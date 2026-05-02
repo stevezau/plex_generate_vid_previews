@@ -530,3 +530,152 @@ class TestMultiPlexDeduping:
         merged = mock_process.call_args.kwargs.get("item_id_by_server") or {}
         assert merged.get("plex-1") == "rk-1", merged
         assert merged.get("jf-1") == "jf-id", merged
+
+
+class TestRealEndToEndMultiServerFullScan:
+    """Boundary-only end-to-end test: real ``_run_full_scan_multi_server`` →
+    real ``_dispatch_processable_items`` → real ``process_canonical_path`` →
+    real ``_publish_one``, with mocks at only:
+
+      * the per-vendor processor's enumeration (replaces network-backed
+        library walk),
+      * ``generate_images`` (FFmpeg subprocess),
+      * the adapter's ``compute_output_paths`` / ``publish`` so we don't
+        write to a real Plex bundle directory but DO capture every call
+        the real publisher path makes,
+      * ``os.path.isfile`` / ``os.listdir`` filesystem boundary.
+
+    The point: D31 shipped because every test stubbed the function with
+    the bug. This test is the canary — if any future change reshapes the
+    canonical-path or item-id flow, this assertion fires.
+    """
+
+    def test_full_scan_drives_real_publish_with_well_formed_inputs(self, tmp_path):
+        cfg = _server_config("srv-real", ServerType.JELLYFIN)
+        registry_real = MagicMock()
+        registry_real.configs.return_value = [cfg]
+
+        # The real _resolve_publishers (in multi_server.py) calls
+        # registry.find_owning_servers(canonical_path) — wire that up to
+        # return the same server + adapter the dispatcher must publish to.
+        server_obj = MagicMock(id="srv-real", name="Test jellyfin")
+        adapter = MagicMock()
+        adapter.name = "test_adapter"
+        adapter.compute_output_paths.return_value = [tmp_path / "out" / "trickplay.bif"]
+        adapter.publish.return_value = None
+
+        # Capture every call the real publisher path makes — these are
+        # the "URLs hit" the audit asks for. The adapter is the boundary
+        # where we'd see a doubled prefix or a leaked URL-form id.
+        captured_compute_calls: list = []
+        captured_publish_calls: list = []
+
+        def _capture_compute(bundle, srv, item_id):
+            captured_compute_calls.append({"canonical_path": bundle.canonical_path, "item_id": item_id, "server": srv})
+            return [tmp_path / "out" / "trickplay.bif"]
+
+        def _capture_publish(bundle, output_paths, item_id=None):
+            captured_publish_calls.append(
+                {
+                    "canonical_path": bundle.canonical_path,
+                    "frame_count": bundle.frame_count,
+                    "item_id": item_id,
+                    "output_paths": output_paths,
+                }
+            )
+
+        adapter.compute_output_paths.side_effect = _capture_compute
+        adapter.publish.side_effect = _capture_publish
+
+        # The vendor processor enumerates one item; we drive it with a
+        # bare ratingKey-style id (the production canonical form).
+        proc = MagicMock()
+        proc.list_canonical_paths.return_value = iter(
+            [
+                ProcessableItem(
+                    canonical_path="/data/movies/Real (2024)/Real (2024).mkv",
+                    server_id="srv-real",
+                    item_id_by_server={"srv-real": "12345"},
+                    title="Real (2024)",
+                    library_id="lib-real",
+                )
+            ]
+        )
+
+        cfg_obj = SimpleNamespace(
+            gpu_threads=0,
+            cpu_threads=1,
+            working_tmp_folder=str(tmp_path / "work"),
+            tmp_folder=str(tmp_path / "frames"),
+            plex_url="",
+            plex_token="",
+            webhook_paths=None,
+            server_id_filter=None,
+            plex_bif_frame_interval=5,
+            thumbnail_interval=5,
+            server_display_name="srv-real",
+        )
+
+        with (
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+            patch("media_preview_generator.servers.ServerRegistry") as mock_registry,
+            patch("media_preview_generator.processing.get_processor_for", return_value=proc),
+            # Only the *boundary* mocks — the real process_canonical_path
+            # body runs from here down.
+            patch(
+                "media_preview_generator.processing.multi_server._resolve_publishers",
+                return_value=[(server_obj, adapter, "12345")],
+            ),
+            patch(
+                "media_preview_generator.processing.multi_server._resolve_item_id_for",
+                return_value="12345",
+            ),
+            patch(
+                "media_preview_generator.processing.multi_server.outputs_fresh_for_source",
+                return_value=False,
+            ),
+            patch(
+                "media_preview_generator.processing.multi_server.os.path.isfile",
+                return_value=True,
+            ),
+            patch(
+                "media_preview_generator.processing.multi_server.generate_images",
+                return_value=(True, 8, "h264", 320, 30.0, 320),
+            ),
+            patch(
+                "media_preview_generator.processing.multi_server.os.listdir",
+                return_value=[f"{i:05d}.jpg" for i in range(1, 9)],
+            ),
+            patch(
+                "media_preview_generator.processing.multi_server.write_meta",
+            ),
+        ):
+            mock_sm.return_value.get.return_value = [{"id": "srv-real", "type": "jellyfin", "enabled": True}]
+            mock_registry.from_settings.return_value = registry_real
+
+            counts = _run_full_scan_multi_server(cfg_obj, selected_gpus=[])
+
+        # The real pipeline ran end-to-end and recorded one publish.
+        assert counts.get("published", 0) == 1, counts
+        # compute_output_paths is called twice in the real flow: once by
+        # the pre-FFmpeg "are outputs fresh?" probe, once inside
+        # _publish_one for the publish path. Both must see the same
+        # canonical path and the same bare item id — that's the D31 contract.
+        assert len(captured_compute_calls) == 2
+        assert len(captured_publish_calls) == 1
+
+        for call in captured_compute_calls:
+            assert call["canonical_path"] == "/data/movies/Real (2024)/Real (2024).mkv"
+            assert call["item_id"] == "12345"
+            assert not str(call["item_id"]).startswith("/library/metadata/"), (
+                f"D31 regression: URL-form item id leaked to compute_output_paths: {call['item_id']!r}"
+            )
+
+        publish_call = captured_publish_calls[0]
+        assert publish_call["canonical_path"] == "/data/movies/Real (2024)/Real (2024).mkv"
+        assert publish_call["item_id"] == "12345"
+        assert not str(publish_call["item_id"]).startswith("/library/metadata/"), (
+            f"D31 regression: URL-form item id leaked to publish: {publish_call['item_id']!r}"
+        )
+        # Frame count from generate_images flowed through to the bundle.
+        assert publish_call["frame_count"] == 8

@@ -290,11 +290,13 @@ class TestGetGPUDevices:
     @patch("media_preview_generator.gpu.detect.os.path.exists")
     @patch("media_preview_generator.gpu.detect.os.path.realpath")
     def test_get_gpu_devices(self, mock_realpath, mock_exists, mock_listdir, mock_readlink, mock_islink):
-        """Test enumerating GPU devices from /sys/class/drm."""
+        """Enumerating /sys/class/drm should yield (card, render_path, driver) tuples
+        for every card with a matching renderD* sibling — and skip connector
+        children like card0-HDMI-A-1."""
         mock_exists.return_value = True
         mock_listdir.return_value = [
             "card0",
-            "card0-HDMI-A-1",
+            "card0-HDMI-A-1",  # connector child — must NOT enumerate
             "renderD128",
             "card1",
             "renderD129",
@@ -302,12 +304,18 @@ class TestGetGPUDevices:
         mock_islink.return_value = True
         mock_readlink.return_value = "amdgpu"
         mock_realpath.side_effect = lambda x: "/sys/devices/pci0000:00/0000:00:01.0"
-        # Force Linux code path for this test
         with patch("media_preview_generator.gpu.detect.platform.system", return_value="Linux"):
             devices = _get_gpu_devices()
 
-        # Should find GPU devices
-        assert len(devices) > 0
+        # Two cards (card0, card1) → two device tuples; connector child dropped.
+        assert len(devices) == 2
+        cards = sorted(d[0] for d in devices)
+        assert cards == ["card0", "card1"]
+        # Render-node paths must be the canonical /dev/dri/renderD* form,
+        # not raw sysfs paths.
+        for _card, render_path, driver in devices:
+            assert render_path.startswith("/dev/dri/renderD")
+            assert driver == "amdgpu"
 
     @patch("media_preview_generator.gpu.detect.os.path.exists")
     def test_get_gpu_devices_no_drm(self, mock_exists):
@@ -631,7 +639,7 @@ class TestLogSystemInfo:
     @patch("platform.release")
     @patch("media_preview_generator.gpu.enumeration.logger")
     def test_log_system_info(self, mock_logger, mock_release, mock_system):
-        """Test logging system information."""
+        """_log_system_info should emit the system + release in at least one debug line."""
         from media_preview_generator.gpu import _log_system_info
 
         mock_system.return_value = "Linux"
@@ -639,8 +647,14 @@ class TestLogSystemInfo:
 
         _log_system_info()
 
-        # Should log system information
-        assert mock_logger.debug.called
+        # At least one debug line must mention either the OS or kernel version,
+        # otherwise the function is silently a no-op.
+        all_debug = " ".join(str(call.args[0]) if call.args else "" for call in mock_logger.debug.call_args_list)
+        all_args = " ".join(str(arg) for call in mock_logger.debug.call_args_list for arg in call.args[1:])
+        combined = all_debug + " " + all_args
+        assert "Linux" in combined or "5.15.0" in combined or "Platform" in combined or "Kernel" in combined, (
+            f"No platform info in debug calls: {mock_logger.debug.call_args_list}"
+        )
 
 
 class TestParseLspciGPUName:
@@ -681,24 +695,42 @@ class TestParseLspciGPUName:
 
 
 class TestAccelerationMethodTesting:
-    """Test acceleration method testing."""
+    """Test acceleration method testing.
 
-    @patch("media_preview_generator.gpu.detect._test_hwaccel_functionality")
-    def test_test_acceleration_method_cuda_failure(self, mock_test):
-        """Test CUDA acceleration method failure."""
+    GPU_ACCELERATION_MAP keys are upper-case ("NVIDIA"/"AMD"/"INTEL");
+    earlier versions of these tests passed lower-case vendor names which
+    silently took the unknown-vendor branch instead of exercising the
+    hwaccel-functionality mock.
+    """
 
-        mock_test.return_value = False
+    @patch("media_preview_generator.gpu.detect._is_hwaccel_available", return_value=True)
+    @patch("media_preview_generator.gpu.detect._test_hwaccel_functionality", return_value=False)
+    def test_test_acceleration_method_cuda_failure(self, mock_test, _mock_avail):
+        """When the CUDA functional test fails, the wrapper returns False AND
+        delegates to ``_test_hwaccel_functionality('cuda')`` (not the AMD/VAAPI path)."""
+        result = _test_acceleration_method("NVIDIA", "CUDA", None)
+        assert result is False
+        mock_test.assert_called_once_with("cuda")
 
-        result = _test_acceleration_method("nvidia", "CUDA", None)
+    @patch("media_preview_generator.gpu.detect._is_hwaccel_available", return_value=True)
+    @patch("media_preview_generator.gpu.detect._test_hwaccel_functionality", return_value=False)
+    def test_test_acceleration_method_vaapi_failure(self, mock_test, _mock_avail):
+        """When the VAAPI functional test fails, the wrapper returns False AND
+        forwarded the device path to the inner test."""
+        result = _test_acceleration_method("AMD", "VAAPI", "/dev/dri/renderD128")
+        assert result is False
+        mock_test.assert_called_once_with("vaapi", "/dev/dri/renderD128")
+
+    @patch("media_preview_generator.gpu.detect._is_hwaccel_available", return_value=False)
+    def test_test_acceleration_method_returns_false_when_hwaccel_unavailable(self, _mock_avail):
+        """When FFmpeg lacks the hwaccel entirely, return False without probing."""
+        result = _test_acceleration_method("NVIDIA", "CUDA", None)
         assert result is False
 
-    @patch("media_preview_generator.gpu.detect._test_hwaccel_functionality")
-    def test_test_acceleration_method_vaapi_failure(self, mock_test):
-        """Test VAAPI acceleration method failure."""
-
-        mock_test.return_value = False
-
-        result = _test_acceleration_method("amd", "VAAPI", "/dev/dri/renderD128")
+    @patch("media_preview_generator.gpu.detect._is_hwaccel_available", return_value=True)
+    def test_test_acceleration_method_unknown_vendor(self, _mock_avail):
+        """Unknown vendor → False (was masking the real CUDA-failure tests)."""
+        result = _test_acceleration_method("nvidia", "CUDA", None)  # lowercase = unknown
         assert result is False
 
 

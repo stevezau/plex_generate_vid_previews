@@ -128,7 +128,9 @@ class TestPageRoutes:
 
     def test_index_redirects_to_login_when_unauthenticated(self, client):
         resp = client.get("/", follow_redirects=False)
-        assert resp.status_code in (302, 308)
+        # @login_required uses Flask's default redirect (302). A 308 here would
+        # mean the route became a permanent redirect, which is a UX regression.
+        assert resp.status_code == 302
         assert "/login" in resp.headers.get("Location", "")
 
     def test_login_page_renders(self, client):
@@ -138,7 +140,8 @@ class TestPageRoutes:
 
     def test_settings_requires_auth(self, client):
         resp = client.get("/settings", follow_redirects=False)
-        assert resp.status_code in (302, 308)
+        assert resp.status_code == 302
+        assert "/login" in resp.headers.get("Location", "")
 
     def test_settings_accessible_when_authenticated(self, authed_client):
         resp = authed_client.get("/settings")
@@ -221,8 +224,12 @@ class TestLoginLogout:
     def test_login_post_valid_token(self, client):
         resp = client.post("/login", data={"token": "test-token-12345678"}, follow_redirects=False)
         # Should redirect to dashboard
-        assert resp.status_code in (302, 308)
+        assert resp.status_code == 302
         assert "/login" not in resp.headers.get("Location", "")
+        # Session must be marked authenticated — bug class: redirect happens
+        # but session never updates and the next request bounces back to /login.
+        with client.session_transaction() as sess:
+            assert sess.get("authenticated") is True
 
     def test_login_post_invalid_token(self, client):
         resp = client.post("/login", data={"token": "wrong"})
@@ -231,14 +238,16 @@ class TestLoginLogout:
 
     def test_already_authenticated_redirects_from_login(self, authed_client):
         resp = authed_client.get("/login", follow_redirects=False)
-        assert resp.status_code in (302, 308)
+        assert resp.status_code == 302
+        # Should redirect to dashboard (/), not loop back to /login.
+        assert "/login" not in resp.headers.get("Location", "")
 
     def test_logout_clears_session(self, authed_client):
         resp = authed_client.get("/logout", follow_redirects=False)
-        assert resp.status_code in (302, 308)
+        assert resp.status_code == 302
         # Subsequent request should require login
         resp2 = authed_client.get("/", follow_redirects=False)
-        assert resp2.status_code in (302, 308)
+        assert resp2.status_code == 302
         assert "/login" in resp2.headers.get("Location", "")
 
     def test_login_rate_limit_exceeded(self, client):
@@ -316,12 +325,26 @@ class TestTokenEndpoints:
         resp = client.post("/api/token/regenerate")
         assert resp.status_code == 401
 
-    def test_regenerate_token_returns_masked(self, client):
-        resp = client.post("/api/token/regenerate", headers=_api_headers())
+    def test_regenerate_token_returns_masked(self, client, monkeypatch):
+        # The fixture pins WEB_AUTH_TOKEN in env, which causes regenerate_token()
+        # to short-circuit and return the env token unchanged. Bypass the env-control
+        # gate so the endpoint actually mints a new token on disk and we can verify
+        # the change.
+        monkeypatch.delenv("WEB_AUTH_TOKEN", raising=False)
+        from media_preview_generator.web.auth import load_auth_config
+
+        original_token = load_auth_config()["token"]
+
+        resp = client.post("/api/token/regenerate", headers={"Authorization": f"Bearer {original_token}"})
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["success"] is True
         assert data["token"].startswith("****")
+        # Verify the persisted token actually changed — without this assertion
+        # a no-op endpoint would still pass the masked-prefix check.
+        new_token = load_auth_config()["token"]
+        assert new_token != original_token
+        assert data["token"].endswith(new_token[-4:])
 
     def test_regenerate_token_invalidates_session(self, client):
         """After token regeneration, session is cleared; request with old session gets 401."""
@@ -872,6 +895,12 @@ class TestJobsAPI:
 
     def test_pause_resume_job(self, client):
         """Per-job pause/resume routes delegate to global processing pause/resume."""
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        # Start unpaused so we can witness the toggle.
+        sm.processing_paused = False
+
         with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
@@ -884,10 +913,14 @@ class TestJobsAPI:
         pause_resp = client.post(f"/api/jobs/{job_id}/pause", headers=_api_headers())
         assert pause_resp.status_code == 200
         assert pause_resp.get_json().get("paused") is True
+        # Verify the pause actually persisted to settings (the response payload
+        # alone could lie — the real bug surface is the settings-side state).
+        assert sm.processing_paused is True
 
         resume_resp = client.post(f"/api/jobs/{job_id}/resume", headers=_api_headers())
         assert resume_resp.status_code == 200
         assert resume_resp.get_json().get("paused") is False
+        assert sm.processing_paused is False
 
     def test_processing_state_get(self, client):
         """GET /api/processing/state returns global pause state."""
@@ -1947,11 +1980,21 @@ class TestSetupWizardAPI:
         assert state.get("data", {}).get("path_mappings") == path_mappings
 
     def test_complete_setup(self, client):
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        # Fixture pre-marks setup complete; clear it so we can assert the
+        # endpoint actually flips it (not just returns success while the
+        # underlying state stays whatever it was).
+        sm.set("setup_complete", False)
+        assert sm.is_setup_complete() is False
+
         resp = client.post("/api/setup/complete", headers=_api_headers())
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["success"] is True
         assert data["redirect"] == "/"
+        assert sm.is_setup_complete() is True
 
     def test_set_setup_token_mismatch(self, client):
         resp = client.post(
@@ -2116,15 +2159,35 @@ class TestSystemAPI:
             resp = client.get("/api/system/status", headers=_api_headers())
         assert resp.status_code == 200
         data = resp.get_json()
-        assert "gpus" in data
+        # Empty GPU list flows through unchanged; running_job + pending_jobs
+        # populated from the (empty) job manager so the dashboard renders 0/none.
+        assert data["gpus"] == []
+        assert data["gpu_stats"] == []
+        assert data["running_job"] is None
+        assert data["pending_jobs"] == 0
 
     def test_get_config(self, client):
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        sm.set("plex_url", "http://plex.example:32400")
+        sm.set("plex_token", "secret-tok")
+        sm.set("plex_config_folder", "/config/plex")
+        sm.set("plex_verify_ssl", False)
+
         with patch("media_preview_generator.config.load_config", return_value=None):
             resp = client.get("/api/system/config", headers=_api_headers())
         assert resp.status_code == 200
         data = resp.get_json()
-        assert "gpu_threads" in data
-        assert "cpu_threads" in data
+        # Endpoint must echo settings + mask the token; key presence alone
+        # would let a regression that returns "" for everything pass silently.
+        assert data["plex_url"] == "http://plex.example:32400"
+        assert data["plex_token"] == "****"
+        assert data["plex_config_folder"] == "/config/plex"
+        assert data["plex_verify_ssl"] is False
+        assert isinstance(data["gpu_threads"], int)
+        assert isinstance(data["cpu_threads"], int)
+        assert "config_error" in data
 
     def test_media_servers_status_empty_when_unconfigured(self, client):
         from media_preview_generator.web.routes import api_system as _api_system
@@ -2890,7 +2953,8 @@ class TestPageRoutesAdditional:
 
     def test_automation_page_requires_auth(self, client):
         resp = client.get("/automation", follow_redirects=False)
-        assert resp.status_code in (302, 308)
+        assert resp.status_code == 302
+        assert "/login" in resp.headers.get("Location", "")
 
     def test_automation_page_renders_with_both_panes(self, authed_client):
         resp = authed_client.get("/automation")
@@ -2931,15 +2995,21 @@ class TestPageRoutesAdditional:
 
     def test_logs_page_requires_auth(self, client):
         resp = client.get("/logs", follow_redirects=False)
-        assert resp.status_code in (302, 308)
+        assert resp.status_code == 302
+        assert "/login" in resp.headers.get("Location", "")
 
     def test_logs_page_accessible_when_authenticated(self, authed_client):
         resp = authed_client.get("/logs")
         assert resp.status_code == 200
 
     def test_setup_wizard_page_redirects_when_configured(self, authed_client):
+        # Authed + setup_complete (set by the `app` fixture) -> /setup must
+        # redirect to / (302). Accepting 200 lets a regression that drops
+        # the redirect slip past — that's exactly the bounce-loop bug
+        # users hit after relogin.
         resp = authed_client.get("/setup", follow_redirects=False)
-        assert resp.status_code in (200, 302, 308)
+        assert resp.status_code == 302
+        assert resp.headers.get("Location", "").endswith("/")
 
     def test_index_redirects_to_setup_when_not_configured(self, client, tmp_path):
         """When setup is incomplete, authenticated user is redirected to setup."""
@@ -2965,7 +3035,11 @@ class TestPageRoutesAdditional:
                 sess["authenticated"] = True
 
             resp = test_client.get("/", follow_redirects=False)
-            assert resp.status_code in (200, 302, 308)
+            # Setup not complete + authed -> index should 302 to /setup. A
+            # 200 here would mean the dashboard rendered without setup, which
+            # is the regression we're guarding against.
+            assert resp.status_code == 302
+            assert "/setup" in resp.headers.get("Location", "")
             reset_settings_manager()
 
 
@@ -2991,8 +3065,12 @@ class TestLogHistoryAPI:
                 f.write(_json.dumps(e) + "\n")
 
     def test_log_history_requires_auth(self, client):
+        # @setup_or_auth_required returns 401 (Unauthorized) — not 403 — when
+        # setup is complete and no token is supplied. Pin to the actual code so
+        # we don't silently accept a regression flipping to 403 (Forbidden) which
+        # implies a different auth model (token present but insufficient).
         resp = client.get("/api/logs/history")
-        assert resp.status_code in (401, 403)
+        assert resp.status_code == 401
 
     def test_log_history_empty_when_no_file(self, app, authed_client, tmp_path):
         fake = str(tmp_path / "nonexistent" / "app.log")
@@ -3459,7 +3537,22 @@ class TestPlexWebhookLoopbackGuard:
         assert resp.status_code == 200
         body = resp.get_json()
         assert body["success"] is True
+        # Inspect the outbound request — D31 was caused by silently building a
+        # broken URL/body. A bare assert_called_once misses that class of bug.
         mock_post.assert_called_once()
+        call = mock_post.call_args
+        target_url = call.args[0] if call.args else call.kwargs.get("url")
+        # The endpoint appends ?token=<auth> via _build_authenticated_url, but
+        # the path prefix must match the user-supplied URL exactly — D31 was a
+        # doubled prefix that this assertion catches.
+        assert target_url.startswith("http://localhost:9191/api/webhooks/plex"), (
+            f"webhook test must POST to the user-supplied URL (with token query), got {target_url!r}"
+        )
+        assert "/api/webhooks/plex/api/webhooks/plex" not in target_url, (
+            f"D31 regression: doubled URL prefix in {target_url!r}"
+        )
+        # Plex-style multipart payload, not JSON.
+        assert "files" in call.kwargs, "must use multipart files= to mimic real Plex POSTs"
 
     @patch("media_preview_generator.web.routes.api_settings.is_docker_environment")
     @patch("requests.post")
@@ -3485,6 +3578,17 @@ class TestPlexWebhookLoopbackGuard:
         assert resp.status_code == 200
         assert resp.get_json()["success"] is True
         mock_post.assert_called_once()
+        # D31 regression guard: assert the URL was passed through with the
+        # user-supplied prefix intact (the auth ?token=… is appended).
+        call = mock_post.call_args
+        target_url = call.args[0] if call.args else call.kwargs.get("url")
+        assert target_url.startswith("http://192.168.1.50:9191/api/webhooks/plex"), (
+            f"webhook test must POST to the user-supplied URL prefix, got {target_url!r}"
+        )
+        assert "/api/webhooks/plex/api/webhooks/plex" not in target_url, (
+            f"D31 regression: doubled URL prefix in {target_url!r}"
+        )
+        assert "files" in call.kwargs, "must use multipart files= to mimic real Plex POSTs"
 
     @patch("media_preview_generator.web.routes.api_settings.is_docker_environment")
     def test_loopback_guard_covers_ipv4_and_ipv6(self, mock_is_docker, client):
@@ -3519,17 +3623,39 @@ class TestPlexWebhookLoopbackGuard:
 class TestPlexLibrariesAPI:
     """Test /api/plex/libraries endpoint."""
 
-    @patch("media_preview_generator.web.routes.api_libraries._fetch_libraries_via_http")
-    def test_get_plex_libraries(self, mock_fetch, client):
+    @patch("requests.get")
+    def test_get_plex_libraries(self, mock_get, client):
+        # Mock at the HTTP boundary (requests.get) instead of the in-module
+        # _fetch_libraries_via_http helper. Mocking the helper lets a real bug
+        # in the helper slip past — the D31 webhook double-prefix regression
+        # is exactly what this rule guards against.
         from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.set("plex_url", "http://plex:32400")
         sm.set("plex_token", "test-token")
-        mock_fetch.return_value = [{"id": "1", "name": "Movies", "type": "movie"}]
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "MediaContainer": {
+                "Directory": [
+                    {"key": "1", "title": "Movies", "type": "movie"},
+                ]
+            }
+        }
+        mock_response.raise_for_status = MagicMock()
+        mock_get.return_value = mock_response
+
         resp = client.get("/api/plex/libraries", headers=_api_headers())
         assert resp.status_code == 200
-        assert len(resp.get_json()["libraries"]) == 1
+        libs = resp.get_json()["libraries"]
+        assert len(libs) == 1
+        assert libs[0]["name"] == "Movies"
+        assert libs[0]["type"] == "movie"
+        # Verify the route really called Plex with the expected URL/token.
+        call = mock_get.call_args
+        assert call.args[0].startswith("http://plex:32400")
+        assert call.kwargs["headers"]["X-Plex-Token"] == "test-token"
 
     def test_get_plex_libraries_no_creds(self, client):
         from media_preview_generator.web.settings_manager import get_settings_manager
@@ -3543,8 +3669,8 @@ class TestPlexLibrariesAPI:
             resp = client.get("/api/plex/libraries", headers=_api_headers())
         assert resp.status_code == 400
 
-    @patch("media_preview_generator.web.routes.api_libraries._fetch_libraries_via_http")
-    def test_get_plex_libraries_ssl_error_returns_specific_message(self, mock_fetch, client):
+    @patch("requests.get")
+    def test_get_plex_libraries_ssl_error_returns_specific_message(self, mock_get, client):
         """SSLError must surface as an SSL-specific message — it's a subclass
         of ConnectionError, so without an explicit handler it gets reported
         as a generic 'could not connect' error and the user has no clue
@@ -3557,7 +3683,9 @@ class TestPlexLibrariesAPI:
         sm = get_settings_manager()
         sm.set("plex_url", "https://192.168.1.10:32400")
         sm.set("plex_token", "tok")
-        mock_fetch.side_effect = requests.exceptions.SSLError("self signed certificate")
+        # Mock the HTTP boundary — requests.get raises, the in-module helper
+        # propagates, and the route's SSLError handler converts to 502.
+        mock_get.side_effect = requests.exceptions.SSLError("self signed certificate")
 
         resp = client.get("/api/plex/libraries", headers=_api_headers())
         assert resp.status_code == 502
@@ -3670,15 +3798,22 @@ class TestParamToBool:
 class TestLibraryCache:
     """Test Plex library caching behaviour."""
 
-    @patch("media_preview_generator.web.routes.api_libraries._fetch_libraries_via_http")
-    def test_libraries_cached_on_second_call(self, mock_fetch, client):
+    @staticmethod
+    def _plex_directory_response():
+        resp = MagicMock()
+        resp.json.return_value = {"MediaContainer": {"Directory": [{"key": "1", "title": "Movies", "type": "movie"}]}}
+        resp.raise_for_status = MagicMock()
+        return resp
+
+    @patch("requests.get")
+    def test_libraries_cached_on_second_call(self, mock_get, client):
         """Second call to /api/libraries returns cached data without re-fetching."""
         from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.set("plex_url", "http://plex:32400")
         sm.set("plex_token", "test-token")
-        mock_fetch.return_value = [{"id": "1", "name": "Movies", "type": "movie"}]
+        mock_get.return_value = self._plex_directory_response()
 
         resp1 = client.get("/api/libraries", headers=_api_headers())
         resp2 = client.get("/api/libraries", headers=_api_headers())
@@ -3686,18 +3821,18 @@ class TestLibraryCache:
         assert resp1.status_code == 200
         assert resp2.status_code == 200
         assert resp2.get_json()["libraries"][0]["name"] == "Movies"
-        # Only one fetch — second call served from cache
-        assert mock_fetch.call_count == 1
+        # Only one HTTP fetch — second call served from cache.
+        assert mock_get.call_count == 1
 
-    @patch("media_preview_generator.web.routes.api_libraries._fetch_libraries_via_http")
-    def test_cache_bypassed_with_explicit_url(self, mock_fetch, client):
+    @patch("requests.get")
+    def test_cache_bypassed_with_explicit_url(self, mock_get, client):
         """Explicit url/token query params bypass the library cache."""
         from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.set("plex_url", "http://plex:32400")
         sm.set("plex_token", "test-token")
-        mock_fetch.return_value = [{"id": "1", "name": "Movies", "type": "movie"}]
+        mock_get.side_effect = lambda *a, **kw: self._plex_directory_response()
 
         # First call populates cache
         client.get("/api/libraries", headers=_api_headers())
@@ -3706,10 +3841,12 @@ class TestLibraryCache:
             "/api/libraries?url=http://other:32400&token=tok",
             headers=_api_headers(),
         )
-        assert mock_fetch.call_count == 2
+        assert mock_get.call_count == 2
+        # Second call should have hit the override URL, not the cached one.
+        assert mock_get.call_args_list[1].args[0].startswith("http://other:32400")
 
-    @patch("media_preview_generator.web.routes.api_libraries._fetch_libraries_via_http")
-    def test_cache_invalidated_on_plex_url_change(self, mock_fetch, client):
+    @patch("requests.get")
+    def test_cache_invalidated_on_plex_url_change(self, mock_get, client):
         """Saving a new plex_url clears the library cache.
 
         Uses the explicit ``?url=&token=`` path so we exercise the cached
@@ -3722,13 +3859,13 @@ class TestLibraryCache:
         sm = get_settings_manager()
         sm.set("plex_url", "http://plex:32400")
         sm.set("plex_token", "test-token")
-        mock_fetch.return_value = [{"id": "1", "name": "Movies", "type": "movie"}]
+        mock_get.side_effect = lambda *a, **kw: self._plex_directory_response()
 
         client.get(
             "/api/libraries?url=http://plex:32400&token=test-token",
             headers=_api_headers(),
         )
-        assert mock_fetch.call_count == 1
+        assert mock_get.call_count == 1
 
         # Changing plex_url should invalidate the cache
         client.post(
@@ -3740,7 +3877,8 @@ class TestLibraryCache:
             "/api/libraries?url=http://new-plex:32400&token=test-token",
             headers=_api_headers(),
         )
-        assert mock_fetch.call_count == 2
+        assert mock_get.call_count == 2
+        assert mock_get.call_args_list[1].args[0].startswith("http://new-plex:32400")
 
 
 # ---------------------------------------------------------------------------
@@ -4183,7 +4321,12 @@ class TestGetPlexServersConnectionList:
 
 
 class TestBifSearchPhases:
-    """Test /api/bif/search phase 1 (show expansion) and phase 2 (direct hits)."""
+    """Test /api/bif/search phase 1 (show expansion) and phase 2 (direct hits).
+
+    Mocks at the HTTP boundary (``requests.get``) — patching the
+    intra-module helpers ``_item_to_result`` / ``_fetch_show_episodes``
+    would let bugs in those helpers slip past the test (D31 class).
+    """
 
     def _configure_plex(self):
         from media_preview_generator.web.settings_manager import get_settings_manager
@@ -4193,83 +4336,176 @@ class TestBifSearchPhases:
         sm.set("plex_token", "test-plex-token")
         sm.set("plex_config_folder", "/config/plex")
 
-    def _hub_response(self, hubs):
+    @staticmethod
+    def _json_resp(payload):
         resp = MagicMock()
-        resp.json.return_value = {"MediaContainer": {"Hub": hubs}}
+        resp.json.return_value = payload
         resp.raise_for_status = MagicMock()
         return resp
 
-    @patch("media_preview_generator.web.routes.api_bif._item_to_result")
-    @patch("media_preview_generator.web.routes.api_bif._fetch_show_episodes")
+    @staticmethod
+    def _xml_tree_resp():
+        """Return an empty Plex XML tree response so _resolve_bif_for_item
+        completes without finding a BIF (which is what we want for search
+        result tests — they assert keys, not bif_path content)."""
+        resp = MagicMock()
+        resp.content = b"<MediaContainer></MediaContainer>"
+        resp.raise_for_status = MagicMock()
+        return resp
+
+    def _build_dispatcher(self, hubs, episodes_by_show_key=None):
+        """Return a side_effect that dispatches requests.get by URL.
+
+        - ``/hubs/search`` -> hub list
+        - ``/library/metadata/<id>/allLeaves`` -> episode list (per show)
+        - ``/library/metadata/<id>/tree`` -> empty XML (no BIF)
+        """
+        episodes_by_show_key = episodes_by_show_key or {}
+
+        def _dispatch(url, *args, **kwargs):
+            if "/hubs/search" in url:
+                return self._json_resp({"MediaContainer": {"Hub": hubs}})
+            if url.endswith("/allLeaves"):
+                # url is "<plex_url><show_key>/allLeaves"; strip the suffix.
+                show_key = url[len("http://plex:32400") : -len("/allLeaves")]
+                eps = episodes_by_show_key.get(show_key, [])
+                return self._json_resp({"MediaContainer": {"Metadata": eps}})
+            if url.endswith("/tree"):
+                return self._xml_tree_resp()
+            raise AssertionError(f"unexpected URL: {url}")
+
+        return _dispatch
+
     @patch("requests.get")
-    def test_season_filter_skips_phase_2_and_passes_filters_to_fetch(self, mock_get, mock_fetch_eps, mock_item, client):
-        """Query with ``S01E02`` expands the show hub but ignores episode/movie hubs."""
+    def test_season_filter_skips_phase_2_and_passes_filters_to_fetch(self, mock_get, client):
+        """Query with ``S01E02`` expands the show hub but ignores episode/movie hubs.
+
+        Filters are verified by feeding /allLeaves a 3-episode list spanning
+        two seasons and asserting only the matching one is returned in the
+        response — that's a real behaviour assertion, not "the helper got the
+        right kwargs".
+        """
         self._configure_plex()
-        mock_get.return_value = self._hub_response(
-            [
-                {"type": "show", "Metadata": [{"ratingKey": "100", "title": "Show"}]},
-                # This episode hub would match phase 2 if season_filter were None,
-                # but with a filter set it must be ignored.
-                {"type": "episode", "Metadata": [{"key": "/library/metadata/999"}]},
-            ]
-        )
-        mock_fetch_eps.return_value = [
-            {"key": "/library/metadata/200", "title": "Ep1"},
-            {"key": "/library/metadata/201", "title": "Ep2"},
+
+        all_eps = [
+            {
+                "key": "/library/metadata/200",
+                "title": "S1E1",
+                "parentIndex": 1,
+                "index": 1,
+                "type": "episode",
+                "grandparentTitle": "Show",
+            },
+            {
+                "key": "/library/metadata/201",
+                "title": "S1E2",
+                "parentIndex": 1,
+                "index": 2,
+                "type": "episode",
+                "grandparentTitle": "Show",
+            },
+            {
+                "key": "/library/metadata/202",
+                "title": "S2E1",
+                "parentIndex": 2,
+                "index": 1,
+                "type": "episode",
+                "grandparentTitle": "Show",
+            },
         ]
-        mock_item.side_effect = lambda item, *a, **kw: {"key": item.get("key", "")}
+        mock_get.side_effect = self._build_dispatcher(
+            hubs=[
+                {"type": "show", "Metadata": [{"ratingKey": "100", "title": "Show"}]},
+                # episode hub must be ignored because season_filter is set.
+                {
+                    "type": "episode",
+                    "Metadata": [
+                        {"key": "/library/metadata/999", "title": "Skipped", "type": "episode"},
+                    ],
+                },
+            ],
+            episodes_by_show_key={"/library/metadata/100": all_eps},
+        )
 
         resp = client.get("/api/bif/search?q=Show S01E02", headers=_api_headers())
 
         assert resp.status_code == 200
-        keys = [r["key"] for r in resp.get_json()["results"]]
-        assert "/library/metadata/200" in keys
-        assert "/library/metadata/999" not in keys
-        # Verify season/episode filters made it through to _fetch_show_episodes
-        call_kwargs = mock_fetch_eps.call_args.kwargs
-        assert call_kwargs["season_filter"] == 1
-        assert call_kwargs["episode_filter"] == 2
+        # Only the S01E02 episode survives the filter; phase-2 episode hub is skipped.
+        # Result dict has no "key" field, so identify by display title.
+        titles = [r["title"] for r in resp.get_json()["results"]]
+        assert titles == ["Show S01E02 - S1E2"]
+        # Confirm the route did call /allLeaves for the show key (i.e. phase 1 ran).
+        called_urls = [call.args[0] for call in mock_get.call_args_list]
+        assert any(u.endswith("/library/metadata/100/allLeaves") for u in called_urls)
+        # Confirm phase 2 did NOT call /tree for the skipped episode key.
+        assert not any("/library/metadata/999/tree" in u for u in called_urls), (
+            "phase-2 episode hub must be skipped when a season filter is active"
+        )
 
-    @patch("media_preview_generator.web.routes.api_bif._item_to_result")
     @patch("requests.get")
-    def test_plain_query_includes_movie_and_episode_hubs(self, mock_get, mock_item, client):
+    def test_plain_query_includes_movie_and_episode_hubs(self, mock_get, client):
         self._configure_plex()
-        mock_get.return_value = self._hub_response(
-            [
-                {"type": "movie", "Metadata": [{"key": "/library/metadata/10"}]},
-                {"type": "episode", "Metadata": [{"key": "/library/metadata/11"}]},
+        mock_get.side_effect = self._build_dispatcher(
+            hubs=[
+                {
+                    "type": "movie",
+                    "Metadata": [{"key": "/library/metadata/10", "title": "MovieA", "type": "movie"}],
+                },
+                {
+                    "type": "episode",
+                    "Metadata": [
+                        {
+                            "key": "/library/metadata/11",
+                            "title": "EpA",
+                            "type": "episode",
+                            "grandparentTitle": "Show",
+                            "parentIndex": 1,
+                            "index": 3,
+                        }
+                    ],
+                },
             ]
         )
-        mock_item.side_effect = lambda item, *a, **kw: {"key": item.get("key", "")}
 
         resp = client.get("/api/bif/search?q=Inception", headers=_api_headers())
 
-        keys = [r["key"] for r in resp.get_json()["results"]]
-        assert "/library/metadata/10" in keys
-        assert "/library/metadata/11" in keys
+        results = resp.get_json()["results"]
+        titles = [r["title"] for r in results]
+        # Both phase-2 hubs flow through when there's no season filter.
+        assert "MovieA" in titles
+        assert "Show S01E03 - EpA" in titles
+        # Verify each item triggered a /tree resolution (the BIF lookup path).
+        called_urls = [call.args[0] for call in mock_get.call_args_list]
+        assert any(u.endswith("/library/metadata/10/tree") for u in called_urls)
+        assert any(u.endswith("/library/metadata/11/tree") for u in called_urls)
 
-    @patch("media_preview_generator.web.routes.api_bif._item_to_result")
     @patch("requests.get")
-    def test_duplicate_keys_are_deduped(self, mock_get, mock_item, client):
+    def test_duplicate_keys_are_deduped(self, mock_get, client):
         self._configure_plex()
-        mock_get.return_value = self._hub_response(
-            [
+        mock_get.side_effect = self._build_dispatcher(
+            hubs=[
                 {
                     "type": "movie",
                     "Metadata": [
-                        {"key": "/library/metadata/1"},
-                        {"key": "/library/metadata/1"},  # duplicate
-                        {"key": "/library/metadata/2"},
+                        {"key": "/library/metadata/1", "title": "Alpha", "type": "movie"},
+                        {"key": "/library/metadata/1", "title": "Alpha", "type": "movie"},  # duplicate
+                        {"key": "/library/metadata/2", "title": "Beta", "type": "movie"},
                     ],
                 }
             ]
         )
-        mock_item.side_effect = lambda item, *a, **kw: {"key": item.get("key", "")}
 
         resp = client.get("/api/bif/search?q=Movie", headers=_api_headers())
 
         results = resp.get_json()["results"]
-        assert [r["key"] for r in results] == ["/library/metadata/1", "/library/metadata/2"]
+        # Dedup is keyed off the Plex item key — only two distinct results.
+        assert len(results) == 2
+        assert [r["title"] for r in results] == ["Alpha", "Beta"]
+        # Tree was called once per unique key, not three times.
+        called_urls = [call.args[0] for call in mock_get.call_args_list]
+        tree_calls = [u for u in called_urls if u.endswith("/tree")]
+        assert sum(1 for u in tree_calls if u.endswith("/metadata/1/tree")) == 1
+        assert sum(1 for u in tree_calls if u.endswith("/metadata/2/tree")) == 1
 
     def test_short_query_returns_400(self, client):
         resp = client.get("/api/bif/search?q=a", headers=_api_headers())

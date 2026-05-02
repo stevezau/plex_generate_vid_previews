@@ -25,10 +25,20 @@ class TestBasicFunctionality:
         )
 
     def test_web_module_importable(self):
-        """Test that the web module can be imported."""
+        """create_app() returns a real Flask app with registered routes (not just a callable)."""
+        import flask
+
         from media_preview_generator.web.app import create_app
 
-        assert callable(create_app)
+        app = create_app()
+        assert isinstance(app, flask.Flask)
+        # The app must have registered URL rules — guards against the failure
+        # mode where blueprint registration silently raises on import and
+        # leaves an empty Flask app behind.
+        rules = [r.rule for r in app.url_map.iter_rules()]
+        assert len(rules) > 0
+        # /api endpoints are mandatory — the dashboard depends on them.
+        assert any(r.startswith("/api/") for r in rules), f"No /api/ routes registered: {rules[:5]}"
 
     def test_no_cli_module(self):
         """Test that CLI module has been removed."""
@@ -88,20 +98,20 @@ class TestGPUDetection:
     """Test GPU detection functionality."""
 
     def test_format_gpu_info(self):
-        """Test GPU info formatting."""
+        """Test GPU info formatting using the real (gpu_type, gpu_device, gpu_name, acceleration?) signature."""
         from media_preview_generator.gpu import format_gpu_info
 
-        # Test NVIDIA formatting
-        nvidia_info = format_gpu_info("cuda", 0, "NVIDIA GeForce RTX 3080")
-        assert "NVIDIA" in nvidia_info
-        assert "RTX 3080" in nvidia_info
-        assert "cuda" in nvidia_info.lower()
+        # NVIDIA via the explicit-acceleration path
+        nvidia_info = format_gpu_info("NVIDIA", "0", "NVIDIA GeForce RTX 3080", "CUDA")
+        assert nvidia_info == "NVIDIA GeForce RTX 3080 (CUDA)"
 
-        # Test AMD formatting
-        amd_info = format_gpu_info("vaapi", "/dev/dri/renderD128", "AMD Radeon RX 6800 XT")
-        assert "AMD" in amd_info
-        assert "RX 6800 XT" in amd_info
-        assert "vaapi" in amd_info.lower()
+        # AMD via VAAPI on a DRM render node
+        amd_info = format_gpu_info("AMD", "/dev/dri/renderD128", "AMD Radeon RX 6800 XT", "VAAPI")
+        assert amd_info == "AMD Radeon RX 6800 XT (VAAPI - /dev/dri/renderD128)"
+
+        # Backward-compat path (no acceleration arg) still resolves NVIDIA -> CUDA
+        nvidia_legacy = format_gpu_info("NVIDIA", "0", "NVIDIA GeForce RTX 3080")
+        assert nvidia_legacy == "NVIDIA GeForce RTX 3080 (CUDA)"
 
     def test_ffmpeg_version_check(self):
         """Test FFmpeg version checking."""
@@ -123,13 +133,3 @@ class TestGPUDetection:
 
             mock_get_version.return_value = (6, 9, 0)
             assert _check_ffmpeg_version() is False
-
-
-class TestProcessingModule:
-    """Test processing module exists and is importable."""
-
-    def test_run_processing_importable(self):
-        """Test that run_processing can be imported from job_orchestrator module."""
-        from media_preview_generator.jobs.orchestrator import run_processing
-
-        assert callable(run_processing)

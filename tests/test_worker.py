@@ -856,8 +856,14 @@ class TestWorkerPool:
 
         pool.process_items(_pi_list_or_passthrough(items), config, registry, worker_progress, main_progress)
 
-        # Progress update should have been called
-        assert worker_progress.update.called or worker_progress.remove_task.called
+        # The worker's progress task must end up cleaned up — remove_task
+        # is the load-bearing call (it's what stops the orphaned row from
+        # rendering in the rich console after the item completes).
+        worker_progress.remove_task.assert_called()
+        # ``add_task`` must have run exactly once for our single worker so
+        # remove_task pairs 1:1 with it (no leak).
+        assert worker_progress.add_task.call_count == 1
+        assert worker_progress.remove_task.call_count == 1
 
     def test_worker_statistics(self):
         """Test worker completed/failed statistics."""
@@ -1222,7 +1228,7 @@ class TestWorkerCancellation:
         if worker.current_thread:
             worker.current_thread.join(timeout=2)
 
-        assert mock_process.called
+        mock_process.assert_called_once()
         call_kwargs = mock_process.call_args[1]
         assert call_kwargs.get("cancel_check") is cancel_fn
 

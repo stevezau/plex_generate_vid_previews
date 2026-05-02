@@ -151,32 +151,47 @@ class TestSubscription:
     """Test room subscription via subscribe/unsubscribe events."""
 
     def test_subscribe_to_job(self, authed_socketio_client):
-        """Subscribing to a job room should not error."""
-        authed_socketio_client.emit(
-            "subscribe",
-            {"job_id": "test-job-123"},
-            namespace="/jobs",
-        )
-        # No error means success; server joins the room silently.
-        # We can verify by checking received events (should be empty for subscribe).
-        received = authed_socketio_client.get_received(namespace="/jobs")
-        # Subscribe doesn't emit back by default
-        assert isinstance(received, list)
+        """Subscribe handler must accept the event silently and keep the connection live.
 
-    def test_unsubscribe_from_job(self, authed_socketio_client):
-        """Unsubscribing should not error."""
-        authed_socketio_client.emit(
-            "subscribe",
-            {"job_id": "test-job-456"},
-            namespace="/jobs",
-        )
-        authed_socketio_client.emit(
-            "unsubscribe",
-            {"job_id": "test-job-456"},
-            namespace="/jobs",
-        )
+        ``isinstance(received, list)`` was tautological — get_received() ALWAYS
+        returns a list. We assert the meaningful invariants instead: the
+        handler is silent (no echo back), the client stays connected (didn't
+        get bounced by an auth check inside the handler), and an empty/missing
+        job_id is tolerated (the early-return branch).
+        """
+        authed_socketio_client.emit("subscribe", {"job_id": "test-job-123"}, namespace="/jobs")
         received = authed_socketio_client.get_received(namespace="/jobs")
-        assert isinstance(received, list)
+        assert received == [], f"subscribe should be silent, got {received!r}"
+        assert authed_socketio_client.is_connected(namespace="/jobs")
+
+        # Empty payload should hit the `if job_id:` early return without raising.
+        authed_socketio_client.emit("subscribe", {}, namespace="/jobs")
+        assert authed_socketio_client.get_received(namespace="/jobs") == []
+        assert authed_socketio_client.is_connected(namespace="/jobs")
+
+    def test_unsubscribe_from_job(self, app, authed_socketio_client):
+        """Unsubscribe handler must accept the event silently and keep the connection live.
+
+        ``isinstance(received, list)`` was tautological. Note: the production
+        ``_emit_event`` in ``JobManager`` broadcasts to the namespace (not to
+        a specific room), so we cannot assert "no events arrive after
+        leave_room" — that would test behaviour the code doesn't implement.
+        Instead we verify the handler's real contract: it returns silently,
+        doesn't disconnect the client, and is idempotent.
+        """
+        authed_socketio_client.emit("subscribe", {"job_id": "test-job-456"}, namespace="/jobs")
+        # Drain whatever the subscribe handler may have emitted (currently nothing).
+        authed_socketio_client.get_received(namespace="/jobs")
+
+        authed_socketio_client.emit("unsubscribe", {"job_id": "test-job-456"}, namespace="/jobs")
+        received = authed_socketio_client.get_received(namespace="/jobs")
+        assert received == [], f"unsubscribe should be silent, got {received!r}"
+        assert authed_socketio_client.is_connected(namespace="/jobs")
+
+        # Idempotent: leaving an already-left room must not crash or emit.
+        authed_socketio_client.emit("unsubscribe", {"job_id": "test-job-456"}, namespace="/jobs")
+        assert authed_socketio_client.get_received(namespace="/jobs") == []
+        assert authed_socketio_client.is_connected(namespace="/jobs")
 
 
 # ---------------------------------------------------------------------------

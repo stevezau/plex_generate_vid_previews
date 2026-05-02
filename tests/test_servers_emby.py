@@ -269,6 +269,13 @@ class TestResolveItemToRemotePath:
 
             assert emby.resolve_item_to_remote_path("42") == "/media-source.mkv"
 
+            # Verify the URL — without user_id the universal /Items?Ids endpoint
+            # is used (bare /Items/{id} returns 404 on Emby without user context).
+            call_args = req.call_args
+            assert call_args.args[0] == "GET"
+            assert call_args.args[1] == "/Items"
+            assert call_args.kwargs.get("params", {}).get("Ids") == "42"
+
     def test_falls_back_to_top_level_path(self, emby):
         with patch.object(EmbyServer, "_request") as req:
             response = MagicMock()

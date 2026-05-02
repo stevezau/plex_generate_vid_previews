@@ -61,16 +61,39 @@ class TestPlexServerConnection:
             plex_server(mock_config)
 
     @patch("plexapi.server.PlexServer")
-    @patch("requests.Session")
-    def test_plex_server_retry_strategy(self, mock_session, mock_plex_server, mock_config):
-        """Test that retry strategy is configured."""
-        mock_plex = MagicMock()
-        mock_plex_server.return_value = mock_plex
+    def test_plex_server_retry_strategy(self, mock_plex_server, mock_config):
+        """Verify the Session is mounted with an HTTPAdapter whose Retry config
+        matches what plex_client wants — total=3, backoff_factor=0.3, and
+        the 5xx status_forcelist. Just asserting "Session was called" let
+        a regression where retries are silently disabled slip through.
+        """
+        from requests.adapters import HTTPAdapter
 
-        plex_server(mock_config)
+        mock_plex_server.return_value = MagicMock()
 
-        # Verify session was configured with retry
-        assert mock_session.called
+        with patch("media_preview_generator.plex_client.requests.Session") as mock_session_cls:
+            session_instance = MagicMock()
+            mock_session_cls.return_value = session_instance
+
+            plex_server(mock_config)
+
+        # Session.mount should be called for both http and https with the
+        # SAME HTTPAdapter instance.
+        mount_calls = session_instance.mount.call_args_list
+        schemes = sorted(call.args[0] for call in mount_calls)
+        assert schemes == ["http://", "https://"], f"expected both http:// and https:// mounted; got {schemes}"
+
+        adapters = [call.args[1] for call in mount_calls]
+        assert all(isinstance(a, HTTPAdapter) for a in adapters), "non-HTTPAdapter mounted on session"
+        # Same adapter instance used for both schemes (single Retry config).
+        assert adapters[0] is adapters[1]
+
+        retry = adapters[0].max_retries
+        assert retry.total == 3, f"Retry.total expected 3, got {retry.total}"
+        assert retry.backoff_factor == 0.3, f"Retry.backoff_factor expected 0.3, got {retry.backoff_factor}"
+        assert sorted(retry.status_forcelist) == [500, 502, 503, 504], (
+            f"Retry.status_forcelist expected [500,502,503,504], got {sorted(retry.status_forcelist)}"
+        )
 
     @patch("plexapi.server.PlexServer")
     @patch("requests.Session")
@@ -428,7 +451,13 @@ class TestGetLibrarySections:
     """Test library section retrieval."""
 
     def test_get_library_sections_movies(self, mock_config):
-        """Test getting movie libraries."""
+        """Test getting movie libraries.
+
+        D31 — assert the BARE ratingKey is stored, not the URL form. Production
+        code now mirrors the webhook resolver's behaviour (uses ratingKey, falls
+        back to parsing the trailing segment of m.key). Mocks set BOTH attributes
+        so this test fails loudly if production ever picks .key again.
+        """
         mock_plex = MagicMock()
 
         # Mock section
@@ -436,8 +465,9 @@ class TestGetLibrarySections:
         mock_section.title = "Movies"
         mock_section.METADATA_TYPE = "movie"
 
-        # Mock movie
+        # Mock movie — real plexapi populates both attrs.
         mock_movie = MagicMock()
+        mock_movie.ratingKey = 1
         mock_movie.key = "/library/metadata/1"
         mock_movie.title = "Test Movie"
 
@@ -450,7 +480,12 @@ class TestGetLibrarySections:
         section, media = sections[0]
         assert section == mock_section
         assert len(media) == 1
-        assert media[0][0] == "/library/metadata/1"
+        # BARE ratingKey, NOT the URL form — anything else doubles the prefix
+        # downstream when PlexBundleAdapter builds f"/library/metadata/{id}/tree".
+        assert media[0][0] == "1"
+        assert "/" not in media[0][0], (
+            f"item id contains '/' ({media[0][0]!r}) — would double the URL prefix in /tree query"
+        )
         assert media[0][1] == "Test Movie"
         assert media[0][2] == "movie"
 
@@ -464,6 +499,7 @@ class TestGetLibrarySections:
         mock_section.METADATA_TYPE = "movie"
 
         mock_movie = MagicMock()
+        mock_movie.ratingKey = 1
         mock_movie.key = "/library/metadata/1"
         mock_movie.title = "Test Movie"
         mock_section.search.return_value = [mock_movie]
@@ -485,6 +521,7 @@ class TestGetLibrarySections:
         mock_section.METADATA_TYPE = "movie"
 
         mock_movie = MagicMock()
+        mock_movie.ratingKey = 1
         mock_movie.key = "/library/metadata/1"
         mock_movie.title = "Test Movie"
         mock_section.search.return_value = [mock_movie]
@@ -647,7 +684,11 @@ class TestGetLibrarySectionsExtended:
     """Extended tests for library section retrieval."""
 
     def test_get_library_sections_episodes(self, mock_config):
-        """Test getting TV show libraries."""
+        """Test getting TV show libraries.
+
+        D31 — assert the BARE ratingKey is stored, not the URL form (see
+        ``test_get_library_sections_movies`` for the rationale).
+        """
         mock_plex = MagicMock()
 
         # Mock section
@@ -655,8 +696,9 @@ class TestGetLibrarySectionsExtended:
         mock_section.title = "TV Shows"
         mock_section.METADATA_TYPE = "episode"
 
-        # Mock episode
+        # Mock episode — real plexapi populates both attrs.
         mock_episode = MagicMock()
+        mock_episode.ratingKey = 123
         mock_episode.key = "/library/metadata/123"
         mock_episode.grandparentTitle = "Test Show"
         mock_episode.seasonEpisode = "s01e01"
@@ -671,7 +713,9 @@ class TestGetLibrarySectionsExtended:
         section, media = sections[0]
         assert section == mock_section
         assert len(media) == 1
-        assert media[0][0] == "/library/metadata/123"
+        # BARE ratingKey, NOT the URL form — see test_get_library_sections_movies.
+        assert media[0][0] == "123"
+        assert "/" not in media[0][0]
         assert "Test Show" in media[0][1]
         assert "S01E01" in media[0][1]
         assert media[0][2] == "episode"
@@ -752,14 +796,17 @@ class TestGetLibrarySectionsExtended:
         mock_section.title = "TV Shows"
         mock_section.METADATA_TYPE = "episode"
 
-        # Two episodes pointing to same file (multi-part episode)
+        # Two episodes pointing to same file (multi-part episode).
+        # Mocks set both .ratingKey and .key (real plexapi shape).
         mock_episode1 = MagicMock()
+        mock_episode1.ratingKey = 1
         mock_episode1.key = "/library/metadata/1"
         mock_episode1.grandparentTitle = "Show"
         mock_episode1.seasonEpisode = "s01e01"
         mock_episode1.locations = ["/path/to/episode.mkv"]
 
         mock_episode2 = MagicMock()
+        mock_episode2.ratingKey = 2
         mock_episode2.key = "/library/metadata/2"
         mock_episode2.grandparentTitle = "Show"
         mock_episode2.seasonEpisode = "s01e02"
@@ -800,6 +847,7 @@ class TestGetLibrarySectionsExtended:
         mock_section1.key = "1"
         mock_section1.METADATA_TYPE = "movie"
         mock_movie = MagicMock()
+        mock_movie.ratingKey = 1
         mock_movie.key = "/library/metadata/1"
         mock_movie.title = "Test Movie"
         mock_section1.search.return_value = [mock_movie]
@@ -836,6 +884,7 @@ class TestGetLibrarySectionsExtended:
         mock_section.title = "Movies"
         mock_section.METADATA_TYPE = "movie"
         mock_movie = MagicMock()
+        mock_movie.ratingKey = 1
         mock_movie.key = "/library/metadata/1"
         mock_movie.title = "Test Movie"
         mock_section.search.return_value = [mock_movie]
@@ -922,6 +971,8 @@ class TestGetMediaItemsByPaths:
         mock_section.METADATA_TYPE = "movie"
 
         mock_movie = MagicMock()
+        # D31 — set both attrs so we exercise the canonical (ratingKey) branch.
+        mock_movie.ratingKey = 100
         mock_movie.key = "/library/metadata/100"
         mock_movie.title = "Test Movie"
         mock_movie.locations = ["/data/movies/Test Movie (2024)/Test Movie.mkv"]
@@ -932,6 +983,7 @@ class TestGetMediaItemsByPaths:
         result = get_media_items_by_paths(mock_plex, mock_config, ["/data/movies/Test Movie (2024)/Test Movie.mkv"])
         assert len(result.items) == 1
         assert result.items[0][0] == "100"  # D31 — bare ratingKey, not URL
+        assert "/" not in result.items[0][0]
         assert result.items[0][1] == "Test Movie"
         assert result.items[0][2] == "movie"
         assert mock_plex.fetchItems.called
@@ -949,6 +1001,7 @@ class TestGetMediaItemsByPaths:
         mock_section.METADATA_TYPE = "movie"
 
         mock_movie = MagicMock()
+        mock_movie.ratingKey = 100
         mock_movie.key = "/library/metadata/100"
         mock_movie.title = "Test Movie"
         mock_movie.locations = ["/data/movies/Test Movie (2024)/Test Movie.mkv"]
@@ -1011,6 +1064,7 @@ class TestGetMediaItemsByPaths:
         mock_section.METADATA_TYPE = "episode"
 
         mock_episode = MagicMock()
+        mock_episode.ratingKey = 200
         mock_episode.key = "/library/metadata/200"
         mock_episode.grandparentTitle = "Test Show"
         mock_episode.seasonEpisode = "s01e01"
@@ -1026,6 +1080,7 @@ class TestGetMediaItemsByPaths:
         )
         assert len(result.items) == 1
         assert result.items[0][0] == "200"  # D31 — bare ratingKey, not URL
+        assert "/" not in result.items[0][0]
         assert "Test Show" in result.items[0][1]
         assert "S01E01" in result.items[0][1]
         assert result.items[0][2] == "episode"
@@ -1050,6 +1105,7 @@ class TestGetMediaItemsByPaths:
         mock_section.METADATA_TYPE = "episode"
 
         mock_episode = MagicMock()
+        mock_episode.ratingKey = 481077
         mock_episode.key = "/library/metadata/481077"
         mock_episode.grandparentTitle = "The Mind, Explained"
         mock_episode.seasonEpisode = "s02e02"
@@ -1069,6 +1125,7 @@ class TestGetMediaItemsByPaths:
 
         assert len(result.items) == 1
         assert result.items[0][0] == "481077"  # D31 — bare ratingKey, not URL
+        assert "/" not in result.items[0][0]
         assert "The Mind, Explained" in result.items[0][1]
         assert result.items[0][2] == "episode"
         assert mock_plex.fetchItems.called
@@ -1082,6 +1139,7 @@ class TestGetMediaItemsByPaths:
         mock_section.METADATA_TYPE = "movie"
 
         mock_movie = MagicMock()
+        mock_movie.ratingKey = 999
         mock_movie.key = "/library/metadata/999"
         mock_movie.title = "Late Match"
         mock_movie.locations = ["/data/movies/Late Match/Late Match.mkv"]
@@ -1093,6 +1151,7 @@ class TestGetMediaItemsByPaths:
 
         assert len(result.items) == 1
         assert result.items[0][0] == "999"  # D31 — bare ratingKey, not URL
+        assert "/" not in result.items[0][0]
         assert mock_plex.fetchItems.called
 
     def test_get_media_items_by_paths_prefers_explicit_ratingKey_over_url_key(self, mock_config):
@@ -1141,6 +1200,7 @@ class TestGetMediaItemsByPaths:
         mock_section.title = "Movies"
         mock_section.METADATA_TYPE = "movie"
         mock_movie = MagicMock()
+        mock_movie.ratingKey = 999
         mock_movie.key = "/library/metadata/999"
         mock_movie.title = "Late Match"
         mock_movie.locations = ["/data/movies/Late Match/Late Match.mkv"]
@@ -1160,6 +1220,8 @@ class TestGetMediaItemsByPaths:
         mock_section.METADATA_TYPE = "movie"
 
         mock_movie = MagicMock()
+        # Both ratingKey AND key absent — production must skip with a warning.
+        mock_movie.ratingKey = None
         mock_movie.key = None
         mock_movie.title = "No Key Movie"
         mock_movie.locations = ["/data/movies/No Key Movie/No Key Movie.mkv"]
@@ -1190,6 +1252,7 @@ class TestGetMediaItemsByPaths:
         mock_section.METADATA_TYPE = "movie"
 
         mock_movie = MagicMock()
+        mock_movie.ratingKey = 100
         mock_movie.key = "/library/metadata/100"
         mock_movie.title = "Test Movie"
         mock_movie.locations = ["/data_16tb1/movies/Test Movie (2024)/Test Movie.mkv"]
@@ -1222,6 +1285,7 @@ class TestGetMediaItemsByPaths:
         mock_section.METADATA_TYPE = "movie"
 
         mock_movie = MagicMock()
+        mock_movie.ratingKey = 101
         mock_movie.key = "/library/metadata/101"
         mock_movie.title = "Other Movie"
         mock_movie.locations = ["/data_16tb1/Movies/Other Movie.mkv"]
@@ -1247,6 +1311,7 @@ class TestGetMediaItemsByPaths:
         mock_section.METADATA_TYPE = "movie"
 
         mock_movie = MagicMock()
+        mock_movie.ratingKey = 102
         mock_movie.key = "/library/metadata/102"
         mock_movie.title = "Direct Match"
         mock_movie.locations = ["/data/movies/Direct Match.mkv"]
@@ -1279,6 +1344,7 @@ class TestGetMediaItemsByPaths:
         mock_section.METADATA_TYPE = "movie"
 
         mock_movie = MagicMock()
+        mock_movie.ratingKey = 200
         mock_movie.key = "/library/metadata/200"
         mock_movie.title = "Multi Disk Movie"
         mock_movie.locations = ["/data_disk2/movies/Multi Disk Movie.mkv"]
@@ -1316,6 +1382,7 @@ class TestGetMediaItemsByPaths:
         mock_section.METADATA_TYPE = "episode"
 
         mock_episode = MagicMock()
+        mock_episode.ratingKey = 300
         mock_episode.key = "/library/metadata/300"
         mock_episode.grandparentTitle = "Test Show"
         mock_episode.seasonEpisode = "s01e03"

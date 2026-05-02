@@ -30,15 +30,33 @@ class TestRunMigrations:
     """Tests for the top-level run_migrations entry point."""
 
     def test_calls_env_and_schema_migrations(self, settings_manager, monkeypatch):
-        """run_migrations runs both env var and schema migrations."""
+        """run_migrations runs both env-var and schema migrations end-to-end.
+
+        We assert real side effects from each phase:
+          * env-migrate phase wrote PLEX_URL into settings.json (settings.plex_url),
+          * schema-migrate phase bumped _schema_version to the current value,
+          * v7 phase synthesised a media_servers entry from the legacy plex_url.
+        Just checking the boolean flags would let a regression that runs
+        env-migrate but skips schema-migrate (or vice versa) pass silently.
+        """
         from media_preview_generator.upgrade import run_migrations
 
         monkeypatch.setenv("PLEX_URL", "http://plex:32400")
+        monkeypatch.setenv("PLEX_TOKEN", "tok")
         run_migrations(settings_manager)
 
         assert settings_manager.get("_env_migrated") is True
         assert settings_manager.get("_schema_version") == _CURRENT_SCHEMA_VERSION
+        # env-var side effect:
         assert settings_manager.get("plex_url") == "http://plex:32400"
+        assert settings_manager.get("plex_token") == "tok"
+        # v7 schema-migration side effect: media_servers got synthesised from legacy keys.
+        servers = settings_manager.get("media_servers")
+        assert isinstance(servers, list) and len(servers) == 1
+        assert servers[0]["url"] == "http://plex:32400"
+        assert servers[0]["type"] == "plex"
+        # v11 schema-migration side effect: frame_reuse defaults seeded.
+        assert settings_manager.get("frame_reuse") is not None
 
 
 class TestSeedLastSeenVersionForUpgraders:
@@ -230,13 +248,26 @@ class TestEnvVarMigrationExtended:
         assert mappings[0]["plex_prefix"] == "/plex/media"
 
     def test_deprecated_env_var_does_not_crash(self, settings_manager, monkeypatch):
-        """Deprecated env vars emit a warning but don't block migration."""
+        """Deprecated env vars emit a warning but don't migrate to settings.
+
+        "Doesn't crash" alone passes a regression where deprecated keys get
+        silently persisted into settings.json. Assert the migration ran AND
+        that the deprecated keys were ignored (not written to settings).
+        """
         from media_preview_generator.upgrade import _migrate_env_vars
 
         monkeypatch.setenv("GPU_SELECTION", "0")
         monkeypatch.setenv("SORT_BY", "name")
         _migrate_env_vars(settings_manager)
         assert settings_manager.get("_env_migrated") is True
+        # Deprecated env vars must NOT be persisted into settings.json — they
+        # should be logged and dropped.
+        assert settings_manager.get("gpu_selection") is None
+        assert settings_manager.get("sort_by") is None
+        # No spurious top-level keys snuck through.
+        all_keys = set(settings_manager.get_all().keys())
+        assert "GPU_SELECTION" not in all_keys
+        assert "SORT_BY" not in all_keys
 
 
 class TestBuildGpuConfigFromEnv:

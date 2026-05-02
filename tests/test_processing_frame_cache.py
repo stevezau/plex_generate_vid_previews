@@ -502,15 +502,18 @@ class TestConfigurableFrameReuse:
         assert disk == 4096
 
     def test_disk_cap_evicts_when_over(self, tmp_path):
-        """Disk cap LRU-evicts oldest entries when total exceeds the limit.
+        """Disk cap LRU-evicts oldest entries (oldest-first) until total <= cap.
 
-        Each entry holds N decodable JPGs; we set a tiny disk cap so even
-        one entry blows past it and triggers eviction on the next put.
+        Each entry holds one decodable JPG (~600 bytes after PIL's
+        quality=70 encode). We seed five entries while the cap is large,
+        then drop the cap so the *next* put forces eviction. Because the
+        evictor walks oldest-first and stops the moment it's under cap,
+        the result is deterministic — every old entry must be gone and
+        only the newly-inserted entry remains.
         """
-        # 1 MB cap; each entry will be a few KB so cap doesn't bite immediately.
         cache = FrameCache(tmp_path / "cache", max_disk_mb=1)
 
-        # Each entry is ~3 KB (one tiny JPG); add 5 entries — under cap.
+        # Five entries while cap is generous.
         for i in range(5):
             media = tmp_path / f"f{i:03d}.mkv"
             media.write_bytes(b"x")
@@ -519,17 +522,33 @@ class TestConfigurableFrameReuse:
             cache.put(str(media), frame_dir=slot, frame_count=1)
         assert len(cache) == 5
 
-        # Now drop the cap to ~1 KB and add one more entry; the LRU
-        # eviction should drop the oldest entries until we're under cap.
-        cache._max_disk_bytes = 1024
+        # Compute the per-entry size from disk so the assertion adapts
+        # to PIL's exact JPEG output without going loose.
+        entry_sizes = [
+            sum(child.stat().st_size for child in entry.frame_dir.iterdir()) for entry in cache._entries.values()
+        ]
+        # Cap chosen so only ONE entry can survive after the next put:
+        # smaller than 2 entries' worth, larger than 1 entry's worth.
+        cap = max(entry_sizes) + 1
+        assert cap < sum(sorted(entry_sizes, reverse=True)[:2]), (
+            "test setup: cap must force eviction down to exactly the newest entry"
+        )
+        cache._max_disk_bytes = cap
+
         media = tmp_path / "newest.mkv"
         media.write_bytes(b"x")
         slot = cache.frame_dir_for(str(media))
         _populate_real_jpgs(slot, count=1)
         cache.put(str(media), frame_dir=slot, frame_count=1)
-        # At least some old entries should be gone; the newest survives.
-        assert len(cache) < 6
+
+        # Exactly one entry remains, and it is the newest one (the
+        # always-keep-newest invariant the evictor advertises).
+        assert len(cache) == 1
         assert cache.get(str(media)) is not None
+        # Every previously-inserted entry was actually evicted, not just
+        # marked stale — none should resolve via .get().
+        for i in range(5):
+            assert cache.get(str(tmp_path / f"f{i:03d}.mkv")) is None
 
     def test_get_frame_cache_reads_settings_on_first_construction(self, tmp_path):
         """The singleton's TTL is seeded from the frame_reuse settings block."""

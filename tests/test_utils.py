@@ -131,17 +131,26 @@ class TestSanitizePath:
         assert "/" not in result
 
     @patch("os.name", "posix")
-    @patch(
-        "media_preview_generator.utils.os.path.normpath",
-        side_effect=__import__("posixpath").normpath,
-    )
-    def test_sanitize_path_unix(self, _mock_normpath):
-        """Test Unix path remains unchanged."""
+    def test_sanitize_path_unix(self):
+        """Unix paths remain unchanged: no slash conversion, normpath is idempotent."""
+        # Real os.path.normpath under POSIX leaves an already-normalised path
+        # alone — no need to mock it. Mocking it would only test that our
+        # mock returns what we told it to.
         path = "/data/movies/test.mkv"
         result = sanitize_path(path)
 
-        # Should remain unchanged
         assert result == path
+        # Backslashes never appear on POSIX output.
+        assert "\\" not in result
+
+    @patch("os.name", "posix")
+    def test_sanitize_path_unix_normalises_redundant_separators(self):
+        """Real normpath collapses //, /./, and /foo/.. on POSIX."""
+        # This is what we actually rely on from os.path.normpath — exercising
+        # it without a mock catches a regression if someone removed the
+        # normalize step or replaced it with a no-op.
+        assert sanitize_path("/data//movies/./test.mkv") == "/data/movies/test.mkv"
+        assert sanitize_path("/data/movies/../movies/test.mkv") == "/data/movies/test.mkv"
 
     @patch("os.name", "nt")
     def test_sanitize_path_windows_mixed(self):

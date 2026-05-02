@@ -9,8 +9,6 @@ Tests Windows-specific functionality including:
 - Path sanitization with Windows paths
 """
 
-import os
-import tempfile
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -70,31 +68,35 @@ class TestWindowsPathSanitization:
         assert result == "C:\\Users\\Test\\Videos\\movie.mkv"
 
     @patch("os.name", "nt")
-    @patch("media_preview_generator.utils.os.path.normpath")
-    def test_sanitize_path_normpath(self, mock_normpath):
-        """Test path normalization on Windows."""
-        # Mock normpath to behave like Windows (resolve .. and .)
-        mock_normpath.return_value = "C:\\Users\\Videos\\movie.mkv"
+    def test_sanitize_path_normpath_uses_ntpath(self):
+        """On Windows, sanitize_path delegates to ntpath.normpath via os.path.normpath.
 
-        path = "C:/Users/Test/../Videos/./movie.mkv"
-        result = sanitize_path(path)
+        Rather than mocking ``os.path.normpath`` (which is what
+        ``sanitize_path`` calls), patch ``os.path`` to point at the real
+        ``ntpath`` module. That way the test exercises the full real
+        Windows-style normalisation pipeline (slash conversion + .. and .
+        collapse) instead of just verifying our own mock's return value.
+        """
+        import ntpath
+
+        with patch("media_preview_generator.utils.os.path", ntpath):
+            result = sanitize_path("C:/Users/Test/../Videos/./movie.mkv")
         assert result == "C:\\Users\\Videos\\movie.mkv"
 
-        # Verify normpath was called with the backslash-converted path.
-        # Use assert_any_call (not assert_called_once_with) because under
-        # pytest-xdist + coverage, other framework code also hits normpath.
-        mock_normpath.assert_any_call("C:\\Users\\Test\\..\\Videos\\.\\movie.mkv")
-
     @patch("os.name", "posix")
-    @patch(
-        "media_preview_generator.utils.os.path.normpath",
-        side_effect=__import__("posixpath").normpath,
-    )
-    def test_sanitize_path_linux_unchanged(self, _mock_normpath):
-        """Test Linux paths remain unchanged (normalized only)."""
+    def test_sanitize_path_linux_unchanged(self):
+        """On Linux, an already-normalised POSIX path comes through verbatim.
+
+        Real os.path.normpath under POSIX is a no-op for clean paths, so
+        no mocking is needed — exercising the production call directly
+        guards against the regression where normpath is removed or
+        replaced with a no-op.
+        """
         path = "/home/user/videos/movie.mkv"
         result = sanitize_path(path)
         assert result == "/home/user/videos/movie.mkv"
+        # And the POSIX branch must never emit backslashes.
+        assert "\\" not in result
 
 
 class TestWindowsTempDirectory:
@@ -179,94 +181,46 @@ class TestWindowsTempDirectory:
         assert config.tmp_folder == "C:\\Temp"  # Should use the mocked gettempdir() value
 
 
-class TestWindowsSignalHandling:
-    """Test signal handling compatibility on Windows."""
-
-    @patch("os.name", "nt")
-    def test_sigterm_not_registered_on_windows(self):
-        """Test that SIGTERM handling accounts for Windows compatibility."""
-        # On Windows, SIGTERM doesn't exist in the signal module
-        # We test that code should check for SIGTERM existence before using it
-        import signal as sig_module
-
-        # This test verifies the signal-handling pattern:
-        # signal.signal(signal.SIGINT, handler)
-        # if hasattr(signal, 'SIGTERM'):
-        #     signal.signal(signal.SIGTERM, handler)
-
-        # On Linux (where we're running), SIGTERM exists
-        # But we verify the pattern would work on Windows
-        assert hasattr(sig_module, "SIGINT")  # Always available
-
-        # The actual check: SIGTERM may or may not exist depending on platform
-        # On Windows it doesn't, on Linux it does
-        # This is why code should use hasattr() before accessing it
-
-    @patch("os.name", "posix")
-    @patch("signal.signal")
-    def test_sigterm_registered_on_linux(self, mock_signal_signal):
-        """Test that SIGTERM is registered on Linux."""
-        import signal as sig_module
-
-        # Both SIGINT and SIGTERM should be available on Linux
-        assert hasattr(sig_module, "SIGINT")
-        assert hasattr(sig_module, "SIGTERM")
-
-
 class TestWindowsPathMappings:
-    """Test path mappings with Windows paths."""
+    """Path mapping with Windows-style paths — exercises the production
+    ``path_to_canonical_local`` resolver, not an inline ``str.replace``."""
 
     @patch("os.name", "nt")
     def test_path_mapping_windows_to_windows(self):
-        """Test path mapping from one Windows path to another."""
+        """Plex sees D:\\, local sees C:\\ — production resolver maps it."""
+        from media_preview_generator.config import path_to_canonical_local
         from media_preview_generator.utils import sanitize_path
 
-        # Simulate what happens in media_processing.py
-        plex_path = "D:/PlexMedia/Movies/movie.mkv"
-        plex_mapping = "D:/PlexMedia"
-        local_mapping = "C:\\Media"
-
-        # Apply mapping
-        mapped_path = plex_path.replace(plex_mapping, local_mapping)
-        result = sanitize_path(mapped_path)
-
-        assert result == "C:\\Media\\Movies\\movie.mkv"
+        # Path mappings store unix-style separators in settings.json — the
+        # production resolver handles the conversion via ``sanitize_path``.
+        mappings = [
+            {
+                "plex_prefix": "D:/PlexMedia",
+                "local_prefix": "C:/Media",
+                "webhook_prefixes": [],
+            }
+        ]
+        canonical = path_to_canonical_local("D:/PlexMedia/Movies/movie.mkv", mappings)
+        # The resolver returns POSIX-style; sanitize_path converts to Windows.
+        assert canonical == "C:/Media/Movies/movie.mkv"
+        assert sanitize_path(canonical) == "C:\\Media\\Movies\\movie.mkv"
 
     @patch("os.name", "nt")
     def test_path_mapping_unc_to_local(self):
-        """Test path mapping from UNC path to local Windows path."""
+        """UNC plex_prefix → local Windows prefix via the production resolver."""
+        from media_preview_generator.config import path_to_canonical_local
         from media_preview_generator.utils import sanitize_path
 
-        # Plex sees UNC path, local sees C:\ path
-        plex_path = "//server/media/Movies/movie.mkv"
-        plex_mapping = "//server/media"
-        local_mapping = "C:\\Media"
-
-        # Apply mapping
-        mapped_path = plex_path.replace(plex_mapping, local_mapping)
-        result = sanitize_path(mapped_path)
-
-        assert result == "C:\\Media\\Movies\\movie.mkv"
-
-
-class TestWindowsFFmpegLogPath:
-    """Test that FFmpeg log files use Windows-compatible paths."""
-
-    @patch("os.name", "nt")
-    def test_ffmpeg_log_path_on_windows(self):
-        """Test that FFmpeg log file paths work on Windows."""
-
-        # Simulate what happens in media_processing.py line 215
-        pid = 12345
-        thread_id = 67890
-        timestamp = 1234567890123456789
-        output_file = os.path.join(tempfile.gettempdir(), f"ffmpeg_output_{pid}_{thread_id}_{timestamp}.log")
-
-        # Verify the path format is valid (actual temp path depends on environment)
-        assert "ffmpeg_output_" in output_file
-        assert output_file.endswith(".log")
-        assert str(pid) in output_file
-        assert str(thread_id) in output_file
+        mappings = [
+            {
+                "plex_prefix": "//server/media",
+                "local_prefix": "C:/Media",
+                "webhook_prefixes": [],
+            }
+        ]
+        canonical = path_to_canonical_local("//server/media/Movies/movie.mkv", mappings)
+        assert canonical == "C:/Media/Movies/movie.mkv"
+        assert sanitize_path(canonical) == "C:\\Media\\Movies\\movie.mkv"
 
 
 class TestWindowsConfigValidation:

@@ -53,8 +53,10 @@ def authenticated_client(flask_app):
 class TestServersPage:
     def test_unauthenticated_redirects_to_login(self, client):
         response = client.get("/servers", follow_redirects=False)
-        # Login required => redirect (302/303) to /login.
-        assert response.status_code in (302, 303)
+        # Flask's redirect() defaults to 302 — pinning the status code
+        # ensures we don't silently accept e.g. a 308 (permanent route change)
+        # or a 303 (POST redirect) when neither is what the auth gate emits.
+        assert response.status_code == 302
         assert "/login" in response.headers.get("Location", "")
 
     def test_authenticated_renders(self, authenticated_client):
@@ -70,6 +72,10 @@ class TestServersPage:
         assert 'data-type="jellyfin"' in body
 
     def test_navbar_includes_servers_link(self, authenticated_client):
+        # Wrapping the assertion in `if status_code == 200:` made this test
+        # silently pass even when /  bounces to /setup or /login. Demand 200
+        # unconditionally so we actually verify the navbar contents.
         response = authenticated_client.get("/")
-        if response.status_code == 200:
-            assert "/servers" in response.get_data(as_text=True)
+        assert response.status_code == 200
+        body = response.get_data(as_text=True)
+        assert "/servers" in body

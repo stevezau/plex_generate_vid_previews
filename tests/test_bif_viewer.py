@@ -211,8 +211,12 @@ def sample_bif(tmp_path):
 
 class TestBifViewerPage:
     def test_requires_auth(self, client):
+        # @login_required uses Flask's redirect() which is 302 by default —
+        # pinning the status code catches a regression that flips to a 308
+        # (permanent route move) where bookmarks would behave differently.
         resp = client.get("/bif-viewer", follow_redirects=False)
-        assert resp.status_code in (302, 308)
+        assert resp.status_code == 302
+        assert "/login" in resp.headers.get("Location", "")
 
     def test_renders_when_authenticated(self, authed_client):
         resp = authed_client.get("/bif-viewer")

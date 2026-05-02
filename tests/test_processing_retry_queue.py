@@ -405,61 +405,61 @@ def _isolated_frame_cache():
 
 
 class TestProcessCanonicalPathIntegration:
-    """process_canonical_path schedules a retry when SKIPPED_NOT_INDEXED happens."""
+    """process_canonical_path schedules a retry when SKIPPED_NOT_INDEXED happens.
+
+    These tests exercise the *real* ``_publish_one`` path: instead of
+    stubbing the same-module helper (the D31-style anti-pattern), we make
+    the adapter's ``compute_output_paths`` raise
+    :class:`LibraryNotYetIndexedError`, which is exactly how the production
+    "not yet indexed" signal reaches ``_publish_one`` in normal operation
+    (Plex's bundle-hash lookup hasn't populated yet).
+    """
+
+    def _make_adapter(self, raise_not_indexed: bool):
+        from media_preview_generator.servers.base import LibraryNotYetIndexedError
+
+        adapter = MagicMock()
+        adapter.name = "plex_bundle"
+        if raise_not_indexed:
+            adapter.compute_output_paths.side_effect = LibraryNotYetIndexedError("bundle hash unavailable")
+        else:
+            adapter.compute_output_paths.return_value = ["/tmp/out/sd.bif"]
+        return adapter
 
     def test_skipped_not_indexed_triggers_retry_schedule(self, _isolated_frame_cache):
-        """Smoke test: dispatcher hands off to retry queue automatically.
+        """When the only publisher comes back SKIPPED_NOT_INDEXED, dispatcher
+        must schedule one retry through the retry queue boundary.
 
-        We verify by spying on ``schedule_retry_for_unindexed`` rather
-        than introspecting the global pending count — the count races
-        with background timer threads firing entries scheduled by other
-        tests in the same xdist worker.
+        The boundary we mock is the retry-queue helper itself
+        (``schedule_retry_for_unindexed``) so we can read off the keyword
+        arguments the dispatcher actually passed — including the canonical
+        path it preserved end-to-end. Spying here (vs at ``_publish_one``)
+        keeps the production ``_publish_one`` body covered, which is what
+        the D31 audit requires.
         """
-        from media_preview_generator.processing.multi_server import (
-            PublisherResult,
-            PublisherStatus,
-        )
-
         registry = MagicMock()
-        registry.find_owning_servers.return_value = [
-            MagicMock(server_id="plex-1"),
-        ]
-        registry.get.return_value = MagicMock(id="plex-1", name="plex-1")
-        registry.get_config.return_value = MagicMock(
-            type=MagicMock(value="plex"),
-            output={"adapter": "plex_bundle", "plex_config_folder": "/tmp/p", "frame_interval": 5},
-        )
+        server = MagicMock(id="plex-1", name="plex-1")
+        adapter = self._make_adapter(raise_not_indexed=True)
 
         config = MagicMock()
         config.working_tmp_folder = "/tmp/x"
         config.plex_bif_frame_interval = 5
+        config.thumbnail_interval = 5
 
-        def stub_publish(server, adapter, bundle, item_id, *, skip_if_exists, frame_source="extracted"):
-            return PublisherResult(
-                server_id="plex-1",
-                server_name="plex-1",
-                adapter_name="plex_bundle",
-                status=PublisherStatus.SKIPPED_NOT_INDEXED,
-                message="bundle hash unavailable",
-            )
-
-        # Spy on the actual scheduler call site so we observe the
-        # invocation directly rather than racing the background timer.
         schedule_calls: list[dict] = []
 
         def _spy_schedule(*args, **kwargs):
-            schedule_calls.append(kwargs)
+            schedule_calls.append({"args": args, "kwargs": kwargs})
             return True
 
-        # Stub the heavy machinery - we only care about scheduling behavior.
         with (
             patch(
                 "media_preview_generator.processing.multi_server._resolve_publishers",
-                return_value=[(MagicMock(id="plex-1", name="plex-1"), MagicMock(name="adapter"), None)],
+                return_value=[(server, adapter, "rk-1")],
             ),
             patch(
-                "media_preview_generator.processing.multi_server._publish_one",
-                side_effect=stub_publish,
+                "media_preview_generator.processing.multi_server._resolve_item_id_for",
+                return_value="rk-1",
             ),
             patch(
                 "media_preview_generator.processing.multi_server.os.path.isfile",
@@ -493,54 +493,53 @@ class TestProcessCanonicalPathIntegration:
                 use_frame_cache=False,
             )
 
-        # D13 — when every publisher is SKIPPED_NOT_INDEXED the aggregate
-        # status is the dedicated SKIPPED_NOT_INDEXED, not generic SKIPPED.
+        # D13: every publisher was SKIPPED_NOT_INDEXED → aggregate is the
+        # dedicated bucket, not generic SKIPPED.
+        from media_preview_generator.processing.multi_server import MultiServerStatus
+
         assert result.status is MultiServerStatus.SKIPPED_NOT_INDEXED
-        # The dispatcher made exactly ONE schedule_retry_for_unindexed call
-        # (corresponding to our SKIPPED_NOT_INDEXED publisher).
+        # _publish_one really ran: it caught LibraryNotYetIndexedError and
+        # produced exactly the SKIPPED_NOT_INDEXED publisher result.
+        assert len(result.publishers) == 1
+        assert result.publishers[0].adapter_name == "plex_bundle"
+        # Exactly one retry got scheduled, with the canonical path the
+        # dispatcher started from and attempt counter incremented from 0 → 1.
         assert len(schedule_calls) == 1, schedule_calls
-        assert schedule_calls[0].get("attempt") == 1
-        assert schedule_calls[0].get("canonical_path") in (None, "/x.mkv") or (
-            len(schedule_calls[0].get("canonical_path") or "") > 0
-        )
+        kw = schedule_calls[0]["kwargs"]
+        args = schedule_calls[0]["args"]
+        # canonical_path is positional in the production call site.
+        assert args and args[0] == "/x.mkv", schedule_calls
+        assert kw.get("attempt") == 1
 
     def test_skipped_not_indexed_no_retry_when_disabled(self, _isolated_frame_cache):
-        """schedule_retry_on_not_indexed=False suppresses scheduling."""
-        from media_preview_generator.processing.multi_server import (
-            PublisherResult,
-            PublisherStatus,
-        )
+        """schedule_retry_on_not_indexed=False suppresses scheduling.
 
+        Same boundary: real ``_publish_one`` runs, only the retry-queue
+        helper is spied on so we can prove zero invocations.
+        """
         registry = MagicMock()
+        server = MagicMock(id="plex-1", name="plex-1")
+        adapter = self._make_adapter(raise_not_indexed=True)
+
         config = MagicMock()
         config.working_tmp_folder = "/tmp/x"
         config.plex_bif_frame_interval = 5
+        config.thumbnail_interval = 5
 
-        def stub_publish(server, adapter, bundle, item_id, *, skip_if_exists, frame_source="extracted"):
-            return PublisherResult(
-                server_id="plex-1",
-                server_name="plex-1",
-                adapter_name="plex_bundle",
-                status=PublisherStatus.SKIPPED_NOT_INDEXED,
-                message="not yet",
-            )
-
-        # Spy: same shape as the previous test for symmetry + race-free
-        # observation.
         schedule_calls: list[dict] = []
 
         def _spy_schedule(*args, **kwargs):
-            schedule_calls.append(kwargs)
+            schedule_calls.append({"args": args, "kwargs": kwargs})
             return True
 
         with (
             patch(
                 "media_preview_generator.processing.multi_server._resolve_publishers",
-                return_value=[(MagicMock(id="plex-1", name="plex-1"), MagicMock(name="adapter"), None)],
+                return_value=[(server, adapter, "rk-1")],
             ),
             patch(
-                "media_preview_generator.processing.multi_server._publish_one",
-                side_effect=stub_publish,
+                "media_preview_generator.processing.multi_server._resolve_item_id_for",
+                return_value="rk-1",
             ),
             patch(
                 "media_preview_generator.processing.multi_server.os.path.isfile",
@@ -572,6 +571,4 @@ class TestProcessCanonicalPathIntegration:
                 schedule_retry_on_not_indexed=False,
             )
 
-        # No schedule call when scheduling is disabled.
         assert schedule_calls == []
-        # (orig delta-based assertion below replaced)

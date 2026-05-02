@@ -211,6 +211,15 @@ class TestListItems:
 
 class TestResolveItemToRemotePath:
     def test_prefers_media_sources_path(self, jelly):
+        """Verifies BOTH the parsed result AND the URL Jellyfin was queried at.
+
+        Without the URL assertion, a regression that called the wrong endpoint
+        (e.g. doubling the prefix to ``/Users/u/Items//Users/u/Items/42``, or
+        flipping to the bare ``/Items/{id}`` shape that 400s on Jellyfin)
+        would still pass — the mock returns the canned payload regardless.
+        Mirrors the assertion pattern in
+        ``test_servers_emby.py::test_per_user_endpoint_when_user_id_present``.
+        """
         with patch.object(JellyfinServer, "_request") as req:
             response = MagicMock()
             response.json.return_value = {
@@ -221,6 +230,35 @@ class TestResolveItemToRemotePath:
             req.return_value = response
 
             assert jelly.resolve_item_to_remote_path("42") == "/media-source.mkv"
+
+            # Default auth fixture has user_id="u" so the per-user endpoint must be used.
+            call_args = req.call_args
+            assert call_args.args[0] == "GET", call_args
+            assert call_args.args[1] == "/Users/u/Items/42", (
+                f"Jellyfin item lookup hit the wrong URL: {call_args.args[1]!r}. "
+                "Expected /Users/u/Items/42 — bare /Items/{id} returns 400 on Jellyfin."
+            )
+
+    def test_falls_back_to_plural_items_endpoint_when_no_user_id(self):
+        """Without user_id (api_key auth), the universal /Items?Ids= endpoint is used."""
+        config = _jelly_config(auth={"method": "api_key", "api_key": "k"})
+        jelly_no_user = JellyfinServer(config)
+        with patch.object(JellyfinServer, "_request") as req:
+            response = MagicMock()
+            response.json.return_value = {"Items": [{"Path": "/found.mkv"}]}
+            response.raise_for_status.return_value = None
+            req.return_value = response
+
+            assert jelly_no_user.resolve_item_to_remote_path("99") == "/found.mkv"
+
+            call_args = req.call_args
+            assert call_args.args[0] == "GET"
+            assert call_args.args[1] == "/Items", (
+                f"Jellyfin item lookup hit the wrong URL: {call_args.args[1]!r}. "
+                "Expected /Items (plural) when user_id is unknown."
+            )
+            # And the params carry the id — otherwise we'd get the whole library.
+            assert call_args.kwargs.get("params", {}).get("Ids") == "99"
 
     def test_returns_none_on_failure(self, jelly):
         with patch.object(JellyfinServer, "_request", side_effect=RuntimeError("404")):

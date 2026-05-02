@@ -171,44 +171,58 @@ class TestJobManagerSetOutcome:
 
 
 class TestMisconfigurationDetection:
-    """Test the misconfiguration warning logic in processing.py."""
+    """Test the real path-mapping-misconfig predicate in jobs.orchestrator."""
+
+    def _outcome(self, **counters) -> dict:
+        outcome = {r.value: 0 for r in ProcessingResult}
+        outcome.update(counters)
+        return outcome
 
     def test_warning_logged_when_all_not_found(self):
-        """When all items are skipped_file_not_found, a warning is logged."""
-        from media_preview_generator.processing import ProcessingResult
+        """All items finished as ``skipped_file_not_found`` with zero generated → warn."""
+        from media_preview_generator.jobs.orchestrator import _maybe_log_path_mapping_misconfig
 
-        outcome = {r.value: 0 for r in ProcessingResult}
-        outcome["skipped_file_not_found"] = 100
+        with patch("media_preview_generator.jobs.orchestrator.logger") as mock_logger:
+            fired = _maybe_log_path_mapping_misconfig(self._outcome(skipped_file_not_found=100), processed=100)
 
-        total_processed = 100
-        generated = outcome.get("generated", 0)
-        not_found = outcome.get("skipped_file_not_found", 0)
-
-        assert total_processed > 0
-        assert not_found > 0
-        assert generated == 0
+        assert fired is True
+        mock_logger.warning.assert_called_once()
+        args, _ = mock_logger.warning.call_args
+        assert "no previews were generated this run" in args[0]
+        # The count is interpolated as a positional arg by loguru (template uses {}).
+        assert args[1] == 100
 
     def test_no_warning_when_items_generated(self):
-        """When items are generated, no misconfiguration warning."""
-        from media_preview_generator.processing import ProcessingResult
+        """At least one ``generated`` item suppresses the warning even with not-found rows."""
+        from media_preview_generator.jobs.orchestrator import _maybe_log_path_mapping_misconfig
 
-        outcome = {r.value: 0 for r in ProcessingResult}
-        outcome["generated"] = 50
-        outcome["skipped_file_not_found"] = 10
+        with patch("media_preview_generator.jobs.orchestrator.logger") as mock_logger:
+            fired = _maybe_log_path_mapping_misconfig(
+                self._outcome(generated=50, skipped_file_not_found=10), processed=60
+            )
 
-        generated = outcome.get("generated", 0)
-        assert generated > 0
-        assert outcome.get("skipped_file_not_found", 0) == 10
+        assert fired is False
+        mock_logger.warning.assert_not_called()
 
     def test_no_warning_when_all_exist(self):
-        """When all items already have BIF files, no warning."""
-        from media_preview_generator.processing import ProcessingResult
+        """All items already had BIF files — no warning."""
+        from media_preview_generator.jobs.orchestrator import _maybe_log_path_mapping_misconfig
 
-        outcome = {r.value: 0 for r in ProcessingResult}
-        outcome["skipped_bif_exists"] = 500
+        with patch("media_preview_generator.jobs.orchestrator.logger") as mock_logger:
+            fired = _maybe_log_path_mapping_misconfig(self._outcome(skipped_bif_exists=500), processed=500)
 
-        not_found = outcome.get("skipped_file_not_found", 0)
-        assert not_found == 0
+        assert fired is False
+        mock_logger.warning.assert_not_called()
+
+    def test_no_warning_when_zero_processed(self):
+        """A run that processed nothing (e.g. cancellation before first item) must not warn."""
+        from media_preview_generator.jobs.orchestrator import _maybe_log_path_mapping_misconfig
+
+        with patch("media_preview_generator.jobs.orchestrator.logger") as mock_logger:
+            fired = _maybe_log_path_mapping_misconfig(self._outcome(skipped_file_not_found=0), processed=0)
+
+        assert fired is False
+        mock_logger.warning.assert_not_called()
 
 
 class TestOutcomeInWorkerPoolResult:

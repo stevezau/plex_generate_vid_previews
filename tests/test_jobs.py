@@ -714,7 +714,14 @@ class TestSqliteJobsBackend:
         assert os.path.isfile(legacy + ".imported.bak")
 
     def test_legacy_import_skips_corrupt_records(self, config_dir):
-        """One bad record never blocks the others (Fix-5 pattern, J4 mirror)."""
+        """One bad record never blocks the others (Fix-5 pattern, J4 mirror).
+
+        ``progress`` must be a dict / JobProgress shape; a bare string trips
+        ``to_dict()`` inside ``upsert()`` and the importer must catch that
+        without dropping the surrounding good rows. A separate bad row with
+        a ``status`` value that isn't a JobStatus enum member trips at
+        ``__post_init__`` time and exercises the constructor failure path.
+        """
         import json as _json
 
         os.makedirs(config_dir, exist_ok=True)
@@ -723,11 +730,12 @@ class TestSqliteJobsBackend:
                 {
                     "jobs": [
                         {"id": "ok-1", "library_name": "Movies"},
-                        # priority must be int / known label — "garbage" is neither
-                        {"id": "bad", "library_name": "X", "priority": object()}
-                        if False
-                        else {"id": "ok-2", "library_name": "TV"},
-                        {"id": "bad", "progress": "not-a-dict-or-progress-shape"},
+                        # status is parsed by JobStatus(...) which raises ValueError
+                        {"id": "bad-status", "library_name": "X", "status": "not-a-status"},
+                        {"id": "ok-2", "library_name": "TV"},
+                        # progress must be a dict / JobProgress; bare string trips to_dict()
+                        {"id": "bad-progress", "library_name": "Y", "progress": "not-a-dict"},
+                        {"id": "ok-3", "library_name": "Anime"},
                     ]
                 },
                 f,
@@ -736,8 +744,10 @@ class TestSqliteJobsBackend:
         jm = JobManager(config_dir=config_dir)
         assert jm.get_job("ok-1") is not None
         assert jm.get_job("ok-2") is not None
-        # The bad row's progress assignment ends up as a TypeError in __post_init__
-        # which gets caught + logged. Either way the good rows survive.
+        assert jm.get_job("ok-3") is not None
+        # Both bad rows should have been skipped, not stored.
+        assert jm.get_job("bad-status") is None
+        assert jm.get_job("bad-progress") is None
 
     def test_does_not_reimport_when_db_already_populated(self, config_dir):
         """Restoring jobs.json on top of a populated DB must not duplicate."""

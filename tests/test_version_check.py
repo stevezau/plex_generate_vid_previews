@@ -2,13 +2,20 @@
 Tests for version_check.py module.
 
 Tests version parsing, GitHub API interaction, and update checking.
+
+Tests for ``check_for_updates`` capture loguru output and assert on the
+specific log lines emitted, since that's the only observable side effect
+of the function (it has no return value). A ``_caplog_loguru`` helper
+fixture wires loguru to pytest's caplog so we can inspect the messages.
 """
 
+import logging
 import os
 from unittest.mock import MagicMock, patch
 
 import pytest
 import requests
+from loguru import logger
 
 from media_preview_generator.version_check import (
     check_for_updates,
@@ -16,6 +23,28 @@ from media_preview_generator.version_check import (
     get_latest_github_release,
     parse_version,
 )
+
+
+@pytest.fixture
+def loguru_caplog(caplog):
+    """Forward loguru records into pytest's caplog so tests can assert on them.
+
+    ``check_for_updates`` only signals its outcome via loguru — adding a
+    propagating handler at WARNING/INFO level is the boundary-respecting
+    way to verify the message without monkey-patching the function under
+    test or its module-level dependencies.
+    """
+
+    class _PropagateHandler(logging.Handler):
+        def emit(self, record):  # pragma: no cover — handler glue
+            logging.getLogger(record.name).handle(record)
+
+    handler_id = logger.add(_PropagateHandler(), level="DEBUG", format="{message}")
+    caplog.set_level(logging.DEBUG)
+    try:
+        yield caplog
+    finally:
+        logger.remove(handler_id)
 
 
 class TestGetCurrentVersion:
@@ -146,128 +175,174 @@ class TestGetLatestGitHubRelease:
 class TestCheckForUpdates:
     """Test update checking logic."""
 
+    @patch("media_preview_generator.version_check.get_git_commit_sha", return_value=None)
+    @patch("media_preview_generator.version_check.get_git_branch", return_value=None)
     @patch("media_preview_generator.version_check.get_latest_github_release")
     @patch("media_preview_generator.version_check.get_current_version")
-    def test_check_for_updates_newer_available(self, mock_current, mock_latest):
-        """Test showing update message when newer version available."""
+    def test_check_for_updates_newer_available(self, mock_current, mock_latest, _mock_branch, _mock_sha, loguru_caplog):
+        """Newer GitHub release is announced with both versions visible to the user."""
         mock_current.return_value = "2.0.0"
         mock_latest.return_value = "v2.1.0"
 
-        # Should not raise, just log
         check_for_updates()
+        text = loguru_caplog.text
+        assert "newer version is available" in text
+        assert "v2.1.0" in text
+        assert "2.0.0" in text
 
     @patch("media_preview_generator.version_check.get_latest_github_release")
     @patch("media_preview_generator.version_check.get_current_version")
-    def test_check_for_updates_up_to_date(self, mock_current, mock_latest):
-        """Test no message when current version is latest."""
+    def test_check_for_updates_up_to_date(self, mock_current, mock_latest, loguru_caplog):
+        """When current == latest, no 'newer version' warning is emitted."""
         mock_current.return_value = "2.0.0"
         mock_latest.return_value = "v2.0.0"
 
-        # Should not raise, just log
         check_for_updates()
+        # No warning to upgrade should fire on the up-to-date path.
+        assert "newer version is available" not in loguru_caplog.text
+        assert "Update:" not in loguru_caplog.text
 
     @patch("media_preview_generator.version_check.get_latest_github_release")
     @patch("media_preview_generator.version_check.get_current_version")
-    def test_check_for_updates_current_newer(self, mock_current, mock_latest):
-        """Test when current version is newer than latest (dev version)."""
+    def test_check_for_updates_current_newer(self, mock_current, mock_latest, loguru_caplog):
+        """Local version > GitHub latest (developer build) — no upgrade nag."""
         mock_current.return_value = "2.1.0"
         mock_latest.return_value = "v2.0.0"
 
-        # Should not raise or show update message
         check_for_updates()
+        assert "newer version is available" not in loguru_caplog.text
+        # Must not falsely advertise a downgrade.
+        assert "Update:" not in loguru_caplog.text
 
     @patch("media_preview_generator.version_check.get_latest_github_release")
     @patch("media_preview_generator.version_check.get_current_version")
-    def test_check_for_updates_api_failure(self, mock_current, mock_latest):
-        """Test handling of API failure."""
+    def test_check_for_updates_api_failure(self, mock_current, mock_latest, loguru_caplog):
+        """When latest can't be fetched the function returns silently — no upgrade msg."""
         mock_current.return_value = "2.0.0"
-        mock_latest.return_value = None  # API failed
+        mock_latest.return_value = None
 
-        # Should handle gracefully
         check_for_updates()
+        assert "newer version is available" not in loguru_caplog.text
 
-    @patch("media_preview_generator.utils.is_docker_environment")
+    @patch("media_preview_generator.version_check.get_git_commit_sha", return_value=None)
+    @patch("media_preview_generator.version_check.get_git_branch", return_value=None)
+    @patch("media_preview_generator.version_check.is_docker_environment")
     @patch("media_preview_generator.version_check.get_latest_github_release")
     @patch("media_preview_generator.version_check.get_current_version")
-    def test_check_for_updates_docker_message(self, mock_current, mock_latest, mock_docker):
-        """Test Docker-specific update instructions."""
+    def test_check_for_updates_docker_message(
+        self, mock_current, mock_latest, mock_docker, _mock_branch, _mock_sha, loguru_caplog
+    ):
+        """Docker installs receive the docker pull instruction."""
         mock_docker.return_value = True
         mock_current.return_value = "2.0.0"
         mock_latest.return_value = "v2.1.0"
 
-        # Should show Docker-specific instructions
         check_for_updates()
+        text = loguru_caplog.text
+        assert "docker pull" in text
+        assert "stevezzau/media_preview_generator" in text
 
-    @patch("media_preview_generator.utils.is_docker_environment")
+    @patch("media_preview_generator.version_check.get_git_commit_sha", return_value=None)
+    @patch("media_preview_generator.version_check.get_git_branch", return_value=None)
+    @patch("media_preview_generator.version_check.is_docker_environment")
     @patch("media_preview_generator.version_check.get_latest_github_release")
     @patch("media_preview_generator.version_check.get_current_version")
-    def test_check_for_updates_non_docker_message(self, mock_current, mock_latest, mock_docker):
-        """Test non-Docker update instructions."""
+    def test_check_for_updates_non_docker_message(
+        self, mock_current, mock_latest, mock_docker, _mock_branch, _mock_sha, loguru_caplog
+    ):
+        """Non-Docker installs receive the pip install instruction (not docker pull)."""
         mock_docker.return_value = False
         mock_current.return_value = "2.0.0"
         mock_latest.return_value = "v2.1.0"
 
-        # Should show update instructions (from source or Docker)
         check_for_updates()
+        text = loguru_caplog.text
+        assert "pip install" in text
+        assert "git+https://github.com/stevezau/media_preview_generator.git" in text
 
+    @patch("media_preview_generator.version_check.get_git_commit_sha", return_value=None)
+    @patch("media_preview_generator.version_check.get_git_branch", return_value=None)
     @patch("media_preview_generator.version_check.get_latest_github_release")
     @patch("media_preview_generator.version_check.get_current_version")
-    def test_check_for_updates_dev_snapshot(self, mock_current, mock_latest):
-        """Running from dev snapshot (0.0.0) shows appropriate message."""
+    def test_check_for_updates_dev_snapshot(self, mock_current, mock_latest, _mock_branch, _mock_sha, loguru_caplog):
+        """0.0.0+unknown emits the dev-snapshot guidance, not the regular upgrade msg."""
         mock_current.return_value = "0.0.0+unknown"
         mock_latest.return_value = "v2.1.0"
         check_for_updates()
+        text = loguru_caplog.text
+        assert "development snapshot" in text
+        assert "v2.1.0" in text
+        assert "Latest stable release" in text
 
     @patch("media_preview_generator.version_check.get_latest_github_release")
     @patch("media_preview_generator.version_check.get_current_version")
-    def test_check_for_updates_invalid_version_handled(self, mock_current, mock_latest):
-        """Invalid current version is handled gracefully."""
+    def test_check_for_updates_invalid_version_handled(self, mock_current, mock_latest, loguru_caplog):
+        """Garbage current version is handled silently — no upgrade message."""
         mock_current.return_value = "invalid"
         mock_latest.return_value = "v2.1.0"
         check_for_updates()
+        assert "newer version is available" not in loguru_caplog.text
 
-    @patch.dict(os.environ, {"GIT_BRANCH": "dev", "GIT_SHA": "abc1234"})
+    @patch.dict(os.environ, {"GIT_BRANCH": "dev", "GIT_SHA": "abc1234567"})
     @patch("media_preview_generator.version_check.get_branch_head_sha")
-    def test_check_for_updates_dev_docker_up_to_date(self, mock_head):
-        """Dev Docker image at latest commit."""
+    def test_check_for_updates_dev_docker_up_to_date(self, mock_head, loguru_caplog):
+        """Dev Docker at latest commit logs the up-to-date message and skips upgrade nag."""
         mock_head.return_value = "abc1234567890abcdef1234567890abcdef123456"
         check_for_updates()
+        text = loguru_caplog.text
+        assert "Dev build up to date" in text
+        assert "dev" in text
+        assert "Newer dev commit" not in text
 
     @patch.dict(os.environ, {"GIT_BRANCH": "dev", "GIT_SHA": "abc1234"})
     @patch("media_preview_generator.version_check.get_branch_head_sha")
-    def test_check_for_updates_dev_docker_behind(self, mock_head):
-        """Dev Docker image behind remote branch."""
+    def test_check_for_updates_dev_docker_behind(self, mock_head, loguru_caplog):
+        """Dev Docker behind remote branch nags about a newer dev commit."""
         mock_head.return_value = "def5678567890abcdef1234567890abcdef123456"
         check_for_updates()
+        text = loguru_caplog.text
+        assert "Newer dev commit" in text
+        # Must point users at the dev tag specifically, not :latest.
+        assert ":dev" in text
 
     @patch.dict(os.environ, {"GIT_BRANCH": "dev", "GIT_SHA": "abc1234"})
     @patch("media_preview_generator.version_check.get_branch_head_sha")
-    def test_check_for_updates_dev_docker_api_failure(self, mock_head):
-        """Dev Docker image with API failure falls through."""
+    def test_check_for_updates_dev_docker_api_failure(self, mock_head, loguru_caplog):
+        """Dev Docker + GitHub API failure: no fake "up to date" or "behind" claim."""
         mock_head.return_value = None
         check_for_updates()
+        text = loguru_caplog.text
+        assert "Dev build up to date" not in text
+        assert "Newer dev commit" not in text
 
     @patch.dict(os.environ, {"GIT_BRANCH": "", "GIT_SHA": ""}, clear=False)
     @patch("media_preview_generator.version_check.get_git_branch")
     @patch("media_preview_generator.version_check.get_git_commit_sha")
     @patch("media_preview_generator.version_check.get_branch_head_sha")
-    def test_check_for_updates_git_checkout_up_to_date(self, mock_head, mock_sha, mock_branch):
-        """Git checkout up to date with remote."""
+    def test_check_for_updates_git_checkout_up_to_date(self, mock_head, mock_sha, mock_branch, loguru_caplog):
+        """Local git checkout matches remote: emits the up-to-date message, no nag."""
         mock_sha.return_value = "abc1234567890abcdef1234567890abcdef123456"
         mock_branch.return_value = "main"
         mock_head.return_value = "abc1234567890abcdef1234567890abcdef123456"
         check_for_updates()
+        text = loguru_caplog.text
+        assert "Git checkout up to date" in text
+        assert "main" in text
+        assert "Newer commit on" not in text
 
     @patch.dict(os.environ, {"GIT_BRANCH": "", "GIT_SHA": ""}, clear=False)
     @patch("media_preview_generator.version_check.get_git_branch")
     @patch("media_preview_generator.version_check.get_git_commit_sha")
     @patch("media_preview_generator.version_check.get_branch_head_sha")
-    def test_check_for_updates_git_checkout_behind(self, mock_head, mock_sha, mock_branch):
-        """Git checkout behind remote."""
+    def test_check_for_updates_git_checkout_behind(self, mock_head, mock_sha, mock_branch, loguru_caplog):
+        """Local git checkout behind remote: emits 'git pull' instruction with branch."""
         mock_sha.return_value = "abc1234567890abcdef1234567890abcdef123456"
         mock_branch.return_value = "main"
         mock_head.return_value = "def5678567890abcdef1234567890abcdef123456"
         check_for_updates()
+        text = loguru_caplog.text
+        assert "Newer commit on" in text
+        assert "git pull origin main" in text
 
 
 class TestGetGitCommitSha:

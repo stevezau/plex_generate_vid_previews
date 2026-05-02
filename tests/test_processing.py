@@ -129,7 +129,14 @@ class TestMultiServerGuards:
         with patch(f"{MODULE}._run_full_scan_multi_server") as mock_scan:
             mock_scan.return_value = {r.value: 0 for r in ProcessingResult}
             result = run_processing(config, selected_gpus=[])
-        assert mock_scan.called
+        # Exactly one multi-server scan dispatched, with the *same* config
+        # the caller passed in (no silent reshape). The "selected_gpus=[]"
+        # is the bare empty list we provided — if a wrapper accidentally
+        # mutated it into None we'd see it here.
+        mock_scan.assert_called_once()
+        call_args = mock_scan.call_args
+        assert call_args.args[0] is config
+        assert call_args.kwargs.get("selected_gpus") == []
         assert result is not None
         assert "outcome" in result
         # No skip path — the multi-server scan ran (possibly producing zero
@@ -147,7 +154,7 @@ class TestMultiServerGuards:
             ]
             mock_scan.return_value = {r.value: 0 for r in ProcessingResult}
             result = run_processing(config, selected_gpus=[])
-        assert mock_scan.called
+        mock_scan.assert_called_once()
         # The pin must be passed through so the scan only walks that server.
         assert mock_scan.call_args.kwargs.get("server_id_filter") == "emby-1"
         assert result is not None
@@ -166,7 +173,16 @@ class TestMultiServerGuards:
         ):
             mock_dispatch.return_value = {r.value: 0 for r in ProcessingResult}
             result = run_processing(config, selected_gpus=[])
-        assert mock_dispatch.called
+        # The webhook-paths multi-server dispatcher ran exactly once with
+        # the same Config the caller supplied (so the dispatcher pulls
+        # webhook_paths from there). `paths=` is left None on this branch
+        # — that's the contract the dispatcher reads to fall back to
+        # ``config.webhook_paths``.
+        mock_dispatch.assert_called_once()
+        call = mock_dispatch.call_args
+        assert call.args[0] is config
+        assert call.kwargs.get("paths") is None
+        assert config.webhook_paths == ["/data/movies/Foo.mkv"]
         assert result is not None
         assert "outcome" in result
 
@@ -205,8 +221,9 @@ class TestMultiServerGuards:
             mock_dispatch.return_value = {r.value: 0 for r in ProcessingResult}
             run_processing(config, selected_gpus=[])
 
-        # Fallback called for the unresolved subset only.
-        assert mock_dispatch.called
+        # Fallback called exactly once for the unresolved subset only —
+        # not for every webhook path, not for the resolved one.
+        mock_dispatch.assert_called_once()
         kwargs = mock_dispatch.call_args.kwargs
         assert kwargs.get("paths") == ["/data/b.mkv", "/data/c.mkv"]
 
@@ -290,7 +307,7 @@ class TestMultiServerGuards:
             ]
             run_processing(config, selected_gpus=[])
 
-        assert not mock_dispatch.called
+        mock_dispatch.assert_not_called()
 
 
 class TestLibraryScanFlow:

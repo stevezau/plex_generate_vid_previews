@@ -623,6 +623,99 @@ class TestEmbyWebhook:
         assert proc.call_args.kwargs["item_id_by_server"] == {"uuid-emby-B": "em-42"}
 
 
+class TestPlexWebhook:
+    """D31 — assert that for a Plex-native multipart webhook, the resulting
+    ``item_id_by_server`` value is the BARE ratingKey, NOT the URL form
+    ``/library/metadata/<id>``. This is the router-layer site of the D31
+    bug: if ``parse_webhook`` ever again stores the URL form here, downstream
+    ``PlexBundleAdapter.compute_output_paths`` builds
+    ``/library/metadata//library/metadata/<id>/tree`` → 404 → silent
+    "skipped_not_indexed" lie on every Sonarr/Radarr → Plex webhook for days.
+    """
+
+    def _seed_plex_server(self):
+        _seed_servers(
+            [
+                {
+                    "id": "plex-1",
+                    "type": "plex",
+                    "name": "Plex",
+                    "enabled": True,
+                    "url": "http://plex:32400",
+                    "auth": {"token": "tok"},
+                    "libraries": [
+                        {"id": "1", "name": "Movies", "remote_paths": ["/data/movies"], "enabled": True},
+                    ],
+                }
+            ]
+        )
+
+    def test_item_id_by_server_is_bare_rating_key(self, client, auth_headers, monkeypatch):
+        """Plex webhook -> router stores BARE ratingKey in item_id_by_server."""
+        from media_preview_generator.servers.plex import PlexServer
+
+        self._seed_plex_server()
+        # Stub the path-resolution so we can assert on the item_id without
+        # caring how Plex would actually resolve the file.
+        monkeypatch.setattr(
+            PlexServer,
+            "resolve_item_to_remote_path",
+            lambda self, item_id: "/data/movies/Foo.mkv",
+        )
+
+        plex_payload = {
+            "event": "library.new",
+            "Metadata": {
+                "ratingKey": "557676",
+                "title": "Foo",
+                "type": "movie",
+            },
+        }
+        with patch(
+            "media_preview_generator.web.webhook_router.process_canonical_path",
+            return_value=_published_result(),
+        ) as proc:
+            response = client.post(
+                "/api/webhooks/incoming",
+                headers=auth_headers,
+                data={"payload": json.dumps(plex_payload)},
+                content_type="multipart/form-data",
+            )
+
+        assert response.status_code == 200, response.get_data(as_text=True)
+        assert response.get_json()["kind"] == "plex"
+        proc.assert_called_once()
+        item_id_by_server = proc.call_args.kwargs["item_id_by_server"]
+        assert item_id_by_server == {"plex-1": "557676"}, (
+            f"D31 regression — expected bare ratingKey, got {item_id_by_server!r}. "
+            "URL form like '/library/metadata/557676' would double-prefix downstream."
+        )
+        bare_id = item_id_by_server["plex-1"]
+        assert "/" not in bare_id, (
+            f"item_id contains '/' ({bare_id!r}) — would yield '/library/metadata//library/metadata/...' on /tree query"
+        )
+        assert not bare_id.startswith("/library/metadata/"), "item_id is in URL form — D31 root-cause shape"
+
+    def test_non_library_new_event_returns_202(self, client, auth_headers):
+        """Playback-state events (media.play etc.) must NOT dispatch."""
+        self._seed_plex_server()
+        plex_payload = {"event": "media.play", "Metadata": {"ratingKey": "1"}}
+        with patch(
+            "media_preview_generator.web.webhook_router.process_canonical_path",
+            return_value=_published_result(),
+        ) as proc:
+            response = client.post(
+                "/api/webhooks/incoming",
+                headers=auth_headers,
+                data={"payload": json.dumps(plex_payload)},
+                content_type="multipart/form-data",
+            )
+
+        # router treats parse_webhook -> None as "irrelevant", returning 202 not 200.
+        assert response.status_code == 202, response.get_data(as_text=True)
+        proc.assert_not_called()
+
+
 class TestPathFirstWebhook:
     def test_simple_path_dispatch(self, client, auth_headers):
         with patch(

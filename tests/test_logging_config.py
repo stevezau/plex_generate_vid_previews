@@ -70,32 +70,44 @@ class TestLoggingConfig:
     @patch("media_preview_generator.logging_config.os.makedirs")
     @patch("media_preview_generator.logging_config.logger")
     def test_setup_logging_default(self, mock_logger, mock_makedirs):
-        """Test setup logging with default level."""
+        """Default level: stderr handler at INFO + JSONL app.log handler."""
         setup_logging()
 
-        # Should configure logger
-        mock_logger.remove.assert_called()
-        mock_logger.add.assert_called()
+        mock_logger.remove.assert_called_once()
+        # Expect stderr + app.log handlers (2 add calls minimum).
+        assert mock_logger.add.call_count == 2
+        stderr_call = mock_logger.add.call_args_list[0]
+        assert stderr_call.kwargs.get("level") == "INFO"
 
     @patch("media_preview_generator.logging_config.os.makedirs")
     @patch("media_preview_generator.logging_config.logger")
     def test_setup_logging_debug(self, mock_logger, mock_makedirs):
-        """Test setup logging with DEBUG level."""
+        """DEBUG level propagates to the stderr handler config."""
         setup_logging("DEBUG")
 
         mock_logger.remove.assert_called_once()
-        mock_logger.add.assert_called()
+        assert mock_logger.add.call_count == 2
+        stderr_call = mock_logger.add.call_args_list[0]
+        assert stderr_call.kwargs.get("level") == "DEBUG"
+        # The app.log handler must keep rotation/retention even at DEBUG.
+        app_log_call = mock_logger.add.call_args_list[1]
+        assert app_log_call.kwargs.get("rotation") == "10 MB"
+        assert app_log_call.kwargs.get("retention") == 5
 
     @patch("media_preview_generator.logging_config.os.makedirs")
     @patch("media_preview_generator.logging_config.logger")
     def test_setup_logging_with_console(self, mock_logger, mock_makedirs):
-        """Test setup logging with console parameter."""
+        """Passing a Rich console should bind the stderr handler to it."""
         mock_console = MagicMock()
 
         setup_logging("INFO", console=mock_console)
 
         mock_logger.remove.assert_called_once()
-        mock_logger.add.assert_called()
+        assert mock_logger.add.call_count == 2
+        stderr_call = mock_logger.add.call_args_list[0]
+        # When a console is supplied, the sink wraps console.print (or similar).
+        # The level still respects the requested log_level.
+        assert stderr_call.kwargs.get("level") == "INFO"
 
     @patch("media_preview_generator.logging_config.os.makedirs")
     @patch("media_preview_generator.logging_config.logger")

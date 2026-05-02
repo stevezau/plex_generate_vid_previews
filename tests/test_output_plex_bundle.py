@@ -6,12 +6,19 @@ Verifies that:
 - "not yet indexed" cases raise the right exception so the dispatcher's
   slow-backoff queue takes over,
 - ``publish`` packs frames into a real BIF on disk.
+
+Mocking philosophy: these tests deliberately mock at the system boundary
+(``plex.query``) and let the URL-construction code in ``get_bundle_metadata``
+run for real. Mocking the server method would defeat the purpose — the D31
+bug lived inside the URL string built right next to the query call. See
+``test_does_not_double_prefix_url_when_item_id_is_full_path``.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
+from xml.etree import ElementTree as ET
 
 import pytest
 
@@ -31,6 +38,25 @@ def _make_bundle(canonical_path: str, frame_dir: Path) -> BifBundle:
     )
 
 
+def _wire_plex_query(server: PlexServer, *, parts: list[tuple[str, str]]) -> list[str]:
+    """Wire ``server._plex.query`` to return a /tree-shaped XML response built
+    from ``parts``. Returns the list that captures URLs requested. Lets the
+    real URL-construction in ``get_bundle_metadata`` run — this is the
+    boundary where mocks belong (D31 lived in the URL string itself)."""
+    captured_urls: list[str] = []
+    media_parts_xml = "".join(f'<MediaPart hash="{h}" file="{f}" />' for h, f in parts)
+    payload = f"<MediaContainer><MetadataItem><MediaItem>{media_parts_xml}</MediaItem></MetadataItem></MediaContainer>"
+
+    def fake_query(url):
+        captured_urls.append(url)
+        return ET.fromstring(payload)
+
+    plex = MagicMock()
+    plex.query = fake_query
+    server._plex = plex
+    return captured_urls
+
+
 class TestNeedsServerMetadata:
     def test_returns_true(self):
         adapter = PlexBundleAdapter(plex_config_folder="/cfg", frame_interval=10)
@@ -45,36 +71,35 @@ class TestComputeOutputPaths:
     def test_path_structure_matches_plex_bundle_layout(self, tmp_path, mock_config):
         adapter = PlexBundleAdapter(plex_config_folder="/cfg", frame_interval=10)
         server = PlexServer(mock_config)
-        with patch.object(
+        urls = _wire_plex_query(server, parts=[("abcdef0123456789", "/m/foo.mkv")])
+
+        paths = adapter.compute_output_paths(
+            _make_bundle("/m/foo.mkv", tmp_path),
             server,
-            "get_bundle_metadata",
-            return_value=[("abcdef0123456789", "/m/foo.mkv")],
-        ):
-            paths = adapter.compute_output_paths(
-                _make_bundle("/m/foo.mkv", tmp_path),
-                server,
-                item_id="42",
-            )
+            item_id="42",
+        )
 
         assert len(paths) == 1
         assert paths[0] == Path("/cfg/Media/localhost/a/bcdef0123456789.bundle/Contents/Indexes/index-sd.bif")
+        # Sanity: the URL was built correctly for the bare-id input.
+        assert urls == ["/library/metadata/42/tree"]
 
     def test_picks_matching_part_by_basename(self, tmp_path, mock_config):
         adapter = PlexBundleAdapter(plex_config_folder="/cfg", frame_interval=10)
         server = PlexServer(mock_config)
-        with patch.object(
+        _wire_plex_query(
             server,
-            "get_bundle_metadata",
-            return_value=[
+            parts=[
                 ("aaaaaaaaaa", "/m/disc1.mkv"),
                 ("bbbbbbbbbb", "/m/disc2.mkv"),
             ],
-        ):
-            paths = adapter.compute_output_paths(
-                _make_bundle("/m/disc2.mkv", tmp_path),
-                server,
-                item_id="99",
-            )
+        )
+
+        paths = adapter.compute_output_paths(
+            _make_bundle("/m/disc2.mkv", tmp_path),
+            server,
+            item_id="99",
+        )
 
         # Should pick the second part's hash, not the first.
         assert paths[0] == Path("/cfg/Media/localhost/b/bbbbbbbbb.bundle/Contents/Indexes/index-sd.bif")
@@ -82,44 +107,43 @@ class TestComputeOutputPaths:
     def test_falls_back_to_first_hash_when_no_basename_match(self, tmp_path, mock_config):
         adapter = PlexBundleAdapter(plex_config_folder="/cfg", frame_interval=10)
         server = PlexServer(mock_config)
-        with patch.object(
+        _wire_plex_query(server, parts=[("zzzzzzzzzz", "/srv/different/path.mkv")])
+
+        paths = adapter.compute_output_paths(
+            _make_bundle("/m/foo.mkv", tmp_path),
             server,
-            "get_bundle_metadata",
-            return_value=[("zzzzzzzzzz", "/srv/different/path.mkv")],
-        ):
-            paths = adapter.compute_output_paths(
-                _make_bundle("/m/foo.mkv", tmp_path),
-                server,
-                item_id="42",
-            )
+            item_id="42",
+        )
         assert paths[0].name == "index-sd.bif"
         assert "zzzzzzzzz.bundle" in str(paths[0])
 
     def test_empty_metadata_raises_not_yet_indexed(self, tmp_path, mock_config):
         adapter = PlexBundleAdapter(plex_config_folder="/cfg", frame_interval=10)
         server = PlexServer(mock_config)
-        with patch.object(server, "get_bundle_metadata", return_value=[]):
-            with pytest.raises(LibraryNotYetIndexedError):
-                adapter.compute_output_paths(
-                    _make_bundle("/m/foo.mkv", tmp_path),
-                    server,
-                    item_id="42",
-                )
+        # Empty MediaPart list — Plex returned a /tree but no parts yet.
+        _wire_plex_query(server, parts=[])
+
+        with pytest.raises(LibraryNotYetIndexedError):
+            adapter.compute_output_paths(
+                _make_bundle("/m/foo.mkv", tmp_path),
+                server,
+                item_id="42",
+            )
 
     def test_invalid_hash_for_matching_part_raises_not_yet_indexed(self, tmp_path, mock_config):
         adapter = PlexBundleAdapter(plex_config_folder="/cfg", frame_interval=10)
         server = PlexServer(mock_config)
-        with patch.object(
-            server,
-            "get_bundle_metadata",
-            return_value=[("", "/m/foo.mkv")],
-        ):
-            with pytest.raises(LibraryNotYetIndexedError):
-                adapter.compute_output_paths(
-                    _make_bundle("/m/foo.mkv", tmp_path),
-                    server,
-                    item_id="42",
-                )
+        # MediaPart present but hash is too short for a bundle path — Plex's
+        # /tree sometimes returns a placeholder before bundle generation
+        # finishes. _select_hash_for_path's length>=2 guard rejects it.
+        _wire_plex_query(server, parts=[("a", "/m/foo.mkv")])
+
+        with pytest.raises(LibraryNotYetIndexedError):
+            adapter.compute_output_paths(
+                _make_bundle("/m/foo.mkv", tmp_path),
+                server,
+                item_id="42",
+            )
 
     def test_missing_item_id_raises_value_error(self, tmp_path, mock_config):
         adapter = PlexBundleAdapter(plex_config_folder="/cfg", frame_interval=10)

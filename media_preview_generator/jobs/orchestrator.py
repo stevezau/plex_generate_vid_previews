@@ -780,6 +780,31 @@ def _should_use_multi_server_full_scan(config, pinned_type: str) -> bool:
     return non_plex_pin or no_plex_at_all or has_non_plex_server
 
 
+def _maybe_log_path_mapping_misconfig(aggregate_outcome: dict, processed: int) -> bool:
+    """Emit the path-mapping misconfiguration warning when the run looks broken.
+
+    Returns ``True`` when the warning fired so callers and tests can assert on
+    the exact predicate (every processed item finished as
+    ``skipped_file_not_found`` and zero items were generated). Splitting this
+    out lets the rule be unit-tested without exercising the entire
+    ``run_processing`` pipeline; before the extraction the only test coverage
+    re-implemented dictionary arithmetic in the test file and never ran the
+    real predicate.
+    """
+    not_found = aggregate_outcome.get("skipped_file_not_found", 0)
+    generated = aggregate_outcome.get("generated", 0)
+    if processed > 0 and not_found > 0 and generated == 0:
+        logger.warning(
+            "All {} item(s) finished with the file not found locally — no previews were generated this run. "
+            "This almost always means your path mappings are wrong: Plex reports the file at one path, but this "
+            "app can't see it at that path. Open Settings → Path mappings and add a row that translates Plex's "
+            "path to the local path this app sees. The Plex server itself is fine — only file access is broken.",
+            not_found,
+        )
+        return True
+    return False
+
+
 def _format_outcome_summary(aggregate_outcome: dict) -> str:
     """Build the one-line "X generated, Y already existed, Z failed" string for the end-of-job log.
 
@@ -1244,15 +1269,7 @@ def run_processing(
         else:
             logger.info("Processing complete: {}", summary)
 
-        not_found = aggregate_outcome.get("skipped_file_not_found", 0)
-        if totals["processed"] > 0 and not_found > 0 and aggregate_outcome.get("generated", 0) == 0:
-            logger.warning(
-                "All {} item(s) finished with the file not found locally — no previews were generated this run. "
-                "This almost always means your path mappings are wrong: Plex reports the file at one path, but this "
-                "app can't see it at that path. Open Settings → Path mappings and add a row that translates Plex's "
-                "path to the local path this app sees. The Plex server itself is fine — only file access is broken.",
-                not_found,
-            )
+        _maybe_log_path_mapping_misconfig(aggregate_outcome, totals["processed"])
 
         log_failure_summary()
 

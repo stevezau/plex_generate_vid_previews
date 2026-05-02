@@ -82,11 +82,18 @@ class TestSetupNotComplete:
         assert not settings.is_setup_complete()
 
         response = client.get("/api/plex/servers")
-        # The endpoint itself may return 401 for "No Plex token available" —
-        # that is NOT from the auth decorator.  Check the error message.
-        if response.status_code == 401:
-            data = response.get_json()
-            assert data.get("error") != "Authentication required"
+        # In the no-plex-token-configured fixture state, the endpoint returns
+        # 401 from its OWN body check (api_plex.py: "No Plex token available")
+        # — not from @setup_or_auth_required. Wrapping in `if status_code == 401`
+        # let the test pass even if the auth decorator fired its own 401, which
+        # is the exact bug class this test is supposed to guard. Pin to 401
+        # AND assert the error string proves it came from the body check.
+        assert response.status_code == 401
+        data = response.get_json()
+        assert data.get("error") != "Authentication required", (
+            "401 here MUST be the body-level 'No Plex token' error, not the auth decorator"
+        )
+        assert "token" in (data.get("error") or "").lower()
 
     def test_unauthenticated_get_system_status(self, client):
         """Test unauthenticated GET /api/system/status when setup incomplete."""

@@ -132,12 +132,31 @@ def test_plex_webhook_extracts_paths_from_inline_media_part(mock_schedule, clien
     assert args[2] == "/data/movies/Inline Movie/Inline Movie.mkv"
 
 
-@patch("media_preview_generator.web.webhooks._resolve_plex_paths_from_rating_key")
 @patch("media_preview_generator.web.webhooks._schedule_webhook_job")
-def test_plex_webhook_falls_back_to_plex_api_lookup(mock_schedule, mock_resolve, client):
-    """When Media.Part.file is missing, the endpoint should look the item up by ratingKey."""
+def test_plex_webhook_falls_back_to_plex_api_lookup(mock_schedule, client):
+    """End-to-end: when Media.Part.file is missing, the webhook ROUTE must
+    drive ``_resolve_plex_paths_from_rating_key`` which in turn must hit
+    Plex via ``plex.fetchItem`` and walk media/parts. We mock at the
+    plexapi boundary (``plex_server`` + ``fetchItem``) NOT at the resolver,
+    so a regression like "route stops calling the resolver" or "resolver
+    forgets to walk parts" fails loudly. Mocking ``_resolve_plex_paths_from_rating_key``
+    directly was the pattern that hid bugs in the route → resolver coupling.
+    """
     mock_schedule.return_value = True
-    mock_resolve.return_value = (["/data/tv/Show/S01E01.mkv"], None)
+
+    # Plex item has the file path on its first MediaPart (typical episode).
+    fake_part = MagicMock(file="/data/tv/Show/S01E01.mkv")
+    fake_item = MagicMock(
+        media=[MagicMock(parts=[fake_part])],
+        type="episode",
+        title="Pilot",
+        grandparentTitle="Show",
+        parentIndex=1,
+        index=1,
+    )
+    fake_plex = MagicMock()
+    fake_plex.fetchItem.return_value = fake_item
+
     payload = {
         "event": "library.new",
         "Metadata": {
@@ -147,9 +166,19 @@ def test_plex_webhook_falls_back_to_plex_api_lookup(mock_schedule, mock_resolve,
         },
     }
 
-    resp = _multipart_post(client, payload)
+    with (
+        patch("media_preview_generator.config.load_config", return_value=MagicMock()),
+        patch("media_preview_generator.plex_client.plex_server", return_value=fake_plex),
+        patch(
+            "media_preview_generator.plex_client.retry_plex_call",
+            side_effect=lambda fn, *a, **kw: fn(*a, **kw),
+        ),
+    ):
+        resp = _multipart_post(client, payload)
+
     assert resp.status_code == 202
-    mock_resolve.assert_called_once_with("98765")
+    # The route called fetchItem(98765) — NOT a stub of the resolver.
+    fake_plex.fetchItem.assert_called_once_with(98765)
     assert mock_schedule.called
     assert mock_schedule.call_args[0][2] == "/data/tv/Show/S01E01.mkv"
 
@@ -243,7 +272,13 @@ def test_plex_webhook_accepts_query_token(mock_schedule, client):
         content_type="multipart/form-data",
     )
     assert resp.status_code == 202
+    # Inspect the dispatch args — bare ``.called`` would let a regression
+    # that schedules a job with empty/wrong values silently pass.
     assert mock_schedule.called
+    args = mock_schedule.call_args[0]
+    assert args[0] == "plex"
+    assert args[1] == "Query token test"
+    assert args[2] == "/data/movies/Q.mkv"
 
 
 def test_plex_webhook_rejects_invalid_query_token(client):

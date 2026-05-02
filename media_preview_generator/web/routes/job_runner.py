@@ -19,6 +19,20 @@ _inflight_jobs: set = set()
 _inflight_lock = threading.Lock()
 
 
+def _format_eta(seconds: float) -> str:
+    """Format seconds into a human-readable ETA string.
+
+    Used by ``run_job``'s worker_callback to surface FFmpeg's
+    ``remaining_time`` as a UI-friendly string (e.g. ``2m 5s``).
+    """
+    if seconds < 60:
+        return f"{int(seconds)}s"
+    elif seconds < 3600:
+        return f"{int(seconds // 60)}m {int(seconds % 60)}s"
+    else:
+        return f"{int(seconds // 3600)}h {int((seconds % 3600) // 60)}m"
+
+
 def _build_selected_gpus(settings) -> list:
     """Build the selected_gpus list from gpu_config and GPU cache.
 
@@ -305,15 +319,6 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                 raise RuntimeError(f"Working temp folder is not healthy: {config.working_tmp_folder}")
 
             selected_gpus = _build_selected_gpus(settings)
-
-            def _format_eta(seconds: float) -> str:
-                """Format seconds into human-readable ETA string."""
-                if seconds < 60:
-                    return f"{int(seconds)}s"
-                elif seconds < 3600:
-                    return f"{int(seconds // 60)}m {int(seconds % 60)}s"
-                else:
-                    return f"{int(seconds // 3600)}h {int((seconds % 3600) // 60)}m"
 
             def progress_callback(
                 current: int,

@@ -493,8 +493,8 @@ class TestGenerateImages:
 
         generate_images("/test/video.mp4", temp_dir, None, None, mock_config)
 
-        # Verify FFmpeg was called
-        assert mock_popen.called
+        # Verify FFmpeg was called exactly once with the configured binary and source path.
+        mock_popen.assert_called_once()
         args = mock_popen.call_args[0][0]
         assert mock_config.ffmpeg_path in args
         assert "/test/video.mp4" in args
@@ -816,13 +816,15 @@ class TestGenerateImages:
 
         generate_images("/test/video.mp4", temp_dir, None, None, mock_config)
 
-        # Verify rename was called with correct arguments
-        # img-000001.jpg (frame 0) -> 0000000000.jpg (0 seconds)
-        # img-000002.jpg (frame 1) -> 0000000005.jpg (5 seconds)
-        # img-000003.jpg (frame 2) -> 0000000010.jpg (10 seconds)
-        assert mock_rename.called
+        # Verify rename was called once per frame, mapping img-NNNNNN.jpg to
+        # the seconds-based name the BIF packer expects:
+        #   img-000001.jpg (frame 0) -> 0000000000.jpg (0 seconds)
+        #   img-000002.jpg (frame 1) -> 0000000005.jpg (5 seconds)
+        #   img-000003.jpg (frame 2) -> 0000000010.jpg (10 seconds)
         calls = mock_rename.call_args_list
         assert len(calls) == 3
+        renamed_targets = [os.path.basename(c.args[1]) for c in calls]
+        assert renamed_targets == ["0000000000.jpg", "0000000005.jpg", "0000000010.jpg"]
 
     @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
@@ -933,11 +935,15 @@ class TestGenerateImages:
             generate_images("/test/video.mp4", temp_dir, "NVIDIA", None, mock_config)
 
         assert "GPU processing failed" in str(exc_info.value)
-        assert mock_detect.called
+        # Codec-error detection ran on the failing FFmpeg process — that's
+        # the predicate that gates whether to raise CodecNotSupportedError
+        # vs fall back to CPU. Once is enough; more would mean the retry
+        # path is mis-checking.
+        assert mock_detect.call_count >= 1
         assert mock_popen.call_count == 2  # GPU with skip_frame + GPU without skip_frame (no CPU fallback)
 
-        # Verify cleanup was attempted
-        assert mock_remove.called
+        # Verify cleanup was attempted at least once for the partial output dir.
+        assert mock_remove.call_count >= 1
 
     @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
@@ -1006,7 +1012,7 @@ class TestGenerateImages:
         with pytest.raises(CodecNotSupportedError):
             generate_images("/test/video.mp4", temp_dir, "NVIDIA", None, mock_config)
 
-        assert mock_detect.called
+        assert mock_detect.call_count >= 1
         assert mock_popen.call_count == 2  # Initial attempt + skip_frame retry, no CPU fallback (exception raised)
 
     @patch("media_preview_generator.processing.generator.MediaInfo")
@@ -1079,7 +1085,7 @@ class TestGenerateImages:
         # Should fail (no fallback since not codec error)
         assert success is False
         assert image_count == 0
-        assert mock_detect.called
+        assert mock_detect.call_count >= 1
         assert mock_popen.call_count == 2  # Initial attempt + skip_frame retry, no CPU fallback
 
     @patch("media_preview_generator.processing.generator.MediaInfo")

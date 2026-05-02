@@ -235,20 +235,32 @@ class TestRequeueInterruptedOnStartup:
 
 
 class TestPrewarmCaches:
-    """Test background cache pre-warming at startup."""
+    """Test background cache pre-warming at startup.
 
-    @patch("media_preview_generator.web.app._prewarm_caches")
-    def test_prewarm_called_during_create_app(self, mock_prewarm, tmp_path):
-        """create_app invokes _prewarm_caches so GPU/version caches are warm.
+    The previous ``test_prewarm_called_during_create_app`` mocked
+    ``_prewarm_caches`` itself and asserted the mock was called — that's
+    a tautology (we patch it, then check the patch fired) and tells us
+    nothing about whether prewarm actually warms the caches. Replaced
+    with a real-side-effect test that mocks the *boundaries*
+    (vulkan probe, GPU detection, GitHub HTTP) and asserts those
+    boundaries got hit when create_app runs.
+    """
 
-        Uses tmp_path so parallel xdist workers don't race on a shared dir.
+    @pytest.mark.real_prewarm
+    def test_create_app_triggers_real_prewarm(self, tmp_path):
+        """create_app must run prewarm such that the GPU + version helpers fire.
+
+        Mocks at system boundaries (vulkan probe, GPU detection function,
+        version helper) so we verify the actual prewarm code path executed,
+        not just that we patched a function and called it.
         """
         import json
         import os
+        import threading
 
         from media_preview_generator.web.app import create_app
 
-        config_dir = str(tmp_path / "prewarm")
+        config_dir = str(tmp_path / "prewarm_real")
         os.makedirs(config_dir, exist_ok=True)
         auth_file = os.path.join(config_dir, "auth.json")
         with open(auth_file, "w") as f:
@@ -257,12 +269,33 @@ class TestPrewarmCaches:
         with open(settings_file, "w") as f:
             json.dump({"setup_complete": True}, f)
 
-        with patch.dict(
-            os.environ,
-            {"CONFIG_DIR": config_dir, "WEB_AUTH_TOKEN": "test-token-12345678"},
+        with (
+            patch.dict(
+                os.environ,
+                {"CONFIG_DIR": config_dir, "WEB_AUTH_TOKEN": "test-token-12345678"},
+            ),
+            patch(
+                "media_preview_generator.gpu.vulkan_probe.get_vulkan_device_info",
+                return_value=None,
+            ) as mock_vulkan,
+            patch(
+                "media_preview_generator.web.routes.api_system._get_version_info",
+                return_value={"current_version": "1.0.0"},
+            ) as mock_version,
+            patch(
+                "media_preview_generator.web.routes._helpers._ensure_gpu_cache",
+            ) as mock_gpu,
         ):
             create_app(config_dir=config_dir)
-            mock_prewarm.assert_called_once()
+            # Wait for the daemon threads spawned by _prewarm_caches.
+            for t in threading.enumerate():
+                if t.name in ("prewarm-gpu", "prewarm-version"):
+                    t.join(timeout=5)
+
+            # Vulkan runs synchronously inline; GPU + version run in threads.
+            mock_vulkan.assert_called_once()
+            mock_gpu.assert_called_once()
+            mock_version.assert_called_once()
 
     @pytest.mark.real_prewarm
     @patch(

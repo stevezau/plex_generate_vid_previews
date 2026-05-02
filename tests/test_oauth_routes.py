@@ -175,22 +175,49 @@ class TestPlexServerRoutes:
     """Tests for Plex server discovery routes."""
 
     def test_get_servers_without_token(self, client, auth_headers, monkeypatch):
-        """Test getting servers without Plex token returns error."""
+        """No Plex token configured -> /api/plex/servers must return 401.
+
+        The route returns 401 specifically (see api_plex.py:get_plex_servers
+        line 132-133). Accepting [400, 401, 500] here lets a regression flip
+        to 500 silently — the UI can't distinguish "missing token" from
+        "server crashed" if any 4xx/5xx passes.
+        """
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
         monkeypatch.delenv("PLEX_TOKEN", raising=False)
         monkeypatch.delenv("PLEX_URL", raising=False)
+        sm = get_settings_manager()
+        sm.delete("plex_token")
+        sm.delete("plex_url")
+
         response = client.get("/api/plex/servers", headers=auth_headers)
 
-        # Should return error since no Plex token is configured
-        assert response.status_code in [400, 401, 500]
+        assert response.status_code == 401
+        body = json.loads(response.data)
+        assert body["servers"] == []
+        assert "token" in body["error"].lower()
 
     def test_get_libraries_without_server(self, client, auth_headers, monkeypatch):
-        """Test getting libraries without server configured."""
+        """No Plex URL/token -> /api/plex/libraries must return 400 (bad request).
+
+        The route validates url+token *before* attempting any I/O, so the
+        error class is "client request is missing data" -> 400. Accepting
+        [400, 500] would let an unhandled exception path slip through.
+        """
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
         monkeypatch.delenv("PLEX_TOKEN", raising=False)
         monkeypatch.delenv("PLEX_URL", raising=False)
+        sm = get_settings_manager()
+        sm.delete("plex_token")
+        sm.delete("plex_url")
+
         response = client.get("/api/plex/libraries", headers=auth_headers)
 
-        # Should return error since no server is configured
-        assert response.status_code in [400, 500]
+        assert response.status_code == 400
+        body = json.loads(response.data)
+        assert body["libraries"] == []
+        assert "Plex" in body["error"]
 
     def test_check_pin_returns_auth_token(self, client, auth_headers, monkeypatch):
         """check_plex_pin must return the auth_token to the client.

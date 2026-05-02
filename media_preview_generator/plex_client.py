@@ -40,6 +40,21 @@ def _log_prefix(config: Config) -> str:
     return f"[{name}] " if name else ""
 
 
+def _plex_item_id(m) -> str:
+    """Return Plex's bare ``ratingKey`` for ``m`` (e.g. ``"54321"``).
+
+    Why: PlexAPI's ``m.key`` is the URL ``/library/metadata/<id>`` — passing it
+    downstream as ``item_id`` doubles the prefix when ``PlexBundleAdapter`` builds
+    ``/library/metadata/{item_id}/tree``, which silently 404s and reports
+    ``skipped_not_indexed`` for every item. See D31.
+    """
+    raw = getattr(m, "ratingKey", None)
+    if isinstance(raw, str | int) and str(raw).strip():
+        return str(raw)
+    key = str(getattr(m, "key", "") or "")
+    return key.rsplit("/", 1)[-1] if key else key
+
+
 def retry_plex_call(func, *args, max_retries=3, retry_delay=1.0, **kwargs):
     """Retry a Plex API call if it fails due to XML parsing errors.
 
@@ -342,7 +357,11 @@ def get_library_sections(plex, config: Config, cancel_check=None, progress_callb
                     show_title = m.grandparentTitle
                     season_episode = m.seasonEpisode.upper()
                     formatted_title = f"{show_title} {season_episode}"
-                    media_with_locations.append((m.key, m.locations, formatted_title, "episode"))
+                    # D31 — store the bare ratingKey, NOT m.key. PlexAPI's m.key is the URL
+                    # "/library/metadata/<id>"; passing that downstream as item_id causes
+                    # PlexBundleAdapter to build "/library/metadata//library/metadata/<id>/tree"
+                    # → 404, silently misreported as "not indexed yet".
+                    media_with_locations.append((_plex_item_id(m), m.locations, formatted_title, "episode"))
                 media_with_locations = _filter_excluded_by_path(media_with_locations, config)
                 # Filter out multi episode files based on file locations
                 media = filter_duplicate_locations(media_with_locations)
@@ -352,7 +371,7 @@ def get_library_sections(plex, config: Config, cancel_check=None, progress_callb
                     search_kwargs["sort"] = sort_param
                 search_results = retry_plex_call(section.search, **search_kwargs)
                 media_with_locations = [
-                    (m.key, getattr(m, "locations", []) or [], m.title, "movie") for m in search_results
+                    (_plex_item_id(m), getattr(m, "locations", []) or [], m.title, "movie") for m in search_results
                 ]
                 media_with_locations = _filter_excluded_by_path(media_with_locations, config)
                 media = [(k, t, "movie") for k, _loc, t, _ in media_with_locations]
