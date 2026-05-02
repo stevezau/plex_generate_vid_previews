@@ -370,15 +370,33 @@ def _dispatch_processable_items(
             return 1
 
     def _device_label(gpu_info, gpu_device, gpu_type) -> str:
-        # Friendly device name for the worker row label. Prefer the
-        # human-readable ``name`` from the GPU detection cache (e.g.
-        # "NVIDIA TITAN RTX") so the Workers panel matches the legacy
-        # WorkerPool's labels — fall back to device path / type.
+        # Compact human-readable device name for the worker row label.
+        # The raw gpu_info["name"] from lspci-style detection can be
+        # quite long (e.g. "Intel Corporation Raptor Lake-S GT1
+        # [UHD Graphics 770] (rev 04)") which made the Workers-panel
+        # row wrap and pushed the status badge around. Pull the
+        # bracketed user-recognisable identifier when present, else
+        # fall back to the full name / device path / type.
+        import re as _re
+
         if isinstance(gpu_info, dict):
-            name = gpu_info.get("name") or ""
+            name = (gpu_info.get("name") or "").strip()
         else:
-            name = getattr(gpu_info, "name", "") or ""
-        return name.strip() or (gpu_device or gpu_type or "GPU")
+            name = (getattr(gpu_info, "name", "") or "").strip()
+        if not name:
+            return gpu_device or (gpu_type or "GPU")
+
+        m = _re.search(r"\[([^\]]+)\]", name)
+        if m:
+            bracketed = m.group(1).strip()
+            vendor = (gpu_type or name.split()[0] or "").strip()
+            v_low = vendor.lower()
+            if v_low == "intel":
+                return f"Intel {bracketed}"
+            if v_low in ("amd", "radeon"):
+                return f"AMD {bracketed}"
+            return f"{vendor} {bracketed}" if vendor else bracketed
+        return name
 
     # Pre-allocate one stable slot per concurrent worker. The slot is
     # alive for the entire dispatch; only ``status`` and ``current_title``
@@ -389,18 +407,25 @@ def _dispatch_processable_items(
     #   2. Each ThreadPool thread persistently binds to ONE slot, which
     #      means its GPU assignment is also stable — no per-item
     #      round-robin churn.
+    # Per-type counter so labels match the legacy WorkerPool format
+    # ("GPU Worker 1 (NVIDIA TITAN RTX)") that users already recognise
+    # — avoids two different label conventions side-by-side when a job
+    # mixes the legacy and multi-server paths.
     gpu_slots: list[dict] = []
     slot_seq = 0
+    gpu_seq = 0
+    cpu_seq = 0
     for gpu_type, gpu_device, gpu_info in gpu_devices:
         per_device = _read_workers_count(gpu_info)
-        label = _device_label(gpu_info, gpu_device, gpu_type)
+        device_label = _device_label(gpu_info, gpu_device, gpu_type)
         for _ in range(per_device):
             slot_seq += 1
+            gpu_seq += 1
             gpu_slots.append(
                 {
                     "worker_id": slot_seq,
                     "worker_type": "GPU",
-                    "worker_name": f"{label} #{slot_seq}",
+                    "worker_name": f"GPU Worker {gpu_seq} ({device_label})",
                     "gpu_type": gpu_type,
                     "gpu_device": gpu_device,
                     "status": "idle",
@@ -414,11 +439,12 @@ def _dispatch_processable_items(
             )
     for _ in range(cpu_workers):
         slot_seq += 1
+        cpu_seq += 1
         gpu_slots.append(
             {
                 "worker_id": slot_seq,
                 "worker_type": "CPU",
-                "worker_name": f"CPU Worker #{slot_seq}",
+                "worker_name": f"CPU Worker {cpu_seq}",
                 "gpu_type": None,
                 "gpu_device": None,
                 "status": "idle",

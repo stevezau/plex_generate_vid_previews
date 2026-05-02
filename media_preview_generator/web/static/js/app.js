@@ -1837,6 +1837,24 @@ function updateJobProgress(jobId, progress) {
 
 // Worker Status Functions
 
+// In-place worker card updates. Previously this function rebuilt the
+// entire #workerStatusContainer via innerHTML on every poll, which (a)
+// flickered the panel even when nothing changed and (b) the idle vs
+// processing branches rendered DIFFERENT child markup so the card
+// HEIGHT changed every time a worker flipped state — visible as the
+// whole panel shifting up/down 30+ pixels per second on a busy job.
+//
+// Fix:
+//   1. Render each card with the SAME DOM shape regardless of status
+//      (title row + progress bar + footer line). Idle simply puts an
+//      em-dash in the title and keeps the rest at zero — the row
+//      height never changes.
+//   2. Update text/class in place against a per-(type,id) cached card
+//      so successive polls don't blow away DOM nodes the user might
+//      be hovering / selecting.
+//   3. Workers that disappear from the snapshot are removed by id;
+//      new ones are appended. The common case (4 stable rows) is a
+//      pure text/class diff on existing nodes.
 function updateWorkerStatuses(workers, options = {}) {
     const {
         fallbackCounts = null,
@@ -1886,55 +1904,160 @@ function updateWorkerStatuses(workers, options = {}) {
         _fallbackStateByWorker.set(w.worker_id, now);
     }
 
-    let html = '<div class="row g-3">';
-
-    for (const worker of workers) {
-        const fallbackActive = !!worker.fallback_active;
-        const icon = fallbackActive
-            ? 'bi-cpu'
-            : (worker.worker_type === 'GPU' ? 'bi-gpu-card' : 'bi-cpu');
-        const statusColor = worker.status === 'processing' ? 'primary' : 'secondary';
-        const progressPercent = (worker.progress_percent || 0).toFixed(1);
-        const fallbackBadge = fallbackActive
-            ? `<span class="badge bg-warning text-dark ms-1" title="${escapeHtml(worker.fallback_reason || 'CPU fallback')}"><i class="bi bi-arrow-down-circle me-1"></i>CPU fallback</span>`
-            : '';
-        const fallbackNote = fallbackActive && worker.fallback_reason
-            ? `<div class="small text-warning text-truncate mb-1" title="${escapeHtml(worker.fallback_reason)}"><i class="bi bi-exclamation-triangle me-1"></i>${escapeHtml(worker.fallback_reason)}</div>`
-            : '';
-
-        html += `
-            <div class="col-md-6">
-                <div class="card bg-body-tertiary${fallbackActive ? ' border-warning' : ''}">
-                    <div class="card-body py-2">
-                        <div class="d-flex justify-content-between align-items-center mb-2">
-                            <span><i class="bi ${icon} me-2"></i>${escapeHtml(worker.worker_name)}${fallbackBadge}</span>
-                            <span class="badge bg-${statusColor}">${escapeHtml(worker.status)}</span>
-                        </div>
-                        ${fallbackNote}
-                        ${worker.status === 'processing' ? `
-                            <div class="small text-truncate mb-1" title="${escapeHtml(worker.current_title)}">
-                                ${worker.library_name ? `<span class="text-muted">${escapeHtml(worker.library_name)}</span> <i class="bi bi-chevron-right small text-muted"></i> ` : ''}${escapeHtml(worker.current_title) || 'Processing...'}
-                            </div>
-                            <div class="progress" style="height: 6px;">
-                                <div class="progress-bar${fallbackActive ? ' bg-warning' : ''}" style="width: ${progressPercent}%"></div>
-                            </div>
-                            <div class="d-flex justify-content-between small text-muted mt-1">
-                                <span>${progressPercent}%</span>
-                                <span>${escapeHtml(worker.speed)}</span>
-                                <span>ETA: ${escapeHtml(worker.eta) || '-'}</span>
-                            </div>
-                        ` : `
-                            <div class="small text-muted">Idle - waiting for task</div>
-                        `}
-                    </div>
-                </div>
-            </div>
-        `;
+    // Ensure the row container exists; build it once on the first call.
+    let row = container.querySelector(':scope > .row.g-3');
+    if (!row) {
+        container.innerHTML = '<div class="row g-3"></div>';
+        row = container.querySelector(':scope > .row.g-3');
     }
 
-    html += '</div>';
-    container.innerHTML = html;
+    const seenKeys = new Set();
+    for (const worker of workers) {
+        const key = `${worker.worker_type}_${worker.worker_id}`;
+        seenKeys.add(key);
+        let col = row.querySelector(`:scope > [data-worker-key="${CSS.escape(key)}"]`);
+        if (!col) {
+            // First sighting of this slot — stamp the static DOM shape
+            // once. From here on we only mutate text/class on existing
+            // nodes, so there's no flicker.
+            col = document.createElement('div');
+            col.className = 'col-md-6';
+            col.dataset.workerKey = key;
+            col.innerHTML = `
+                <div class="card bg-body-tertiary" data-card>
+                    <div class="card-body py-2">
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <span class="text-truncate" data-name-wrap>
+                                <i class="bi" data-icon></i>
+                                <span data-name></span>
+                                <span class="badge bg-warning text-dark ms-1 d-none" data-fallback-badge>
+                                    <i class="bi bi-arrow-down-circle me-1"></i>CPU fallback
+                                </span>
+                            </span>
+                            <span class="badge" data-status></span>
+                        </div>
+                        <div class="small text-warning text-truncate mb-1 d-none" data-fallback-note>
+                            <i class="bi bi-exclamation-triangle me-1"></i><span data-fallback-reason></span>
+                        </div>
+                        <div class="small text-truncate mb-1" data-title></div>
+                        <div class="progress" style="height: 6px;">
+                            <div class="progress-bar" data-progress style="width: 0%"></div>
+                        </div>
+                        <div class="d-flex justify-content-between small text-muted mt-1">
+                            <span data-percent>0.0%</span>
+                            <span data-speed>0.0x</span>
+                            <span>ETA: <span data-eta>-</span></span>
+                        </div>
+                    </div>
+                </div>
+            `;
+            row.appendChild(col);
+            // Cosmetic: slightly tighter icon spacing.
+            col.querySelector('[data-icon]').classList.add('me-2');
+        }
+        _patchWorkerCard(col, worker);
+    }
+
+    // Drop any cards for workers that vanished (a job ending, a pool
+    // resize). The legacy code did this implicitly via innerHTML
+    // rebuild; here we do it explicitly.
+    for (const col of Array.from(row.children)) {
+        if (!seenKeys.has(col.dataset.workerKey)) {
+            col.remove();
+        }
+    }
     refreshWorkerScaleButtons();
+}
+
+function _patchWorkerCard(col, worker) {
+    const fallbackActive = !!worker.fallback_active;
+    const isProcessing = worker.status === 'processing';
+    const card = col.querySelector('[data-card]');
+    const icon = col.querySelector('[data-icon]');
+    const nameEl = col.querySelector('[data-name]');
+    const fallbackBadge = col.querySelector('[data-fallback-badge]');
+    const fallbackNote = col.querySelector('[data-fallback-note]');
+    const fallbackReason = col.querySelector('[data-fallback-reason]');
+    const statusEl = col.querySelector('[data-status]');
+    const titleEl = col.querySelector('[data-title]');
+    const progress = col.querySelector('[data-progress]');
+    const percent = col.querySelector('[data-percent]');
+    const speed = col.querySelector('[data-speed]');
+    const eta = col.querySelector('[data-eta]');
+
+    // Card border (warning ring on fallback)
+    card.classList.toggle('border-warning', fallbackActive);
+
+    // Icon (gpu-card vs cpu, fallback flips to cpu)
+    const iconClass = fallbackActive
+        ? 'bi-cpu'
+        : (worker.worker_type === 'GPU' ? 'bi-gpu-card' : 'bi-cpu');
+    if (!icon.classList.contains(iconClass)) {
+        icon.className = `bi me-2 ${iconClass}`;
+    }
+
+    // Name (only update if changed — avoids tearing during text selection)
+    if (nameEl.textContent !== worker.worker_name) {
+        nameEl.textContent = worker.worker_name;
+    }
+
+    // Fallback badge + note
+    fallbackBadge.classList.toggle('d-none', !fallbackActive);
+    if (fallbackActive) {
+        fallbackBadge.title = worker.fallback_reason || 'CPU fallback';
+    }
+    const showFallbackNote = fallbackActive && !!worker.fallback_reason;
+    fallbackNote.classList.toggle('d-none', !showFallbackNote);
+    if (showFallbackNote && fallbackReason.textContent !== worker.fallback_reason) {
+        fallbackReason.textContent = worker.fallback_reason;
+        fallbackNote.title = worker.fallback_reason;
+    }
+
+    // Status badge — colour AND text
+    const statusColor = isProcessing ? 'bg-primary' : 'bg-secondary';
+    if (!statusEl.classList.contains(statusColor)) {
+        statusEl.className = `badge ${statusColor}`;
+    }
+    if (statusEl.textContent !== worker.status) {
+        statusEl.textContent = worker.status;
+    }
+
+    // Title row — render the SAME DOM whether idle or processing so
+    // the card height never changes. Idle uses an em-dash placeholder
+    // (text-muted) instead of a wholly different "Idle - waiting"
+    // single-line box that resized the card.
+    let titleHTML;
+    if (isProcessing) {
+        const lib = worker.library_name
+            ? `<span class="text-muted">${escapeHtml(worker.library_name)}</span> <i class="bi bi-chevron-right small text-muted"></i> `
+            : '';
+        titleHTML = `${lib}${escapeHtml(worker.current_title) || 'Processing…'}`;
+        titleEl.title = worker.current_title || '';
+        titleEl.classList.remove('text-muted');
+    } else {
+        titleHTML = '<span class="text-muted">— idle</span>';
+        titleEl.title = 'Worker is idle';
+    }
+    if (titleEl.innerHTML !== titleHTML) {
+        titleEl.innerHTML = titleHTML;
+    }
+
+    // Progress bar — width + colour. Visibility kept (just zero width)
+    // when idle so the row height stays the same.
+    const progressPercent = isProcessing ? (worker.progress_percent || 0) : 0;
+    const desiredWidth = `${progressPercent.toFixed(1)}%`;
+    if (progress.style.width !== desiredWidth) {
+        progress.style.width = desiredWidth;
+    }
+    progress.classList.toggle('bg-warning', fallbackActive);
+
+    // Footer numbers
+    const percentText = `${progressPercent.toFixed(1)}%`;
+    if (percent.textContent !== percentText) percent.textContent = percentText;
+    const speedText = isProcessing ? (worker.speed || '0.0x') : '—';
+    if (speed.textContent !== speedText) speed.textContent = speedText;
+    const etaText = isProcessing ? (worker.eta || '-') : '-';
+    if (eta.textContent !== etaText) eta.textContent = etaText;
 }
 
 async function loadWorkerStatuses() {

@@ -674,6 +674,94 @@ class TestWorkerCallbackEmissionFromMultiServerDispatch:
         assert "The Named Movie" in captured_titles, f"item title missing from worker snapshots: {captured_titles!r}"
 
 
+class TestFriendlyDeviceLabel:
+    """D34 — the raw gpu_info["name"] from lspci-style detection can be
+    extremely verbose (e.g. "Intel Corporation Raptor Lake-S GT1
+    [UHD Graphics 770] (rev 04)") which made the Workers-panel row
+    wrap and pushed the status badge around. The dispatcher's
+    _device_label helper extracts the bracketed user-recognisable
+    identifier when present.
+    """
+
+    def test_intel_long_name_collapses_to_bracketed_marketing_name(self, tmp_path):
+        # Verify by driving an actual dispatch with a synthetic gpu_info
+        # — the helper isn't exposed but we can read the worker_name it
+        # produces from the slot snapshot.
+        from media_preview_generator.jobs.orchestrator import _dispatch_processable_items
+        from media_preview_generator.processing.multi_server import MultiServerStatus
+
+        cfg = _server_config("srv-a", ServerType.JELLYFIN)
+        items = [(cfg, ProcessableItem(canonical_path="/data/m.mkv", server_id="srv-a"))]
+        gpus = [
+            (
+                "INTEL",
+                "/dev/dri/renderD128",
+                {
+                    "workers": 1,
+                    "ffmpeg_threads": 2,
+                    "device": "/dev/dri/renderD128",
+                    "name": "Intel Corporation Raptor Lake-S GT1 [UHD Graphics 770] (rev 04)",
+                },
+            ),
+            (
+                "NVIDIA",
+                "cuda:0",
+                {"workers": 1, "ffmpeg_threads": 2, "device": "cuda:0", "name": "NVIDIA TITAN RTX"},
+            ),
+        ]
+        snapshots: list[list[dict]] = []
+        with patch(
+            "media_preview_generator.processing.multi_server.process_canonical_path",
+            return_value=SimpleNamespace(
+                publishers=[], canonical_path="/data/m.mkv", status=MultiServerStatus.PUBLISHED, message=""
+            ),
+        ):
+            _dispatch_processable_items(
+                items=items,
+                config=_config(cpu_threads=0),
+                registry=MagicMock(),
+                selected_gpus=gpus,
+                label="full scan",
+                worker_callback=lambda w: snapshots.append(list(w)),
+            )
+
+        worker_names = {w["worker_name"] for snap in snapshots for w in snap}
+        # NVIDIA name is short already — pass through unchanged.
+        assert any(n == "GPU Worker 1 (Intel UHD Graphics 770)" for n in worker_names), (
+            f"Intel label must collapse the verbose lspci string to the bracketed marketing name; got {worker_names!r}"
+        )
+        assert any(n == "GPU Worker 2 (NVIDIA TITAN RTX)" for n in worker_names), (
+            f"NVIDIA short label must pass through unchanged; got {worker_names!r}"
+        )
+
+    def test_no_brackets_falls_back_to_full_name(self, tmp_path):
+        from media_preview_generator.jobs.orchestrator import _dispatch_processable_items
+        from media_preview_generator.processing.multi_server import MultiServerStatus
+
+        cfg = _server_config("srv-a", ServerType.JELLYFIN)
+        items = [(cfg, ProcessableItem(canonical_path="/data/m.mkv", server_id="srv-a"))]
+        gpus = [
+            ("NVIDIA", "cuda:0", {"workers": 1, "name": "NVIDIA GeForce RTX 4090"}),
+        ]
+        snapshots: list[list[dict]] = []
+        with patch(
+            "media_preview_generator.processing.multi_server.process_canonical_path",
+            return_value=SimpleNamespace(
+                publishers=[], canonical_path="/data/m.mkv", status=MultiServerStatus.PUBLISHED, message=""
+            ),
+        ):
+            _dispatch_processable_items(
+                items=items,
+                config=_config(cpu_threads=0),
+                registry=MagicMock(),
+                selected_gpus=gpus,
+                label="full scan",
+                worker_callback=lambda w: snapshots.append(list(w)),
+            )
+        worker_names = {w["worker_name"] for snap in snapshots for w in snap}
+        assert any("NVIDIA GeForce RTX 4090" in n for n in worker_names), worker_names
+
+
 class TestParallelismRespectsPerDeviceWorkerCount:
     """D34 — the multi-server dispatcher used to read ``workers`` off
     each gpu_info entry via ``getattr(g[2], 'workers', 1)``. But
@@ -774,16 +862,18 @@ class TestParallelismRespectsPerDeviceWorkerCount:
                 all_ids.add(w.get("worker_id"))
         assert all_ids == {1, 2, 3, 4}, f"slot ids must be the stable 1..N range, got {all_ids!r}"
 
-        # Each slot's friendly name uses the configured device name
-        # (e.g. "NVIDIA TITAN RTX #1"), not the raw thread name. We
-        # used the device path here ("cuda:0") since the test fixture
-        # didn't set a name; the production path uses the human label.
+        # Each slot's friendly name follows the legacy WorkerPool
+        # format ("GPU Worker N (Device)") so the multi-server panel
+        # rows look identical to the legacy panel rows. We used the
+        # device path here ("cuda:0") since the test fixture didn't
+        # set a name; production passes a real device name through
+        # the same formatter.
         worker_names = sorted({w.get("worker_name", "") for snap in snapshots for w in snap})
-        assert any("cuda:0" in n and "#" in n for n in worker_names), (
-            f"NVIDIA slot label missing the stable '#N' suffix; got {worker_names!r}"
+        assert any("GPU Worker" in n and "cuda:0" in n for n in worker_names), (
+            f"NVIDIA slot label missing the 'GPU Worker N (cuda:0)' shape; got {worker_names!r}"
         )
-        assert any("renderD128" in n and "#" in n for n in worker_names), (
-            f"Intel slot label missing the stable '#N' suffix; got {worker_names!r}"
+        assert any("GPU Worker" in n and "renderD128" in n for n in worker_names), (
+            f"Intel slot label missing the 'GPU Worker N (renderD128)' shape; got {worker_names!r}"
         )
 
     def test_workers_zero_treated_as_one(self, tmp_path):
