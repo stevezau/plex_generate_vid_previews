@@ -103,6 +103,16 @@
                             <label class="form-check-label" for="editServerEnabled">Server enabled (uncheck to pause publishing)</label>
                         </div>
 
+                        <!-- Test Connection — verify URL + credentials right here in
+                             the modal, especially after a Re-authenticate flow. The
+                             result pill below shows the last probe outcome. -->
+                        <div class="mb-3 d-flex align-items-center gap-2 flex-wrap">
+                            <button type="button" class="btn btn-sm btn-outline-primary" id="editTestConnectionBtn">
+                                <i class="bi bi-broadcast me-1"></i>Test Connection
+                            </button>
+                            <span id="editTestConnectionResult" class="small text-muted"></span>
+                        </div>
+
                         <!-- Plex-only: config folder -->
                         <div id="editPlexConfigGroup" class="mb-3 d-none">
                             <label class="form-label">Plex config folder</label>

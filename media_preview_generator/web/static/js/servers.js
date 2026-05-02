@@ -149,6 +149,76 @@
         $$('.fix-trickplay-btn').forEach((btn) => {
             probeJellyfinTrickplay(btn.dataset.id, btn);
         });
+        // Quick enable/disable toggle on each card.
+        $$('.server-enabled-toggle').forEach((cb) => {
+            cb.addEventListener('change', async (ev) => {
+                const target = ev.currentTarget;
+                const id = target.dataset.id;
+                const enabled = target.checked;
+                target.disabled = true;
+                const r = await api('PATCH', `/api/servers/${encodeURIComponent(id)}/enabled`, { enabled });
+                target.disabled = false;
+                if (r.ok) {
+                    const label = target.parentElement.querySelector('label');
+                    if (label) label.textContent = enabled ? 'Enabled' : 'Disabled';
+                    showToast('Server updated', `${enabled ? 'Enabled' : 'Disabled'} successfully`, 'success');
+                    // Re-probe connection status — disabled servers shouldn't
+                    // probe (we'd hit a server the user just paused).
+                    if (enabled) probeServerConnection(id);
+                    else updateServerStatusPill(id, { ok: null, message: 'Disabled' });
+                } else {
+                    target.checked = !enabled;  // revert on error
+                    showToast('Update failed', `${(r.data && r.data.error) || r.status}`, 'danger');
+                }
+            });
+        });
+        // Per-card connection probe — sequential to avoid hammering 3+
+        // servers in parallel from the same browser tab. Each probe is
+        // ~200-1500ms so this is fast enough; doing them concurrently
+        // would saturate the single gunicorn worker on a multi-server
+        // install for a few seconds during page load.
+        (async () => {
+            for (const s of servers) {
+                if (!s.enabled) {
+                    updateServerStatusPill(s.id, { ok: null, message: 'Disabled' });
+                    continue;
+                }
+                await probeServerConnection(s.id);
+            }
+        })();
+    }
+
+    async function probeServerConnection(serverId) {
+        try {
+            const r = await api('POST', `/api/servers/${encodeURIComponent(serverId)}/test-connection`);
+            const data = r.data || {};
+            updateServerStatusPill(serverId, {
+                ok: data.ok === true,
+                message: data.message || (data.ok ? 'Connected' : 'Connection failed'),
+            });
+        } catch (e) {
+            updateServerStatusPill(serverId, { ok: false, message: String(e) });
+        }
+    }
+
+    function updateServerStatusPill(serverId, { ok, message }) {
+        const pill = document.getElementById(`server-status-${serverId}`);
+        if (!pill) return;
+        if (ok === null) {
+            pill.className = 'badge bg-secondary';
+            pill.innerHTML = '<i class="bi bi-pause-circle me-1"></i>Disabled';
+            pill.title = message || 'Disabled';
+            return;
+        }
+        if (ok) {
+            pill.className = 'badge bg-success';
+            pill.innerHTML = '<i class="bi bi-check-circle me-1"></i>Connected';
+            pill.title = message || 'Connected';
+        } else {
+            pill.className = 'badge bg-warning text-dark';
+            pill.innerHTML = '<i class="bi bi-exclamation-triangle me-1"></i>Auth failed';
+            pill.title = message || 'Connection failed';
+        }
     }
 
     async function probeJellyfinTrickplay(serverId, btn) {
@@ -167,9 +237,6 @@
 
     function serverCard(server) {
         const typeBadgeColor = { plex: 'warning', emby: 'success', jellyfin: 'info' }[server.type] || 'secondary';
-        const enabledBadge = server.enabled
-            ? '<span class="badge bg-success">enabled</span>'
-            : '<span class="badge bg-secondary">disabled</span>';
         const libCount = (server.libraries || []).length;
         const enabledLibs = (server.libraries || []).filter((l) => l.enabled).length;
         // Vendor SVG logo (24px) prepended to the server name. Falls back
@@ -178,16 +245,35 @@
         const vendorLogo = ['plex', 'emby', 'jellyfin'].includes((server.type || '').toLowerCase())
             ? `<img src="/static/images/vendors/${escapeHtml(server.type.toLowerCase())}.svg" alt="${escapeHtml(server.type)}" width="24" height="24" style="margin-right: 8px; vertical-align: -5px;">`
             : '';
+        // Connection status pill — populated lazily after card render via
+        // _refreshServerCardStatus(). Starts as "Checking…" so users get
+        // immediate feedback that the probe is running. Same colour map
+        // as the System & Workers card for visual consistency.
+        const statusPillId = `server-status-${escapeHtml(server.id)}`;
+        const enabledToggleId = `server-enabled-${escapeHtml(server.id)}`;
         return `
             <div class="col-md-6 col-lg-4">
                 <div class="card card-interactive h-100">
                     <div class="card-body">
-                        <div class="d-flex justify-content-between align-items-start mb-2">
-                            <h5 class="card-title mb-0">${vendorLogo}${escapeHtml(server.name)}</h5>
-                            <span class="badge bg-${typeBadgeColor}">${escapeHtml(server.type)}</span>
+                        <div class="d-flex justify-content-between align-items-start mb-2 gap-2">
+                            <h5 class="card-title mb-0 d-flex align-items-center" style="min-width:0;">
+                                <span style="white-space:nowrap;">${vendorLogo}</span>
+                                <span class="text-truncate">${escapeHtml(server.name)}</span>
+                            </h5>
+                            <span class="badge bg-${typeBadgeColor} flex-shrink-0">${escapeHtml(server.type)}</span>
                         </div>
                         <div class="text-muted small mb-2 text-truncate" title="${escapeHtml(server.url)}">${escapeHtml(server.url)}</div>
-                        <div class="mb-2">${enabledBadge}</div>
+                        <div class="d-flex align-items-center justify-content-between mb-2 gap-2 flex-wrap">
+                            <span class="badge bg-secondary" id="${statusPillId}" title="Connection status">
+                                <span class="spinner-border spinner-border-sm me-1" role="status" style="width:0.7em; height:0.7em;"></span>Checking&hellip;
+                            </span>
+                            <div class="form-check form-switch mb-0" title="Quick enable/disable — when off, this server is ignored by all jobs and webhooks">
+                                <input class="form-check-input server-enabled-toggle" type="checkbox"
+                                       id="${enabledToggleId}" data-id="${escapeHtml(server.id)}"
+                                       ${server.enabled ? 'checked' : ''}>
+                                <label class="form-check-label small" for="${enabledToggleId}">${server.enabled ? 'Enabled' : 'Disabled'}</label>
+                            </div>
+                        </div>
                         <div class="text-muted small">
                             Libraries: <strong>${enabledLibs}</strong> enabled / ${libCount} total
                         </div>
@@ -1018,6 +1104,13 @@
         $('#editServerUrl').value = server.url || '';
         $('#editServerVerifySsl').checked = server.verify_ssl !== false;
         $('#editServerEnabled').checked = server.enabled !== false;
+        // Reset the test-connection result so a stale "Connected" from
+        // the previous Edit doesn't carry over.
+        const tcResult = document.getElementById('editTestConnectionResult');
+        if (tcResult) {
+            tcResult.className = 'small text-muted';
+            tcResult.textContent = '';
+        }
         // D24 — vendor-aware re-auth UI: show ONE block matching the
         // server's type, hide the others, and reset all input state so
         // an old value from a previous Edit doesn't leak across.
@@ -1379,6 +1472,35 @@
         }
     }
 
+    async function testEditConnection() {
+        const id = ($('#editServerId').value || '').trim();
+        if (!id) return;
+        const btn = document.getElementById('editTestConnectionBtn');
+        const result = document.getElementById('editTestConnectionResult');
+        const original = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Testing…';
+        result.className = 'small text-muted';
+        result.textContent = '';
+        try {
+            const r = await api('POST', `/api/servers/${encodeURIComponent(id)}/test-connection`);
+            const data = r.data || {};
+            if (data.ok) {
+                result.className = 'small text-success';
+                result.innerHTML = `<i class="bi bi-check-circle me-1"></i>Connected${data.version ? ` &mdash; ${escapeHtml(data.version)}` : ''}`;
+            } else {
+                result.className = 'small text-warning';
+                result.innerHTML = `<i class="bi bi-exclamation-triangle me-1"></i>${escapeHtml(data.message || 'Connection failed')}`;
+            }
+        } catch (e) {
+            result.className = 'small text-danger';
+            result.textContent = String(e);
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = original;
+        }
+    }
+
     async function refreshLibrariesFromModal(btn) {
         const id = ($('#editServerId').value || '').trim();
         if (!id) return;
@@ -1436,6 +1558,8 @@
         );
         const refreshBtn = document.getElementById('editRefreshLibrariesBtn');
         if (refreshBtn) refreshBtn.addEventListener('click', (ev) => refreshLibrariesFromModal(ev.currentTarget));
+        const testConnBtn = document.getElementById('editTestConnectionBtn');
+        if (testConnBtn) testConnBtn.addEventListener('click', testEditConnection);
 
         // D24 — vendor-aware re-auth wiring inside the Edit modal.
         document.querySelectorAll('input[name="editReauthJfMethod"]').forEach((r) =>

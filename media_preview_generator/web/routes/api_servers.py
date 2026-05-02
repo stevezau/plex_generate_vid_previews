@@ -777,6 +777,83 @@ def test_server_connection():
     return jsonify(response_body)
 
 
+@api.route("/servers/<server_id>/test-connection", methods=["POST"])
+@setup_or_auth_required
+def test_existing_server_connection(server_id: str):
+    """Probe a saved server's connection on demand.
+
+    Drives the "Test Connection" button on the /servers page +
+    Edit Server modal so users can verify after credential changes
+    without having to wait for the next webhook to surface a failure.
+    Returns the same shape as :func:`test_server_connection`.
+    """
+    raw_servers = _get_media_servers()
+    target = next((s for s in raw_servers if isinstance(s, dict) and s.get("id") == server_id), None)
+    if target is None:
+        return jsonify({"ok": False, "message": f"server {server_id!r} not found"}), 404
+
+    try:
+        cfg = server_config_from_dict(target)
+    except Exception as exc:
+        return jsonify({"ok": False, "message": f"invalid server config: {exc}"}), 400
+
+    live = _instantiate_for_probe(cfg)
+    if live is None:
+        return jsonify({"ok": False, "message": f"unsupported type {cfg.type.value!r}"}), 400
+
+    try:
+        result = live.test_connection()
+    except Exception as exc:
+        logger.warning(
+            "Test Connection: unexpected error contacting saved server {!r} ({}: {})",
+            cfg.name or cfg.id,
+            type(exc).__name__,
+            exc,
+        )
+        return jsonify({"ok": False, "message": f"unexpected error: {exc}"}), 200
+
+    return jsonify(
+        {
+            "ok": result.ok,
+            "server_id": result.server_id,
+            "server_name": result.server_name,
+            "version": result.version,
+            "message": result.message,
+        }
+    )
+
+
+@api.route("/servers/<server_id>/enabled", methods=["PATCH"])
+@setup_or_auth_required
+def set_server_enabled(server_id: str):
+    """Toggle the saved server's enabled flag without a full PUT.
+
+    Drives the on/off switch on the /servers page server cards.
+    Body: ``{"enabled": bool}``.
+    """
+    payload = request.get_json(silent=True) or {}
+    if "enabled" not in payload or not isinstance(payload["enabled"], bool):
+        return jsonify({"error": "body must be {enabled: bool}"}), 400
+
+    settings = get_settings_manager()
+    raw_servers = _get_media_servers()
+    target_index = next(
+        (i for i, s in enumerate(raw_servers) if isinstance(s, dict) and s.get("id") == server_id),
+        None,
+    )
+    if target_index is None:
+        return jsonify({"error": f"server {server_id!r} not found"}), 404
+
+    updated = list(raw_servers)
+    entry = dict(updated[target_index])
+    entry["enabled"] = payload["enabled"]
+    updated[target_index] = entry
+    settings.set("media_servers", updated)
+    logger.info("Server {!r} enabled={}", entry.get("name") or server_id, payload["enabled"])
+
+    return jsonify({"server_id": server_id, "enabled": payload["enabled"]})
+
+
 @api.route("/servers/<server_id>/jellyfin/trickplay-status", methods=["GET"])
 @setup_or_auth_required
 def get_jellyfin_trickplay_status(server_id: str):
