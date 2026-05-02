@@ -915,6 +915,30 @@ html[data-bs-theme="dark"] .workers-panel-card[data-status="processing"] {
 }
 
 /* ──────────────────────────────────────────────────────────────────────
+ * System & Workers card sections — replaces the old <hr>-separated
+ * blob with named sub-sections (Media Servers / Worker Pool / Version).
+ * Each .system-section gets a small uppercase title + comfortable
+ * vertical rhythm. The whole card reads as an outline rather than a
+ * scroll of disconnected widgets.
+ * ────────────────────────────────────────────────────────────────────── */
+.system-card-body { padding-bottom: 0.85rem; }
+.system-card-body .system-section { margin-bottom: 1.1rem; }
+.system-card-body .system-section:last-of-type { margin-bottom: 0.4rem; }
+
+.system-section-title {
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--bs-secondary-color);
+    margin-bottom: 0.55rem;
+}
+
+html[data-bs-theme="dark"] .system-version-row { border-color: rgba(255, 255, 255, 0.08); }
+html[data-bs-theme="light"] .system-version-row { border-color: rgba(0, 0, 0, 0.08); }
+.system-version-row { padding-top: 0.7rem !important; margin-top: 0.4rem; }
+
+/* ──────────────────────────────────────────────────────────────────────
  * Day-of-week picker (Quiet Hours) — checked days get the brand
  * orange so the user sees at a glance which days the window applies
  * to. Bootstrap's default btn-check + outline-secondary leaves

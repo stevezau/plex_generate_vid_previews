@@ -1,76 +1,91 @@
 .setup-container {
-    max-width: 700px;
+    max-width: 720px;
     margin: 0 auto;
-    padding: 2rem;
+    padding: 2rem 1.25rem;
 }
 
 .setup-header {
     text-align: center;
-    margin-bottom: 2rem;
+    margin-bottom: 2.25rem;
 }
 
 .setup-header h1 {
-    font-size: 2rem;
-    margin-bottom: 0.5rem;
+    font-size: 1.85rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    margin-bottom: 0.35rem;
+}
+
+.setup-header h1 > .bi {
+    color: var(--plex-orange, #e5a00d);
 }
 
 .setup-progress {
     display: flex;
     justify-content: center;
-    margin-bottom: 2rem;
+    margin-bottom: 2.25rem;
 }
 
 .progress-step {
     display: flex;
     align-items: center;
-    color: var(--bs-secondary);
+    color: var(--bs-secondary-color);
     /* Keep step labels ("Sign In", "Server", etc.) on a single line.
        Without this the flex container squashes the column at narrow
        viewports and short labels wrap onto two lines. */
     white-space: nowrap;
+    font-size: 0.875rem;
+    font-weight: 500;
 }
 
+/* Brand-aligned step states — active uses brand orange (matches the
+ * primary-action colour throughout the app), completed uses the
+ * status-completed green so the user can scan past steps at a glance. */
 .progress-step.active {
-    color: var(--bs-primary);
+    color: var(--plex-orange, #e5a00d);
 }
 
 .progress-step.completed {
-    color: var(--bs-success);
+    color: #2ecc71;
 }
 
 .step-number {
-    width: 36px;
-    height: 36px;
+    width: 32px;
+    height: 32px;
     border-radius: 50%;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-weight: bold;
+    font-weight: 700;
     border: 2px solid currentColor;
-    margin-right: 0.5rem;
+    margin-right: 0.55rem;
+    transition: background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+    background-color: transparent;
 }
 
 .progress-step.active .step-number {
-    background-color: var(--bs-primary);
-    color: white;
-    border-color: var(--bs-primary);
+    background-color: var(--plex-orange, #e5a00d);
+    color: #161616;
+    border-color: var(--plex-orange, #e5a00d);
+    box-shadow: 0 0 0 4px rgba(229, 160, 13, 0.18);
 }
 
 .progress-step.completed .step-number {
-    background-color: var(--bs-success);
-    color: white;
-    border-color: var(--bs-success);
+    background-color: #2ecc71;
+    color: #fff;
+    border-color: #2ecc71;
 }
 
 .step-connector {
-    width: 40px;
+    width: 48px;
     height: 2px;
-    background-color: var(--bs-secondary);
-    margin: 0 0.5rem;
+    background-color: var(--surface-border, rgba(255, 255, 255, 0.12));
+    margin: 0 0.6rem;
+    border-radius: 1px;
 }
 
 .step-connector.completed {
-    background-color: var(--bs-success);
+    background-color: #2ecc71;
 }
 
 .setup-step {
@@ -114,19 +129,22 @@
 
 .library-card {
     padding: 1rem;
-    border: 1px solid var(--bs-border-color);
-    border-radius: 0.5rem;
+    border: 1px solid var(--surface-border, rgba(255, 255, 255, 0.12));
+    border-radius: var(--radius, 0.5rem);
+    background-color: var(--surface-1, rgba(255, 255, 255, 0.04));
     cursor: pointer;
-    transition: all 0.2s;
+    transition: border-color 0.15s ease, background-color 0.15s ease, transform 0.15s ease;
 }
 
 .library-card:hover {
-    border-color: var(--bs-primary);
+    border-color: rgba(229, 160, 13, 0.4);
+    background-color: var(--surface-2, rgba(255, 255, 255, 0.06));
+    transform: translateY(-1px);
 }
 
 .library-card.selected {
-    border-color: var(--bs-primary);
-    background-color: rgba(13, 110, 253, 0.1);
+    border-color: var(--plex-orange, #e5a00d);
+    background-color: var(--plex-orange-soft, rgba(229, 160, 13, 0.12));
 }
 
 .library-card input[type="checkbox"] {

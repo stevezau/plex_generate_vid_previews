@@ -35,42 +35,40 @@
             <div class="card-header">
                 <i class="bi bi-pc-display me-2"></i>System &amp; Workers
             </div>
-            <div class="card-body">
+            <div class="card-body system-card-body">
                 <!-- Media Servers Status (one row per configured server) -->
-                <div id="mediaServersStatus" class="mb-3">
-                    <div class="text-muted small d-flex align-items-center gap-2">
-                        <span class="spinner-border spinner-border-sm" role="status"></span>
-                        Checking media servers&hellip;
+                <section class="system-section">
+                    <h6 class="system-section-title">Media Servers</h6>
+                    <div id="mediaServersStatus">
+                        <div class="text-muted small d-flex align-items-center gap-2">
+                            <span class="spinner-border spinner-border-sm" role="status"></span>
+                            Checking media servers&hellip;
+                        </div>
                     </div>
-                </div>
-
-                <hr>
+                </section>
 
                 <!-- Dynamic Status (GPU info + processing state, replaced by app.js) -->
-                <div id="systemStatus"></div>
+                <div id="systemStatus" class="system-section"></div>
 
-                <hr>
-
-                <!-- Per-GPU Worker Config (populated by app.js) -->
-                <div id="gpuWorkerConfig">
-                    <div class="text-muted small">Loading GPU config...</div>
-                </div>
-
-                <div class="mt-2 mb-3">
-                    <div class="d-flex justify-content-between align-items-center mb-2">
-                        <span>CPU Workers:</span>
+                <!-- Per-GPU + CPU Worker Config (populated by app.js) -->
+                <section class="system-section">
+                    <h6 class="system-section-title">Worker Pool</h6>
+                    <div id="gpuWorkerConfig">
+                        <div class="text-muted small">Loading GPU config&hellip;</div>
+                    </div>
+                    <div class="d-flex justify-content-between align-items-center mt-2">
+                        <span class="small text-muted"><i class="bi bi-cpu me-1"></i>CPU workers</span>
                         <span class="d-flex align-items-center gap-1">
                             <button type="button" class="btn btn-sm btn-outline-secondary worker-scale-btn" data-worker-type="CPU" data-direction="-1" onclick="scaleWorkersGlobal('CPU', -1)" title="Remove one CPU worker"><i class="bi bi-dash-lg"></i></button>
                             <span id="cpuWorkers" class="badge bg-secondary" style="min-width: 1.5rem;">-</span>
                             <button type="button" class="btn btn-sm btn-outline-success worker-scale-btn" data-worker-type="CPU" data-direction="1" onclick="scaleWorkersGlobal('CPU', 1)" title="Add one CPU worker"><i class="bi bi-plus-lg"></i></button>
                         </span>
                     </div>
-                </div>
-                <hr>
+                </section>
 
                 <!-- Version Info -->
-                <div class="d-flex justify-content-between align-items-center">
-                    <span>Version:</span>
+                <div class="d-flex justify-content-between align-items-center pt-2 border-top system-version-row">
+                    <span class="small text-muted">Version</span>
                     <span class="d-flex align-items-center gap-2">
                         <span id="dashboardVersion" class="small text-muted">
                             <span class="spinner-border spinner-border-sm" role="status"></span>
