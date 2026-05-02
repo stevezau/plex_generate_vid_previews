@@ -869,9 +869,11 @@ function updateSystemStatus(status) {
         cachedDetectedGpus = [];
     }
 
-    // Running job
-    html += '<div>';
-    html += '<h6><i class="bi bi-activity me-2"></i>Status</h6>';
+    // Status row — matches the .system-section-title pattern of its
+    // sibling sections (Media Servers, Worker Pool) so it doesn't read
+    // as an orphan h6 between them.
+    html += '<h6 class="system-section-title">Status</h6>';
+    html += '<div class="d-flex align-items-center">';
     if (status.running_job) {
         html += `<span class="badge bg-primary">Processing</span>`;
     } else if (status.pending_jobs > 0) {
