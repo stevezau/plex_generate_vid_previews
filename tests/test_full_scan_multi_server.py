@@ -237,6 +237,141 @@ class TestMultiServerFullScan:
         )
 
 
+class TestPinnedFilterForwardedToProcessCanonicalPath:
+    """Regression for the cross-server contamination bug where a Plex-pinned
+    full scan still attempted to publish to Jellyfin/Emby siblings.
+
+    Live reproducer: job d9918149 was configured with
+    ``server_id: "plex-default"`` (the user picked "scan Movies on plex"
+    from the UI). Enumeration correctly walked only the Plex library, but
+    every per-item dispatch into ``process_canonical_path`` fanned out to
+    every owning server because the Plex-originator branch in
+    ``_dispatch_processable_items._process_one`` unconditionally dropped
+    the caller's ``server_id_filter``. Result: every Plex success row was
+    paired with a JellyTest "failed" row (no item_id available), and
+    FFmpeg was re-extracted for the doomed Jellyfin attempt despite Plex
+    already having the BIF.
+
+    The previous test suite had:
+      * a "pinned to Jellyfin/Emby" test — passes either way because the
+        non-Plex branch happened to forward the filter.
+      * no test asserting the filter is *forwarded* to
+        ``process_canonical_path`` — it only checked which server's
+        enumerator was called.
+
+    Both gaps are fixed here. Every test below asserts the kwargs reaching
+    ``process_canonical_path`` so a future regression in the per-item
+    pin precedence is caught at the boundary.
+    """
+
+    def test_plex_pinned_forwards_filter_to_process_canonical_path(self, tmp_path):
+        """The exact d9918149 reproducer: Plex-pinned full scan must
+        publish ONLY to Plex — never fan out to Jellyfin/Emby siblings."""
+        cfg_plex = _server_config("plex-default", ServerType.PLEX)
+
+        registry_mock = MagicMock()
+        registry_mock.configs.return_value = [cfg_plex]
+
+        proc = MagicMock()
+        proc.list_canonical_paths.return_value = iter(
+            [
+                ProcessableItem(canonical_path="/data/movies/x.mkv", server_id="plex-default"),
+                ProcessableItem(canonical_path="/data/movies/y.mkv", server_id="plex-default"),
+            ]
+        )
+
+        with (
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+            patch("media_preview_generator.servers.ServerRegistry") as mock_registry,
+            patch("media_preview_generator.processing.get_processor_for", return_value=proc),
+            patch("media_preview_generator.processing.multi_server.process_canonical_path") as mock_process,
+        ):
+            mock_sm.return_value.get.return_value = [
+                {"id": "plex-default", "type": "plex", "enabled": True},
+                {"id": "jelly-test", "type": "jellyfin", "enabled": True},
+            ]
+            mock_registry.from_settings.return_value = registry_mock
+            mock_process.return_value = MagicMock(publishers=[])
+
+            _run_full_scan_multi_server(
+                _config(),
+                selected_gpus=[],
+                server_id_filter="plex-default",
+            )
+
+        assert mock_process.call_count == 2
+        # Both items must have the pin forwarded — without this fix the
+        # Plex-originator branch dropped the filter to None and the
+        # downstream resolver fanned out to Jellyfin too.
+        for call in mock_process.call_args_list:
+            assert call.kwargs["server_id_filter"] == "plex-default", (
+                "Plex-pinned dispatch leaked into other servers — "
+                f"got server_id_filter={call.kwargs.get('server_id_filter')!r}"
+            )
+
+    def test_no_pin_plex_originator_fans_out(self, tmp_path):
+        """When no pin is set and the originator is Plex, the dispatcher
+        forwards ``server_id_filter=None`` so every owning server gets a
+        publisher (the multi-vendor fan-out path)."""
+        cfg_plex = _server_config("plex-default", ServerType.PLEX)
+
+        registry_mock = MagicMock()
+        registry_mock.configs.return_value = [cfg_plex]
+
+        proc = MagicMock()
+        proc.list_canonical_paths.return_value = iter(
+            [ProcessableItem(canonical_path="/data/x.mkv", server_id="plex-default")]
+        )
+
+        with (
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+            patch("media_preview_generator.servers.ServerRegistry") as mock_registry,
+            patch("media_preview_generator.processing.get_processor_for", return_value=proc),
+            patch("media_preview_generator.processing.multi_server.process_canonical_path") as mock_process,
+        ):
+            mock_sm.return_value.get.return_value = [
+                {"id": "plex-default", "type": "plex", "enabled": True},
+            ]
+            mock_registry.from_settings.return_value = registry_mock
+            mock_process.return_value = MagicMock(publishers=[])
+
+            _run_full_scan_multi_server(_config(), selected_gpus=[])
+
+        mock_process.assert_called_once()
+        assert mock_process.call_args.kwargs["server_id_filter"] is None
+
+    def test_no_pin_non_plex_originator_scopes_to_originator(self, tmp_path):
+        """No pin + Jellyfin originator → dispatcher pins to that
+        originator so single-server installs don't try to publish to
+        unrelated servers that happen to own the path."""
+        cfg = _server_config("jelly-only", ServerType.JELLYFIN)
+
+        registry_mock = MagicMock()
+        registry_mock.configs.return_value = [cfg]
+
+        proc = MagicMock()
+        proc.list_canonical_paths.return_value = iter(
+            [ProcessableItem(canonical_path="/data/x.mkv", server_id="jelly-only")]
+        )
+
+        with (
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+            patch("media_preview_generator.servers.ServerRegistry") as mock_registry,
+            patch("media_preview_generator.processing.get_processor_for", return_value=proc),
+            patch("media_preview_generator.processing.multi_server.process_canonical_path") as mock_process,
+        ):
+            mock_sm.return_value.get.return_value = [
+                {"id": "jelly-only", "type": "jellyfin", "enabled": True},
+            ]
+            mock_registry.from_settings.return_value = registry_mock
+            mock_process.return_value = MagicMock(publishers=[])
+
+            _run_full_scan_multi_server(_config(), selected_gpus=[])
+
+        mock_process.assert_called_once()
+        assert mock_process.call_args.kwargs["server_id_filter"] == "jelly-only"
+
+
 class TestEnumerationStatusBanner:
     """D28 — surface a "Querying {server} library…" status BEFORE each
     server's enumeration walk and a "Dispatching N item(s)…" status the

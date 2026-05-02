@@ -279,6 +279,7 @@ def _dispatch_processable_items(
     cancel_check=None,
     job_id: str | None = None,
     label: str = "scan",
+    server_id_filter: str | None = None,
 ) -> dict:
     """Run a list of ``(server_config, ProcessableItem)`` pairs in parallel.
 
@@ -375,6 +376,24 @@ def _dispatch_processable_items(
         if cancel_check and cancel_check():
             return None
         gpu_type, gpu_device = _gpu_for(index)
+        # Pin precedence:
+        #   1. Caller-supplied ``server_id_filter`` always wins — that's
+        #      the user's explicit "scan Movies on plex-default" pin from
+        #      the job config. Without this we'd fan out to Jellyfin/Emby
+        #      on a Plex-pinned job (job d9918149 reproducer: every Plex
+        #      file got a JellyTest publisher attempt that failed because
+        #      no Jellyfin item_id existed).
+        #   2. No caller pin + non-Plex originator → scope to that
+        #      originator. Plex isn't reachable on this install.
+        #   3. No caller pin + Plex originator → fan out to every
+        #      owning server (the original cross-vendor publish path
+        #      that benefits multi-vendor installs).
+        if server_id_filter:
+            per_item_pin = server_id_filter
+        elif server_cfg.type is not ServerType.PLEX:
+            per_item_pin = server_cfg.id
+        else:
+            per_item_pin = None
         try:
             return process_canonical_path(
                 canonical_path=item.canonical_path,
@@ -384,11 +403,7 @@ def _dispatch_processable_items(
                 gpu=gpu_type,
                 gpu_device_path=gpu_device,
                 cancel_check=cancel_check,
-                # Scope publishing to the originating server only on
-                # non-Plex installs — Plex scans should still fan out
-                # to every owning sibling so multi-vendor publishers
-                # benefit.
-                server_id_filter=(server_cfg.id if server_cfg.type is not ServerType.PLEX else None),
+                server_id_filter=per_item_pin,
             )
         except Exception as exc:
             logger.warning(
@@ -649,6 +664,7 @@ def _run_full_scan_multi_server(
         cancel_check=cancel_check,
         job_id=job_id,
         label="full scan",
+        server_id_filter=server_id_filter,
     )
 
 
@@ -719,6 +735,7 @@ def _run_recently_added_multi_server(
         cancel_check=cancel_check,
         job_id=job_id,
         label="recently-added scan",
+        server_id_filter=server_id_filter,
     )
 
 
