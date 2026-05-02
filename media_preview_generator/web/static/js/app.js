@@ -1503,23 +1503,31 @@ function updateJobQueue() {
     for (const job of jobs) {
         const statusBadge = getStatusBadge(job.status, job.paused, job.error, job.progress && job.progress.outcome);
         const progress = job.progress.percent.toFixed(1);
-        const created = formatDate(job.created_at);
+        const created = formatRelativeTime(job.created_at);
         let actionButtons = '';
 
+        // Use a btn-group so spacing is consistent between adjacent
+        // icon buttons and the row's right edge — previously buttons
+        // had ad-hoc me-1 margins that produced different gaps depending
+        // on which set was rendered.
         if (job.status === 'running' || job.status === 'pending') {
-            actionButtons += `<button class="btn btn-sm btn-outline-danger" onclick="cancelJob('${escapeHtml(job.id)}')" title="Cancel">
-                                <i class="bi bi-x"></i>
-                              </button>`;
+            actionButtons = `<div class="btn-group btn-group-sm icon-btn-group" role="group">
+                <button class="btn btn-outline-danger" onclick="cancelJob('${escapeHtml(job.id)}')" title="Cancel" aria-label="Cancel job">
+                    <i class="bi bi-x-lg"></i>
+                </button>
+            </div>`;
         } else {
-            actionButtons = `<button class="btn btn-sm btn-outline-info me-1" onclick="showLogsModal('${escapeHtml(job.id)}')" title="View Logs">
-                                <i class="bi bi-file-text"></i>
-                             </button>
-                             <button class="btn btn-sm btn-outline-primary me-1" onclick="reprocessJob('${escapeHtml(job.id)}')" title="Reprocess">
-                                <i class="bi bi-arrow-repeat"></i>
-                             </button>
-                             <button class="btn btn-sm btn-outline-secondary" onclick="deleteJob('${escapeHtml(job.id)}')" title="Delete">
-                                <i class="bi bi-trash"></i>
-                             </button>`;
+            actionButtons = `<div class="btn-group btn-group-sm icon-btn-group" role="group">
+                <button class="btn btn-outline-secondary" onclick="showLogsModal('${escapeHtml(job.id)}')" title="View logs" aria-label="View logs">
+                    <i class="bi bi-file-text"></i>
+                </button>
+                <button class="btn btn-outline-secondary" onclick="reprocessJob('${escapeHtml(job.id)}')" title="Re-run" aria-label="Re-run job">
+                    <i class="bi bi-arrow-repeat"></i>
+                </button>
+                <button class="btn btn-outline-danger" onclick="deleteJob('${escapeHtml(job.id)}')" title="Delete" aria-label="Delete job">
+                    <i class="bi bi-trash"></i>
+                </button>
+            </div>`;
         }
 
         let webhookBasenames = job.config && Array.isArray(job.config.webhook_basenames) && job.config.webhook_basenames.length > 0
@@ -1565,14 +1573,19 @@ function updateJobQueue() {
                     </div>`;
         }
         html += `
-            <tr id="job-row-${escapeHtml(job.id)}">
-                <td><code>${escapeHtml(job.id.substring(0, 8))}</code></td>
-                <td${libraryTitle}>${escapeHtml(job.library_name) || 'All Libraries'}${_serverBadge(job)}${retryLabel}${filesToggleBtn}</td>
-                <td>${statusBadge}</td>
-                <td>${priorityCell}</td>
-                <td>${progressCell}</td>
-                <td>${created}</td>
-                <td class="text-nowrap">
+            <tr id="job-row-${escapeHtml(job.id)}" class="job-row">
+                <td class="d-none d-lg-table-cell text-muted small font-monospace align-middle"><code class="bg-transparent p-0">${escapeHtml(job.id.substring(0, 8))}</code></td>
+                <td class="align-middle"${libraryTitle}>
+                    <div class="d-flex align-items-center flex-wrap gap-2">
+                        <span class="fw-medium">${escapeHtml(job.library_name) || 'All Libraries'}</span>
+                        ${_serverBadge(job)}${retryLabel}${filesToggleBtn}
+                    </div>
+                </td>
+                <td class="align-middle">${statusBadge}</td>
+                <td class="align-middle d-none d-md-table-cell">${priorityCell}</td>
+                <td class="align-middle">${progressCell}</td>
+                <td class="align-middle d-none d-lg-table-cell text-muted small">${created}</td>
+                <td class="align-middle text-end text-nowrap">
                     ${actionButtons}
                 </td>
             </tr>
@@ -1924,7 +1937,7 @@ function updateWorkerStatuses(workers, options = {}) {
             col.className = 'col-md-6';
             col.dataset.workerKey = key;
             col.innerHTML = `
-                <div class="card bg-body-tertiary" data-card>
+                <div class="card bg-body-tertiary workers-panel-card" data-card data-status="idle">
                     <div class="card-body py-2">
                         <div class="d-flex justify-content-between align-items-center mb-2">
                             <span class="text-truncate" data-name-wrap>
@@ -1934,16 +1947,16 @@ function updateWorkerStatuses(workers, options = {}) {
                                     <i class="bi bi-arrow-down-circle me-1"></i>CPU fallback
                                 </span>
                             </span>
-                            <span class="badge" data-status></span>
+                            <span class="badge" data-status-badge></span>
                         </div>
                         <div class="small text-warning text-truncate mb-1 d-none" data-fallback-note>
                             <i class="bi bi-exclamation-triangle me-1"></i><span data-fallback-reason></span>
                         </div>
                         <div class="small text-truncate mb-1" data-title></div>
-                        <div class="progress" style="height: 6px;">
+                        <div class="progress" data-progress-wrap style="height: 6px;">
                             <div class="progress-bar" data-progress style="width: 0%"></div>
                         </div>
-                        <div class="d-flex justify-content-between small text-muted mt-1">
+                        <div class="d-flex justify-content-between small text-muted mt-1" data-metrics>
                             <span data-percent>0.0%</span>
                             <span data-speed>0.0x</span>
                             <span>ETA: <span data-eta>-</span></span>
@@ -1978,12 +1991,26 @@ function _patchWorkerCard(col, worker) {
     const fallbackBadge = col.querySelector('[data-fallback-badge]');
     const fallbackNote = col.querySelector('[data-fallback-note]');
     const fallbackReason = col.querySelector('[data-fallback-reason]');
-    const statusEl = col.querySelector('[data-status]');
+    const statusEl = col.querySelector('[data-status-badge]');
     const titleEl = col.querySelector('[data-title]');
+    const progressWrap = col.querySelector('[data-progress-wrap]');
     const progress = col.querySelector('[data-progress]');
+    const metrics = col.querySelector('[data-metrics]');
     const percent = col.querySelector('[data-percent]');
     const speed = col.querySelector('[data-speed]');
     const eta = col.querySelector('[data-eta]');
+
+    // Attribute on the card itself so the .workers-panel-card[data-status]
+    // CSS rule can flip the row's accent without re-rendering anything.
+    if (card.getAttribute('data-status') !== worker.status) {
+        card.setAttribute('data-status', worker.status);
+    }
+    // Hide the progress bar + footer metrics when idle — a wall of
+    // "0.0% / 0.0x / ETA: -" rows on an 8-worker setup is just noise.
+    // Visibility (not display) keeps the card height pinned so the
+    // panel never shifts vertically between idle and processing.
+    progressWrap.style.visibility = isProcessing ? 'visible' : 'hidden';
+    metrics.style.visibility = isProcessing ? 'visible' : 'hidden';
 
     // Card border (warning ring on fallback)
     card.classList.toggle('border-warning', fallbackActive);
@@ -2670,6 +2697,27 @@ function formatDate(dateStr) {
     if (!dateStr) return '-';
     const date = new Date(dateStr);
     return date.toLocaleString();
+}
+
+// Relative time with absolute date as a tooltip. The dashboard's
+// "Created" column used to show an awkward "5/2/2026, 6:01:38 PM"
+// that was hard to scan at a glance — relative reads in 1 word
+// ("2 min ago") and the absolute is one hover away. Falls back to
+// a short locale string for anything older than a week.
+function formatRelativeTime(dateStr) {
+    if (!dateStr) return '<span class="text-muted">—</span>';
+    const date = new Date(dateStr);
+    const now = Date.now();
+    const diffSec = Math.round((now - date.getTime()) / 1000);
+    let label;
+    if (diffSec < 5) label = 'just now';
+    else if (diffSec < 60) label = `${diffSec}s ago`;
+    else if (diffSec < 3600) label = `${Math.round(diffSec / 60)} min ago`;
+    else if (diffSec < 86400) label = `${Math.round(diffSec / 3600)} h ago`;
+    else if (diffSec < 86400 * 7) label = `${Math.round(diffSec / 86400)} d ago`;
+    else label = date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    const abs = date.toLocaleString();
+    return `<span class="text-nowrap" title="${escapeHtml(abs)}">${label}</span>`;
 }
 
 function formatElapsed(startDateStr) {

@@ -358,6 +358,80 @@ html[data-bs-theme="dark"] .dropdown-menu .form-check-label {
     color: #e0e0e0;
 }
 
+/* ──────────────────────────────────────────────────────────────────────
+ * Icon button groups — used for table-row action clusters (View logs /
+ * Re-run / Delete on the Job Queue, Edit / Refresh / Delete on the
+ * Servers + Schedules pages). The default Bootstrap btn-sm is too tall
+ * for a dense row; we lock the height + width to a 32px square so the
+ * rows feel uniform. The btn-group also strips inter-button margin so
+ * each cluster sits as one cohesive control instead of three loose
+ * icons.
+ * ────────────────────────────────────────────────────────────────────── */
+.icon-btn-group .btn {
+    width: 2rem;
+    height: 2rem;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+}
+
+.icon-btn-group .btn .bi {
+    font-size: 0.95rem;
+    line-height: 1;
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Jobs table — compact row layout with breathing space at the
+ * uppercase column headers + a subtle hover. Header gets the same
+ * tracking treatment used on the Schedules teaser badge so the page
+ * has one consistent micro-typography rhythm.
+ * ────────────────────────────────────────────────────────────────────── */
+.jobs-table thead th {
+    border-top: 0;
+    letter-spacing: 0.04em;
+    font-weight: 600;
+    font-size: 0.72rem;
+    padding-top: 0.65rem;
+    padding-bottom: 0.65rem;
+    background-color: transparent;
+}
+
+.jobs-table tbody td {
+    padding-top: 0.55rem;
+    padding-bottom: 0.55rem;
+}
+
+/* Sticky-feel left padding on first/last columns so action icons don't
+   touch the card edge. */
+.jobs-table thead th:first-child,
+.jobs-table tbody td:first-child { padding-left: 1rem; }
+.jobs-table thead th:last-child,
+.jobs-table tbody td:last-child { padding-right: 1rem; }
+
+html[data-bs-theme="dark"] .jobs-table tbody tr:hover { background-color: rgba(255,255,255,0.04); }
+html[data-bs-theme="light"] .jobs-table tbody tr:hover { background-color: rgba(0,0,0,0.03); }
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Workers panel — idle slot rows. The processing layout (title,
+ * progress bar, footer numbers) drops into a quieter palette so an
+ * 8-worker deployment doesn't look like a wall of fake metrics on a
+ * mostly-idle queue. Card height stays constant either way (the
+ * structure is identical — only colours change), which is the
+ * D34 anti-flash contract.
+ * ────────────────────────────────────────────────────────────────────── */
+.workers-panel-card { transition: border-color 0.15s ease; }
+
+html[data-bs-theme="dark"] .workers-panel-card[data-status="idle"] {
+    background-color: rgba(255,255,255,0.025);
+    border-color: rgba(255,255,255,0.06);
+}
+
+html[data-bs-theme="dark"] .workers-panel-card[data-status="processing"] {
+    border-color: rgba(13,110,253,0.35);
+}
+
 /* Priority buttons & badges — fixed width so High/Normal/Low don't shift layout */
 .priority-btn,
 .priority-badge {

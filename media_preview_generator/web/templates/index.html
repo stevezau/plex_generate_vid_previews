@@ -211,10 +211,10 @@
                     <span class="badge bg-secondary" id="activeJobsCount">No active jobs</span>
                 </div>
             </div>
-            <div class="card-body" id="activeJobsContainer">
-                <div class="text-muted text-center py-4">
-                    <i class="bi bi-inbox fs-1 d-block mb-2"></i>
-                    No jobs are currently running
+            <div class="card-body py-3" id="activeJobsContainer">
+                <div class="text-muted small d-flex align-items-center justify-content-center gap-2">
+                    <i class="bi bi-inbox"></i>
+                    <span>Idle — no jobs in flight.</span>
                 </div>
             </div>
         </div>
@@ -261,22 +261,22 @@
             </div>
             <div class="card-body p-0">
                 <div class="table-responsive">
-                    <table class="table table-hover mb-0">
+                    <table class="table table-hover align-middle mb-0 jobs-table">
                         <thead>
-                            <tr>
-                                <th>ID</th>
+                            <tr class="text-uppercase small text-muted">
+                                <th class="d-none d-lg-table-cell">ID</th>
                                 <th>Library</th>
                                 <th>Status</th>
-                                <th style="width:100px">Priority</th>
+                                <th class="d-none d-md-table-cell" style="width:110px">Priority</th>
                                 <th>Progress</th>
-                                <th>Created</th>
-                                <th>Actions</th>
+                                <th class="d-none d-lg-table-cell">Created</th>
+                                <th class="text-end">Actions</th>
                             </tr>
                         </thead>
                         <tbody id="jobQueue">
                             <tr>
                                 <td colspan="7" class="text-center text-muted py-4">
-                                    Loading jobs...
+                                    <div class="spinner-border spinner-border-sm me-2" role="status"></div>Loading jobs…
                                 </td>
                             </tr>
                         </tbody>
