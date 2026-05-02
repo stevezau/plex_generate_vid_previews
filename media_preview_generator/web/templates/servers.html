@@ -4,16 +4,17 @@
 
 {% block content %}
 <div class="container py-4">
-    <div class="d-flex justify-content-between align-items-center mb-4">
+    <header class="page-header">
         <div>
-            <h1 class="mb-0">
-                <i class="bi bi-hdd-stack me-2"></i>Media Servers
-            </h1>
+            <h1 class="page-title"><i class="bi bi-hdd-stack me-2"></i>Media Servers</h1>
+            <p class="page-subtitle mb-0">Plex, Emby, and Jellyfin servers this app publishes previews to.</p>
         </div>
-        <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addServerModal">
-            <i class="bi bi-plus-lg me-1"></i>Add Server
-        </button>
-    </div>
+        <div class="page-actions">
+            <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addServerModal">
+                <i class="bi bi-plus-lg me-1"></i>Add Server
+            </button>
+        </div>
+    </header>
 
     <div id="serverList" class="row g-3">
         <div class="col-12 text-center text-muted py-5">

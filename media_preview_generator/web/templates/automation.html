@@ -41,10 +41,18 @@
 
     <!-- Main Content -->
     <div class="col-lg-9 col-xl-8 automation-content">
-        <div class="d-flex justify-content-between align-items-center mb-4">
-            <h2 id="automationHeading"><i class="bi bi-broadcast me-2" id="automationHeadingIcon"></i><span id="automationHeadingText">Triggers</span></h2>
-            <span id="saveStatusIndicator" class="autosave-indicator"></span>
-        </div>
+        <header class="page-header">
+            <div>
+                <h1 class="page-title" id="automationHeading">
+                    <i class="bi bi-broadcast me-2" id="automationHeadingIcon"></i>
+                    <span id="automationHeadingText">Triggers</span>
+                </h1>
+                <p class="page-subtitle mb-0" id="automationSubtitle">Webhooks that fire the moment new media lands.</p>
+            </div>
+            <div class="page-actions">
+                <span id="saveStatusIndicator" class="autosave-indicator"></span>
+            </div>
+        </header>
 
         <div class="tab-content" id="automationTabContent">
             <div class="tab-pane fade show active" id="pane-triggers" role="tabpanel">
@@ -70,13 +78,16 @@
     function setHeading(which) {
         var icon = document.getElementById('automationHeadingIcon');
         var text = document.getElementById('automationHeadingText');
+        var subtitle = document.getElementById('automationSubtitle');
         if (!icon || !text) return;
         if (which === 'schedules') {
             icon.className = 'bi bi-calendar-event me-2';
             text.textContent = 'Schedules';
+            if (subtitle) subtitle.textContent = 'Recurring scans on a timer + Quiet Hours.';
         } else {
             icon.className = 'bi bi-broadcast me-2';
             text.textContent = 'Triggers';
+            if (subtitle) subtitle.textContent = 'Webhooks that fire the moment new media lands.';
         }
     }
 
