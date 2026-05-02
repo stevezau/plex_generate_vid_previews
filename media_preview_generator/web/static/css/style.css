@@ -1040,6 +1040,17 @@ html[data-bs-theme="light"] .jobs-table tbody tr:hover { background-color: rgba(
     .jobs-table tbody tr > td:nth-child(5) { grid-area: progress; }
     .jobs-table tbody tr > td:nth-child(7) { grid-area: actions; justify-self: end; }
 
+    /* Hide the progress bar on mobile for terminal job states — the
+     * coloured status dot ("● Completed", "● Cancelled", "● Failed")
+     * already conveys the outcome, so a 100% bar adds nothing but
+     * vertical noise. Keep it for running/pending where the live %
+     * is the point. */
+    .jobs-table tbody tr > td:nth-child(5):has(.progress[data-status="completed"]),
+    .jobs-table tbody tr > td:nth-child(5):has(.progress[data-status="cancelled"]),
+    .jobs-table tbody tr > td:nth-child(5):has(.progress[data-status="failed"]) {
+        display: none;
+    }
+
     /* Force-show "Created" on mobile (it's d-none d-lg-table-cell on
      * desktop) so users get the row metadata they were missing. */
     .jobs-table tbody tr > td:nth-child(6) {

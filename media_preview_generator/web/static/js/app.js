@@ -1573,8 +1573,20 @@ function updateJobQueue() {
             const label = remaining > 0 ? `Retry starting in ${remaining}s` : 'Starting...';
             progressCell = `<span class="text-warning small" data-scheduled-at="${escapeHtml(scheduledAt)}"><i class="bi bi-hourglass-split me-1"></i>${label}</span>`;
         } else {
-            progressCell = `<div class="progress" style="height: 20px;">
-                        <div class="progress-bar" role="progressbar"
+            // Color the bar by status — blue (primary) is reserved for
+            // running. Completed/failed/cancelled get the matching outcome
+            // colour so the bar reinforces the status pill rather than
+            // contradicting it (a 100% blue bar next to a green
+            // "Completed" pill was confusing the eye).
+            const barClass = ({
+                completed: 'bg-success',
+                failed: 'bg-danger',
+                cancelled: 'bg-secondary',
+                running: 'progress-bar-striped progress-bar-animated',
+                pending: 'bg-secondary',
+            })[job.status] || '';
+            progressCell = `<div class="progress" data-status="${escapeHtml(job.status)}" style="height: 20px;">
+                        <div class="progress-bar ${barClass}" role="progressbar"
                              style="width: ${progress}%">${progress}%</div>
                     </div>`;
         }
