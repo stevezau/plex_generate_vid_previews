@@ -115,24 +115,6 @@ class PlexServer(MediaServer):
                 name=name or "Plex",
             )
         self._plex = None  # type: ignore[assignment]
-        # D36 — bundle-hash cache. Plex's /tree endpoint returns the
-        # bundle hash + MediaPart paths for one item; we need this for
-        # every output-path computation, even when the BIF is already
-        # on disk. A 9981-item full-lib scan with 100% cache-hit BIFs
-        # used to make 9981 sequential Plex calls = several minutes of
-        # gunicorn-thread time, which also starves the API endpoints
-        # (pause/jobs-list start timing out: "Failed to fetch"). The
-        # cache is loaded from /config/plex_bundle_cache_<server>.json
-        # at startup and rewritten asynchronously after each new entry.
-        # Keys are item_ids; values are the (hash, file_path) tuples
-        # from Plex's response. Bundle hashes only change when Plex
-        # re-analyzes a file — orders of magnitude rarer than a
-        # full-lib scan, so a stale entry just causes a single FFmpeg
-        # rerun (no data loss).
-        self._bundle_cache: dict[str, list[tuple[str, str]]] = {}
-        self._bundle_cache_loaded = False
-        self._bundle_cache_dirty = False
-        self._bundle_cache_lock: Any = None  # threading.Lock, lazily made
 
     @property
     def type(self) -> ServerType:
@@ -640,19 +622,6 @@ class PlexServer(MediaServer):
             logger.warning("Plex /tree called with empty item_id; cannot compute bundle hash")
             return []
 
-        # D36 — fast-path: check bundle-hash cache before hitting Plex.
-        # Bundle hashes change only when Plex re-analyzes a file (rare);
-        # the previous behaviour of querying Plex per item meant a
-        # 9981-item all-cached scan made 9981 sequential network calls,
-        # saturating the gunicorn threadpool and timing out the API
-        # (pause/jobs-list "Failed to fetch"). On cache hit we skip the
-        # network entirely. On a stale entry, the worst case is a
-        # single re-run after the file is re-analyzed (no data loss).
-        self._ensure_bundle_cache_loaded()
-        cached = self._bundle_cache.get(bare_id)
-        if cached:
-            return list(cached)
-
         try:
             data = retry_plex_call(self._connect().query, f"/library/metadata/{bare_id}/tree")
         except Exception as exc:
@@ -672,105 +641,7 @@ class PlexServer(MediaServer):
             file_path = part.attrib.get("file") or ""
             if bundle_hash and file_path:
                 results.append((bundle_hash, file_path))
-        if results:
-            self._cache_bundle_metadata(bare_id, results)
         return results
-
-    # ------------------------------------------------------------------
-    # D36 — bundle-hash cache helpers
-    # ------------------------------------------------------------------
-    def _bundle_cache_path(self) -> str | None:
-        """Return the on-disk JSON path for this server's bundle cache.
-
-        Located under the app's config dir keyed by server_id so multiple
-        Plex servers don't collide. ``None`` when no usable config dir
-        is set (tests / mocks) — caller falls back to in-memory only.
-        Also returns ``None`` under pytest so tests don't share a global
-        cache file across runs (would break ``test_empty_metadata_raises``
-        and friends by serving a cached hash to an "empty Plex" mock).
-        """
-        import os as _os
-
-        if _os.environ.get("PYTEST_CURRENT_TEST"):
-            return None
-        config_dir = _os.environ.get("CONFIG_DIR") or "/config"
-        if not config_dir or not _os.path.isdir(config_dir):
-            return None
-        safe_id = "".join(c if (c.isalnum() or c in "-_") else "_" for c in (getattr(self, "id", None) or "plex"))
-        return _os.path.join(config_dir, f"plex_bundle_cache_{safe_id}.json")
-
-    def _ensure_bundle_cache_loaded(self) -> None:
-        """Lazy-load the JSON cache from disk into ``self._bundle_cache``.
-
-        Idempotent — sets ``_bundle_cache_loaded`` after the first call so
-        every subsequent ``get_bundle_metadata`` skips the I/O. Failure to
-        read leaves the cache empty (treated as an empty cache, not a
-        crash).
-        """
-        if self._bundle_cache_loaded:
-            return
-        import threading as _threading
-
-        if self._bundle_cache_lock is None:
-            self._bundle_cache_lock = _threading.Lock()
-        with self._bundle_cache_lock:
-            if self._bundle_cache_loaded:
-                return
-            path = self._bundle_cache_path()
-            if path:
-                try:
-                    import os as _os
-
-                    if _os.path.exists(path):
-                        with open(path, encoding="utf-8") as fh:
-                            data = json.load(fh)
-                        if isinstance(data, dict):
-                            for k, v in data.items():
-                                if isinstance(v, list):
-                                    self._bundle_cache[str(k)] = [
-                                        (str(t[0]), str(t[1])) for t in v if isinstance(t, list | tuple) and len(t) >= 2
-                                    ]
-                            logger.info(
-                                "Plex bundle-hash cache loaded for {!r}: {} entry(ies). "
-                                "Subsequent full-lib scans skip the per-item Plex /tree call "
-                                "for cached items (orders of magnitude faster).",
-                                self.name,
-                                len(self._bundle_cache),
-                            )
-                except Exception as exc:
-                    logger.debug("Could not load bundle-hash cache from {}: {}", path, exc)
-            self._bundle_cache_loaded = True
-
-    def _cache_bundle_metadata(self, item_id: str, results: list[tuple[str, str]]) -> None:
-        """Store one entry and persist the cache to disk.
-
-        Persistence is best-effort: a failure to write only means the
-        next process start re-queries Plex — no correctness impact. We
-        rewrite the whole file (not append) so cache invalidations and
-        evictions can be added later without churn. Lock protects the
-        whole snapshot+write so concurrent worker threads don't race.
-        """
-        import threading as _threading
-
-        if self._bundle_cache_lock is None:
-            self._bundle_cache_lock = _threading.Lock()
-        with self._bundle_cache_lock:
-            self._bundle_cache[str(item_id)] = list(results)
-            self._bundle_cache_dirty = True
-            path = self._bundle_cache_path()
-            if not path:
-                return
-            try:
-                # JSON-serialise tuples as 2-element lists (round-trips fine).
-                snapshot = {k: [list(t) for t in v] for k, v in self._bundle_cache.items()}
-                tmp_path = path + ".tmp"
-                with open(tmp_path, "w", encoding="utf-8") as fh:
-                    json.dump(snapshot, fh, separators=(",", ":"))
-                import os as _os
-
-                _os.replace(tmp_path, path)
-            except Exception as exc:
-                logger.debug("Could not persist bundle-hash cache to {}: {}", path, exc)
 
     def parse_webhook(self, payload: dict[str, Any] | bytes, headers: dict[str, str]) -> WebhookEvent | None:
         """Normalise a Plex webhook payload to a :class:`WebhookEvent`.
