@@ -1,34 +1,108 @@
-html, body {
-    height: 100%;
-}
+/* Login screen — first impression. Centred panel on a soft gradient
+ * background, brand-orange film icon, generous breathing room.
+ */
+
+html, body { height: 100%; }
+
 body {
     display: flex;
     align-items: center;
-    padding-top: 40px;
-    padding-bottom: 40px;
+    padding: 40px 16px;
+    margin: 0;
 }
+
+/* Subtle radial gradient on the page background — gives the login
+ * screen a sense of depth without distracting from the form. */
 html[data-bs-theme="dark"] body {
-    background-color: #1a1a2e;
+    background:
+        radial-gradient(circle at 20% 0%, rgba(229, 160, 13, 0.08), transparent 45%),
+        radial-gradient(circle at 80% 100%, rgba(74, 158, 255, 0.06), transparent 50%),
+        var(--plex-gray, #1a1a2e);
 }
 html[data-bs-theme="light"] body {
-    background-color: #f7f7fb;
+    background:
+        radial-gradient(circle at 20% 0%, rgba(229, 160, 13, 0.05), transparent 45%),
+        radial-gradient(circle at 80% 100%, rgba(13, 110, 253, 0.04), transparent 50%),
+        #f7f7fb;
 }
+
 .form-signin {
-    max-width: 400px;
-    padding: 15px;
+    max-width: 420px;
+    padding: 0;
 }
+
 .form-signin .form-floating:focus-within {
     z-index: 2;
 }
+
+/* Card uses the global .card panel style + a stronger shadow so it
+ * floats on the gradient background. */
+.login-card {
+    box-shadow: var(--shadow-2);
+}
+
 .logo-container {
     text-align: center;
-    margin-bottom: 2rem;
+    margin-bottom: 1.5rem;
 }
+
 .logo-container i {
-    font-size: 4rem;
-    color: #e5a00d;
+    font-size: 3.5rem;
+    color: var(--plex-orange);
+    line-height: 1;
 }
+
 .logo-container h1 {
-    margin-top: 1rem;
-    font-size: 1.5rem;
+    margin-top: 0.85rem;
+    margin-bottom: 0.25rem;
+    font-size: 1.4rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+}
+
+/* "How do I find my token?" list — three icons + lines, more visual
+ * structure than plain bullets. */
+.login-help-list {
+    list-style: none;
+    padding: 0;
+    margin: 0 0 0.5rem;
+}
+.login-help-list li {
+    display: flex;
+    gap: 0.6rem;
+    align-items: flex-start;
+    padding: 0.4rem 0.6rem;
+    border-radius: var(--radius-sm);
+    line-height: 1.45;
+}
+.login-help-list li + li { margin-top: 0.1rem; }
+.login-help-list li:hover { background: var(--surface-1); }
+.login-help-list li > .bi {
+    color: var(--plex-orange);
+    font-size: 0.95rem;
+    flex-shrink: 0;
+    margin-top: 0.15rem;
+}
+
+.login-help-summary {
+    cursor: pointer;
+    user-select: none;
+    padding: 0.3rem 0;
+}
+.login-help-summary:hover { color: var(--bs-body-color); }
+
+.login-help-detail {
+    line-height: 1.6;
+}
+
+.login-help-snippet {
+    background-color: var(--surface-1);
+    border: 1px solid var(--surface-border);
+    border-radius: var(--radius-sm);
+    padding: 0.6rem 0.75rem;
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 0.78rem;
+    margin: 0.4rem 0 0.4rem;
+    white-space: pre-wrap;
+    color: var(--bs-body-color);
 }
