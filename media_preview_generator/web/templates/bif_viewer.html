@@ -129,8 +129,15 @@
     </div>
 </div>
 
-<!-- Empty state (before any BIF is loaded) -->
-<div id="emptyState" class="text-center text-muted py-5 d-none"></div>
+<!-- Empty state (before any BIF is loaded). Shown on first page-load;
+     JS hides it when a search runs or the viewer opens. -->
+<div id="emptyState" class="text-center py-5">
+    <i class="bi bi-film d-block mb-3" style="font-size: 3rem; opacity: 0.25;"></i>
+    <p class="text-muted mb-1">Search a title above to inspect its preview thumbnails.</p>
+    <p class="text-muted small mb-0">
+        Or paste a BIF / trickplay path directly to skip the lookup.
+    </p>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -226,6 +233,7 @@
         $('searchBtn').disabled = true;
         $('searchBtn').innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Searching...';
         $('searchResults').innerHTML = `<div class="text-center text-muted py-3"><div class="spinner-border spinner-border-sm"></div> Searching ${escapeHtml(server.name)}...</div>`;
+        $('emptyState').classList.add('d-none');
 
         try {
             const resp = await fetch(`/api/bif/servers/${encodeURIComponent(server.id)}/search?q=${encodeURIComponent(query)}`);
