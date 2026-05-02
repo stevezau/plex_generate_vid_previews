@@ -116,16 +116,20 @@ a:focus-visible {
  * Brand accent strip — single 2px line under the nav using the brand
  * gradient. Anchors the top of the page and gives every screen an
  * unmistakable Plex-orange edge that the eye picks up immediately.
+ * Plus frosted-glass effect on the navbar background — a modern dark
+ * theme staple that reads as polish without being flashy.
  * ────────────────────────────────────────────────────────────────────── */
 nav.navbar.sticky-top {
     border-bottom: 1px solid var(--surface-border) !important;
-    background-image: linear-gradient(
-        to right,
-        transparent 0,
-        transparent calc(100% - 2px),
-        transparent 100%
-    );
     position: relative;
+    backdrop-filter: saturate(180%) blur(14px);
+    -webkit-backdrop-filter: saturate(180%) blur(14px);
+}
+html[data-bs-theme="dark"] nav.navbar.sticky-top {
+    background-color: rgba(15, 15, 26, 0.78) !important;
+}
+html[data-bs-theme="light"] nav.navbar.sticky-top {
+    background-color: rgba(255, 255, 255, 0.78);
 }
 nav.navbar.sticky-top::after {
     content: "";
@@ -179,12 +183,23 @@ html[data-bs-theme="dark"] .card {
     border: 1px solid var(--surface-border);
     border-radius: var(--radius-lg);
     box-shadow: var(--shadow-1);
+    transition: border-color 0.18s ease, transform 0.18s ease, box-shadow 0.18s ease;
 }
 html[data-bs-theme="light"] .card {
     background: #ffffff;
     border: 1px solid var(--surface-border);
     border-radius: var(--radius-lg);
     box-shadow: var(--shadow-1);
+    transition: border-color 0.18s ease, transform 0.18s ease, box-shadow 0.18s ease;
+}
+
+/* Subtle hover lift on cards that opt-in via .card-interactive (e.g.
+ * server cards, schedule cards). Avoid lifting every dashboard panel
+ * — that would have the whole page jiggle on cursor move. */
+.card-interactive:hover {
+    border-color: rgba(229, 160, 13, 0.35);
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-2);
 }
 
 html[data-bs-theme="dark"] .card-header,
@@ -347,6 +362,42 @@ html[data-bs-theme="dark"] .table > tbody > tr:last-child > td { border-bottom-c
     border-radius: var(--radius-sm);
     padding-top: 0.5rem;
     padding-bottom: 0.5rem;
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Tabs (nav-pills + nav-tabs) — branded active state. Bootstrap's
+ * default uses primary blue which clashes with the new orange brand
+ * primary on dark theme. Fill becomes the brand orange soft tint and
+ * the active label picks up the brand colour.
+ * ────────────────────────────────────────────────────────────────────── */
+.nav-pills .nav-link {
+    color: var(--bs-body-color);
+    background-color: transparent;
+    border-radius: var(--radius-sm);
+    transition: background-color 0.15s ease, color 0.15s ease;
+}
+html[data-bs-theme="dark"] .nav-pills .nav-link:hover {
+    background-color: rgba(255, 255, 255, 0.04);
+}
+.nav-pills .nav-link.active,
+.nav-pills .show > .nav-link {
+    background-color: var(--plex-orange-soft) !important;
+    color: var(--plex-orange) !important;
+    font-weight: 600;
+}
+
+/* Bootstrap's standard nav-tabs (used in modals) — matched look. */
+.nav-tabs .nav-link.active {
+    color: var(--plex-orange);
+    border-bottom-color: var(--plex-orange);
+    background-color: transparent;
+}
+.nav-tabs .nav-link {
+    color: var(--bs-body-color);
+    border-top: none;
+    border-left: none;
+    border-right: none;
+    transition: color 0.15s ease, border-color 0.15s ease;
 }
 
 /* ──────────────────────────────────────────────────────────────────────
@@ -862,6 +913,22 @@ html[data-bs-theme="dark"] .workers-panel-card[data-status="idle"] {
 html[data-bs-theme="dark"] .workers-panel-card[data-status="processing"] {
     border-color: rgba(13,110,253,0.35);
 }
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Day-of-week picker (Quiet Hours) — checked days get the brand
+ * orange so the user sees at a glance which days the window applies
+ * to. Bootstrap's default btn-check + outline-secondary leaves
+ * checked days in the same washed-out grey as unchecked.
+ * ────────────────────────────────────────────────────────────────────── */
+.qh-window-days .btn-check:checked + .btn,
+.qh-window-days .btn-check:checked + .btn:focus {
+    background-color: var(--plex-orange) !important;
+    border-color: var(--plex-orange) !important;
+    color: #161616 !important;
+    font-weight: 600;
+}
+.qh-window-days .btn-check + .btn { color: var(--bs-body-color); }
+.qh-window-days .btn-check + .btn:hover { background-color: var(--surface-1); }
 
 /* Priority buttons & badges — fixed width so High/Normal/Low don't shift layout */
 .priority-btn,
