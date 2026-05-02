@@ -115,15 +115,39 @@ def _log_webhook_owning_servers(config, paths: list[str]) -> None:
             )
             return
 
+        from ..servers.ownership import apply_webhook_prefixes
+
         name_by_id = {cfg.id: (cfg.name or cfg.id) for cfg in configs}
         owners_by_server: dict[str, int] = {}
         unowned = 0
         for path in paths:
-            matches = find_owning_servers(path, configs)
-            if not matches:
+            # Try the path AS-IS first, then fall back to candidates produced
+            # by translating webhook_prefixes → local_prefix on every server's
+            # path_mappings. Sonarr/Radarr send paths in their own view
+            # (e.g. /data/Movies/X.mkv) which won't match library remote_paths
+            # like /data_16tb/Movies until translated. Without this, the
+            # breadcrumb cried "none match" even when path mapping would have
+            # resolved everything cleanly downstream.
+            candidate_paths = {path}
+            for cfg in configs:
+                for translated in apply_webhook_prefixes(path, cfg.path_mappings or []):
+                    candidate_paths.add(translated)
+            path_matches = []
+            for cp in candidate_paths:
+                path_matches.extend(find_owning_servers(cp, configs))
+            # Dedupe per (path, server_id) so a path that matches via two
+            # webhook prefixes doesn't double-count.
+            seen_servers = set()
+            uniq_matches = []
+            for m in path_matches:
+                if m.server_id in seen_servers:
+                    continue
+                seen_servers.add(m.server_id)
+                uniq_matches.append(m)
+            if not uniq_matches:
                 unowned += 1
                 continue
-            for match in matches:
+            for match in uniq_matches:
                 key = name_by_id.get(match.server_id, match.server_id)
                 owners_by_server[key] = owners_by_server.get(key, 0) + 1
 

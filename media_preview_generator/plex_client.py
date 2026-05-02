@@ -1290,10 +1290,17 @@ def get_media_items_by_paths(plex, config: Config, file_paths: list[str]) -> Web
             excluded_count,
         )
     else:
+        # Count webhook INPUTS that successfully resolved (not candidate
+        # path-aliases). matched_targets is the post-aliasing set of
+        # path candidates that matched in Plex, which can be 2-3× the
+        # real input count when path mappings produce multiple aliases
+        # per input. Reporting that as "N webhook path(s)" was
+        # confusing — the user sends 1 file, sees "Resolved 2".
+        resolved_inputs = sum(1 for p in input_paths if input_to_targets.get(p, set()).intersection(matched_targets))
         logger.info(
-            "{}Resolved {} webhook path(s) into {} item(s)",
+            "{}Resolved {} webhook input(s) into {} item(s)",
             _log_prefix(config),
-            len(matched_targets),
+            resolved_inputs,
             len(matched_items),
         )
     # Deduplicate by file location so multi-episode files are queued once (same as library scan).

@@ -59,6 +59,42 @@ def _normalize(path: str) -> str:
     return unicodedata.normalize("NFC", path.rstrip("/")) + "/"
 
 
+def apply_webhook_prefixes(webhook_path: str, mappings: list[dict[str, Any]]) -> list[str]:
+    """Translate a webhook-source path (Sonarr/Radarr view) to candidate local paths.
+
+    Each ``path_mappings`` entry can list one or more ``webhook_prefixes`` that
+    represent how an external sender (Sonarr, Radarr, Tdarr) sees the path
+    before it lands on this app's local mount. The same disk often shows up
+    under both the sender's view (``/data/Movies/X.mkv``) and the local view
+    (``/data_16tb/Movies/X.mkv``). Webhook breadcrumbs / ownership checks
+    should be done against the LOCAL path so per-server library remote_paths
+    actually match.
+
+    Returns the input path unchanged when no webhook prefix matches — caller
+    then knows the path is already in local form (or there's a missing
+    mapping, which the dispatcher's resolver will catch downstream).
+    """
+    if not mappings:
+        return [webhook_path]
+
+    candidates: list[str] = []
+    norm = _normalize(webhook_path)
+    for entry in mappings:
+        local = entry.get("local_prefix") or ""
+        if not local:
+            continue
+        for wp in entry.get("webhook_prefixes") or []:
+            if not wp:
+                continue
+            norm_wp = _normalize(wp)
+            if norm.startswith(norm_wp):
+                tail = webhook_path[len(wp.rstrip("/")) :]
+                candidates.append(local.rstrip("/") + tail)
+    if not candidates:
+        candidates.append(webhook_path)
+    return candidates
+
+
 def apply_path_mappings(remote_path: str, mappings: list[dict[str, Any]]) -> list[str]:
     """Translate a server-side path to candidate local paths.
 
