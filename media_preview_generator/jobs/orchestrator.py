@@ -349,30 +349,88 @@ def _dispatch_processable_items(
 
     gpu_devices = list(selected_gpus or [])
     cpu_workers = max(0, int(getattr(config, "cpu_threads", 1) or 0))
-    # Expand each device into one slot per configured worker. Previously
-    # this used ``getattr(g[2], "workers", 1)`` — but ``g[2]`` is a dict
-    # (built by ``_build_selected_gpus`` with ``info["workers"] = workers``),
-    # and ``getattr`` on a dict returns the default unless the dict ALSO
-    # has an attribute with that name. Result: a user with NVIDIA workers=2
-    # and Intel workers=2 (4 total slots) ran with parallelism=2 (one slot
-    # per device, regardless of configuration). The Workers panel showed
-    # only 2 rows and FFmpeg utilisation sat at half the configured cap.
-    gpu_slots: list[tuple[str, str | None, dict]] = []
-    for gpu_type, gpu_device, gpu_info in gpu_devices:
-        n = 1
+
+    def _read_workers_count(gpu_info) -> int:
+        # Previously ``getattr(g[2], "workers", 1)`` — but ``g[2]`` is the
+        # dict that ``_build_selected_gpus`` constructs with
+        # ``info["workers"] = workers``. ``getattr`` on a dict returns
+        # the default unless the dict also has an attribute by that
+        # name (it doesn't), so a user with two GPUs each configured for
+        # 2 workers got parallelism=2 instead of 4. Use the right
+        # accessor + clamp to ≥1 so a workers=0 typo can't silently
+        # hide a device.
         if isinstance(gpu_info, dict):
             try:
-                n = max(1, int(gpu_info.get("workers", 1) or 1))
+                return max(1, int(gpu_info.get("workers", 1) or 1))
             except (TypeError, ValueError):
-                n = 1
+                return 1
+        try:
+            return max(1, int(getattr(gpu_info, "workers", 1) or 1))
+        except (TypeError, ValueError):
+            return 1
+
+    def _device_label(gpu_info, gpu_device, gpu_type) -> str:
+        # Friendly device name for the worker row label. Prefer the
+        # human-readable ``name`` from the GPU detection cache (e.g.
+        # "NVIDIA TITAN RTX") so the Workers panel matches the legacy
+        # WorkerPool's labels — fall back to device path / type.
+        if isinstance(gpu_info, dict):
+            name = gpu_info.get("name") or ""
         else:
-            try:
-                n = max(1, int(getattr(gpu_info, "workers", 1) or 1))
-            except (TypeError, ValueError):
-                n = 1
-        for _ in range(n):
-            gpu_slots.append((gpu_type, gpu_device, gpu_info))
-    parallelism = max(1, len(gpu_slots) + cpu_workers)
+            name = getattr(gpu_info, "name", "") or ""
+        return name.strip() or (gpu_device or gpu_type or "GPU")
+
+    # Pre-allocate one stable slot per concurrent worker. The slot is
+    # alive for the entire dispatch; only ``status`` and ``current_title``
+    # mutate as items pass through. Two payoffs:
+    #   1. The Workers panel shows N persistent rows (matches the legacy
+    #      WorkerPool model). No more rows flashing on/off as items
+    #      complete and the next thread picks up a microsecond later.
+    #   2. Each ThreadPool thread persistently binds to ONE slot, which
+    #      means its GPU assignment is also stable — no per-item
+    #      round-robin churn.
+    gpu_slots: list[dict] = []
+    slot_seq = 0
+    for gpu_type, gpu_device, gpu_info in gpu_devices:
+        per_device = _read_workers_count(gpu_info)
+        label = _device_label(gpu_info, gpu_device, gpu_type)
+        for _ in range(per_device):
+            slot_seq += 1
+            gpu_slots.append(
+                {
+                    "worker_id": slot_seq,
+                    "worker_type": "GPU",
+                    "worker_name": f"{label} #{slot_seq}",
+                    "gpu_type": gpu_type,
+                    "gpu_device": gpu_device,
+                    "status": "idle",
+                    "current_title": "",
+                    "library_name": "",
+                    "progress_percent": 0,
+                    "speed": "0.0x",
+                    "remaining_time": 0,
+                    "_thread": None,  # bound on first pickup; stripped from snapshots
+                }
+            )
+    for _ in range(cpu_workers):
+        slot_seq += 1
+        gpu_slots.append(
+            {
+                "worker_id": slot_seq,
+                "worker_type": "CPU",
+                "worker_name": f"CPU Worker #{slot_seq}",
+                "gpu_type": None,
+                "gpu_device": None,
+                "status": "idle",
+                "current_title": "",
+                "library_name": "",
+                "progress_percent": 0,
+                "speed": "0.0x",
+                "remaining_time": 0,
+                "_thread": None,
+            }
+        )
+    parallelism = max(1, len(gpu_slots))
 
     job_manager = None
     if job_id:
@@ -399,33 +457,42 @@ def _dispatch_processable_items(
         except Exception as exc:
             logger.debug("progress_callback raised on dispatch banner: {}", exc)
 
-    def _gpu_for(index: int):
-        # Rotate over the expanded slots list so a device with workers=N
-        # actually gets N concurrent items (the legacy WorkerPool path
-        # already does this; without the expansion here the multi-server
-        # dispatcher pinned every Nth item to the same single device
-        # regardless of its configured concurrency).
-        if not gpu_slots:
-            return None, None
-        gpu_type, gpu_device, _ = gpu_slots[index % len(gpu_slots)]
-        return gpu_type, gpu_device
+    # Lock guarding ``gpu_slots`` mutations + thread→slot binding. The
+    # snapshot reader (called from worker threads on entry/exit AND from
+    # the dispatch thread between iterations) must observe a consistent
+    # view of every slot's state.
+    _slots_lock = threading.Lock()
+    _thread_to_slot: dict[str, dict] = {}
 
-    # Live workers map for the synthetic worker_callback. Keyed by the
-    # ThreadPoolExecutor's stable thread name so a worker that picks up
-    # a second item replaces (not duplicates) its existing entry. The
-    # legacy WorkerPool path emits this same shape via Worker._tick;
-    # mimicking it here keeps the Workers-panel UI vendor-agnostic so
-    # multi-server full scans don't render an empty panel mid-job.
-    _active_workers: dict[str, dict] = {}
-    _active_workers_lock = threading.Lock()
+    def _claim_slot_for(thread_name: str) -> dict | None:
+        # First-pickup binds this thread to the next idle slot
+        # permanently — once bound, the thread keeps the same slot
+        # (and the same friendly name + GPU assignment) for the rest
+        # of the dispatch. Subsequent calls just look up the bound
+        # slot in O(1).
+        with _slots_lock:
+            slot = _thread_to_slot.get(thread_name)
+            if slot is not None:
+                return slot
+            for s in gpu_slots:
+                if s["_thread"] is None:
+                    s["_thread"] = thread_name
+                    _thread_to_slot[thread_name] = s
+                    return s
+            return None
+
+    def _snapshot_slots() -> list[dict]:
+        # Strip the internal "_thread" binding before exposing snapshot
+        # rows to the worker_callback (the job-manager / panel never
+        # needs to know the underlying ThreadPool thread name).
+        with _slots_lock:
+            return [{k: v for k, v in s.items() if not k.startswith("_")} for s in gpu_slots]
 
     def _emit_worker_snapshot() -> None:
         if not worker_callback:
             return
-        with _active_workers_lock:
-            snapshot = list(_active_workers.values())
         try:
-            worker_callback(snapshot)
+            worker_callback(_snapshot_slots())
         except Exception as exc:
             logger.debug("worker_callback raised: {}", exc)
 
@@ -448,34 +515,35 @@ def _dispatch_processable_items(
             register_job_thread(job_id)
 
         index, (server_cfg, item) = index_and_item
-        if cancel_check and cancel_check():
-            return None
-        gpu_type, gpu_device = _gpu_for(index)
         thread_name = threading.current_thread().name
-        worker_label_short = f"GPU Worker — {gpu_device or gpu_type}" if gpu_type else "CPU Worker"
-        # Register this thread as actively processing the item so the
-        # live worker snapshot reflects what's actually running. The
-        # snapshot is emitted via worker_callback after the result
-        # comes back (not here — the callback itself acquires the
-        # job-manager lock and we want the dispatch thread to do that
-        # not the worker thread).
-        with _active_workers_lock:
-            _active_workers[thread_name] = {
-                "worker_id": thread_name,
-                "worker_type": "GPU" if gpu_type else "CPU",
-                "worker_name": worker_label_short,
-                "status": "processing",
-                "current_title": item.title or os.path.basename(item.canonical_path),
-                "library_name": "",
-                "progress_percent": 0,
-                "speed": "0.0x",
-                "remaining_time": 0,
-            }
+        slot = _claim_slot_for(thread_name)
+        # GPU assignment is *per slot*, not per item. The slot's
+        # gpu_type / gpu_device were chosen at slot-allocation time so
+        # a device configured for ``workers=2`` actually gets 2
+        # concurrent items routed to its physical hardware.
+        gpu_type = slot["gpu_type"] if slot else None
+        gpu_device = slot["gpu_device"] if slot else None
+        worker_label = slot["worker_name"] if slot else "Worker"
+
+        if cancel_check and cancel_check():
+            return (worker_label, None)
+
+        # Flip the slot to "processing X" *in place* — never pop it.
+        # The legacy WorkerPool model: worker rows persist for the
+        # entire dispatch, only the title flips between items. Without
+        # this, the Workers panel rows visibly flashed on/off every
+        # time an item completed (the polling caught the gap between
+        # the per-item finally-pop and the next-item pickup).
+        if slot is not None:
+            with _slots_lock:
+                slot["status"] = "processing"
+                slot["current_title"] = item.title or os.path.basename(item.canonical_path)
         # Push the snapshot the moment the thread picks up the item so
         # the Workers panel shows activity within ~1 frame of dispatch
         # (otherwise the panel would only update on completion — for
         # FFmpeg passes that take 30s+ that's a very long blank stare).
         _emit_worker_snapshot()
+
         # Pin precedence:
         #   1. Caller-supplied ``server_id_filter`` always wins — that's
         #      the user's explicit "scan Movies on plex-default" pin from
@@ -495,7 +563,7 @@ def _dispatch_processable_items(
         else:
             per_item_pin = None
         try:
-            return process_canonical_path(
+            result = process_canonical_path(
                 canonical_path=item.canonical_path,
                 registry=registry,
                 config=config,
@@ -505,6 +573,7 @@ def _dispatch_processable_items(
                 cancel_check=cancel_check,
                 server_id_filter=per_item_pin,
             )
+            return (worker_label, result)
         except Exception as exc:
             logger.warning(
                 "Multi-server {}: per-item processing failed for {!r} ({}: {}). "
@@ -514,13 +583,16 @@ def _dispatch_processable_items(
                 type(exc).__name__,
                 exc,
             )
-            return None
+            return (worker_label, None)
         finally:
-            # Free the worker slot the moment process_canonical_path
-            # returns so the next snapshot doesn't leave a stale row
-            # for a thread that's already idle.
-            with _active_workers_lock:
-                _active_workers.pop(thread_name, None)
+            # Flip back to idle in place — DON'T pop the slot. Keeps
+            # the row visible in the Workers panel between items so
+            # the user sees a stable list of N workers throughout the
+            # job, the way the legacy WorkerPool model presents it.
+            if slot is not None:
+                with _slots_lock:
+                    slot["status"] = "idle"
+                    slot["current_title"] = ""
             _emit_worker_snapshot()
 
     completed = 0
@@ -531,23 +603,18 @@ def _dispatch_processable_items(
     # summary chip with no per-file attribution.
     indexed_items = list(enumerate(items))
     with ThreadPoolExecutor(max_workers=parallelism) as pool:
-        for index_and_result in zip(indexed_items, pool.map(_process_one, indexed_items), strict=True):
-            (idx, (_server_cfg, item)), result = index_and_result
+        for index_and_pair in zip(indexed_items, pool.map(_process_one, indexed_items), strict=True):
+            (idx, (_server_cfg, item)), (worker_label, result) = index_and_pair
             completed += 1
             if progress_callback:
                 try:
                     progress_callback(completed, total, f"Processed {completed}/{total}")
                 except Exception:
                     pass
-            # Synthesise a worker label so the Files-panel "Worker" column
-            # isn't blank for the multi-server scan path. The legacy
-            # WorkerPool path produces "GPU Worker N (NVIDIA …)"; mimic
-            # that shape here using the GPU we round-robined onto.
-            gpu_type, gpu_device = _gpu_for(idx)
-            if gpu_type:
-                worker_label = f"GPU Worker (multi-server) — {gpu_device or gpu_type}"
-            else:
-                worker_label = "CPU Worker (multi-server)"
+            # ``worker_label`` already came back from _process_one as the
+            # actual stable slot name (e.g. "NVIDIA TITAN RTX #1") that
+            # processed this item — so the Files panel's Worker column
+            # shows the same identity as the Workers panel's row.
             if result is None:
                 # _process_one swallowed an exception (FFmpeg crash, codec
                 # not supported, etc.). Count it as a failed item so the

@@ -617,8 +617,18 @@ class TestWorkerCallbackEmissionFromMultiServerDispatch:
         assert any(any(w.get("status") == "processing" for w in snap) for snap in snapshots), (
             f"no 'processing' worker entry in any snapshot: {snapshots!r}"
         )
-        # Final state: every active row drained on completion.
-        assert snapshots[-1] == [], f"workers leaked into the final snapshot: {snapshots[-1]!r}"
+        # Final state: every slot is back to idle (slots persist across
+        # the whole dispatch — they're not popped between items, that
+        # was the cause of the Workers-panel "flashing" bug). Slot
+        # *count* stays constant; only ``status`` and ``current_title``
+        # change in place.
+        assert snapshots[-1], "final snapshot must still carry the persistent slot rows"
+        assert all(w.get("status") == "idle" for w in snapshots[-1]), (
+            f"some slots ended in non-idle state: {snapshots[-1]!r}"
+        )
+        assert all(w.get("current_title") == "" for w in snapshots[-1]), (
+            "current_title must be cleared on idle so the panel doesn't keep showing a stale title"
+        )
 
     def test_worker_callback_carries_current_title(self, tmp_path):
         from media_preview_generator.jobs.orchestrator import _dispatch_processable_items
@@ -732,31 +742,48 @@ class TestParallelismRespectsPerDeviceWorkerCount:
                 worker_callback=_wcb,
             )
 
-        # The peak number of *concurrently active* worker entries must
-        # match the configured slot count (4), not the device count (2).
-        peak_concurrent = max((len(s) for s in snapshots), default=0)
-        assert peak_concurrent == 4, (
+        # Slot count is always 4 (slots persist across the whole
+        # dispatch — they don't pop between items, that was the
+        # "Workers panel flashing" bug). What we actually need to
+        # assert is that all 4 slots transition to "processing"
+        # *concurrently* at some point.
+        peak_processing = max(
+            (sum(1 for w in snap if w.get("status") == "processing") for snap in snapshots),
+            default=0,
+        )
+        assert peak_processing == 4, (
             f"Configured 2 NVIDIA + 2 Intel = 4 worker slots; observed peak "
-            f"concurrent workers = {peak_concurrent}. The Workers panel showed "
-            f"only that many rows on the canary, which is the user-visible bug."
+            f"concurrently-processing workers = {peak_processing}. The Workers "
+            f"panel only showed that many active rows on the canary."
         )
 
-        # And the GPU device assignment must rotate through all 4 slots —
-        # not just the 2 device names. Inspect the worker_name field on
-        # the first 4 distinct workers we saw.
-        worker_devices_seen: set[str] = set()
+        # Slot rows persist for the whole dispatch — every snapshot
+        # must always carry exactly 4 rows (not 0..4 oscillating).
+        # That's the fix for the "rows flash on/off" bug.
+        slot_counts = sorted({len(s) for s in snapshots})
+        assert slot_counts == [4], (
+            f"Slot rows must persist (always present, only status flips). Observed snapshot lengths: {slot_counts!r}"
+        )
+
+        # Each slot has a stable worker_id (1..N) for the lifetime of
+        # the dispatch — used by the Files panel to attribute each row
+        # to the worker that handled it.
+        all_ids: set[int] = set()
         for snap in snapshots:
             for w in snap:
-                worker_devices_seen.add(w.get("worker_name", ""))
-        # We expect each distinct slot to fire (cuda:0 ×2, intel ×2),
-        # which the worker_name encodes via the "GPU Worker — <device>"
-        # label. Two distinct labels (one per device) is acceptable;
-        # what matters is that BOTH devices are represented.
-        assert any("cuda:0" in n for n in worker_devices_seen), (
-            f"NVIDIA slot never fired; worker_devices_seen={worker_devices_seen!r}"
+                all_ids.add(w.get("worker_id"))
+        assert all_ids == {1, 2, 3, 4}, f"slot ids must be the stable 1..N range, got {all_ids!r}"
+
+        # Each slot's friendly name uses the configured device name
+        # (e.g. "NVIDIA TITAN RTX #1"), not the raw thread name. We
+        # used the device path here ("cuda:0") since the test fixture
+        # didn't set a name; the production path uses the human label.
+        worker_names = sorted({w.get("worker_name", "") for snap in snapshots for w in snap})
+        assert any("cuda:0" in n and "#" in n for n in worker_names), (
+            f"NVIDIA slot label missing the stable '#N' suffix; got {worker_names!r}"
         )
-        assert any("renderD128" in n for n in worker_devices_seen), (
-            f"Intel slot never fired; worker_devices_seen={worker_devices_seen!r}"
+        assert any("renderD128" in n and "#" in n for n in worker_names), (
+            f"Intel slot label missing the stable '#N' suffix; got {worker_names!r}"
         )
 
     def test_workers_zero_treated_as_one(self, tmp_path):
@@ -791,6 +818,75 @@ class TestParallelismRespectsPerDeviceWorkerCount:
             )
 
         assert any(snap for snap in snapshots), "no worker snapshots emitted at all"
+
+    def test_slot_rows_persist_across_items_no_flashing(self, tmp_path):
+        """User-reported bug: Workers panel rows flashed on/off as
+        items completed. Root cause was per-item pop-on-finally + add-on-
+        next-pickup. Fix: pre-allocated slots that flip status in place
+        and never pop. This test asserts both invariants:
+        - every snapshot has the same number of rows (no flashing)
+        - the same worker_id keeps the same worker_name across snapshots
+          (no identity churn between items)
+        """
+        from media_preview_generator.jobs.orchestrator import _dispatch_processable_items
+        from media_preview_generator.processing.multi_server import MultiServerStatus
+
+        cfg = _server_config("srv-a", ServerType.JELLYFIN)
+        items = [
+            (cfg, ProcessableItem(canonical_path=f"/d/m{i}.mkv", server_id="srv-a", title=f"M{i}")) for i in range(8)
+        ]
+        snapshots: list[list[dict]] = []
+        gpus = [self._make_gpu("cuda:0", workers=2)]
+
+        import time as _time
+
+        def _slow(canonical_path, **kwargs):
+            _time.sleep(0.03)
+            return SimpleNamespace(
+                publishers=[],
+                canonical_path=canonical_path,
+                status=MultiServerStatus.PUBLISHED,
+                message="",
+            )
+
+        with patch(
+            "media_preview_generator.processing.multi_server.process_canonical_path",
+            side_effect=_slow,
+        ):
+            _dispatch_processable_items(
+                items=items,
+                config=_config(cpu_threads=0),
+                registry=MagicMock(),
+                selected_gpus=gpus,
+                label="full scan",
+                worker_callback=lambda w: snapshots.append(list(w)),
+            )
+
+        # Invariant 1 — slot count never changes during the run.
+        # Pre-fix: lengths oscillated [0, 1, 2, 1, 0, 1, 2, …] as
+        # workers popped in finally blocks and re-added on the next
+        # item pickup; the panel rendered that as rows blinking.
+        sizes = {len(s) for s in snapshots}
+        assert sizes == {2}, (
+            f"Workers panel rows must persist across items (no flashing); observed snapshot sizes: {sorted(sizes)!r}"
+        )
+
+        # Invariant 2 — each stable worker_id keeps the same friendly
+        # name and same gpu_device for the entire job. If a slot's
+        # name changed mid-run the panel would show "row swap" which
+        # is the same UX as a flash.
+        identity_by_id: dict[int, tuple[str, str | None]] = {}
+        for snap in snapshots:
+            for w in snap:
+                wid = w["worker_id"]
+                ident = (w["worker_name"], w.get("gpu_device"))
+                if wid in identity_by_id:
+                    assert identity_by_id[wid] == ident, (
+                        f"Slot {wid} identity changed mid-run from {identity_by_id[wid]!r} to {ident!r}"
+                    )
+                else:
+                    identity_by_id[wid] = ident
+        assert set(identity_by_id) == {1, 2}, identity_by_id
 
 
 class TestPerJobLogCapture:
