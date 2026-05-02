@@ -113,6 +113,29 @@
                             <span id="editTestConnectionResult" class="small text-muted"></span>
                         </div>
 
+                        <!-- Vendor-side preview generation control. When this
+                             app handles preview generation, the vendor's own
+                             scan-time generation is wasted CPU. -->
+                        <div class="card bg-body-tertiary mb-3">
+                            <div class="card-body p-3">
+                                <h6 class="mb-2"><i class="bi bi-cpu me-2"></i>Vendor-side preview generation</h6>
+                                <p class="small text-muted mb-2" id="editVendorExtractionBlurb">
+                                    This server may be auto-generating video previews on its own
+                                    during library scans. Since this app handles preview generation,
+                                    that's wasted CPU. Disable it to free up your media server.
+                                </p>
+                                <div class="d-flex align-items-center gap-2 flex-wrap">
+                                    <button type="button" class="btn btn-sm btn-outline-warning" id="editDisableVendorExtractionBtn">
+                                        <i class="bi bi-stop-circle me-1"></i>Disable vendor auto-extraction
+                                    </button>
+                                    <button type="button" class="btn btn-sm btn-link" id="editEnableVendorExtractionBtn">
+                                        Re-enable
+                                    </button>
+                                    <span id="editVendorExtractionResult" class="small text-muted"></span>
+                                </div>
+                            </div>
+                        </div>
+
                         <!-- Plex-only: config folder -->
                         <div id="editPlexConfigGroup" class="mb-3 d-none">
                             <label class="form-label">Plex config folder</label>

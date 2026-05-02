@@ -271,6 +271,76 @@ class PlexServer(MediaServer):
             )
         return libraries
 
+    def set_vendor_extraction(
+        self,
+        *,
+        scan_extraction: bool,
+        library_ids: list[str] | None = None,
+    ) -> dict[str, str]:
+        """Toggle Plex's "Generate video preview thumbnails" per library.
+
+        Used by the "Vendor-side preview generation" panel on the Edit
+        Server modal. When THIS app handles preview generation, Plex's
+        own scanner-thumbnail step is wasted CPU — Plex always loads
+        our published BIF when it's present, so disabling Plex's own
+        generation has no display impact.
+
+        Plex's per-section preference is ``enableBIFGeneration`` —
+        bool-as-string ``"0"`` or ``"1"`` accepted via plexapi's
+        ``editAdvanced``. (NOT ``scannerThumbnailVideoFiles`` —
+        that name doesn't exist on modern Plex sections; the
+        BIF-generation toggle is the right field.)
+
+        ``library_ids=None`` means "every library on this server".
+        """
+        from ..plex_client import retry_plex_call
+
+        try:
+            sections = retry_plex_call(self._connect().library.sections)
+        except Exception as exc:
+            return {"_global": f"failed to list sections: {exc}"}
+
+        target = set(library_ids) if library_ids else None
+        results: dict[str, str] = {}
+        # plexapi maps the field's allowed values to int 0/1 (bool).
+        # Passing the string "0"/"1" raises "0 not found in {0: False, 1: True}".
+        value = 1 if scan_extraction else 0
+        for section in sections:
+            section_key = str(getattr(section, "key", "") or "")
+            if not section_key:
+                continue
+            if target is not None and section_key not in target:
+                continue
+            try:
+                section.editAdvanced(enableBIFGeneration=value)
+                results[section_key] = "ok"
+            except Exception as exc:
+                # Custom-agent libraries (Sportarr / XBMCnfoMovieImporter
+                # / community agents) hit a 400: Plex's section edit
+                # endpoint validates the agent against its built-in
+                # registry. There's no API path to bypass that — the
+                # user has to flip the toggle in Plex's web UI for
+                # those libraries. Report distinctly so the user knows
+                # WHY a library was skipped, not just "error".
+                msg = str(exc)
+                if "agent" in msg.lower() and "400" in msg:
+                    results[section_key] = "skipped: custom agent (toggle manually in Plex UI)"
+                    logger.info(
+                        "Plex library {} on server {!r} uses a custom agent — Plex's edit API doesn't accept "
+                        "BIF-generation toggle for custom agents. Disable it manually in Plex (Library → Edit → Advanced).",
+                        section_key,
+                        self.name,
+                    )
+                else:
+                    logger.warning(
+                        "Could not update Plex library {} BIF-generation preference on server {!r}: {}",
+                        section_key,
+                        self.name,
+                        exc,
+                    )
+                    results[section_key] = f"error: {exc}"
+        return results
+
     def list_items(self, library_id: str) -> Iterator[MediaItem]:
         """Yield :class:`MediaItem` objects for a single library by id.
 

@@ -854,6 +854,68 @@ def set_server_enabled(server_id: str):
     return jsonify({"server_id": server_id, "enabled": payload["enabled"]})
 
 
+@api.route("/servers/<server_id>/vendor-extraction", methods=["POST"])
+@setup_or_auth_required
+def set_vendor_extraction(server_id: str):
+    """Disable (or re-enable) the vendor's own scan-time preview generation.
+
+    Drives the "Vendor-side preview generation" panel on the Edit
+    Server modal. When this app handles preview generation, the
+    vendor's own scanner-thumbnail step is wasted CPU. Body:
+    ``{"scan_extraction": bool}``.
+
+    Behaviour per vendor:
+      * Plex: flips ``scannerThumbnailVideoFiles`` per library section.
+      * Emby: flips ``Extract*ImagesDuringLibraryScan`` per library.
+      * Jellyfin: flips ``ExtractTrickplayImagesDuringLibraryScan``
+        but KEEPS ``EnableTrickplayImageExtraction = True`` so
+        Jellyfin still detects + serves our published trickplay.
+    """
+    payload = request.get_json(silent=True) or {}
+    if "scan_extraction" not in payload or not isinstance(payload["scan_extraction"], bool):
+        return jsonify({"error": "body must be {scan_extraction: bool}"}), 400
+
+    raw_servers = _get_media_servers()
+    target = next((s for s in raw_servers if isinstance(s, dict) and s.get("id") == server_id), None)
+    if target is None:
+        return jsonify({"error": f"server {server_id!r} not found"}), 404
+
+    try:
+        cfg = server_config_from_dict(target)
+    except Exception as exc:
+        return jsonify({"error": f"invalid server config: {exc}"}), 400
+
+    live = _instantiate_for_probe(cfg)
+    if live is None or not hasattr(live, "set_vendor_extraction"):
+        return jsonify({"error": f"vendor {cfg.type.value!r} doesn't support extraction toggle yet"}), 400
+
+    try:
+        results = live.set_vendor_extraction(scan_extraction=payload["scan_extraction"])
+    except Exception as exc:
+        logger.warning(
+            "Could not toggle vendor extraction on {!r}: {}",
+            cfg.name or cfg.id,
+            exc,
+        )
+        return jsonify({"ok": False, "error": str(exc)}), 200
+
+    ok_count = sum(1 for v in results.values() if v == "ok")
+    skipped_count = sum(1 for v in results.values() if v.startswith("skipped"))
+    error_count = sum(1 for v in results.values() if v.startswith("error"))
+    total = len(results)
+    return jsonify(
+        {
+            "ok": error_count == 0,
+            "results": results,
+            "ok_count": ok_count,
+            "skipped_count": skipped_count,
+            "error_count": error_count,
+            "total": total,
+            "scan_extraction": payload["scan_extraction"],
+        }
+    )
+
+
 @api.route("/servers/<server_id>/jellyfin/trickplay-status", methods=["GET"])
 @setup_or_auth_required
 def get_jellyfin_trickplay_status(server_id: str):

@@ -1111,6 +1111,22 @@
             tcResult.className = 'small text-muted';
             tcResult.textContent = '';
         }
+        // Vendor-specific blurb for the auto-extraction panel.
+        const veBlurb = document.getElementById('editVendorExtractionBlurb');
+        if (veBlurb) {
+            const t = (server.type || '').toLowerCase();
+            if (t === 'plex') {
+                veBlurb.innerHTML = `Plex's <strong>Generate video preview thumbnails</strong> setting will be turned off on every library. Plex still loads our published BIF when present, so display is unaffected — only Plex's own background generation stops.`;
+            } else if (t === 'emby') {
+                veBlurb.innerHTML = `Emby's chapter-image / trickplay scan-time extraction will be turned off on every library. Emby still loads our published preview files; only its own background generation stops.`;
+            } else if (t === 'jellyfin') {
+                veBlurb.innerHTML = `Jellyfin's <strong>scan-time</strong> trickplay extraction will be turned off, but trickplay <em>display</em> stays enabled (Jellyfin requires that flag on to detect our published files). Net effect: Jellyfin uses our trickplay only, doesn't generate its own.`;
+            } else {
+                veBlurb.textContent = 'Toggle vendor-side preview extraction.';
+            }
+        }
+        const veResult = document.getElementById('editVendorExtractionResult');
+        if (veResult) { veResult.className = 'small text-muted'; veResult.textContent = ''; }
         // D24 — vendor-aware re-auth UI: show ONE block matching the
         // server's type, hide the others, and reset all input state so
         // an old value from a previous Edit doesn't leak across.
@@ -1472,6 +1488,45 @@
         }
     }
 
+    async function setVendorExtraction(scanExtraction) {
+        const id = ($('#editServerId').value || '').trim();
+        if (!id) return;
+        const result = document.getElementById('editVendorExtractionResult');
+        const disableBtn = document.getElementById('editDisableVendorExtractionBtn');
+        const enableBtn = document.getElementById('editEnableVendorExtractionBtn');
+        const both = [disableBtn, enableBtn].filter(Boolean);
+        const labels = both.map(b => b.innerHTML);
+        both.forEach(b => { b.disabled = true; });
+        const targetBtn = scanExtraction ? enableBtn : disableBtn;
+        if (targetBtn) targetBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Working…';
+        result.className = 'small text-muted';
+        result.textContent = '';
+        try {
+            const r = await api('POST', `/api/servers/${encodeURIComponent(id)}/vendor-extraction`, { scan_extraction: scanExtraction });
+            const data = r.data || {};
+            const okCount = data.ok_count || 0;
+            const skippedCount = data.skipped_count || 0;
+            const errorCount = data.error_count || 0;
+            const total = data.total || 0;
+            const verb = scanExtraction ? 'Re-enabled' : 'Disabled';
+            const parts = [`${okCount}/${total} libraries`];
+            if (skippedCount > 0) parts.push(`${skippedCount} skipped (custom agent — toggle in Plex UI)`);
+            if (errorCount > 0) parts.push(`${errorCount} failed`);
+            if (errorCount === 0) {
+                result.className = skippedCount > 0 ? 'small text-warning' : 'small text-success';
+                result.innerHTML = `<i class="bi bi-${skippedCount > 0 ? 'info-circle' : 'check-circle'} me-1"></i>${verb}: ${parts.join(' · ')}`;
+            } else {
+                result.className = 'small text-danger';
+                result.innerHTML = `<i class="bi bi-exclamation-triangle me-1"></i>${verb}: ${parts.join(' · ')} — see Logs page`;
+            }
+        } catch (e) {
+            result.className = 'small text-danger';
+            result.textContent = String(e);
+        } finally {
+            both.forEach((b, i) => { b.disabled = false; b.innerHTML = labels[i]; });
+        }
+    }
+
     async function testEditConnection() {
         const id = ($('#editServerId').value || '').trim();
         if (!id) return;
@@ -1560,6 +1615,10 @@
         if (refreshBtn) refreshBtn.addEventListener('click', (ev) => refreshLibrariesFromModal(ev.currentTarget));
         const testConnBtn = document.getElementById('editTestConnectionBtn');
         if (testConnBtn) testConnBtn.addEventListener('click', testEditConnection);
+        const disableVendorBtn = document.getElementById('editDisableVendorExtractionBtn');
+        if (disableVendorBtn) disableVendorBtn.addEventListener('click', () => setVendorExtraction(false));
+        const enableVendorBtn = document.getElementById('editEnableVendorExtractionBtn');
+        if (enableVendorBtn) enableVendorBtn.addEventListener('click', () => setVendorExtraction(true));
 
         // D24 — vendor-aware re-auth wiring inside the Edit modal.
         document.querySelectorAll('input[name="editReauthJfMethod"]').forEach((r) =>

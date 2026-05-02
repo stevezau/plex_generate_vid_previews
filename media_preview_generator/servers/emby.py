@@ -58,6 +58,64 @@ class EmbyServer(EmbyApiClient):
             except Exception as exc:
                 logger.debug("Emby item refresh failed for {}: {}", item_id, exc)
 
+    def set_vendor_extraction(
+        self,
+        *,
+        scan_extraction: bool,
+        library_ids: list[str] | None = None,
+    ) -> dict[str, str]:
+        """Toggle Emby's chapter-image / trickplay scan-time extraction.
+
+        Mirrors the Jellyfin path-mapped equivalent. Emby uses the
+        ``ExtractChapterImagesDuringLibraryScan`` flag (chapter images
+        are Emby's preview-thumbnail mechanism prior to its modern
+        Trickplay support; ``EnableTrickplayImageExtraction`` controls
+        the newer pipeline on Emby 4.8+ — we set both to be safe so
+        the disable works on older + newer Emby installs).
+
+        ``library_ids=None`` means "every library".
+        """
+        try:
+            response = self._request("GET", "/Library/VirtualFolders")
+            response.raise_for_status()
+            folders = response.json()
+        except Exception as exc:
+            return {"_global": f"failed to fetch libraries: {exc}"}
+
+        if not isinstance(folders, list):
+            return {"_global": "unexpected VirtualFolders response shape"}
+
+        results: dict[str, str] = {}
+        target = set(library_ids) if library_ids else None
+        for raw in folders:
+            if not isinstance(raw, dict):
+                continue
+            lib_id = str(raw.get("ItemId") or raw.get("Id") or raw.get("Name") or "")
+            if target is not None and lib_id not in target:
+                continue
+
+            options = dict(raw.get("LibraryOptions") or {})
+            options["ExtractChapterImagesDuringLibraryScan"] = bool(scan_extraction)
+            options["ExtractTrickplayImagesDuringLibraryScan"] = bool(scan_extraction)
+
+            try:
+                update = self._request(
+                    "POST",
+                    "/Library/VirtualFolders/LibraryOptions",
+                    json_body={"Id": lib_id, "LibraryOptions": options},
+                )
+                update.raise_for_status()
+                results[lib_id] = "ok"
+            except Exception as exc:
+                logger.warning(
+                    "Could not update Emby library {} extraction on server {!r}: {}",
+                    lib_id,
+                    self.name,
+                    exc,
+                )
+                results[lib_id] = f"error: {exc}"
+        return results
+
     def parse_webhook(
         self,
         payload: dict[str, Any] | bytes,

@@ -197,6 +197,68 @@ class JellyfinServer(EmbyApiClient):
                 results[lib_id] = f"error: {exc}"
         return results
 
+    def set_vendor_extraction(
+        self,
+        *,
+        scan_extraction: bool,
+        library_ids: list[str] | None = None,
+    ) -> dict[str, str]:
+        """Toggle Jellyfin's scan-time trickplay generation per library.
+
+        Used by the "Vendor-side preview generation" panel on the Edit
+        Server modal. When the user lets THIS app handle preview
+        generation, Jellyfin's own scan-time extraction is wasted CPU.
+
+        Behaviour: always KEEPS ``EnableTrickplayImageExtraction = True``
+        (Jellyfin needs that on to detect/serve our sidecar trickplay)
+        and only flips ``ExtractTrickplayImagesDuringLibraryScan`` to
+        the requested value. Without that distinction, disabling either
+        flag also kills display of our previews.
+
+        ``library_ids=None`` means "every library".
+        """
+        try:
+            response = self._request("GET", "/Library/VirtualFolders")
+            response.raise_for_status()
+            folders = response.json()
+        except Exception as exc:
+            return {"_global": f"failed to fetch libraries: {exc}"}
+
+        if not isinstance(folders, list):
+            return {"_global": "unexpected VirtualFolders response shape"}
+
+        results: dict[str, str] = {}
+        target_ids = set(library_ids) if library_ids else None
+        for raw in folders:
+            if not isinstance(raw, dict):
+                continue
+            lib_id = str(raw.get("ItemId") or raw.get("Id") or raw.get("Name") or "")
+            if target_ids is not None and lib_id not in target_ids:
+                continue
+
+            options = dict(raw.get("LibraryOptions") or {})
+            # Detection always on so our published trickplay is actually used.
+            options["EnableTrickplayImageExtraction"] = True
+            options["ExtractTrickplayImagesDuringLibraryScan"] = bool(scan_extraction)
+
+            try:
+                update = self._request(
+                    "POST",
+                    "/Library/VirtualFolders/LibraryOptions",
+                    json_body={"Id": lib_id, "LibraryOptions": options},
+                )
+                update.raise_for_status()
+                results[lib_id] = "ok"
+            except Exception as exc:
+                logger.warning(
+                    "Could not update Jellyfin library {} extraction on server {!r}: {}",
+                    lib_id,
+                    self.name,
+                    exc,
+                )
+                results[lib_id] = f"error: {exc}"
+        return results
+
     def parse_webhook(
         self,
         payload: dict[str, Any] | bytes,
