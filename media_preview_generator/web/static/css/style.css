@@ -273,6 +273,18 @@ html[data-bs-theme="light"] .card-header {
 .kpi-tile.kpi-failed   .kpi-value { color: #e74c3c; }
 .kpi-tile.kpi-cancelled .kpi-value { color: var(--plex-orange); }
 
+/* Light mode: the dark-theme palette above is tuned for white-on-navy.
+   On a white card those neon greens / reds read as candy-bright and
+   draw the eye away from the labels they're meant to qualify. Drop a
+   few notches in saturation + lightness so the numbers feel like
+   confident data, not warning lights. */
+html[data-bs-theme="light"] .kpi-tile.kpi-running  .kpi-value { color: #1f6fd6; }
+html[data-bs-theme="light"] .kpi-tile.kpi-completed .kpi-value { color: #198754; }
+html[data-bs-theme="light"] .kpi-tile.kpi-failed   .kpi-value { color: #b02a37; }
+html[data-bs-theme="light"] .status-dot.status-running   { color: #1f6fd6; }
+html[data-bs-theme="light"] .status-dot.status-completed { color: #198754; }
+html[data-bs-theme="light"] .status-dot.status-failed    { color: #b02a37; }
+
 /* ──────────────────────────────────────────────────────────────────────
  * Status indicator dots — replaces full-fill status pills in dense
  * tables. A coloured ●  before a neutral label reads cleaner than
@@ -368,6 +380,18 @@ html[data-bs-theme="light"] .card-header {
     background-color: var(--plex-orange);
     border-color: var(--plex-orange);
     color: #161616;
+}
+
+/* `bg-primary` badges (worker count "2", "NVIDIA"/"INTEL" GPU type pill,
+ * dashboard "Processing" status pill) inherit Bootstrap's vivid blue,
+ * which clashes with the brand-orange `btn-primary` we just established.
+ * Map them to the brand colour with high-contrast dark text so the
+ * digits stay legible at 0.65em-0.85em pill sizes. Overrides .text-white
+ * Bootstrap auto-applies inside `bg-*` to keep contrast WCAG-AA on the
+ * lighter orange surface. */
+.bg-primary {
+    background-color: var(--plex-orange) !important;
+    color: #161616 !important;
 }
 
 /* ──────────────────────────────────────────────────────────────────────
