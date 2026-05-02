@@ -12,17 +12,42 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
-COPY pyproject.toml ./
-COPY media_preview_generator/ ./media_preview_generator/
-
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 
-# Build wheels for the app and all dependencies (pre-compiled, no gcc needed at install time)
+# ---------------------------------------------------------------------------
+# Layer A: pre-cache DEPENDENCY wheels via a stub package.
+#
+# This layer is keyed only on pyproject.toml. Without the split, every
+# Python source change at the next layer would invalidate the wheel cache
+# and force pip to rebuild ~50 dep wheels (Flask, plexapi, APScheduler,
+# gunicorn, transitive deps) from scratch — adding 30-60s per build job
+# (×4 parallel jobs in CI = ~30-60s wall-clock per push).
+#
+# The stub uses setuptools-scm's fallback_version so no git history is
+# needed for this layer; the real version gets stamped at Layer B below.
+# ---------------------------------------------------------------------------
+COPY pyproject.toml ./
+RUN mkdir -p media_preview_generator && \
+    touch media_preview_generator/__init__.py && \
+    SETUPTOOLS_SCM_PRETEND_VERSION_FOR_MEDIA_PREVIEW_GENERATOR=0.0.0 \
+      pip3 wheel --wheel-dir=/wheels --no-cache-dir . && \
+    # Drop the stub app wheel — Layer B builds the real one.
+    rm -f /wheels/media_preview_generator-*.whl && \
+    rm -rf media_preview_generator
+
+# ---------------------------------------------------------------------------
+# Layer B: build the APP wheel only, reusing the cached deps above.
+#
+# --no-deps tells pip to skip dep resolution (already pre-built).
+# Source-only changes invalidate just this layer (~5-10s of work),
+# keeping iteration speed high.
+# ---------------------------------------------------------------------------
+COPY media_preview_generator/ ./media_preview_generator/
 RUN if [ -n "$SETUPTOOLS_SCM_PRETEND_VERSION" ]; then \
       SETUPTOOLS_SCM_PRETEND_VERSION_FOR_MEDIA_PREVIEW_GENERATOR=$SETUPTOOLS_SCM_PRETEND_VERSION \
-      pip3 wheel --wheel-dir=/wheels --no-cache-dir .; \
+      pip3 wheel --wheel-dir=/wheels --no-cache-dir --no-deps .; \
     else \
-      pip3 wheel --wheel-dir=/wheels --no-cache-dir .; \
+      pip3 wheel --wheel-dir=/wheels --no-cache-dir --no-deps .; \
     fi
 
 # =============================================================================
