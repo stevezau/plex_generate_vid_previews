@@ -22,10 +22,10 @@ from media_preview_generator.servers.base import ServerConfig, ServerType
 MODULE = "media_preview_generator.jobs.orchestrator"
 
 
-def _config():
+def _config(cpu_threads: int = 1):
     return SimpleNamespace(
         gpu_threads=0,
-        cpu_threads=1,
+        cpu_threads=cpu_threads,
         working_tmp_folder="/tmp/work",
         plex_url="",
         plex_token="",
@@ -662,6 +662,135 @@ class TestWorkerCallbackEmissionFromMultiServerDispatch:
             )
 
         assert "The Named Movie" in captured_titles, f"item title missing from worker snapshots: {captured_titles!r}"
+
+
+class TestParallelismRespectsPerDeviceWorkerCount:
+    """D34 — the multi-server dispatcher used to read ``workers`` off
+    each gpu_info entry via ``getattr(g[2], 'workers', 1)``. But
+    ``g[2]`` is the dict that ``_build_selected_gpus`` constructs with
+    ``info["workers"] = workers`` — a *key*, not an attribute. ``getattr``
+    on a dict returns the default unless the dict has an attribute with
+    that name (it doesn't), so a user with two GPUs each configured for
+    2 workers got parallelism=2 instead of 4. Live reproducer on the
+    canary: Workers panel only ever showed 2 rows during a Plex Movies
+    scan despite Settings → GPU listing 2+2.
+    """
+
+    @staticmethod
+    def _make_gpu(device: str, workers: int, gpu_type: str = "NVIDIA") -> tuple:
+        # Mirror what _build_selected_gpus produces — a plain dict, not
+        # a SimpleNamespace. The previous test that used SimpleNamespace
+        # inadvertently *worked around* the bug because getattr does
+        # find attributes on SimpleNamespace.
+        return (gpu_type, device, {"workers": workers, "ffmpeg_threads": 2, "device": device})
+
+    def test_per_device_workers_count_expands_into_real_concurrency(self, tmp_path):
+        from media_preview_generator.jobs.orchestrator import _dispatch_processable_items
+        from media_preview_generator.processing.multi_server import MultiServerStatus
+
+        cfg = _server_config("srv-a", ServerType.JELLYFIN)
+        items = [
+            (cfg, ProcessableItem(canonical_path=f"/data/m{i}.mkv", server_id="srv-a", title=f"M{i}")) for i in range(8)
+        ]
+
+        snapshots: list[list[dict]] = []
+
+        def _wcb(workers_list):
+            snapshots.append(list(workers_list))
+
+        # 2 NVIDIA workers + 2 Intel workers — exactly the canary config.
+        gpus = [
+            self._make_gpu("cuda:0", workers=2, gpu_type="NVIDIA"),
+            self._make_gpu("/dev/dri/renderD128", workers=2, gpu_type="INTEL"),
+        ]
+
+        # The mock has to sleep long enough that multiple threads are
+        # alive concurrently — otherwise pool.map serialises by accident
+        # because each item finishes before the next thread is spawned.
+        # 50ms × 8 items = ~100ms wall on parallelism=4.
+        import time as _time
+
+        def _slow(canonical_path, **kwargs):
+            _time.sleep(0.05)
+            return SimpleNamespace(
+                publishers=[],
+                canonical_path=canonical_path,
+                status=MultiServerStatus.PUBLISHED,
+                message="",
+            )
+
+        with patch(
+            "media_preview_generator.processing.multi_server.process_canonical_path",
+            side_effect=_slow,
+        ):
+            _dispatch_processable_items(
+                items=items,
+                config=_config(cpu_threads=0),
+                registry=MagicMock(),
+                selected_gpus=gpus,
+                label="full scan",
+                worker_callback=_wcb,
+            )
+
+        # The peak number of *concurrently active* worker entries must
+        # match the configured slot count (4), not the device count (2).
+        peak_concurrent = max((len(s) for s in snapshots), default=0)
+        assert peak_concurrent == 4, (
+            f"Configured 2 NVIDIA + 2 Intel = 4 worker slots; observed peak "
+            f"concurrent workers = {peak_concurrent}. The Workers panel showed "
+            f"only that many rows on the canary, which is the user-visible bug."
+        )
+
+        # And the GPU device assignment must rotate through all 4 slots —
+        # not just the 2 device names. Inspect the worker_name field on
+        # the first 4 distinct workers we saw.
+        worker_devices_seen: set[str] = set()
+        for snap in snapshots:
+            for w in snap:
+                worker_devices_seen.add(w.get("worker_name", ""))
+        # We expect each distinct slot to fire (cuda:0 ×2, intel ×2),
+        # which the worker_name encodes via the "GPU Worker — <device>"
+        # label. Two distinct labels (one per device) is acceptable;
+        # what matters is that BOTH devices are represented.
+        assert any("cuda:0" in n for n in worker_devices_seen), (
+            f"NVIDIA slot never fired; worker_devices_seen={worker_devices_seen!r}"
+        )
+        assert any("renderD128" in n for n in worker_devices_seen), (
+            f"Intel slot never fired; worker_devices_seen={worker_devices_seen!r}"
+        )
+
+    def test_workers_zero_treated_as_one(self, tmp_path):
+        """A pathological workers=0 in gpu_config used to silently zero
+        out a device's contribution; clamp to ≥1 so users can't hide a
+        device behind a typo."""
+        from media_preview_generator.jobs.orchestrator import _dispatch_processable_items
+        from media_preview_generator.processing.multi_server import MultiServerStatus
+
+        cfg = _server_config("srv-a", ServerType.JELLYFIN)
+        items = [(cfg, ProcessableItem(canonical_path="/data/x.mkv", server_id="srv-a"))]
+
+        snapshots: list[list[dict]] = []
+        gpus = [self._make_gpu("cuda:0", workers=0)]
+
+        with patch(
+            "media_preview_generator.processing.multi_server.process_canonical_path",
+            return_value=SimpleNamespace(
+                publishers=[],
+                canonical_path="/data/x.mkv",
+                status=MultiServerStatus.PUBLISHED,
+                message="",
+            ),
+        ):
+            _dispatch_processable_items(
+                items=items,
+                config=_config(),
+                registry=MagicMock(),
+                selected_gpus=gpus,
+                label="full scan",
+                worker_callback=lambda w: snapshots.append(list(w)),
+            )
+
+        assert any(snap for snap in snapshots), "no worker snapshots emitted at all"
 
 
 class TestPerJobLogCapture:

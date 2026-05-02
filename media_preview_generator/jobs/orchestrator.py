@@ -349,8 +349,30 @@ def _dispatch_processable_items(
 
     gpu_devices = list(selected_gpus or [])
     cpu_workers = max(0, int(getattr(config, "cpu_threads", 1) or 0))
-    gpu_workers = sum(int(getattr(g[2], "workers", 1) or 1) for g in gpu_devices) if gpu_devices else 0
-    parallelism = max(1, gpu_workers + cpu_workers)
+    # Expand each device into one slot per configured worker. Previously
+    # this used ``getattr(g[2], "workers", 1)`` — but ``g[2]`` is a dict
+    # (built by ``_build_selected_gpus`` with ``info["workers"] = workers``),
+    # and ``getattr`` on a dict returns the default unless the dict ALSO
+    # has an attribute with that name. Result: a user with NVIDIA workers=2
+    # and Intel workers=2 (4 total slots) ran with parallelism=2 (one slot
+    # per device, regardless of configuration). The Workers panel showed
+    # only 2 rows and FFmpeg utilisation sat at half the configured cap.
+    gpu_slots: list[tuple[str, str | None, dict]] = []
+    for gpu_type, gpu_device, gpu_info in gpu_devices:
+        n = 1
+        if isinstance(gpu_info, dict):
+            try:
+                n = max(1, int(gpu_info.get("workers", 1) or 1))
+            except (TypeError, ValueError):
+                n = 1
+        else:
+            try:
+                n = max(1, int(getattr(gpu_info, "workers", 1) or 1))
+            except (TypeError, ValueError):
+                n = 1
+        for _ in range(n):
+            gpu_slots.append((gpu_type, gpu_device, gpu_info))
+    parallelism = max(1, len(gpu_slots) + cpu_workers)
 
     job_manager = None
     if job_id:
@@ -378,9 +400,14 @@ def _dispatch_processable_items(
             logger.debug("progress_callback raised on dispatch banner: {}", exc)
 
     def _gpu_for(index: int):
-        if not gpu_devices:
+        # Rotate over the expanded slots list so a device with workers=N
+        # actually gets N concurrent items (the legacy WorkerPool path
+        # already does this; without the expansion here the multi-server
+        # dispatcher pinned every Nth item to the same single device
+        # regardless of its configured concurrency).
+        if not gpu_slots:
             return None, None
-        gpu_type, gpu_device, _ = gpu_devices[index % len(gpu_devices)]
+        gpu_type, gpu_device, _ = gpu_slots[index % len(gpu_slots)]
         return gpu_type, gpu_device
 
     # Live workers map for the synthetic worker_callback. Keyed by the
