@@ -448,14 +448,22 @@ html[data-bs-theme="light"] .card-header {
     font-weight: 500;
 }
 
-/* Stats */
+/* Legacy .stat-value / .stat-label — kept for the few places that
+ * still hand-roll a stat callout outside the .kpi-tile system. New
+ * code should use .kpi-tile + .kpi-value + .kpi-label. */
 .stat-value {
-    font-size: 1.75rem;
-    font-weight: bold;
+    font-size: 1.6rem;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.05;
 }
 
 .stat-label {
-    font-size: 0.875rem;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--bs-secondary-color);
+    font-weight: 600;
 }
 
 /* Progress bars */
