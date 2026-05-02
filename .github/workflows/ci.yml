@@ -122,11 +122,42 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
-      - name: Install FFmpeg + mediainfo (cached)
+      - name: Install FFmpeg + mediainfo + Playwright Chromium runtime libs (cached)
+        # Playwright's `--with-deps chromium` used to apt-install ~20
+        # Chromium runtime libs (libnss3, libgtk, etc.) on EVERY run —
+        # uncached, ~15-20s burned per push. Roll those packages into
+        # the existing apt cache step so warm runs skip apt entirely,
+        # then drop `--with-deps` from the playwright install below.
+        # Bump `version:` if any of these need to refresh.
         uses: awalsh128/cache-apt-pkgs-action@v1
         with:
-          packages: ffmpeg mediainfo
-          version: 1
+          packages: >-
+            ffmpeg
+            mediainfo
+            fonts-liberation
+            libasound2t64
+            libatk-bridge2.0-0t64
+            libatk1.0-0t64
+            libatspi2.0-0t64
+            libcairo2
+            libcups2t64
+            libdbus-1-3
+            libdrm2
+            libgbm1
+            libglib2.0-0t64
+            libnspr4
+            libnss3
+            libpango-1.0-0
+            libx11-6
+            libxcb1
+            libxcomposite1
+            libxdamage1
+            libxext6
+            libxfixes3
+            libxkbcommon0
+            libxrandr2
+            xvfb
+          version: 2
 
       - name: Install dependencies
         run: pip install -e ".[test]"
@@ -137,8 +168,8 @@ jobs:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
 
-      - name: Install Playwright Chromium
-        run: playwright install --with-deps chromium
+      - name: Install Playwright Chromium (browser binary only; runtime libs cached above)
+        run: playwright install chromium
 
       - name: Run e2e tests
         # -n 0: the e2e subprocess fixture binds a fixed port, so workers
