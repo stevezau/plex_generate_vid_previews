@@ -11,7 +11,7 @@ Jellyfin's only public path for trickplay registration is `RefreshTrickplayDataA
 In Jellyfin admin → Dashboard → Plugins → Repositories → **+** add:
 
 ```
-https://stevezau.github.io/plex_generate_vid_previews/jellyfin-plugin/manifest.json
+https://stevezau.github.io/media_preview_generator/jellyfin-plugin/manifest.json
 ```
 
 Then go to Catalogue → install **Media Preview Bridge**. Restart Jellyfin.

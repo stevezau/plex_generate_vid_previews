@@ -137,7 +137,7 @@ class JellyfinServer(EmbyApiClient):
 
     PLUGIN_NAME = "Media Preview Bridge"
     PLUGIN_GUID = "c2cb9bf9-7c5d-4f1a-9a07-2d6f5e5b0001"
-    PLUGIN_REPO_URL = "https://stevezau.github.io/plex_generate_vid_previews/jellyfin-plugin/manifest.json"
+    PLUGIN_REPO_URL = "https://stevezau.github.io/media_preview_generator/jellyfin-plugin/manifest.json"
 
     def check_plugin_installed(self) -> dict[str, Any]:
         """Probe the plugin's anonymous Ping endpoint.
