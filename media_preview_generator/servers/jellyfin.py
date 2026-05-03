@@ -52,20 +52,63 @@ class JellyfinServer(EmbyApiClient):
         return ServerType.JELLYFIN
 
     def trigger_refresh(self, *, item_id: str | None, remote_path: str | None) -> None:
-        """Notify Jellyfin to re-scan an item.
+        """Notify Jellyfin to re-scan an item AND register published trickplay.
 
-        Jellyfin has no equivalent of Emby's path-based ``/Library/Media/Updated``,
-        so we prefer the per-item ``/Items/{id}/Refresh`` endpoint when the
-        item id is known and fall back to a full ``/Library/Refresh``
-        scan otherwise. ``remote_path`` is unused — it's accepted to
-        match the abstract :meth:`MediaServer.trigger_refresh` signature.
-        Failures are silently swallowed — the publishing side already
-        wrote the trickplay tiles next to the media; the scan trigger
-        is best-effort.
+        Two paths run, both best-effort:
+
+        1. ``POST /MediaPreviewBridge/Trickplay/{itemId}`` — the
+           Jellyfin Plugin Bridge installed alongside this tool.
+           Registers the trickplay row directly via Jellyfin's
+           ``ITrickplayManager.SaveTrickplayInfo`` so the player
+           can serve scrubbing previews immediately, no flag flips
+           and no ffmpeg. Returns 404 if the plugin isn't installed
+           — silently swallowed so single-step setups still work
+           (the standard refresh fallback below picks up trickplay
+           on the next library scan, with the user's
+           ``ExtractTrickplayImagesDuringLibraryScan`` flag's caveats).
+
+        2. ``POST /Items/{id}/Refresh`` — standard metadata refresh
+           so any other side effects (artwork rescans, etc.) fire.
+
+        ``remote_path`` is unused — accepted for the abstract
+        :meth:`MediaServer.trigger_refresh` signature.
         """
         del remote_path  # Jellyfin's API doesn't expose a path-keyed refresh
 
         if item_id:
+            # 1. Plugin bridge — instant trickplay registration.
+            try:
+                resp = self._request(
+                    "POST",
+                    f"/MediaPreviewBridge/Trickplay/{item_id}",
+                    params={"width": 320, "intervalMs": 10000},
+                )
+                if resp.status_code == 204:
+                    logger.debug(
+                        "Jellyfin trickplay registered via Media Preview Bridge plugin for {}",
+                        item_id,
+                    )
+                elif resp.status_code == 404:
+                    logger.debug(
+                        "Media Preview Bridge plugin not installed on Jellyfin {!r} — "
+                        "trickplay will be picked up by the next library scan instead.",
+                        self.name,
+                    )
+                else:
+                    logger.debug(
+                        "Media Preview Bridge plugin returned HTTP {} for {}: {}",
+                        resp.status_code,
+                        item_id,
+                        resp.text[:200] if resp.text else "",
+                    )
+            except Exception as exc:
+                logger.debug(
+                    "Media Preview Bridge plugin call failed for {}: {}",
+                    item_id,
+                    exc,
+                )
+
+            # 2. Standard metadata refresh (separate concern from trickplay).
             try:
                 response = self._request("POST", f"/Items/{item_id}/Refresh")
                 response.raise_for_status()

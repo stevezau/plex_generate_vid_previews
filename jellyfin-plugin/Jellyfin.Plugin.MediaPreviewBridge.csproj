@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <RootNamespace>Jellyfin.Plugin.MediaPreviewBridge</RootNamespace>
+    <AssemblyName>Jellyfin.Plugin.MediaPreviewBridge</AssemblyName>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <!-- Match the Jellyfin server release the plugin targets. The user
+         must run a server at this version or newer for the plugin to load
+         (Jellyfin's plugin loader compares NuGet AssemblyVersion). -->
+    <Version>10.11.0.0</Version>
+    <FileVersion>10.11.0.0</FileVersion>
+    <AssemblyVersion>10.11.0.0</AssemblyVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Jellyfin.Controller is the public plugin API surface (DI hooks,
+         service interfaces). Pinned to the minimum version we support;
+         server runs >= this version load us fine. ITrickplayManager
+         landed in 10.10 so we can't go lower than that. -->
+    <PackageReference Include="Jellyfin.Controller" Version="10.11.0" />
+    <!-- SkiaSharp matches what Jellyfin's image stack uses; we only need
+         it for measuring the last sheet (decode + GetPixel). PrivateAssets
+         keeps it out of the published plugin DLL — Jellyfin already
+         loads SkiaSharp at runtime so we just compile against it. -->
+    <PackageReference Include="SkiaSharp" Version="2.88.9" PrivateAssets="all" />
+  </ItemGroup>
+
+</Project>

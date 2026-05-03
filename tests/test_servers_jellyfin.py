@@ -266,15 +266,33 @@ class TestResolveItemToRemotePath:
 
 
 class TestTriggerRefresh:
-    def test_uses_per_item_refresh_when_id_known(self, jelly):
-        with patch.object(JellyfinServer, "_request") as req:
-            response = MagicMock()
-            response.raise_for_status.return_value = None
-            req.return_value = response
+    def test_calls_plugin_bridge_then_per_item_refresh_when_id_known(self, jelly):
+        # Two requests fire when an item_id is supplied: the Media Preview
+        # Bridge plugin endpoint (HTTP 204 = trickplay registered, no
+        # ffmpeg, no flag flip), then the standard /Items/{id}/Refresh.
+        plugin_resp = MagicMock(status_code=204, text="")
+        refresh_resp = MagicMock()
+        refresh_resp.raise_for_status.return_value = None
 
+        with patch.object(JellyfinServer, "_request", side_effect=[plugin_resp, refresh_resp]) as req:
             jelly.trigger_refresh(item_id="42", remote_path=None)
 
-            req.assert_called_once_with("POST", "/Items/42/Refresh")
+            assert req.call_count == 2
+            assert req.call_args_list[0].args == ("POST", "/MediaPreviewBridge/Trickplay/42")
+            assert req.call_args_list[1].args == ("POST", "/Items/42/Refresh")
+
+    def test_continues_to_per_item_refresh_when_plugin_not_installed(self, jelly):
+        # Plugin returns 404 (not installed) — log and continue to the
+        # standard refresh so the call chain still fires.
+        plugin_resp = MagicMock(status_code=404, text="not found")
+        refresh_resp = MagicMock()
+        refresh_resp.raise_for_status.return_value = None
+
+        with patch.object(JellyfinServer, "_request", side_effect=[plugin_resp, refresh_resp]) as req:
+            jelly.trigger_refresh(item_id="42", remote_path=None)
+
+            assert req.call_count == 2
+            assert req.call_args_list[1].args == ("POST", "/Items/42/Refresh")
 
     def test_falls_back_to_library_refresh_without_id(self, jelly):
         with patch.object(JellyfinServer, "_request") as req:
@@ -287,9 +305,12 @@ class TestTriggerRefresh:
             req.assert_called_once_with("POST", "/Library/Refresh")
 
     def test_falls_back_to_library_refresh_when_per_item_fails(self, jelly):
-        # If the per-item refresh raises (e.g. item not yet indexed), we
-        # still nudge the full library scan as a best-effort fallback.
-        responses = [RuntimeError("404"), MagicMock(raise_for_status=MagicMock(return_value=None))]
+        # Plugin call + per-item refresh both raise → full library
+        # refresh fires as last-resort best-effort.
+        plugin_exc = RuntimeError("plugin 404")
+        refresh_exc = RuntimeError("refresh 404")
+        library_resp = MagicMock(raise_for_status=MagicMock(return_value=None))
+        responses = [plugin_exc, refresh_exc, library_resp]
 
         def side_effect(*args, **kwargs):
             value = responses.pop(0)
@@ -300,9 +321,10 @@ class TestTriggerRefresh:
         with patch.object(JellyfinServer, "_request", side_effect=side_effect) as req:
             jelly.trigger_refresh(item_id="42", remote_path=None)
 
-            assert req.call_count == 2
-            assert req.call_args_list[0].args == ("POST", "/Items/42/Refresh")
-            assert req.call_args_list[1].args == ("POST", "/Library/Refresh")
+            assert req.call_count == 3
+            assert req.call_args_list[0].args == ("POST", "/MediaPreviewBridge/Trickplay/42")
+            assert req.call_args_list[1].args == ("POST", "/Items/42/Refresh")
+            assert req.call_args_list[2].args == ("POST", "/Library/Refresh")
 
 
 class TestParseWebhook:
