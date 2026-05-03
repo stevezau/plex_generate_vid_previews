@@ -20,10 +20,14 @@ html[data-bs-theme="dark"] body {
         var(--plex-gray, #1a1a2e);
 }
 html[data-bs-theme="light"] body {
+    /* Cool slate base matching --bs-body-bg + a single quiet slate
+       radial for a hint of depth. The previous warm orange wash in
+       the upper-left clashed with the cool slate palette and read as
+       an accidental tint rather than intentional depth. Brand orange
+       is reserved for the CTA + film-strip logo on this page. */
     background:
-        radial-gradient(circle at 20% 0%, rgba(229, 160, 13, 0.05), transparent 45%),
-        radial-gradient(circle at 80% 100%, rgba(13, 110, 253, 0.04), transparent 50%),
-        #f7f7fb;
+        radial-gradient(circle at 80% 100%, rgba(15, 23, 42, 0.04), transparent 55%),
+        #e4e7eb;
 }
 
 .form-signin {
@@ -82,6 +86,11 @@ html[data-bs-theme="light"] body {
     font-size: 0.95rem;
     flex-shrink: 0;
     margin-top: 0.15rem;
+}
+/* Light mode: quiet slate icons so they don't fight the orange CTA.
+ * Dark mode keeps the brand orange because it pops on navy. */
+html[data-bs-theme="light"] .login-help-list li > .bi {
+    color: var(--bs-secondary-color);
 }
 
 .login-help-summary {

@@ -62,9 +62,9 @@ html[data-bs-theme="light"] {
        than "OLED display at full brightness". The contrast between
        body and card stays just visible — modern SaaS look (Notion,
        Linear) avoids both pure-white cards and pure-black text. */
-    --bs-body-bg: #eef0f3;          /* slightly deeper slate so cards lift */
+    --bs-body-bg: #e4e7eb;          /* slate-200-ish — darker so cards visibly lift */
     --bs-secondary-bg: #fbfcfd;     /* soft off-white card surface */
-    --bs-tertiary-bg: #f1f3f6;      /* code blocks / raised regions */
+    --bs-tertiary-bg: #eceff3;      /* code blocks / raised regions — slightly cooler */
 
     /* Text scale — never pure black; slate-900 reads more refined and
        pairs with the slate surfaces. Three levels are enough. */
@@ -338,10 +338,12 @@ html[data-bs-theme="light"] .card {
        read as "OLED at full brightness" rather than "paper". The 2-3%
        desaturation softens that without losing the elevation. */
     background: #fbfcfd;
-    /* Visible 1px slate border so cards lift via contrast against the
-       cool grey body bg — replaces the heavy box-shadow approach which
-       reads as a "popup" rather than a "panel" on a clean surface. */
-    border: 1px solid #e2e6eb;
+    /* Visibly darker 1px slate border (slate-300 territory) so cards
+       actually lift against the deeper body bg. The previous #e2e6eb
+       was almost invisible against the prior body bg #eef0f3 — now
+       that body is darker AND the border is a touch heavier the cards
+       read as panels with edges, not floating washes. */
+    border: 1px solid #cbd5e1;
     border-radius: var(--radius-lg);
     box-shadow: none;
     transition: border-color 0.18s ease, transform 0.18s ease, box-shadow 0.18s ease;
@@ -1010,7 +1012,12 @@ html[data-bs-theme="dark"] code {
 }
 
 html[data-bs-theme="light"] code {
-    background-color: rgba(0, 0, 0, 0.05);
+    /* Cool slate chip, not orange. Brand orange on a near-white bg
+       reads as a warning state and clashes with the slate palette;
+       slate-100 bg + slate-700 text matches the rest of the surface
+       family. Dark mode keeps the orange because it pops on navy. */
+    background-color: #e2e8f0;          /* slate-200 */
+    color: #334155;                     /* slate-700 */
 }
 
 /* Scrollbar */
