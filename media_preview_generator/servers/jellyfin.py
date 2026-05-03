@@ -19,12 +19,22 @@ during normal operation.
 from __future__ import annotations
 
 import json
+import threading
+import time
 from typing import Any
 
 from loguru import logger
 
 from ._embyish import EmbyApiClient
 from .base import ServerType, WebhookEvent
+
+# Floor on how often a single Jellyfin server may receive a full
+# /Library/Refresh nudge. Without it, a webhook burst (e.g. Sonarr
+# importing a season pack) would trigger one full library scan per
+# file — pinning the Jellyfin process for minutes. 60s comfortably
+# covers the typical Jellyfin scan cadence and keeps the publisher
+# retry-loop responsive.
+_JELLYFIN_FULL_REFRESH_COOLDOWN_S = 60.0
 
 
 class JellyfinServer(EmbyApiClient):
@@ -46,6 +56,8 @@ class JellyfinServer(EmbyApiClient):
 
     def __init__(self, config) -> None:
         super().__init__(config, default_name="Jellyfin")
+        self._last_full_refresh_at = 0.0
+        self._full_refresh_lock = threading.Lock()
 
     @property
     def type(self) -> ServerType:
@@ -116,8 +128,22 @@ class JellyfinServer(EmbyApiClient):
             except Exception as exc:
                 logger.debug("Jellyfin per-item refresh failed for {}: {}", item_id, exc)
 
-        # Fallback: nudge a full scan. Should rarely fire — most paths
-        # arrive at the publisher with an item id from the source webhook.
+        # Fallback: nudge a full scan. Rate-limited because a webhook
+        # burst (e.g. Sonarr season-pack import) would otherwise trigger
+        # one full library scan per file — pins Jellyfin for minutes
+        # and quickly outpaces what a real scan can cover.
+        with self._full_refresh_lock:
+            now = time.monotonic()
+            elapsed = now - self._last_full_refresh_at
+            if elapsed < _JELLYFIN_FULL_REFRESH_COOLDOWN_S:
+                logger.debug(
+                    "Jellyfin /Library/Refresh suppressed for {!r} — last scan {:.0f}s ago, cooldown {:.0f}s",
+                    self.name,
+                    elapsed,
+                    _JELLYFIN_FULL_REFRESH_COOLDOWN_S,
+                )
+                return
+            self._last_full_refresh_at = now
         try:
             response = self._request("POST", "/Library/Refresh")
             response.raise_for_status()

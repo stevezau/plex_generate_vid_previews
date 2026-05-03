@@ -559,7 +559,14 @@ class TestCrossServerBifReuse:
 
 
 class TestPartialFailureIsolation:
-    def test_jellyfin_failure_does_not_block_emby(self, mock_config_for_processing, tmp_path):
+    def test_jellyfin_missing_item_id_does_not_block_emby(self, mock_config_for_processing, tmp_path):
+        # When Jellyfin's reverse-lookup can't resolve the canonical path
+        # to an item_id (file not in its library yet), the dispatcher
+        # short-circuits that publisher to SKIPPED_NOT_IN_LIBRARY and
+        # the sibling Emby publisher proceeds normally. Previously this
+        # branch was reported as FAILED with a "publish-time bookkeeping"
+        # ValueError — see the dedicated SKIPPED_NOT_IN_LIBRARY tests in
+        # TestNotInLibraryRoutesToSkip below for the user-visible message.
         media_dir = tmp_path / "data" / "movies" / "Test"
         media_file = _seed_canonical_file(media_dir)
         media_root = str(tmp_path / "data" / "movies")
@@ -571,8 +578,6 @@ class TestPartialFailureIsolation:
                     server_type=ServerType.EMBY,
                     libraries=[Library(id="1", name="Movies", remote_paths=(media_root,), enabled=True)],
                 ),
-                # Jellyfin entry without an item_id hint — JellyfinTrickplay
-                # will raise ValueError because the manifest needs the id.
                 _server_config(
                     server_id="jelly-1",
                     server_type=ServerType.JELLYFIN,
@@ -594,13 +599,17 @@ class TestPartialFailureIsolation:
                 canonical_path=str(media_file),
                 registry=registry,
                 config=mock_config_for_processing,
-                # No Jellyfin item id supplied -> compute_output_paths raises.
+                # No Jellyfin item id supplied -> compute_output_paths
+                # would have raised; now short-circuited to SKIPPED.
+                # Suppress the retry timer so a 30s-later retry doesn't
+                # fire after pytest tears down loguru sinks.
+                schedule_retry_on_not_indexed=False,
             )
 
         assert result.status is MultiServerStatus.PUBLISHED  # at least one succeeded
         statuses = {p.server_id: p.status for p in result.publishers}
         assert statuses["emby-1"] is PublisherStatus.PUBLISHED
-        assert statuses["jelly-1"] is PublisherStatus.FAILED
+        assert statuses["jelly-1"] is PublisherStatus.SKIPPED_NOT_IN_LIBRARY
 
 
 class TestNotYetIndexedRoutesToSkip:
@@ -702,6 +711,100 @@ class TestNotYetIndexedRoutesToSkip:
                 f"plex.query called with {url!r} — D31 regression "
                 "(doubled /library/metadata/ prefix) would slip past this test."
             )
+
+
+class TestNotInLibraryRoutesToSkip:
+    """When ``resolve_remote_path_to_item_id`` returns None for an
+    adapter that needs an item id (Jellyfin trickplay, Plex bundle),
+    the publisher must report SKIPPED_NOT_IN_LIBRARY with a friendly
+    message — NOT a confusing FAILED with the "publish-time bookkeeping"
+    ValueError. Reproduces job b350d2ac where the user's Jellyfin had a
+    different release of the same episode on a different drive than the
+    canonical path, so the basename match returned None and every
+    publish attempt was reported as a hard failure.
+    """
+
+    def test_jellyfin_returns_skipped_not_in_library_when_item_id_unresolvable(
+        self, mock_config_for_processing, tmp_path
+    ):
+        media_dir = tmp_path / "data" / "movies"
+        media_file = _seed_canonical_file(media_dir)
+
+        registry = ServerRegistry.from_settings(
+            [
+                _server_config(
+                    server_id="jellyfin-1",
+                    server_type=ServerType.JELLYFIN,
+                    libraries=[
+                        Library(
+                            id="1",
+                            name="Movies",
+                            remote_paths=(str(media_dir),),
+                            enabled=True,
+                        )
+                    ],
+                    output={"adapter": "jellyfin_trickplay", "width": 320, "frame_interval": 10},
+                )
+            ],
+        )
+
+        # Stub the reverse-lookup to return None — emulates "Jellyfin's
+        # library doesn't contain this exact file" (e.g. user has the
+        # canonical release on /data_16tb2 but Jellyfin only indexed
+        # the version on /data_16tb).
+        from media_preview_generator.servers._embyish import EmbyApiClient
+
+        # Track scan-nudge calls so we assert the publisher requested
+        # a Jellyfin /Library/Refresh on the not-in-library branch.
+        from media_preview_generator.servers.jellyfin import JellyfinServer
+
+        scan_nudges: list[tuple[str | None, str | None]] = []
+
+        def fake_trigger_refresh(self, *, item_id, remote_path):
+            scan_nudges.append((item_id, remote_path))
+
+        def fake_generate_images(video_file, output_folder, *args, **kwargs):
+            _populate_frames(output_folder, count=3)
+            return (True, 3, "h264", 1.0, 30.0, None)
+
+        with (
+            patch.object(EmbyApiClient, "resolve_remote_path_to_item_id", return_value=None),
+            patch.object(JellyfinServer, "trigger_refresh", autospec=True, side_effect=fake_trigger_refresh),
+            patch(
+                "media_preview_generator.processing.multi_server.generate_images",
+                side_effect=fake_generate_images,
+            ),
+        ):
+            result = process_canonical_path(
+                canonical_path=str(media_file),
+                registry=registry,
+                config=mock_config_for_processing,
+                # Don't schedule a real retry timer — pytest tears down
+                # loguru sinks after the test, and a 30s-later retry
+                # firing after teardown floods CI with
+                # "ValueError: I/O operation on closed file".
+                schedule_retry_on_not_indexed=False,
+            )
+
+        # The publisher row is SKIPPED_NOT_IN_LIBRARY, NOT FAILED. This is
+        # the bug the user hit on job b350d2ac — every Jellyfin publish for
+        # a file Jellyfin didn't index was logged as failed=1 with a
+        # cryptic "publish-time bookkeeping" message.
+        assert len(result.publishers) == 1
+        assert result.publishers[0].status is PublisherStatus.SKIPPED_NOT_IN_LIBRARY
+        assert "library" in result.publishers[0].message.lower()
+        # No mention of "publish-time bookkeeping" or "ValueError" — the
+        # whole point of this branch is a clean user-facing message.
+        assert "bookkeeping" not in result.publishers[0].message.lower()
+        # Aggregate status collapses into SKIPPED_NOT_INDEXED so the file
+        # outcome chip and the per-server pill match (the worker maps both
+        # to the same Worker.outcome bucket — see D13).
+        assert result.status is MultiServerStatus.SKIPPED_NOT_INDEXED
+        # Scan was nudged for the not-in-library publisher so the next
+        # retry has a fighting chance of finding the item.
+        assert scan_nudges, "trigger_refresh was never called for not-in-library publisher"
+        assert scan_nudges[0][0] is None  # item_id=None → fallback /Library/Refresh path
+        assert scan_nudges[0][1] == str(media_file)
 
 
 class TestSkipIfExists:

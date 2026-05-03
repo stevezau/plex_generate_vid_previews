@@ -58,6 +58,7 @@ class PublisherStatus(str, Enum):
 
     PUBLISHED = "published"
     SKIPPED_NOT_INDEXED = "skipped_not_indexed"
+    SKIPPED_NOT_IN_LIBRARY = "skipped_not_in_library"
     SKIPPED_OUTPUT_EXISTS = "skipped_output_exists"
     FAILED = "failed"
 
@@ -465,6 +466,34 @@ def _publish_one(
     overrides this with ``"output_existed"`` because in that branch the
     publisher didn't need any frames at all.
     """
+    # Short-circuit when the adapter requires server metadata (Plex bundle
+    # hash, Jellyfin item id) and the upstream lookup returned None. This
+    # is the "the file isn't in this server's library" case — different
+    # from a hard failure. Catching it here gives the user a clean, actionable
+    # message instead of the cryptic "publish-time bookkeeping" ValueError
+    # that compute_output_paths would otherwise raise. Also nudges the
+    # server to scan (best-effort — Jellyfin only has a full /Library/Refresh,
+    # so the cooldown inside trigger_refresh prevents scan-thrash). The
+    # dispatcher then schedules a retry on SKIPPED_NOT_IN_LIBRARY so the
+    # next attempt picks up the freshly-indexed item.
+    if adapter.needs_server_metadata() and item_id is None:
+        try:
+            server.trigger_refresh(item_id=None, remote_path=bundle.canonical_path)
+        except Exception as exc:
+            logger.debug("Scan-nudge for not-in-library item failed on {}: {}", server.name, exc)
+        return PublisherResult(
+            server_id=server.id,
+            server_name=server.name,
+            adapter_name=adapter.name,
+            status=PublisherStatus.SKIPPED_NOT_IN_LIBRARY,
+            message=(
+                f"This file isn't in {server.name}'s library yet — nudged a scan and will "
+                f"retry. If it never appears, the file probably lives outside every library "
+                f"root configured on {server.name}."
+            ),
+            frame_source=frame_source,
+        )
+
     try:
         output_paths = adapter.compute_output_paths(bundle, server, item_id)
     except LibraryNotYetIndexedError as exc:
@@ -1005,7 +1034,11 @@ def process_canonical_path(
             # server got the BIF and which didn't?" can scan the log
             # by canonical_path.
             log_fn = logger.info if outcome.status is PublisherStatus.PUBLISHED else logger.warning
-            if outcome.status in (PublisherStatus.SKIPPED_OUTPUT_EXISTS, PublisherStatus.SKIPPED_NOT_INDEXED):
+            if outcome.status in (
+                PublisherStatus.SKIPPED_OUTPUT_EXISTS,
+                PublisherStatus.SKIPPED_NOT_INDEXED,
+                PublisherStatus.SKIPPED_NOT_IN_LIBRARY,
+            ):
                 log_fn = logger.info  # skipped is normal, not an error
             log_fn(
                 "Publisher result: server={} adapter={} status={} item_id={} message={!r}",
@@ -1024,12 +1057,17 @@ def process_canonical_path(
             status = MultiServerStatus.PUBLISHED
         elif all_failed:
             status = MultiServerStatus.FAILED
-        elif results and all(r.status is PublisherStatus.SKIPPED_NOT_INDEXED for r in results):
+        elif results and all(
+            r.status in (PublisherStatus.SKIPPED_NOT_INDEXED, PublisherStatus.SKIPPED_NOT_IN_LIBRARY) for r in results
+        ):
             # D13 — distinct from SKIPPED so the file outcome and the
             # per-server chip render the same thing. Otherwise the row
             # shows "Already Existed" while the chip says "Not indexed",
             # confusing users into thinking the BIF is on disk when in
             # fact the server just hasn't scanned the file yet.
+            # SKIPPED_NOT_IN_LIBRARY collapses into the same aggregate —
+            # both mean "waiting on a server-side scan to finish" and
+            # both go through the same retry path.
             status = MultiServerStatus.SKIPPED_NOT_INDEXED
         else:
             # No publisher actually wrote, but at least one wasn't a
@@ -1042,7 +1080,12 @@ def process_canonical_path(
         skipped_count = sum(
             1
             for r in results
-            if r.status in (PublisherStatus.SKIPPED_OUTPUT_EXISTS, PublisherStatus.SKIPPED_NOT_INDEXED)
+            if r.status
+            in (
+                PublisherStatus.SKIPPED_OUTPUT_EXISTS,
+                PublisherStatus.SKIPPED_NOT_INDEXED,
+                PublisherStatus.SKIPPED_NOT_IN_LIBRARY,
+            )
         )
         failed_count = sum(1 for r in results if r.status is PublisherStatus.FAILED)
         logger.info(
@@ -1064,7 +1107,10 @@ def process_canonical_path(
         if (
             schedule_retry_on_not_indexed
             and status is not MultiServerStatus.FAILED
-            and any(r.status is PublisherStatus.SKIPPED_NOT_INDEXED for r in results)
+            and any(
+                r.status in (PublisherStatus.SKIPPED_NOT_INDEXED, PublisherStatus.SKIPPED_NOT_IN_LIBRARY)
+                for r in results
+            )
         ):
             from .retry_queue import schedule_retry_for_unindexed
 

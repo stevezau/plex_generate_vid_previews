@@ -304,6 +304,26 @@ class TestTriggerRefresh:
 
             req.assert_called_once_with("POST", "/Library/Refresh")
 
+    def test_full_refresh_is_rate_limited_per_server(self, jelly):
+        # /Library/Refresh is heavyweight (full library scan, no path
+        # filter). A webhook burst — e.g. Sonarr importing a season pack
+        # where every file hits SKIPPED_NOT_IN_LIBRARY — must NOT trigger
+        # one /Library/Refresh per file or Jellyfin pins for minutes.
+        # The cooldown lives on the server instance so concurrent
+        # webhooks for the same server collapse to a single scan.
+        with patch.object(JellyfinServer, "_request") as req:
+            response = MagicMock()
+            response.raise_for_status.return_value = None
+            req.return_value = response
+
+            jelly.trigger_refresh(item_id=None, remote_path="/path/a.mkv")
+            jelly.trigger_refresh(item_id=None, remote_path="/path/b.mkv")
+            jelly.trigger_refresh(item_id=None, remote_path="/path/c.mkv")
+
+            # Only the first nudge fires the API call; the next two
+            # land inside the cooldown window and short-circuit.
+            req.assert_called_once_with("POST", "/Library/Refresh")
+
     def test_falls_back_to_library_refresh_when_per_item_fails(self, jelly):
         # Plugin call + per-item refresh both raise → full library
         # refresh fires as last-resort best-effort.

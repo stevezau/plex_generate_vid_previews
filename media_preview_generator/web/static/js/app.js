@@ -1417,6 +1417,10 @@ const STATUS_META = {
     // Retry queue will try again on slow backoff.
     skipped_not_indexed:    { label: 'Not Scanned Yet', cls: 'bg-warning text-dark', tip: 'Media server hasn\'t finished scanning / analysing this file yet — will retry' },
     not_indexed:            { label: 'Not Scanned Yet', cls: 'bg-warning text-dark', tip: 'Media server hasn\'t finished scanning / analysing this file yet — will retry' },
+    // Media server doesn't know about this file at all (path isn't in any
+    // of its libraries, OR it just hasn't been picked up by a scan yet).
+    // We've nudged a scan and the retry queue will try again.
+    skipped_not_in_library: { label: 'Not In Library', cls: 'bg-warning text-dark', tip: 'This server doesn\'t know about this file — nudged a scan and will retry. If it never appears, the file is outside every library root configured on this server.' },
 
     // Hard failures.
     failed:                 { label: 'Failed',        cls: 'bg-danger', tip: 'Processing failed' },
@@ -1467,7 +1471,7 @@ function _renderPublishersBlock(job) {
         const logo = _vendorLogo(stype, 12) || '';
         const sname = entry.server_name || stype.toUpperCase() || 'Server';
         const counts = (entry && typeof entry.counts === 'object' && entry.counts) ? entry.counts : {};
-        const statusOrder = ['published', 'skipped_output_exists', 'skipped_not_indexed', 'not_indexed', 'skipped', 'no_owners', 'no_frames', 'failed'];
+        const statusOrder = ['published', 'skipped_output_exists', 'skipped_not_indexed', 'not_indexed', 'skipped_not_in_library', 'skipped', 'no_owners', 'no_frames', 'failed'];
         const seen = new Set();
         const ordered = statusOrder.filter(function (k) { seen.add(k); return counts[k] > 0; })
             .concat(Object.keys(counts).filter(function (k) { return !seen.has(k) && counts[k] > 0; }));
