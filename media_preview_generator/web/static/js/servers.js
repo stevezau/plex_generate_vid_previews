@@ -1120,7 +1120,7 @@
             } else if (t === 'emby') {
                 veBlurb.innerHTML = `Emby's chapter-image / trickplay scan-time extraction will be turned off on every library. Emby still loads our published preview files; only its own background generation stops.`;
             } else if (t === 'jellyfin') {
-                veBlurb.innerHTML = `Jellyfin's <strong>scan-time</strong> trickplay extraction will be turned off, but trickplay <em>display</em> stays enabled (Jellyfin requires that flag on to detect our published files). Net effect: Jellyfin uses our trickplay only, doesn't generate its own.`;
+                veBlurb.innerHTML = `Two Jellyfin library options get flipped: <em>scan-time</em> extraction off, <em>save-with-media</em> on (so Jellyfin reads our published trickplay). The detection flag stays on — without it Jellyfin <strong>deletes</strong> our published files. The daily "Refresh Trickplay Images" task is left at its default 3 AM trigger; that task is Jellyfin's import path, so clearing it would make our trickplay sit on disk invisible. Items not yet covered by this app will get a one-time ffmpeg pass at 3 AM until processed here.`;
             } else {
                 veBlurb.textContent = 'Toggle vendor-side preview extraction.';
             }

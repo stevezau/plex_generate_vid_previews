@@ -227,14 +227,18 @@ class JellyfinServer(EmbyApiClient):
            write); with it, Jellyfin looks under
            ``<media_dir>/<basename>.trickplay/<width> - <tileW>x<tileH>/``
            (where ``JellyfinTrickplayAdapter`` does write).
-        4. The "Refresh Trickplay Images" scheduled task runs daily and
-           does NOT respect ``ExtractTrickplayImagesDuringLibraryScan`` —
-           it walks every video and calls ``RefreshTrickplayDataAsync``
-           directly. When our files exist at the saved-with-media path
-           Jellyfin imports them and skips ffmpeg, but for any item we
-           haven't yet processed Jellyfin would spawn ffmpeg. Strip the
-           task's triggers so it never auto-fires while our tool is in
-           charge.
+
+        The "Refresh Trickplay Images" daily scheduled task is left at
+        its default 3am trigger. We tried clearing it (D38 first cut)
+        but that produced a silent failure: ``RefreshTrickplayDataAsync``
+        is THE import path for our published trickplay, so without the
+        daily run our files sit on disk and Jellyfin's web client gets
+        404 on the trickplay HLS endpoint. With the task running, it
+        imports our files cheaply for covered items (no ffmpeg) and
+        only generates for items we haven't processed yet — a bounded
+        CPU spike that shrinks as the library is covered. The user can
+        still strip the trigger manually via Jellyfin admin if they
+        want a no-ffmpeg-ever guarantee.
 
         ``library_ids=None`` means "every library".
         """
@@ -284,78 +288,7 @@ class JellyfinServer(EmbyApiClient):
                     exc,
                 )
                 results[lib_id] = f"error: {exc}"
-
-        # Strip / restore the daily "Refresh Trickplay Images" task
-        # triggers. Best-effort — task management isn't load-bearing on
-        # the per-library config and a failure here shouldn't abort.
-        try:
-            self._set_trickplay_task_triggers(disabled=not scan_extraction)
-        except Exception as exc:
-            logger.warning(
-                "Could not adjust Jellyfin trickplay scheduled task on server {!r}: {}",
-                self.name,
-                exc,
-            )
         return results
-
-    def _set_trickplay_task_triggers(self, *, disabled: bool) -> None:
-        """Empty (or restore-default) the daily trickplay task triggers.
-
-        Jellyfin's "Refresh Trickplay Images" task fires daily at 3am by
-        default and walks every video — bypassing the per-library
-        ``ExtractTrickplayImagesDuringLibraryScan`` gate. Stripping its
-        triggers stops the auto-fire while leaving the task itself
-        present (so an admin can still hit "Run" manually if they want).
-
-        ``disabled=True`` posts ``[]`` to clear all triggers.
-        ``disabled=False`` restores Jellyfin's default daily 3am trigger
-        so re-enabling vendor generation also reinstates the daily
-        sweep we previously turned off.
-        """
-        try:
-            response = self._request("GET", "/ScheduledTasks")
-            response.raise_for_status()
-            tasks = response.json()
-        except Exception as exc:
-            logger.debug("Could not list Jellyfin scheduled tasks: {}", exc)
-            return
-
-        if not isinstance(tasks, list):
-            return
-
-        triggers: list[dict[str, Any]]
-        if disabled:
-            triggers = []
-        else:
-            # Default: daily at 03:00:00 (10800000000000 ticks = 3 hours
-            # from midnight), matching what Jellyfin ships.
-            triggers = [{"Type": "DailyTrigger", "TimeOfDayTicks": 108000000000}]
-
-        for task in tasks:
-            if not isinstance(task, dict):
-                continue
-            if "trickplay" not in str(task.get("Name") or "").lower():
-                continue
-            if (
-                "generate" not in str(task.get("Name") or "").lower()
-                and "refresh" not in str(task.get("Name") or "").lower()
-            ):
-                continue
-            task_id = str(task.get("Id") or "")
-            if not task_id:
-                continue
-            try:
-                self._request(
-                    "POST",
-                    f"/ScheduledTasks/{task_id}/Triggers",
-                    json_body=triggers,
-                ).raise_for_status()
-            except Exception as exc:
-                logger.debug(
-                    "Could not update triggers on Jellyfin task {!r}: {}",
-                    task.get("Name"),
-                    exc,
-                )
 
     def parse_webhook(
         self,

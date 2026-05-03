@@ -867,9 +867,14 @@ def set_vendor_extraction(server_id: str):
     Behaviour per vendor:
       * Plex: flips ``scannerThumbnailVideoFiles`` per library section.
       * Emby: flips ``Extract*ImagesDuringLibraryScan`` per library.
-      * Jellyfin: flips ``ExtractTrickplayImagesDuringLibraryScan``
-        but KEEPS ``EnableTrickplayImageExtraction = True`` so
-        Jellyfin still detects + serves our published trickplay.
+      * Jellyfin: flips ``ExtractTrickplayImagesDuringLibraryScan`` AND
+        ``SaveTrickplayWithMedia`` per library. Always KEEPS
+        ``EnableTrickplayImageExtraction = True`` (D38: that flag is
+        destructive — Jellyfin deletes our published trickplay when
+        it's False). The daily "Refresh Trickplay Images" task is
+        deliberately LEFT at its default 3 AM trigger because that
+        task is also Jellyfin's import path for our published files;
+        clearing it makes our trickplay sit on disk forever invisible.
     """
     payload = request.get_json(silent=True) or {}
     if "scan_extraction" not in payload or not isinstance(payload["scan_extraction"], bool):
