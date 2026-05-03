@@ -113,26 +113,34 @@
                             <span id="editTestConnectionResult" class="small text-muted"></span>
                         </div>
 
-                        <!-- Vendor-side preview generation control. When this
-                             app handles preview generation, the vendor's own
-                             scan-time generation is wasted CPU. -->
+                        <!-- Stop the media server from generating previews itself.
+                             Title + body copy are vendor-specific and set in JS
+                             (openEditModal → editVendorExtractionBlurb). -->
                         <div class="card bg-body-tertiary mb-3">
                             <div class="card-body p-3">
-                                <h6 class="mb-2"><i class="bi bi-cpu me-2"></i>Vendor-side preview generation</h6>
+                                <h6 class="mb-1">
+                                    <i class="bi bi-cpu me-2"></i>Stop this server from generating previews itself
+                                    <span class="badge bg-success ms-1">Recommended</span>
+                                </h6>
                                 <p class="small text-muted mb-2" id="editVendorExtractionBlurb">
-                                    This server may be auto-generating video previews on its own
-                                    during library scans. Since this app handles preview generation,
-                                    that's wasted CPU. Disable it to free up your media server.
+                                    Without this, your media server will burn CPU re-creating thumbnails
+                                    that this app already published.
                                 </p>
                                 <div class="d-flex align-items-center gap-2 flex-wrap">
-                                    <button type="button" class="btn btn-sm btn-outline-warning" id="editDisableVendorExtractionBtn">
-                                        <i class="bi bi-stop-circle me-1"></i>Disable vendor auto-extraction
+                                    <button type="button" class="btn btn-sm btn-warning" id="editDisableVendorExtractionBtn">
+                                        <i class="bi bi-stop-circle me-1"></i>Disable on this server
                                     </button>
                                     <button type="button" class="btn btn-sm btn-link" id="editEnableVendorExtractionBtn">
                                         Re-enable
                                     </button>
                                     <span id="editVendorExtractionResult" class="small text-muted"></span>
                                 </div>
+                                <details class="mt-2" id="editVendorExtractionDetails">
+                                    <summary class="small text-muted">What this changes</summary>
+                                    <div class="small text-muted mt-2" id="editVendorExtractionDetailsBody">
+                                        <!-- Vendor-specific detail copy injected by JS. -->
+                                    </div>
+                                </details>
                             </div>
                         </div>
 
@@ -142,16 +150,26 @@
                              a `plugin` block with `installed=false`. -->
                         <div id="editJellyfinPluginGroup" class="card bg-body-tertiary mb-3 d-none">
                             <div class="card-body p-3">
-                                <h6 class="mb-2">
-                                    <i class="bi bi-puzzle me-2"></i>Media Preview Bridge plugin
+                                <h6 class="mb-1">
+                                    <i class="bi bi-puzzle me-2"></i>Instant trickplay (optional plugin)
                                     <span id="editJellyfinPluginBadge" class="badge ms-1">checking…</span>
                                 </h6>
-                                <p class="small text-muted mb-2" id="editJellyfinPluginBlurb">
-                                    The plugin lets this app register published trickplay tiles
-                                    instantly with Jellyfin (no ffmpeg, no waiting for the daily
-                                    scheduled task). Without it, scrubbing previews still appear
-                                    eventually but only after Jellyfin's next 3 AM trickplay sweep.
+                                <p class="small text-muted mb-2">
+                                    Two ways to get scrubbing previews into Jellyfin once this app
+                                    publishes them — pick one:
                                 </p>
+                                <ul class="small text-muted mb-2 ps-3" style="line-height:1.5;">
+                                    <li>
+                                        <strong>With the Media Preview Bridge plugin (recommended):</strong>
+                                        previews appear in Jellyfin the moment this app finishes
+                                        generating them. One-click install below.
+                                    </li>
+                                    <li>
+                                        <strong>Without the plugin:</strong>
+                                        previews show up on Jellyfin's next nightly trickplay sweep
+                                        (default 3 AM). They still work — just delayed.
+                                    </li>
+                                </ul>
                                 <div class="d-flex align-items-center gap-2 flex-wrap">
                                     <button type="button" class="btn btn-sm btn-warning" id="editInstallPluginBtn">
                                         <i class="bi bi-download me-1"></i>Install plugin in Jellyfin
@@ -159,7 +177,7 @@
                                     <span id="editInstallPluginResult" class="small text-muted"></span>
                                 </div>
                                 <details class="mt-2">
-                                    <summary class="small text-muted">Manual install</summary>
+                                    <summary class="small text-muted">Install the plugin manually</summary>
                                     <p class="small text-muted mt-2 mb-1">
                                         In Jellyfin admin: <strong>Dashboard → Plugins → Repositories → +</strong>, then paste:
                                     </p>

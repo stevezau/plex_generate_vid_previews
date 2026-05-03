@@ -1111,18 +1111,36 @@
             tcResult.className = 'small text-muted';
             tcResult.textContent = '';
         }
-        // Vendor-specific blurb for the auto-extraction panel.
+        // Vendor-specific blurb for the auto-extraction panel. Two-tier:
+        //   • summary  → always-visible one-liner ("why you'd want this")
+        //   • details  → collapsed "What this changes" body (every flag we
+        //                flip + the one-time-pass caveat). Splitting them
+        //                stops the wall-of-text from drowning out the
+        //                action button. Title in the template stays generic
+        //                because all three vendors land on the same advice:
+        //                "stop the server's own preview generation".
         const veBlurb = document.getElementById('editVendorExtractionBlurb');
+        const veDetails = document.getElementById('editVendorExtractionDetailsBody');
         if (veBlurb) {
             const t = (server.type || '').toLowerCase();
             if (t === 'plex') {
-                veBlurb.innerHTML = `Plex's <strong>Generate video preview thumbnails</strong> setting will be turned off on every library. Plex still loads our published BIF when present, so display is unaffected — only Plex's own background generation stops.`;
+                veBlurb.innerHTML = `Plex would otherwise re-generate previews itself during library scans. Disable to free up CPU — Plex still uses the BIF files this app publishes.`;
+                if (veDetails) {
+                    veDetails.innerHTML = `Flips Plex's <strong>Generate video preview thumbnails</strong> setting to off on every library. Plex still loads our published BIF when present, so playback scrubbing is unaffected — only Plex's own background generation stops.`;
+                }
             } else if (t === 'emby') {
-                veBlurb.innerHTML = `Emby's chapter-image / trickplay scan-time extraction will be turned off on every library. Emby still loads our published preview files; only its own background generation stops.`;
+                veBlurb.innerHTML = `Emby would otherwise re-generate chapter images / trickplay itself during library scans. Disable to free up CPU — Emby still loads the preview files this app publishes.`;
+                if (veDetails) {
+                    veDetails.innerHTML = `Turns off Emby's chapter-image and trickplay scan-time extraction on every library. Emby keeps reading our published preview files (BIF / trickplay sheets); only its own background generation stops.`;
+                }
             } else if (t === 'jellyfin') {
-                veBlurb.innerHTML = `Two Jellyfin library options get flipped: <em>scan-time</em> extraction off, <em>save-with-media</em> on (so Jellyfin reads our published trickplay). The detection flag stays on — without it Jellyfin <strong>deletes</strong> our published files. The daily "Refresh Trickplay Images" task is left at its default 3 AM trigger; that task is Jellyfin's import path, so clearing it would make our trickplay sit on disk invisible. Items not yet covered by this app will get a one-time ffmpeg pass at 3 AM until processed here.`;
+                veBlurb.innerHTML = `Jellyfin would otherwise re-generate trickplay itself during library scans. Disable to free up CPU — Jellyfin still uses the trickplay files this app publishes.`;
+                if (veDetails) {
+                    veDetails.innerHTML = `Turns off <em>scan-time extraction</em> and turns on <em>save-with-media</em> on every Jellyfin library, so Jellyfin reads the trickplay folder this app writes. The <em>detection</em> flag is intentionally left on — without it Jellyfin <strong>deletes</strong> our published files on the next scan. The daily <em>Refresh Trickplay Images</em> task stays at its default schedule (3 AM) because that's also the path Jellyfin uses to import our published tiles into its database — clearing it would leave the files on disk but invisible to the player. Items not yet processed by this app get a one-time ffmpeg pass at 3 AM until covered.`;
+                }
             } else {
                 veBlurb.textContent = 'Toggle vendor-side preview extraction.';
+                if (veDetails) veDetails.textContent = '';
             }
         }
         const veResult = document.getElementById('editVendorExtractionResult');
