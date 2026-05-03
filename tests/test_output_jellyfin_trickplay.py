@@ -2,16 +2,16 @@
 
 Verifies that:
 
-- the on-disk layout matches what Jellyfin 10.9+ scans for natively,
+- the on-disk layout matches Jellyfin 10.10+'s saved-with-media format
+  (``<media_dir>/<basename>.trickplay/<width> - <tileW>x<tileH>/``),
 - frames are packed into 10x10 JPG tile sheets (the Jellyfin native
   format — *not* BIF, which is Jellyscrub-plugin territory),
-- the manifest.json structure matches the @jellyfin/sdk typings,
-- the manifest's top-level key is the supplied item id.
+- no manifest.json is written (Jellyfin synthesises ``TrickplayInfo``
+  from the directory listing + sub-dir name).
 """
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -45,9 +45,7 @@ def _make_bundle(canonical_path: str, frame_dir: Path, frame_count: int) -> BifB
 
 
 class TestNeedsServerMetadata:
-    def test_returns_true_because_manifest_keyed_by_item_id(self):
-        # The manifest's top-level key is Jellyfin's item id; the
-        # dispatcher must surface that before publish.
+    def test_returns_true(self):
         assert JellyfinTrickplayAdapter().needs_server_metadata() is True
 
     def test_name(self):
@@ -55,7 +53,12 @@ class TestNeedsServerMetadata:
 
 
 class TestComputeOutputPaths:
-    def test_manifest_path_uses_basename_and_width(self, tmp_path):
+    def test_sheet0_path_matches_jellyfin_pathmanager_formula(self, tmp_path):
+        """Path must match Jellyfin's ``GetTrickplayDirectory(item, saveWithMedia=true)``
+        plus the ``<width> - <tileW>x<tileH>`` sub-directory — verified
+        against ``release-10.11.z`` source at
+        Emby.Server.Implementations/Library/PathManager.cs.
+        """
         adapter = JellyfinTrickplayAdapter(width=320)
         bundle = _make_bundle(
             "/m/Foo (2024)/Foo (2024).mkv",
@@ -65,19 +68,30 @@ class TestComputeOutputPaths:
         paths = adapter.compute_output_paths(bundle, MagicMock(), item_id="42")
 
         assert len(paths) == 1
-        assert paths[0] == Path("/m/Foo (2024)/trickplay/Foo (2024)-320.json")
+        assert paths[0] == Path("/m/Foo (2024)/Foo (2024).trickplay/320 - 10x10/0.jpg")
 
     def test_respects_custom_width(self, tmp_path):
         adapter = JellyfinTrickplayAdapter(width=480)
         bundle = _make_bundle("/m/Foo.mkv", tmp_path, frame_count=0)
         paths = adapter.compute_output_paths(bundle, MagicMock(), item_id="42")
-        assert paths[0] == Path("/m/trickplay/Foo-480.json")
+        assert paths[0] == Path("/m/Foo.trickplay/480 - 10x10/0.jpg")
 
     def test_missing_item_id_raises(self, tmp_path):
         adapter = JellyfinTrickplayAdapter()
         bundle = _make_bundle("/m/Foo.mkv", tmp_path, frame_count=0)
         with pytest.raises(ValueError, match="item_id"):
             adapter.compute_output_paths(bundle, MagicMock(), item_id=None)
+
+    def test_static_helpers_match_compute_output_paths(self, tmp_path):
+        """``trickplay_dir`` + ``sheet_dir`` are the public path helpers
+        used by the BIF Viewer + diagnostics. They MUST agree with the
+        adapter's own compute_output_paths or the viewer points at a
+        location the publisher never wrote to."""
+        canonical = "/m/Foo (2024)/Foo (2024).mkv"
+        assert JellyfinTrickplayAdapter.trickplay_dir(canonical) == Path("/m/Foo (2024)/Foo (2024).trickplay")
+        assert JellyfinTrickplayAdapter.sheet_dir(canonical, width=320) == Path(
+            "/m/Foo (2024)/Foo (2024).trickplay/320 - 10x10"
+        )
 
 
 class TestPublish:
@@ -92,12 +106,12 @@ class TestPublish:
 
         adapter = JellyfinTrickplayAdapter(width=320, frame_interval=10)
         bundle = _make_bundle(str(media_file), frame_dir, frame_count=15)
-        manifest_path = adapter.compute_output_paths(bundle, MagicMock(), item_id="abc-id")[0]
+        sheet0 = adapter.compute_output_paths(bundle, MagicMock(), item_id="abc-id")[0]
 
-        adapter.publish(bundle, [manifest_path], item_id="abc-id")
+        adapter.publish(bundle, [sheet0], item_id="abc-id")
 
         # Exactly one sheet for 15 frames (10x10 grid holds up to 100).
-        sheets_dir = media_dir / "trickplay" / "Test (2024)-320"
+        sheets_dir = media_dir / "Test (2024).trickplay" / "320 - 10x10"
         assert sheets_dir.is_dir()
         sheet_files = sorted(sheets_dir.iterdir())
         assert len(sheet_files) == 1
@@ -108,18 +122,10 @@ class TestPublish:
         with Image.open(sheet_files[0]) as sheet:
             assert sheet.size == (3200, 1800)  # 10*320 x 10*180
 
-        # Manifest path matches the schema and is keyed by the item id.
-        assert manifest_path.exists()
-        manifest = json.loads(manifest_path.read_text())
-        assert "Trickplay" in manifest
-        assert "abc-id" in manifest["Trickplay"]
-        info = manifest["Trickplay"]["abc-id"]["320"]
-        assert info["Width"] == 320
-        assert info["Height"] == 180
-        assert info["TileWidth"] == 10
-        assert info["TileHeight"] == 10
-        assert info["ThumbnailCount"] == 15
-        assert info["Interval"] == 10000  # ms
+        # No manifest is written — Jellyfin synthesises TrickplayInfo
+        # from the directory listing + sub-dir name on import.
+        assert not list(media_dir.glob("*.json"))
+        assert not list((media_dir / "Test (2024).trickplay").glob("*.json"))
 
     def test_writes_multiple_sheets_for_over_100_frames(self, tmp_path):
         frame_dir = tmp_path / "frames"
@@ -132,18 +138,14 @@ class TestPublish:
 
         adapter = JellyfinTrickplayAdapter(width=320, frame_interval=10)
         bundle = _make_bundle(str(media_file), frame_dir, frame_count=250)
-        manifest_path = adapter.compute_output_paths(bundle, MagicMock(), item_id="long-id")[0]
+        sheet0 = adapter.compute_output_paths(bundle, MagicMock(), item_id="long-id")[0]
 
-        adapter.publish(bundle, [manifest_path], item_id="long-id")
+        adapter.publish(bundle, [sheet0], item_id="long-id")
 
-        sheets_dir = media_dir / "trickplay" / "Long (2024)-320"
+        sheets_dir = media_dir / "Long (2024).trickplay" / "320 - 10x10"
         sheet_files = sorted(sheets_dir.iterdir())
         # 250 frames / 100 per sheet = 3 sheets (last one partially filled).
         assert [s.name for s in sheet_files] == ["0.jpg", "1.jpg", "2.jpg"]
-
-        manifest = json.loads(manifest_path.read_text())
-        info = manifest["Trickplay"]["long-id"]["320"]
-        assert info["ThumbnailCount"] == 250
 
     def test_creates_missing_trickplay_dir(self, tmp_path):
         frame_dir = tmp_path / "frames"
@@ -154,15 +156,42 @@ class TestPublish:
         media_file = media_dir / "X.mkv"
         media_file.write_bytes(b"")
 
-        # No trickplay/ directory yet.
-        assert not (media_dir / "trickplay").exists()
+        # No trickplay directory yet.
+        assert not (media_dir / "X.trickplay").exists()
 
         adapter = JellyfinTrickplayAdapter()
         bundle = _make_bundle(str(media_file), frame_dir, frame_count=5)
-        manifest_path = adapter.compute_output_paths(bundle, MagicMock(), item_id="x")[0]
-        adapter.publish(bundle, [manifest_path], item_id="x")
+        sheet0 = adapter.compute_output_paths(bundle, MagicMock(), item_id="x")[0]
+        adapter.publish(bundle, [sheet0], item_id="x")
 
-        assert (media_dir / "trickplay").is_dir()
+        assert (media_dir / "X.trickplay" / "320 - 10x10").is_dir()
+
+    def test_purges_stale_tiles_from_prior_run(self, tmp_path):
+        """Stale 5.jpg from a prior run with more frames must be removed —
+        Jellyfin imports the directory wholesale and would otherwise set
+        ThumbnailCount to include the leftover tile, causing the player
+        to request a frame that doesn't exist in the new sheet."""
+        frame_dir = tmp_path / "frames"
+        _populate_frames(frame_dir, count=15)
+
+        media_dir = tmp_path / "M"
+        media_dir.mkdir()
+        media_file = media_dir / "Foo.mkv"
+        media_file.write_bytes(b"")
+
+        # Pre-create a stale sheet 5.jpg from a "previous run".
+        sheets_dir = media_dir / "Foo.trickplay" / "320 - 10x10"
+        sheets_dir.mkdir(parents=True)
+        (sheets_dir / "5.jpg").write_bytes(b"\xff\xd8\xff stale")
+
+        adapter = JellyfinTrickplayAdapter(width=320)
+        bundle = _make_bundle(str(media_file), frame_dir, frame_count=15)
+        sheet0 = adapter.compute_output_paths(bundle, MagicMock(), item_id="x")[0]
+        adapter.publish(bundle, [sheet0], item_id="x")
+
+        # Stale tile must be gone; only 0.jpg should remain.
+        sheet_files = sorted(sheets_dir.iterdir())
+        assert [f.name for f in sheet_files] == ["0.jpg"]
 
     def test_empty_frame_dir_raises(self, tmp_path):
         frame_dir = tmp_path / "empty_frames"
@@ -173,10 +202,10 @@ class TestPublish:
 
         adapter = JellyfinTrickplayAdapter()
         bundle = _make_bundle(str(media_file), frame_dir, frame_count=0)
-        manifest_path = adapter.compute_output_paths(bundle, MagicMock(), item_id="x")[0]
+        sheet0 = adapter.compute_output_paths(bundle, MagicMock(), item_id="x")[0]
 
         with pytest.raises(RuntimeError, match="No JPG frames"):
-            adapter.publish(bundle, [manifest_path], item_id="x")
+            adapter.publish(bundle, [sheet0], item_id="x")
 
     def test_empty_output_paths_raises(self, tmp_path):
         adapter = JellyfinTrickplayAdapter()
@@ -197,10 +226,10 @@ class TestPublish:
 
         adapter = JellyfinTrickplayAdapter()
         bundle = _make_bundle(str(media_file), frame_dir, frame_count=2)
-        manifest_path = adapter.compute_output_paths(bundle, MagicMock(), item_id="x")[0]
-        adapter.publish(bundle, [manifest_path], item_id="x")
+        sheet0 = adapter.compute_output_paths(bundle, MagicMock(), item_id="x")[0]
+        adapter.publish(bundle, [sheet0], item_id="x")
 
-        sheets = sorted((tmp_path / "trickplay" / "Foo-320").iterdir())
+        sheets = sorted((tmp_path / "Foo.trickplay" / "320 - 10x10").iterdir())
         with Image.open(sheets[0]) as sheet:
             # Tile size = first frame's size = 320x180.
             assert sheet.size == (3200, 1800)

@@ -1,33 +1,48 @@
 """Jellyfin native trickplay output adapter.
 
-Produces Jellyfin 10.9+'s **native** trickplay format (NOT BIF — the BIF
-format only works in Jellyfin via the third-party Jellyscrub plugin). The
-native format is a sequence of JPG "sheets" — each sheet is a 10×10 grid
-of thumbnails — accompanied by a ``manifest.json`` that catalogues the
-geometry and frame interval. Together these files let Jellyfin's web
-client render scrubbing previews without any plugin installed.
+Produces Jellyfin 10.10+'s **native** "saved with media" trickplay layout —
+the format Jellyfin's own ``Library/PathManager.GetTrickplayDirectory(item, saveWithMedia=true)``
+returns, so Jellyfin's import-existing-tiles path
+(``TrickplayManager.RefreshTrickplayDataAsync``) finds our output, registers
+the resolution in its DB, and skips spawning ffmpeg.
 
 Output layout under the media file's directory::
 
-    trickplay/
-        <basename>-<width>.json     # manifest, keyed by Jellyfin item id
-        <basename>-<width>/
-            0.jpg                   # sheet 0: thumbnails 0..99 in a 10x10 grid
-            1.jpg                   # sheet 1: thumbnails 100..199
+    <basename>.trickplay/
+        <width> - <tileW>x<tileH>/
+            0.jpg                   # sheet 0: tiles 0..(tileW*tileH - 1)
+            1.jpg                   # sheet 1: next tileW*tileH tiles
             ...
 
-The frames our existing FFmpeg pipeline extracts are repacked into sheets
-via Pillow; no second FFmpeg pass needed.
+That is the EXACT layout Jellyfin's ``PathManager.GetTrickplayDirectory``
+emits for ``saveWithMedia=true`` plus the ``"<width> - <tileW>x<tileH>"``
+sub-directory ``TrickplayManager.GetTrickplayDirectory`` constructs. No
+manifest JSON is written — Jellyfin synthesises its own ``TrickplayInfo``
+DB row from the on-disk file count + the tile geometry encoded in the
+sub-dir name.
+
+The required Jellyfin library options for this layout to be picked up::
+
+    EnableTrickplayImageExtraction = true   # detection / serving gate
+    SaveTrickplayWithMedia        = true    # look in <basename>.trickplay/...
+    ExtractTrickplayImagesDuringLibraryScan = false  # don't burn CPU on scans
+
+Note that ``EnableTrickplayImageExtraction = false`` is destructive in
+Jellyfin — it deletes the trickplay directory on the next refresh.
+``servers/jellyfin.py::set_vendor_extraction`` keeps it on for that reason.
 
 References:
-    * Jellyfin 10.9 release notes (introduced the native format).
-    * `@jellyfin/sdk` ``TrickplayOptions`` / ``TrickplayInfo`` typings.
-    * Jellyfin issue #11747 / #12887 for the next-to-media layout.
+    * Jellyfin ``PathManager.GetTrickplayDirectory`` (release-10.11.z) —
+      https://github.com/jellyfin/jellyfin/blob/release-10.11.z/Emby.Server.Implementations/Library/PathManager.cs
+    * Jellyfin ``TrickplayManager.RefreshTrickplayDataAsync`` (release-10.11.z) —
+      https://github.com/jellyfin/jellyfin/blob/release-10.11.z/Jellyfin.Server.Implementations/Trickplay/TrickplayManager.cs
+    * Pre-D38 layout was ``<dir>/trickplay/<basename>-<width>/<i>.jpg`` plus
+      a ``<basename>-<width>.json`` manifest. Jellyfin 10.10+ never looked
+      there — the output existed but rendered nowhere.
 """
 
 from __future__ import annotations
 
-import json
 import math
 import os
 from pathlib import Path
@@ -38,24 +53,27 @@ from PIL import Image
 from ..servers.base import MediaServer
 from .base import BifBundle, OutputAdapter
 
-# Jellyfin's native format groups thumbnails into 10x10 sheets.
+# Jellyfin's native format groups thumbnails into 10x10 sheets. The
+# server reads this geometry from the sheet sub-directory name; changing
+# either dimension WITHOUT also changing the sub-directory name would
+# silently desync Jellyfin's tile-picker math from our layout.
 _TILE_W = 10
 _TILE_H = 10
 _TILES_PER_SHEET = _TILE_W * _TILE_H
 
 
 class JellyfinTrickplayAdapter(OutputAdapter):
-    """Publish Jellyfin's native JPG-tile trickplay layout next to the media file.
+    """Publish Jellyfin's native saved-with-media tile layout next to the media file.
 
     Args:
-        width: Pixel width of each thumbnail. Must match the width the
-            FFmpeg frame-extraction stage produced — sheets are composed
-            by reading frame dimensions from the on-disk JPGs, but
-            packing into the manifest needs the canonical width too so
-            Jellyfin's player picks the right sheet for the requested
-            resolution.
-        frame_interval: Seconds between successive frames; persisted in
-            the manifest as milliseconds.
+        width: Pixel width of each thumbnail. Encoded in the sheet
+            sub-directory name (Jellyfin's tile-picker reads it from
+            there). Must match the width the FFmpeg frame-extraction
+            stage produced.
+        frame_interval: Seconds between successive frames. Not encoded
+            into the layout at all (Jellyfin tracks interval per-item
+            in its DB and recomputes from the file count + duration if
+            unset). Kept on the adapter for symmetry with EmbyBifAdapter.
         jpeg_quality: Output JPEG quality for the assembled sheets
             (Jellyfin's own default is 90; we mirror it).
     """
@@ -76,8 +94,9 @@ class JellyfinTrickplayAdapter(OutputAdapter):
         return "jellyfin_trickplay"
 
     def needs_server_metadata(self) -> bool:
-        # The manifest is keyed by Jellyfin's item id; the dispatcher
-        # must surface that before publish.
+        # Item id is required for the publish-time write_meta call so we
+        # must surface that before publish. (No server API call needed —
+        # the sheet directory is fully derivable from canonical_path.)
         return True
 
     def compute_output_paths(
@@ -86,51 +105,60 @@ class JellyfinTrickplayAdapter(OutputAdapter):
         server: MediaServer | None,
         item_id: str | None,
     ) -> list[Path]:
-        """Return the manifest path; tile-sheet paths are derived during publish.
+        """Return the path of sheet 0 — used for the freshness check.
+
+        Sheet 0 is always present whenever any trickplay output exists
+        for this item, so its mtime is a safe stand-in for the whole
+        trickplay output's freshness.
 
         Raises:
-            ValueError: When ``item_id`` is missing — the manifest is
-                keyed by item id and Jellyfin's web client looks the
-                trickplay data up by item, so without it the output
-                would be invalid.
+            ValueError: When ``item_id`` is missing.
         """
         if item_id is None:
-            raise ValueError(
-                "JellyfinTrickplayAdapter requires an item_id (the manifest is keyed by Jellyfin's item id)"
-            )
-        # We deliberately do NOT touch the server here — the item id is
-        # already known from the source webhook or library scan.
-        del server, item_id  # unused; the dispatcher passes item_id again at publish time
-        return [self.manifest_path(bundle.canonical_path, width=self._width)]
+            raise ValueError("JellyfinTrickplayAdapter requires an item_id for publish-time bookkeeping")
+        del server, item_id  # unused; layout is derived purely from canonical_path
+        return [self.sheet_dir(bundle.canonical_path, width=self._width) / "0.jpg"]
 
     @staticmethod
-    def manifest_path(canonical_path: str, *, width: int) -> Path:
-        """Compute the manifest JSON path for a media file at the given width.
+    def trickplay_dir(canonical_path: str) -> Path:
+        """Compute ``<media_dir>/<basename>.trickplay/`` for ``canonical_path``.
 
-        Public helper mirroring :meth:`EmbyBifAdapter.sidecar_path` so
-        callers (BIF Viewer, output-status diagnostics) can compute the
-        path without instantiating an adapter.
+        Mirrors Jellyfin's ``PathManager.GetTrickplayDirectory(item, saveWithMedia=true)``:
+        ``Path.Combine(item.ContainingFolderPath, Path.ChangeExtension(item.Path, ".trickplay"))``.
         """
         media_path = Path(canonical_path)
-        basename = media_path.stem
-        return media_path.parent / "trickplay" / f"{basename}-{int(width)}.json"
+        return media_path.parent / f"{media_path.stem}.trickplay"
+
+    @staticmethod
+    def sheet_dir(
+        canonical_path: str,
+        *,
+        width: int,
+        tile_w: int = _TILE_W,
+        tile_h: int = _TILE_H,
+    ) -> Path:
+        """Compute the per-resolution sheet directory.
+
+        Mirrors Jellyfin's ``TrickplayManager.GetTrickplayDirectory`` which
+        appends ``"{width} - {tileW}x{tileH}"`` to the trickplay directory.
+        Static + parameterised so the BIF Viewer + diagnostics can compute
+        the path without instantiating an adapter.
+        """
+        return JellyfinTrickplayAdapter.trickplay_dir(canonical_path) / f"{int(width)} - {int(tile_w)}x{int(tile_h)}"
 
     def publish(self, bundle: BifBundle, output_paths: list[Path], item_id: str | None = None) -> None:
-        """Pack ``bundle.frame_dir`` JPG frames into Jellyfin tile sheets + manifest.
+        """Pack ``bundle.frame_dir`` JPG frames into Jellyfin tile sheets.
 
-        ``output_paths[0]`` is the manifest path (computed by
-        :meth:`compute_output_paths`). Sheet directory and contents are
-        derived from it. ``item_id`` is the Jellyfin item id this
-        manifest indexes — the same value that was passed to
-        :meth:`compute_output_paths`.
+        ``output_paths[0]`` is the sheet-0 path (computed by
+        :meth:`compute_output_paths`). All sibling sheets are written
+        into the same parent directory.
         """
         if not output_paths:
-            raise ValueError("JellyfinTrickplayAdapter.publish requires the manifest path")
+            raise ValueError("JellyfinTrickplayAdapter.publish requires the sheet-0 path")
         if not item_id:
             raise ValueError("JellyfinTrickplayAdapter.publish requires the Jellyfin item_id")
 
-        manifest_path = output_paths[0]
-        sheets_dir = manifest_path.with_suffix("")  # strip .json → trickplay/<basename>-<width>/
+        sheets_dir = output_paths[0].parent
         try:
             sheets_dir.mkdir(parents=True, exist_ok=True)
         except PermissionError as exc:
@@ -145,6 +173,16 @@ class JellyfinTrickplayAdapter(OutputAdapter):
                 exc,
             )
             raise
+
+        # Clear any stale tiles from a prior run with a different frame
+        # count — Jellyfin imports the directory contents wholesale, so a
+        # leftover sheet-N.jpg from before would inflate the manifest's
+        # ThumbnailCount and crash the player on a missing tile.
+        for stale in sheets_dir.glob("*.jpg"):
+            try:
+                stale.unlink()
+            except OSError as exc:
+                logger.debug("Could not remove stale tile {}: {}", stale, exc)
 
         frames = sorted(p for p in os.listdir(bundle.frame_dir) if p.lower().endswith(".jpg"))
         if not frames:
@@ -181,46 +219,11 @@ class JellyfinTrickplayAdapter(OutputAdapter):
             sheet_image.save(sheet_path, "JPEG", quality=self._jpeg_quality)
             sheets_written += 1
 
-        manifest_payload = self._build_manifest(
-            item_id=item_id,
-            thumbnail_count=len(frames),
-            thumb_w=thumb_w,
-            thumb_h=thumb_h,
-        )
-        with manifest_path.open("w", encoding="utf-8") as f:
-            json.dump(manifest_payload, f, indent=2)
-
         logger.debug(
-            "Jellyfin trickplay published: {} sheet(s) + manifest at {}",
+            "Jellyfin trickplay published: {} sheet(s) at {}",
             sheets_written,
-            manifest_path,
+            sheets_dir,
         )
-
-    def _build_manifest(
-        self,
-        *,
-        item_id: str,
-        thumbnail_count: int,
-        thumb_w: int,
-        thumb_h: int,
-    ) -> dict:
-        """Build the manifest dict; structure verified against @jellyfin/sdk typings."""
-        bandwidth = thumbnail_count * thumb_w * thumb_h * 3  # rough; Jellyfin is permissive
-        return {
-            "Trickplay": {
-                item_id: {
-                    str(self._width): {
-                        "Width": int(thumb_w),
-                        "Height": int(thumb_h),
-                        "TileWidth": _TILE_W,
-                        "TileHeight": _TILE_H,
-                        "ThumbnailCount": int(thumbnail_count),
-                        "Interval": int(self._frame_interval) * 1000,
-                        "Bandwidth": int(bandwidth),
-                    }
-                }
-            }
-        }
 
 
 def _measure_first_frame(frame_path: Path) -> tuple[int, int]:

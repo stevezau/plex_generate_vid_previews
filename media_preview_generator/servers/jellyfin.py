@@ -209,11 +209,32 @@ class JellyfinServer(EmbyApiClient):
         Server modal. When the user lets THIS app handle preview
         generation, Jellyfin's own scan-time extraction is wasted CPU.
 
-        Behaviour: always KEEPS ``EnableTrickplayImageExtraction = True``
-        (Jellyfin needs that on to detect/serve our sidecar trickplay)
-        and only flips ``ExtractTrickplayImagesDuringLibraryScan`` to
-        the requested value. Without that distinction, disabling either
-        flag also kills display of our previews.
+        Three flags + one scheduled task all need handling — Jellyfin's
+        trickplay subsystem is gated by several knobs and missing any
+        one re-introduces the spike:
+
+        1. ``EnableTrickplayImageExtraction`` — KEEP True. This is the
+           detection / serving gate AND a destructive prune flag — when
+           False, ``RefreshTrickplayDataAsync`` ``Directory.Delete``s our
+           saved-with-media output on the next refresh.
+        2. ``ExtractTrickplayImagesDuringLibraryScan`` — set to
+           ``scan_extraction``. ``TrickplayProvider.FetchInternal``
+           early-returns when this is False, skipping per-item scan
+           extraction.
+        3. ``SaveTrickplayWithMedia`` — set True when ``scan_extraction``
+           is False. Without this Jellyfin looks for trickplay under
+           ``<config>/data/trickplay/<id[..2]>/<id>/...`` (where we never
+           write); with it, Jellyfin looks under
+           ``<media_dir>/<basename>.trickplay/<width> - <tileW>x<tileH>/``
+           (where ``JellyfinTrickplayAdapter`` does write).
+        4. The "Refresh Trickplay Images" scheduled task runs daily and
+           does NOT respect ``ExtractTrickplayImagesDuringLibraryScan`` —
+           it walks every video and calls ``RefreshTrickplayDataAsync``
+           directly. When our files exist at the saved-with-media path
+           Jellyfin imports them and skips ffmpeg, but for any item we
+           haven't yet processed Jellyfin would spawn ffmpeg. Strip the
+           task's triggers so it never auto-fires while our tool is in
+           charge.
 
         ``library_ids=None`` means "every library".
         """
@@ -240,6 +261,12 @@ class JellyfinServer(EmbyApiClient):
             # Detection always on so our published trickplay is actually used.
             options["EnableTrickplayImageExtraction"] = True
             options["ExtractTrickplayImagesDuringLibraryScan"] = bool(scan_extraction)
+            # When we own generation, point Jellyfin at the media-relative
+            # path our adapter writes to. When the user wants Jellyfin to
+            # own generation again, leave the flag alone — they may have
+            # set it intentionally either way.
+            if not scan_extraction:
+                options["SaveTrickplayWithMedia"] = True
 
             try:
                 update = self._request(
@@ -257,7 +284,78 @@ class JellyfinServer(EmbyApiClient):
                     exc,
                 )
                 results[lib_id] = f"error: {exc}"
+
+        # Strip / restore the daily "Refresh Trickplay Images" task
+        # triggers. Best-effort — task management isn't load-bearing on
+        # the per-library config and a failure here shouldn't abort.
+        try:
+            self._set_trickplay_task_triggers(disabled=not scan_extraction)
+        except Exception as exc:
+            logger.warning(
+                "Could not adjust Jellyfin trickplay scheduled task on server {!r}: {}",
+                self.name,
+                exc,
+            )
         return results
+
+    def _set_trickplay_task_triggers(self, *, disabled: bool) -> None:
+        """Empty (or restore-default) the daily trickplay task triggers.
+
+        Jellyfin's "Refresh Trickplay Images" task fires daily at 3am by
+        default and walks every video — bypassing the per-library
+        ``ExtractTrickplayImagesDuringLibraryScan`` gate. Stripping its
+        triggers stops the auto-fire while leaving the task itself
+        present (so an admin can still hit "Run" manually if they want).
+
+        ``disabled=True`` posts ``[]`` to clear all triggers.
+        ``disabled=False`` restores Jellyfin's default daily 3am trigger
+        so re-enabling vendor generation also reinstates the daily
+        sweep we previously turned off.
+        """
+        try:
+            response = self._request("GET", "/ScheduledTasks")
+            response.raise_for_status()
+            tasks = response.json()
+        except Exception as exc:
+            logger.debug("Could not list Jellyfin scheduled tasks: {}", exc)
+            return
+
+        if not isinstance(tasks, list):
+            return
+
+        triggers: list[dict[str, Any]]
+        if disabled:
+            triggers = []
+        else:
+            # Default: daily at 03:00:00 (10800000000000 ticks = 3 hours
+            # from midnight), matching what Jellyfin ships.
+            triggers = [{"Type": "DailyTrigger", "TimeOfDayTicks": 108000000000}]
+
+        for task in tasks:
+            if not isinstance(task, dict):
+                continue
+            if "trickplay" not in str(task.get("Name") or "").lower():
+                continue
+            if (
+                "generate" not in str(task.get("Name") or "").lower()
+                and "refresh" not in str(task.get("Name") or "").lower()
+            ):
+                continue
+            task_id = str(task.get("Id") or "")
+            if not task_id:
+                continue
+            try:
+                self._request(
+                    "POST",
+                    f"/ScheduledTasks/{task_id}/Triggers",
+                    json_body=triggers,
+                ).raise_for_status()
+            except Exception as exc:
+                logger.debug(
+                    "Could not update triggers on Jellyfin task {!r}: {}",
+                    task.get("Name"),
+                    exc,
+                )
 
     def parse_webhook(
         self,

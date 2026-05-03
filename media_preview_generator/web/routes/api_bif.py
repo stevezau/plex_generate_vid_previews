@@ -729,11 +729,15 @@ def _resolve_preview_for_item(item, server_cfg) -> dict:
             preview_exists=bif.exists(),
         )
     elif server_cfg.type is ServerType.JELLYFIN:
-        manifest = JellyfinTrickplayAdapter.manifest_path(canonical_local, width=width)
+        # Sheet directory is the on-disk root for Jellyfin's saved-with-media
+        # layout (D38). The viewer sends this path back to /trickplay/info,
+        # which synthesises the manifest from the directory listing —
+        # Jellyfin doesn't write a manifest itself, so we don't either.
+        sheet_dir = JellyfinTrickplayAdapter.sheet_dir(canonical_local, width=width)
         base.update(
             preview_kind="trickplay",
-            preview_path=str(manifest),
-            preview_exists=manifest.exists(),
+            preview_path=str(sheet_dir),
+            preview_exists=sheet_dir.is_dir() and any(sheet_dir.glob("*.jpg")),
         )
     else:
         base.update(preview_kind="unknown", preview_path="", preview_exists=False)
@@ -744,17 +748,23 @@ def _resolve_preview_for_item(item, server_cfg) -> dict:
 @api.route("/bif/trickplay/info")
 @api_token_required
 def trickplay_info():
-    """Return Jellyfin trickplay manifest + sheet metadata for the viewer.
+    """Return Jellyfin trickplay sheet metadata for the viewer.
 
     Query params:
         server_id: Configured Jellyfin server id (for path-validation).
-        path: Absolute path to the manifest JSON.
+        path: Absolute path to the sheet directory
+            (``<media_dir>/<basename>.trickplay/<width> - <tileW>x<tileH>``).
 
-    Returns the parsed manifest plus a ``sheets`` array describing each
-    on-disk tile sheet. The viewer uses ``frames_per_sheet`` +
-    ``thumbnail_count`` to compute frame indices.
+    Synthesises ``thumbnail_count`` + ``thumb_width/height`` + per-sheet
+    info from the on-disk listing — Jellyfin's 10.10+ saved-with-media
+    layout doesn't write a manifest, so neither do we (D38).
+
+    Tile geometry is parsed from the directory name (Jellyfin's own
+    convention: ``"<width> - <tileW>x<tileH>"``); the resolution width
+    comes from the same string so a single Jellyfin-format directory
+    is enough for the viewer to render any frame.
     """
-    import json as _json
+    import re
 
     from ...servers import ServerRegistry
     from ..settings_manager import get_settings_manager
@@ -774,39 +784,76 @@ def trickplay_info():
         return jsonify({"error": "server config missing"}), 500
     allowed_roots = _allowed_roots_for_server(server_cfg)
     resolved = _validate_path_under_any_server(path, allowed_roots)
-    if resolved is None or not resolved.endswith(".json"):
-        return jsonify({"error": "Invalid manifest path"}), 400
+    if resolved is None:
+        return jsonify({"error": "Invalid path"}), 400
+    if not os.path.isdir(resolved):
+        return jsonify({"error": "Sheet directory does not exist"}), 400
 
-    try:
-        with open(resolved, encoding="utf-8") as fh:
-            manifest = _json.load(fh)
-    except (OSError, ValueError) as exc:
-        return jsonify({"error": f"Could not read manifest: {exc}"}), 400
-
-    # Manifest shape: {"Trickplay": {<item_id>: {<width>: {...}}}}
-    tp = manifest.get("Trickplay") or {}
-    if not isinstance(tp, dict) or not tp:
-        return jsonify({"error": "Manifest missing Trickplay metadata"}), 400
-    by_width = next(iter(tp.values())) if tp else {}
-    info = next(iter(by_width.values())) if by_width else {}
-    if not isinstance(info, dict) or "TileWidth" not in info:
-        return jsonify({"error": "Manifest missing per-width metadata"}), 400
-
-    tile_w = int(info["TileWidth"])
-    tile_h = int(info["TileHeight"])
-    thumb_count = int(info.get("ThumbnailCount") or 0)
+    # Parse "<width> - <tileW>x<tileH>" from the directory name (the same
+    # convention Jellyfin's TrickplayManager.GetTrickplayDirectory uses).
+    dir_name = os.path.basename(resolved.rstrip("/"))
+    match = re.match(r"^\s*(\d+)\s*-\s*(\d+)x(\d+)\s*$", dir_name)
+    if not match:
+        return jsonify({"error": f"Sheet directory name doesn't match '<width> - <tileW>x<tileH>': {dir_name!r}"}), 400
+    # match.group(1) is the resolution width — currently unused by the
+    # response (the viewer reads thumb_w/thumb_h measured off the sheet)
+    # but the regex still has to match it to validate the sub-dir name.
+    tile_w = int(match.group(2))
+    tile_h = int(match.group(3))
     if tile_w < 1 or tile_h < 1:
-        # Defensive: a manifest with TileWidth/Height of 0 would later
-        # cause a ZeroDivisionError downstream when /trickplay-frame
-        # divides pos_in_sheet by frames_per_sheet.
-        return jsonify({"error": f"Manifest has invalid TileWidth/TileHeight: {tile_w}x{tile_h}"}), 400
+        # /trickplay/frame divides pos_in_sheet by frames_per_sheet; guard
+        # against a 0 in either dimension producing a ZeroDivisionError.
+        return jsonify({"error": f"Invalid tile geometry {tile_w}x{tile_h}"}), 400
     frames_per_sheet = tile_w * tile_h
-    sheet_count = (thumb_count + frames_per_sheet - 1) // frames_per_sheet
-    sheets_dir = os.path.splitext(resolved)[0]  # strip ``.json``
+
+    sheet_files = sorted(
+        (f for f in os.listdir(resolved) if f.endswith(".jpg") and f.split(".")[0].isdigit()),
+        key=lambda f: int(f.split(".")[0]),
+    )
+    sheet_count = len(sheet_files)
+    if sheet_count == 0:
+        return jsonify({"error": "No tile sheets found in directory"}), 400
+
+    # Measure the LAST sheet to count tiles in it (the last sheet may be
+    # partial); all earlier sheets are full at frames_per_sheet.
+    last_sheet_path = os.path.join(resolved, sheet_files[-1])
+    try:
+        from PIL import Image as _Image
+
+        with _Image.open(last_sheet_path) as img:
+            sheet_pixel_w, sheet_pixel_h = img.size
+    except Exception as exc:
+        return jsonify({"error": f"Could not measure last sheet: {exc}"}), 400
+
+    thumb_w = sheet_pixel_w // tile_w if tile_w else 0
+    thumb_h = sheet_pixel_h // tile_h if tile_h else 0
+    # Last sheet's filled-tile count: scan top-to-bottom for the first
+    # row that's all-black (sentinel rows in our packing). Fall back to
+    # frames_per_sheet for a fully-packed sheet.
+    last_sheet_tiles = frames_per_sheet
+    try:
+        from PIL import Image as _Image
+
+        with _Image.open(last_sheet_path) as img:
+            for i in range(frames_per_sheet - 1, -1, -1):
+                row = i // tile_w
+                col = i % tile_w
+                tile_box = (col * thumb_w, row * thumb_h, (col + 1) * thumb_w, (row + 1) * thumb_h)
+                tile = img.crop(tile_box)
+                # All-black tile = empty slot.
+                if tile.getbbox() is not None:
+                    last_sheet_tiles = i + 1
+                    break
+            else:
+                last_sheet_tiles = 0
+    except Exception:
+        # Fall back to assuming the last sheet is full.
+        pass
+    thumb_count = (sheet_count - 1) * frames_per_sheet + last_sheet_tiles
 
     sheets = []
     for n in range(sheet_count):
-        sheet_path = os.path.join(sheets_dir, f"{n}.jpg")
+        sheet_path = os.path.join(resolved, f"{n}.jpg")
         sheets.append(
             {
                 "index": n,
@@ -816,18 +863,24 @@ def trickplay_info():
             }
         )
 
+    # The viewer reads frame_interval_ms from this response. We don't
+    # know it from disk (Jellyfin tracks it in its DB) so we default to
+    # 10000 — matches our generator's default and is overridable by the
+    # caller adding ``?interval_ms=`` to the request.
+    interval_ms = int(request.args.get("interval_ms") or 10000)
+
     return jsonify(
         {
-            "manifest_path": resolved,
+            "manifest_path": resolved,  # kept for API compat; this is now the sheet-dir path
             "tile_width": tile_w,
             "tile_height": tile_h,
-            "thumb_width": int(info.get("Width") or 320),
-            "thumb_height": int(info.get("Height") or 180),
+            "thumb_width": thumb_w,
+            "thumb_height": thumb_h,
             "thumbnail_count": thumb_count,
-            "interval_ms": int(info.get("Interval") or 10000),
+            "interval_ms": interval_ms,
             "frames_per_sheet": frames_per_sheet,
             "sheet_count": sheet_count,
-            "sheets_dir": sheets_dir,
+            "sheets_dir": resolved,
             "sheets": sheets,
         }
     )

@@ -947,17 +947,17 @@ class TestOutputStatus:
         assert data["exists"] is False
 
     def test_jellyfin_reports_missing_sheets_dir(self, client, auth_headers, tmp_path):
-        # Manifest exists but the tile-sheets directory doesn't yet —
-        # exists must report False because the format requires both.
+        # Sheet directory exists but contains no .jpg tiles yet —
+        # exists must report False (D38: the layout's "fresh" signal is
+        # the presence of at least one tile under the per-resolution
+        # sub-dir, not the presence of the directory shell).
         media_dir = tmp_path / "Show" / "S01"
         media_dir.mkdir(parents=True)
         media_file = media_dir / "S01E01.mkv"
         media_file.write_bytes(b"")
-        trickplay_dir = media_dir / "trickplay"
-        trickplay_dir.mkdir()
-        manifest = trickplay_dir / "S01E01-320.json"
-        manifest.write_text("{}")
-        # NOTE: matching tiles dir trickplay/S01E01-320/ deliberately omitted.
+        sheet_dir = media_dir / "S01E01.trickplay" / "320 - 10x10"
+        sheet_dir.mkdir(parents=True)
+        # NOTE: 0.jpg deliberately omitted.
 
         _seed_media_servers(
             [
@@ -980,9 +980,9 @@ class TestOutputStatus:
         )
         data = response.get_json()
         assert data["server_type"] == "jellyfin"
-        # Manifest was present, but sheets dir wasn't — overall NOT exists.
+        # Sheet dir exists but contains no .jpg tiles — overall NOT exists.
         assert data["exists"] is False
-        assert any("S01E01-320" in p for p in data["missing_paths"])
+        assert any("S01E01.trickplay" in p for p in data["missing_paths"])
 
     def test_404_when_server_missing(self, client, auth_headers):
         _seed_media_servers([])

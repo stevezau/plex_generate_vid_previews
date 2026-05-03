@@ -407,9 +407,9 @@ class TestMultiPublisherFanOut:
         assert statuses["emby-1"] is PublisherStatus.PUBLISHED
         assert statuses["jelly-1"] is PublisherStatus.PUBLISHED
 
-        # Both formats landed on disk.
+        # Both formats landed on disk in the layouts each vendor expects.
         assert (media_dir / "Test (2024)-320-10.bif").exists()
-        assert (media_dir / "trickplay" / "Test (2024)-320.json").exists()
+        assert (media_dir / "Test (2024).trickplay" / "320 - 10x10" / "0.jpg").exists()
 
 
 class TestCrossServerBifReuse:
