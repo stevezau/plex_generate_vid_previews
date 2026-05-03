@@ -55,6 +55,34 @@ class TestBasicFunctionality:
         # /api endpoints are mandatory — the dashboard depends on them.
         assert any(r.startswith("/api/") for r in rules), f"No /api/ routes registered: {rules[:5]}"
 
+    def test_socketio_polling_only(self, tmp_path, monkeypatch):
+        """Regression: SocketIO must refuse WebSocket upgrades.
+
+        With ``async_mode="threading"``, every accepted WebSocket connection
+        pins one gunicorn thread for its lifetime. Page refreshes leave
+        CLOSE_WAIT sockets and the 8-thread pool quickly exhausts —
+        producing the user-visible "Failed to fetch" toast on Pause and
+        a frozen UI under heavy emit load.
+
+        Commit 59d862a fixed this with ``allow_upgrades=False`` + a
+        polling-only client transport. The setting was lost during the
+        ``plex_generate_previews → media_preview_generator`` package
+        rename and the freeze regressed. Lock it in here so the next
+        rename or refactor doesn't silently re-introduce it.
+        """
+        from media_preview_generator.web import auth as _auth
+        from media_preview_generator.web.app import create_app, socketio
+
+        monkeypatch.setattr(_auth, "AUTH_FILE", str(tmp_path / "auth.json"))
+        monkeypatch.setattr(_auth, "CONFIG_DIR", str(tmp_path))
+
+        create_app(config_dir=str(tmp_path))
+        eio_server = socketio.server.eio
+        assert eio_server.allow_upgrades is False, (
+            "SocketIO must refuse WebSocket upgrades — see commit 59d862a "
+            "and create_app()'s socketio.init_app() docstring."
+        )
+
     def test_no_cli_module(self):
         """Test that CLI module has been removed."""
         import importlib

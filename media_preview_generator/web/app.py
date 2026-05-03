@@ -420,15 +420,26 @@ def create_app(config_dir: str | None = None) -> Flask:
     # CSRF exemptions are applied selectively per-endpoint after
     # blueprint registration.  See the loop below register_blueprint().
 
-    # Threading mode: uses real OS threads (no eventlet/gevent).
-    # Eventlet replaces threading.Thread with cooperative green threads,
-    # which deadlocks worker.py's subprocess calls. See GitHub #154.
+    # Threading mode + polling-only transport. The two design constraints:
+    #   1. Eventlet/gevent monkey-patches threading.Thread into green threads
+    #      and breaks worker.py subprocess.* calls (GitHub #154).
+    #   2. With async_mode="threading", every WebSocket connection pins one
+    #      gunicorn thread for its lifetime. Page refreshes leave CLOSE_WAIT
+    #      sockets that exhaust the 8-thread pool — the entire UI then
+    #      freezes and Pause/Refresh fetches fail with "Failed to fetch".
+    # HTTP long-polling sidesteps both: short-lived requests release threads
+    # naturally; dead clients simply stop polling. allow_upgrades=False
+    # explicitly refuses any WebSocket upgrade so a stray client transport
+    # config can't sneak the persistent-socket failure mode back in. See
+    # commit 59d862a for the original validation; the setting was lost in
+    # the plex_generate_previews → media_preview_generator rename.
     socketio.init_app(
         app,
         async_mode="threading",
         cors_allowed_origins=cors_origins,
         ping_timeout=20,
         ping_interval=10,
+        allow_upgrades=False,
     )
 
     # Initialize settings manager with the config_dir FIRST

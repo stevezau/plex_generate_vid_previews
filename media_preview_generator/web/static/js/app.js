@@ -241,8 +241,12 @@ function initDashboard() {
 
 // SocketIO Connection
 function connectSocket() {
+    // Polling-only — matches allow_upgrades=False on the server. WebSocket
+    // pinned a gunicorn thread per browser tab and dead CLOSE_WAIT sockets
+    // exhausted the pool. Skip the WS upgrade attempt entirely so we don't
+    // pay the failed-handshake round-trip on every reconnect.
     socket = io('/jobs', {
-        transports: ['websocket', 'polling'],
+        transports: ['polling'],
         reconnection: true,
         reconnectionAttempts: 10,
         reconnectionDelay: 1000

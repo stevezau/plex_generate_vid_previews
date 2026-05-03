@@ -305,9 +305,10 @@
     });
 
     // --- SocketIO connection ---
+    // Polling-only — matches allow_upgrades=False on the server (see app.py).
     function connectSocket() {
         socket = io('/logs', {
-            transports: ['websocket', 'polling'],
+            transports: ['polling'],
             reconnection: true,
             reconnectionAttempts: Infinity,
             reconnectionDelay: 2000,
