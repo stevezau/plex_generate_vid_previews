@@ -66,12 +66,23 @@ class MediaItem:
         remote_path: Absolute path to the underlying media file from the server's
             perspective. Apply server path mappings to obtain a canonical local
             path before reading from disk.
+        bundle_metadata: Vendor-specific pre-fetched ``(hash, file)`` pairs
+            captured during enumeration. Plex populates this from
+            ``item.media[*].parts[*].(hash, file)`` so :class:`PlexBundleAdapter`
+            can compute the BIF output path without re-issuing
+            ``/library/metadata/{id}/tree`` per item — a 9981-item scan
+            previously paid 9981 sequential round-trips for hashes that
+            ``section.search()`` already returned. Empty for vendors that
+            don't have an analogous concept (Emby, Jellyfin) and for paths
+            that didn't come from a fresh enumeration (Sonarr/Radarr
+            webhook payloads carrying only a path).
     """
 
     id: str
     library_id: str
     title: str
     remote_path: str
+    bundle_metadata: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)

@@ -839,6 +839,7 @@ def _dispatch_processable_items(
                 registry=registry,
                 config=config,
                 item_id_by_server=item.item_id_by_server or None,
+                bundle_metadata_by_server=item.bundle_metadata_by_server or None,
                 gpu=gpu_type,
                 gpu_device_path=gpu_device,
                 progress_callback=_slot_progress_callback,

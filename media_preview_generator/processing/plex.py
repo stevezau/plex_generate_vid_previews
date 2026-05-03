@@ -19,7 +19,7 @@ from loguru import logger
 
 from ..plex_client import _build_episode_title, _extract_item_locations, retry_plex_call
 from ..servers.base import MediaServer, ServerConfig, ServerType
-from ..servers.plex import PlexServer, _plex_item_id
+from ..servers.plex import PlexServer, _extract_plex_bundle_metadata, _plex_item_id
 from ._shared import _MediaServerProcessor
 from .registry import register_processor
 from .types import ProcessableItem
@@ -135,6 +135,10 @@ class PlexProcessor(_MediaServerProcessor):
                 # See servers/plex.py::_plex_item_id for the same gotcha on
                 # the full-library scan path.
                 item_id = _plex_item_id(item)
+                bundle_metadata = _extract_plex_bundle_metadata(item)
+                bundle_meta_map: dict[str, tuple[tuple[str, str], ...]] = (
+                    {server_config.id: bundle_metadata} if bundle_metadata else {}
+                )
                 for canonical in self._canonical_paths_for(str(locations[0]), server_config):
                     yield ProcessableItem(
                         canonical_path=canonical,
@@ -142,6 +146,7 @@ class PlexProcessor(_MediaServerProcessor):
                         item_id_by_server={server_config.id: item_id} if item_id else {},
                         title=title,
                         library_id=section_id or None,
+                        bundle_metadata_by_server=bundle_meta_map,
                     )
 
 

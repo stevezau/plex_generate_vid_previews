@@ -39,6 +39,16 @@ class BifBundle:
     width: int
     height: int
     frame_count: int
+    # Vendor-specific pre-fetched ``(hash, file)`` pairs for the publisher.
+    # Plex populates this from ``ProcessableItem.bundle_metadata_by_server``
+    # (captured during enumeration via plexapi's ``section.search()`` which
+    # already returns ``item.media[*].parts[*].(hash, file)``). When set,
+    # PlexBundleAdapter skips its per-item ``/library/metadata/{id}/tree``
+    # round-trip — a 9981-item full-library scan previously paid 9981
+    # sequential round-trips for hashes the enumeration already had.
+    # Empty tuple for non-Plex adapters and for paths that didn't come
+    # from a fresh enumeration (e.g. Sonarr/Radarr webhooks).
+    prefetched_bundle_metadata: tuple[tuple[str, str], ...] = ()
 
 
 class OutputAdapter(ABC):

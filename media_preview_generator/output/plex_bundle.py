@@ -74,7 +74,16 @@ class PlexBundleAdapter(OutputAdapter):
         if not isinstance(server, PlexServer):
             raise TypeError(f"PlexBundleAdapter expected a PlexServer, got {type(server).__name__}")
 
-        parts = server.get_bundle_metadata(item_id)
+        # Pre-fetched metadata from enumeration short-circuits the per-item
+        # /library/metadata/{id}/tree call. plexapi's section.search()
+        # already returned item.media[*].parts[*].(hash, file); the
+        # enumerator captured them and the dispatcher threaded them
+        # through bundle.prefetched_bundle_metadata. The /tree fallback
+        # below stays in place for paths that didn't come from a fresh
+        # enumeration (Sonarr/Radarr webhooks).
+        parts = list(bundle.prefetched_bundle_metadata) if bundle.prefetched_bundle_metadata else []
+        if not parts:
+            parts = server.get_bundle_metadata(item_id)
         if not parts:
             raise LibraryNotYetIndexedError(
                 f"File not yet scanned in Plex (item {item_id}): "

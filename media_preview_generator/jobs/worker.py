@@ -387,6 +387,7 @@ class Worker:
                     registry=registry,
                     config=config,
                     item_id_by_server=item.item_id_by_server or None,
+                    bundle_metadata_by_server=item.bundle_metadata_by_server or None,
                     gpu=gpu,
                     gpu_device_path=gpu_device,
                     progress_callback=progress_callback,

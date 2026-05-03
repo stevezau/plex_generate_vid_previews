@@ -368,6 +368,49 @@ class TestListItems:
 
         assert list(wrapper.list_items("missing")) == []
 
+    def test_captures_bundle_metadata_from_plexapi_parts(self, mock_config):
+        """Enumeration must capture ``item.media[*].parts[*].(hash, file)``.
+
+        plexapi's ``section.search()`` returns Movie objects with their
+        Media + MediaPart already loaded — including the bundle ``hash``
+        attribute. Capturing it here lets PlexBundleAdapter skip the
+        per-item ``/library/metadata/{id}/tree`` round-trip; without
+        capture, a 9981-item full-library scan paid 9981 sequential
+        round-trips for hashes that ``section.search()`` already returned.
+        """
+        wrapper = PlexServer(mock_config)
+        # Build a movie with a real .media[*].parts[*] structure (the bare
+        # MagicMock fixture skips this — getattr would return a MagicMock
+        # the iteration helper wouldn't decode correctly).
+        part = MagicMock()
+        part.hash = "abcdef0123456789"
+        part.file = "/data/movies/Foo (2024)/Foo.mkv"
+        media = MagicMock()
+        media.parts = [part]
+        movie = MagicMock(spec=["key", "ratingKey", "title", "locations", "media"])
+        movie.key = "/library/metadata/54321"
+        movie.ratingKey = 54321
+        movie.title = "Foo (2024)"
+        movie.locations = ["/data/movies/Foo (2024)/Foo.mkv"]
+        movie.media = [media]
+
+        section = MagicMock()
+        section.key = 1
+        section.METADATA_TYPE = "movie"
+        section.search.return_value = [movie]
+
+        plex = MagicMock()
+        plex.library.sections.return_value = [section]
+        wrapper._plex = plex
+
+        items = list(wrapper.list_items("1"))
+        assert len(items) == 1
+        assert items[0].bundle_metadata == (("abcdef0123456789", "/data/movies/Foo (2024)/Foo.mkv"),), (
+            "list_items must capture (hash, file) from item.media[*].parts[*] "
+            "so PlexBundleAdapter can skip /tree per item — see commit "
+            "introducing _extract_plex_bundle_metadata."
+        )
+
 
 class TestResolveItemToRemotePath:
     def test_returns_first_part_path(self, plex_wrapper):

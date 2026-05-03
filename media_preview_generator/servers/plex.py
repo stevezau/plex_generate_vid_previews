@@ -47,6 +47,30 @@ def _plex_item_id(m: Any) -> str:
     return key.rsplit("/", 1)[-1] if key else key
 
 
+def _extract_plex_bundle_metadata(m: Any) -> tuple[tuple[str, str], ...]:
+    """Capture every MediaPart's ``(hash, file)`` pair from a plexapi item.
+
+    plexapi's ``section.search()`` returns Movie/Episode objects with
+    ``item.media[*].parts[*]`` already loaded — including the ``hash``
+    attribute that PlexBundleAdapter would otherwise re-fetch one item
+    at a time via ``/library/metadata/{id}/tree``. Capturing the hash
+    here turns N sequential network round-trips per scan into 0.
+
+    Returns an empty tuple when the item carries no parts (rare, but
+    can happen for items still being analysed). The publisher then
+    falls back to the per-item ``/tree`` lookup so behaviour matches
+    the pre-streamlining path for un-indexed items.
+    """
+    pairs: list[tuple[str, str]] = []
+    for media in getattr(m, "media", None) or []:
+        for part in getattr(media, "parts", None) or []:
+            h = str(getattr(part, "hash", "") or "")
+            f = str(getattr(part, "file", "") or "")
+            if h and f:
+                pairs.append((h, f))
+    return tuple(pairs)
+
+
 def _synthesize_legacy_config(cfg: ServerConfig) -> SimpleNamespace:
     """Build a legacy Config-shaped namespace from a per-server ServerConfig.
 
@@ -391,6 +415,7 @@ class PlexServer(MediaServer):
                         library_id=str(target.key),
                         title=_build_episode_title(m),
                         remote_path=str(locations[0]),
+                        bundle_metadata=_extract_plex_bundle_metadata(m),
                     )
             elif target.METADATA_TYPE == "movie":
                 for m in retry_plex_call(target.search):
@@ -402,6 +427,7 @@ class PlexServer(MediaServer):
                         library_id=str(target.key),
                         title=str(getattr(m, "title", "") or ""),
                         remote_path=str(locations[0]),
+                        bundle_metadata=_extract_plex_bundle_metadata(m),
                     )
             else:
                 logger.info(

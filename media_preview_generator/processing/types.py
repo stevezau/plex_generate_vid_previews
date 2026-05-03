@@ -41,6 +41,14 @@ class ProcessableItem:
     item_id_by_server: dict[str, str] = field(default_factory=dict)
     title: str = ""
     library_id: str | None = None
+    # ``{server_id: ((hash, file), …)}`` — pre-fetched bundle metadata
+    # captured during enumeration so the publisher can skip per-item
+    # network round-trips. Currently populated only by Plex (where
+    # ``/library/metadata/{id}/tree`` is otherwise paid per item to
+    # learn the bundle hash); other vendors leave this empty. Empty
+    # also for paths that didn't come from a fresh enumeration (e.g.
+    # Sonarr/Radarr webhooks carrying only a path).
+    bundle_metadata_by_server: dict[str, tuple[tuple[str, str], ...]] = field(default_factory=dict)
 
 
 @dataclass

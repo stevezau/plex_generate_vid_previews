@@ -558,6 +558,7 @@ def process_canonical_path(
     config: Config,
     *,
     item_id_by_server: dict[str, str] | None = None,
+    bundle_metadata_by_server: dict[str, tuple[tuple[str, str], ...]] | None = None,
     gpu: str | None = None,
     gpu_device_path: str | None = None,
     progress_callback=None,
@@ -705,8 +706,14 @@ def process_canonical_path(
     # the probe path. Build one helper so the three call-sites below stay in
     # sync (a divergence here previously hid behind copy-pasted dataclass kwargs).
     probe_frame_interval = int(getattr(config, "thumbnail_interval", 10) or 10)
+    # Per-server pre-fetched (hash, file) pairs lifted from the calling
+    # ProcessableItem. Plex enumeration captures these from
+    # ``item.media[*].parts[*]`` so PlexBundleAdapter can skip the
+    # /library/metadata/{id}/tree round-trip per item.
+    _bundle_meta_by_server = bundle_metadata_by_server or {}
 
-    def _probe_bundle() -> BifBundle:
+    def _probe_bundle(server_id: str = "") -> BifBundle:
+        prefetched = _bundle_meta_by_server.get(server_id, ()) if server_id else ()
         return BifBundle(
             canonical_path=canonical_path,
             frame_dir=Path(os.devnull),  # unused by compute_output_paths
@@ -715,6 +722,7 @@ def process_canonical_path(
             width=320,
             height=180,
             frame_count=0,
+            prefetched_bundle_metadata=prefetched,
         )
 
     if not regenerate:
@@ -722,7 +730,7 @@ def process_canonical_path(
         for server, adapter, item_id_hint in publishers:
             try:
                 item_id = _resolve_item_id_for(server, canonical_path, item_id_hint)
-                paths = adapter.compute_output_paths(_probe_bundle(), server, item_id)
+                paths = adapter.compute_output_paths(_probe_bundle(server.id), server, item_id)
             except Exception:
                 all_fresh = False
                 break
@@ -737,7 +745,7 @@ def process_canonical_path(
             results = []
             for server, adapter, item_id_hint in publishers:
                 item_id = _resolve_item_id_for(server, canonical_path, item_id_hint)
-                paths = adapter.compute_output_paths(_probe_bundle(), server, item_id)
+                paths = adapter.compute_output_paths(_probe_bundle(server.id), server, item_id)
                 results.append(
                     PublisherResult(
                         server_id=server.id,
@@ -763,7 +771,7 @@ def process_canonical_path(
         for server, adapter, item_id_hint in publishers:
             try:
                 item_id = _resolve_item_id_for(server, canonical_path, item_id_hint)
-                clear_meta(adapter.compute_output_paths(_probe_bundle(), server, item_id))
+                clear_meta(adapter.compute_output_paths(_probe_bundle(server.id), server, item_id))
             except Exception:
                 continue
 
@@ -957,15 +965,23 @@ def process_canonical_path(
         # cache-hit and non-tuple branches fall back to the default
         # 320x180 the FFmpeg pass uses.
         gen_width = int(gen_result[3]) if isinstance(gen_result, tuple) and len(gen_result) > 3 else 320
-        bundle = BifBundle(
-            canonical_path=canonical_path,
-            frame_dir=Path(tmp_path),
-            bif_path=None,
-            frame_interval=int(getattr(config, "thumbnail_interval", 10) or 10),
-            width=gen_width,
-            height=180,
-            frame_count=frame_count,
-        )
+
+        # Per-server bundle factory: every publisher gets its own BifBundle
+        # populated with that server's pre-fetched bundle metadata (Plex
+        # only). Sharing one bundle across publishers would force a single
+        # prefetched_bundle_metadata value, defeating the per-server hint.
+        # Building a fresh dataclass per publisher is cheap.
+        def _bundle_for_server(server_id: str) -> BifBundle:
+            return BifBundle(
+                canonical_path=canonical_path,
+                frame_dir=Path(tmp_path),
+                bif_path=None,
+                frame_interval=int(getattr(config, "thumbnail_interval", 10) or 10),
+                width=gen_width,
+                height=180,
+                frame_count=frame_count,
+                prefetched_bundle_metadata=_bundle_meta_by_server.get(server_id, ()),
+            )
 
         # Tag each publisher's result with where its frames came from so
         # the Job UI can render a distinct badge ("reused" vs "extracted").
@@ -980,7 +996,7 @@ def process_canonical_path(
             outcome = _publish_one(
                 server,
                 adapter,
-                bundle,
+                _bundle_for_server(server.id),
                 item_id,
                 skip_if_exists=not regenerate,
                 frame_source=upstream_frame_source,

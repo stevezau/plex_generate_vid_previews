@@ -196,6 +196,10 @@ class _MediaServerProcessor:
             return
         item_id = getattr(media_item, "id", "") or ""
         title = getattr(media_item, "title", "") or remote_path
+        bundle_metadata = getattr(media_item, "bundle_metadata", ()) or ()
+        bundle_meta_map: dict[str, tuple[tuple[str, str], ...]] = (
+            {server_config.id: tuple(bundle_metadata)} if bundle_metadata else {}
+        )
         for canonical in self._canonical_paths_for(remote_path, server_config):
             yield ProcessableItem(
                 canonical_path=canonical,
@@ -203,4 +207,5 @@ class _MediaServerProcessor:
                 item_id_by_server={server_config.id: item_id} if item_id else {},
                 title=title,
                 library_id=library.id,
+                bundle_metadata_by_server=bundle_meta_map,
             )

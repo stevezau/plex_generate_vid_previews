@@ -26,7 +26,12 @@ from media_preview_generator.output import BifBundle, PlexBundleAdapter
 from media_preview_generator.servers import LibraryNotYetIndexedError, PlexServer
 
 
-def _make_bundle(canonical_path: str, frame_dir: Path) -> BifBundle:
+def _make_bundle(
+    canonical_path: str,
+    frame_dir: Path,
+    *,
+    prefetched_bundle_metadata: tuple[tuple[str, str], ...] = (),
+) -> BifBundle:
     return BifBundle(
         canonical_path=canonical_path,
         frame_dir=frame_dir,
@@ -35,6 +40,7 @@ def _make_bundle(canonical_path: str, frame_dir: Path) -> BifBundle:
         width=320,
         height=180,
         frame_count=0,
+        prefetched_bundle_metadata=prefetched_bundle_metadata,
     )
 
 
@@ -250,6 +256,73 @@ class TestComputeOutputPaths:
         )
 
         assert captured_urls == ["/library/metadata/557676/tree"]
+
+
+class TestPrefetchedBundleMetadata:
+    """Pre-fetched (hash, file) pairs from enumeration must short-circuit /tree.
+
+    plexapi's ``section.search()`` already returns
+    ``item.media[*].parts[*].(hash, file)`` so a 9981-item full-library scan
+    no longer needs 9981 sequential ``/library/metadata/{id}/tree``
+    round-trips. The processing pipeline captures those pairs at
+    enumeration time and threads them through ``BifBundle.prefetched_bundle_metadata``;
+    PlexBundleAdapter reads them first.
+    """
+
+    def test_prefetched_metadata_skips_tree_call(self, tmp_path, mock_config):
+        """When prefetched metadata is supplied, /tree must NOT be called."""
+        adapter = PlexBundleAdapter(plex_config_folder="/cfg", frame_interval=10)
+        server = PlexServer(mock_config)
+        # Wire query to ASSERT it isn't called.
+        plex = MagicMock()
+        plex.query.side_effect = AssertionError(
+            "PlexBundleAdapter must not call /tree when prefetched metadata is supplied"
+        )
+        server._plex = plex
+
+        bundle = _make_bundle(
+            "/m/foo.mkv",
+            tmp_path,
+            prefetched_bundle_metadata=(("abcdef0123456789", "/m/foo.mkv"),),
+        )
+        paths = adapter.compute_output_paths(bundle, server, item_id="42")
+
+        assert paths == [Path("/cfg/Media/localhost/a/bcdef0123456789.bundle/Contents/Indexes/index-sd.bif")]
+        plex.query.assert_not_called()
+
+    def test_falls_back_to_tree_when_no_prefetch(self, tmp_path, mock_config):
+        """Empty prefetched metadata → /tree is called (the legacy webhook path)."""
+        adapter = PlexBundleAdapter(plex_config_folder="/cfg", frame_interval=10)
+        server = PlexServer(mock_config)
+        urls = _wire_plex_query(server, parts=[("aaaaaaaaaa", "/m/foo.mkv")])
+
+        bundle = _make_bundle("/m/foo.mkv", tmp_path)  # no prefetch
+        paths = adapter.compute_output_paths(bundle, server, item_id="42")
+
+        assert urls == ["/library/metadata/42/tree"]
+        assert "aaaaaaaaa.bundle" in str(paths[0])
+
+    def test_prefetched_picks_matching_part_by_basename(self, tmp_path, mock_config):
+        """Multi-part item: still pick the basename-matching hash, but from the prefetch."""
+        adapter = PlexBundleAdapter(plex_config_folder="/cfg", frame_interval=10)
+        server = PlexServer(mock_config)
+        plex = MagicMock()
+        plex.query.side_effect = AssertionError("must not call /tree")
+        server._plex = plex
+
+        bundle = _make_bundle(
+            "/m/disc2.mkv",
+            tmp_path,
+            prefetched_bundle_metadata=(
+                ("aaaaaaaaaa", "/m/disc1.mkv"),
+                ("bbbbbbbbbb", "/m/disc2.mkv"),
+            ),
+        )
+        paths = adapter.compute_output_paths(bundle, server, item_id="99")
+        assert "bbbbbbbbb.bundle" in str(paths[0]), (
+            "Prefetched-metadata path must apply the same basename selection "
+            "as the /tree path — otherwise multi-part items get the wrong bundle."
+        )
 
 
 class TestPublish:
