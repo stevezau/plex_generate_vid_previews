@@ -1127,6 +1127,23 @@
         }
         const veResult = document.getElementById('editVendorExtractionResult');
         if (veResult) { veResult.className = 'small text-muted'; veResult.textContent = ''; }
+
+        // Hide the plugin panel by default; reveal + populate via the
+        // background plugin probe below for Jellyfin servers.
+        const pluginGroup = document.getElementById('editJellyfinPluginGroup');
+        if (pluginGroup) pluginGroup.classList.add('d-none');
+        const pluginResult = document.getElementById('editInstallPluginResult');
+        if (pluginResult) { pluginResult.className = 'small text-muted'; pluginResult.textContent = ''; }
+        const serverType = (server.type || '').toLowerCase();
+        if (serverType === 'jellyfin') {
+            // Background-fire so the modal opens instantly. The probe is
+            // cheap (single GET) and surfaces the badge within ~100ms on
+            // a healthy Jellyfin.
+            api('POST', `/api/servers/${encodeURIComponent(server.id)}/test-connection`).then((r) => {
+                if (r && r.data) updateJellyfinPluginPanel(r.data.plugin);
+            }).catch(() => {});
+        }
+
         // D24 — vendor-aware re-auth UI: show ONE block matching the
         // server's type, hide the others, and reset all input state so
         // an old value from a previous Edit doesn't leak across.
@@ -1547,6 +1564,10 @@
                 result.className = 'small text-warning';
                 result.innerHTML = `<i class="bi bi-exclamation-triangle me-1"></i>${escapeHtml(data.message || 'Connection failed')}`;
             }
+            // Plugin badge — only present in the response for Jellyfin
+            // servers that connected successfully. updateJellyfinPluginPanel
+            // hides the panel for non-Jellyfin and missing-plugin cases.
+            updateJellyfinPluginPanel(data.plugin);
         } catch (e) {
             result.className = 'small text-danger';
             result.textContent = String(e);
@@ -1554,6 +1575,97 @@
             btn.disabled = false;
             btn.innerHTML = original;
         }
+    }
+
+    // ─── Media Preview Bridge plugin status / install ──────────────────
+    // Drives the Jellyfin-only "Media Preview Bridge plugin" card in the
+    // Edit Server modal. Visible only when the connection succeeded AND
+    // the server is Jellyfin.
+    function updateJellyfinPluginPanel(plugin) {
+        const group = document.getElementById('editJellyfinPluginGroup');
+        const badge = document.getElementById('editJellyfinPluginBadge');
+        const installBtn = document.getElementById('editInstallPluginBtn');
+        if (!group || !badge) return;
+
+        if (!plugin) {
+            // Non-Jellyfin or connection failed — hide the panel entirely.
+            group.classList.add('d-none');
+            return;
+        }
+        group.classList.remove('d-none');
+        if (plugin.installed) {
+            badge.className = 'badge bg-success ms-1';
+            badge.textContent = `installed${plugin.version ? ` · v${plugin.version}` : ''}`;
+            if (installBtn) installBtn.classList.add('d-none');
+        } else {
+            badge.className = 'badge bg-warning text-dark ms-1';
+            badge.textContent = 'not installed';
+            if (installBtn) installBtn.classList.remove('d-none');
+        }
+    }
+
+    async function installJellyfinPlugin() {
+        const id = ($('#editServerId').value || '').trim();
+        if (!id) return;
+        const btn = document.getElementById('editInstallPluginBtn');
+        const result = document.getElementById('editInstallPluginResult');
+        const original = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Installing…';
+        result.className = 'small text-muted';
+        result.textContent = 'Adding repo, queuing install, requesting Jellyfin restart…';
+        try {
+            const r = await api('POST', `/api/servers/${encodeURIComponent(id)}/install-plugin`);
+            const data = r.data || {};
+            if (!data.ok) {
+                result.className = 'small text-danger';
+                result.innerHTML = `<i class="bi bi-x-circle me-1"></i>${escapeHtml(data.error || 'Install failed')}`;
+                return;
+            }
+            result.className = 'small text-info';
+            result.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Jellyfin restarting — polling for plugin (up to 60s)…';
+
+            // Poll the test-connection endpoint every 3s; flip the badge
+            // when it reports plugin.installed=true. 60s deadline matches
+            // a typical Jellyfin restart on a small install.
+            const deadline = Date.now() + 60_000;
+            while (Date.now() < deadline) {
+                await new Promise((res) => setTimeout(res, 3000));
+                try {
+                    const probe = await api('POST', `/api/servers/${encodeURIComponent(id)}/test-connection`);
+                    const probePlugin = probe.data && probe.data.plugin;
+                    if (probePlugin && probePlugin.installed) {
+                        updateJellyfinPluginPanel(probePlugin);
+                        result.className = 'small text-success';
+                        result.innerHTML = `<i class="bi bi-check-circle me-1"></i>Plugin installed (v${escapeHtml(probePlugin.version || '?')}) — Jellyfin will now register published trickplay instantly.`;
+                        return;
+                    }
+                } catch (_) {
+                    // Keep polling — Jellyfin may still be down mid-restart.
+                }
+            }
+            result.className = 'small text-warning';
+            result.innerHTML = '<i class="bi bi-clock-history me-1"></i>Restart taking longer than expected. Click Test Connection in a minute to re-check the plugin status.';
+        } catch (e) {
+            result.className = 'small text-danger';
+            result.textContent = String(e);
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = original;
+        }
+    }
+
+    function copyPluginRepoUrl() {
+        const input = document.getElementById('editJellyfinPluginRepoUrl');
+        if (!input) return;
+        navigator.clipboard.writeText(input.value).then(
+            () => showToast('Copied', 'Plugin repo URL copied to clipboard.', 'success'),
+            () => {
+                input.select();
+                document.execCommand('copy');
+                showToast('Copied', 'Plugin repo URL copied (fallback).', 'success');
+            }
+        );
     }
 
     async function refreshLibrariesFromModal(btn) {
@@ -1619,6 +1731,10 @@
         if (disableVendorBtn) disableVendorBtn.addEventListener('click', () => setVendorExtraction(false));
         const enableVendorBtn = document.getElementById('editEnableVendorExtractionBtn');
         if (enableVendorBtn) enableVendorBtn.addEventListener('click', () => setVendorExtraction(true));
+        const installPluginBtn = document.getElementById('editInstallPluginBtn');
+        if (installPluginBtn) installPluginBtn.addEventListener('click', installJellyfinPlugin);
+        const copyPluginUrlBtn = document.getElementById('editCopyPluginRepoUrlBtn');
+        if (copyPluginUrlBtn) copyPluginUrlBtn.addEventListener('click', copyPluginRepoUrl);
 
         // D24 — vendor-aware re-auth wiring inside the Edit modal.
         document.querySelectorAll('input[name="editReauthJfMethod"]').forEach((r) =>

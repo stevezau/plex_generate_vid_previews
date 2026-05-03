@@ -812,15 +812,65 @@ def test_existing_server_connection(server_id: str):
         )
         return jsonify({"ok": False, "message": f"unexpected error: {exc}"}), 200
 
-    return jsonify(
-        {
-            "ok": result.ok,
-            "server_id": result.server_id,
-            "server_name": result.server_name,
-            "version": result.version,
-            "message": result.message,
-        }
-    )
+    response_payload: dict = {
+        "ok": result.ok,
+        "server_id": result.server_id,
+        "server_name": result.server_name,
+        "version": result.version,
+        "message": result.message,
+    }
+
+    # For Jellyfin, also probe the Media Preview Bridge plugin so the
+    # UI can show a Plugin: installed/missing badge from a single Test
+    # Connection click. Only fires when the connection itself succeeded
+    # (no point probing a server we can't reach).
+    if result.ok and cfg.type is ServerType.JELLYFIN and hasattr(live, "check_plugin_installed"):
+        try:
+            response_payload["plugin"] = live.check_plugin_installed()
+        except Exception as exc:
+            logger.debug("Plugin probe failed for {!r}: {}", cfg.name, exc)
+            response_payload["plugin"] = {"installed": False, "version": "", "error": str(exc)[:200]}
+
+    return jsonify(response_payload)
+
+
+@api.route("/servers/<server_id>/install-plugin", methods=["POST"])
+@setup_or_auth_required
+def install_jellyfin_plugin(server_id: str):
+    """One-click install Media Preview Bridge plugin on a saved Jellyfin server.
+
+    Drives the "Install plugin in Jellyfin" button on the Edit Server
+    modal (only visible for Jellyfin servers when the plugin probe
+    reports missing). Calls
+    :meth:`JellyfinServer.install_plugin` which adds our manifest URL
+    to Jellyfin's plugin repositories, queues the package install, and
+    requests a Jellyfin restart. Caller polls
+    ``/test-connection`` afterwards for the plugin badge to flip.
+    """
+    raw_servers = _get_media_servers()
+    target = next((s for s in raw_servers if isinstance(s, dict) and s.get("id") == server_id), None)
+    if target is None:
+        return jsonify({"ok": False, "error": f"server {server_id!r} not found"}), 404
+
+    try:
+        cfg = server_config_from_dict(target)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"invalid server config: {exc}"}), 400
+
+    if cfg.type is not ServerType.JELLYFIN:
+        return jsonify({"ok": False, "error": "plugin install is Jellyfin-only"}), 400
+
+    live = _instantiate_for_probe(cfg)
+    if live is None or not hasattr(live, "install_plugin"):
+        return jsonify({"ok": False, "error": "this Jellyfin client doesn't support plugin install"}), 400
+
+    try:
+        result = live.install_plugin()
+    except Exception as exc:
+        logger.warning("Plugin install on {!r} raised: {}", cfg.name or cfg.id, exc)
+        return jsonify({"ok": False, "error": str(exc)}), 200
+
+    return jsonify(result)
 
 
 @api.route("/servers/<server_id>/enabled", methods=["PATCH"])

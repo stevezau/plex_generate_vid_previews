@@ -124,6 +124,148 @@ class JellyfinServer(EmbyApiClient):
         except Exception as exc:
             logger.debug("Jellyfin /Library/Refresh failed: {}", exc)
 
+    # ------------------------------------------------------------------
+    # Media Preview Bridge plugin — install + status helpers
+    # ------------------------------------------------------------------
+    #
+    # The plugin (jellyfin-plugin/) lets us register externally-published
+    # trickplay with Jellyfin's TrickplayInfos store via a single internal
+    # API call. With it installed we get instant scrubbing previews + zero
+    # ffmpeg burn for items we cover. Without it, our trickplay still
+    # works eventually via Jellyfin's daily 3 AM scheduled task — but
+    # with the plugin the user-visible delay drops from 24h to 0s.
+
+    PLUGIN_NAME = "Media Preview Bridge"
+    PLUGIN_GUID = "c2cb9bf9-7c5d-4f1a-9a07-2d6f5e5b0001"
+    PLUGIN_REPO_URL = "https://stevezau.github.io/plex_generate_vid_previews/jellyfin-plugin/manifest.json"
+
+    def check_plugin_installed(self) -> dict[str, Any]:
+        """Probe the plugin's anonymous Ping endpoint.
+
+        Returns a dict with:
+
+          * ``installed`` — bool, True when the plugin returns 200 OK.
+          * ``version`` — plugin version string when installed, else empty.
+          * ``error`` — short description of the failure mode for the UI
+            (e.g. ``"timeout"``, ``"404"``, ``"connection refused"``).
+
+        Tolerant to all transport failures — connection-test code paths
+        call this and the user shouldn't see a stack trace just because
+        the plugin isn't installed yet.
+        """
+        try:
+            response = self._request("GET", "/MediaPreviewBridge/Ping")
+        except Exception as exc:
+            return {"installed": False, "version": "", "error": f"{type(exc).__name__}: {exc}"[:200]}
+        if response.status_code != 200:
+            return {"installed": False, "version": "", "error": f"HTTP {response.status_code}"}
+        try:
+            payload = response.json()
+            return {
+                "installed": bool(payload.get("ok")),
+                "version": str(payload.get("version") or ""),
+                "error": "",
+            }
+        except (ValueError, AttributeError) as exc:
+            return {"installed": False, "version": "", "error": f"bad JSON: {exc}"[:200]}
+
+    def install_plugin(self) -> dict[str, Any]:
+        """One-click install: register repo, install package, restart Jellyfin.
+
+        Steps, all best-effort with structured errors so the UI can
+        surface progress:
+
+        1. ``GET /Repositories`` — read existing repo list.
+        2. ``POST /Repositories`` — append our plugin's manifest URL if
+           it's not already there.
+        3. ``POST /Packages/Installed/{name}?assemblyGuid=…&repositoryUrl=…``
+           — queue the install (Jellyfin downloads the DLL on the next
+           sweep, typically <30s).
+        4. ``POST /System/Restart`` — Jellyfin loads new plugins on
+           startup, so a restart is required for the install to take
+           effect.
+
+        Caller is responsible for polling :meth:`check_plugin_installed`
+        after this returns to know when the restart finished + the
+        plugin is live (Jellyfin restarts asynchronously; takes ~10–30s
+        on a typical install).
+        """
+        result: dict[str, Any] = {"steps": [], "ok": False, "error": ""}
+
+        def _record(step: str, ok: bool, detail: str = "") -> None:
+            result["steps"].append({"step": step, "ok": ok, "detail": detail})
+
+        # 1. Read existing repos.
+        try:
+            response = self._request("GET", "/Repositories")
+            response.raise_for_status()
+            repos = response.json() or []
+        except Exception as exc:
+            result["error"] = f"could not read repositories: {exc}"
+            _record("read_repositories", False, str(exc))
+            return result
+        if not isinstance(repos, list):
+            result["error"] = f"unexpected /Repositories shape: {type(repos).__name__}"
+            _record("read_repositories", False, result["error"])
+            return result
+        _record("read_repositories", True, f"{len(repos)} existing")
+
+        # 2. Append our repo if missing.
+        if not any(isinstance(r, dict) and r.get("Url") == self.PLUGIN_REPO_URL for r in repos):
+            new_repos = list(repos)
+            new_repos.append(
+                {
+                    "Name": "Media Preview Bridge",
+                    "Url": self.PLUGIN_REPO_URL,
+                    "Enabled": True,
+                }
+            )
+            try:
+                self._request("POST", "/Repositories", json_body=new_repos).raise_for_status()
+                _record("add_repository", True, "appended")
+            except Exception as exc:
+                result["error"] = f"could not add repository: {exc}"
+                _record("add_repository", False, str(exc))
+                return result
+        else:
+            _record("add_repository", True, "already present")
+
+        # 3. Trigger install. Jellyfin downloads asynchronously — POST
+        # only queues the job. The package name in the URL must match
+        # the manifest's ``name`` field exactly.
+        from urllib.parse import quote
+
+        try:
+            self._request(
+                "POST",
+                f"/Packages/Installed/{quote(self.PLUGIN_NAME)}",
+                params={
+                    "assemblyGuid": self.PLUGIN_GUID,
+                    "repositoryUrl": self.PLUGIN_REPO_URL,
+                },
+            ).raise_for_status()
+            _record("queue_install", True, "queued")
+        except Exception as exc:
+            result["error"] = f"could not queue install: {exc}"
+            _record("queue_install", False, str(exc))
+            return result
+
+        # 4. Restart so the new plugin loads. Jellyfin's restart endpoint
+        # responds 204 immediately and starts the shutdown asynchronously.
+        try:
+            self._request("POST", "/System/Restart").raise_for_status()
+            _record("restart", True, "restart requested — wait ~30s then poll plugin status")
+        except Exception as exc:
+            # Restart is the only step that fails benignly — plugin is
+            # downloaded, just won't load until next manual restart.
+            _record("restart", False, str(exc))
+            result["error"] = f"plugin queued but restart failed: {exc}"
+            result["ok"] = True  # install succeeded even if restart didn't
+            return result
+
+        result["ok"] = True
+        return result
+
     def check_trickplay_extraction_status(self) -> list[dict[str, Any]]:
         """Return per-library trickplay-extraction flags.
 

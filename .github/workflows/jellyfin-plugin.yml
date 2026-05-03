@@ -1,0 +1,174 @@
+name: Jellyfin Plugin — build, release, publish manifest
+
+on:
+  push:
+    tags:
+      - "plugin-v*.*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version (e.g. 10.11.0.0). Leave blank to use the .csproj's <Version> verbatim."
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+# Stops two tag pushes / dispatches from racing the gh-pages manifest write.
+concurrency:
+  group: jellyfin-plugin
+  cancel-in-progress: false
+
+jobs:
+  build-release-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Need full history so we can land manifest.json on gh-pages
+          # without a force-push wiping prior versions.
+          fetch-depth: 0
+
+      - name: Setup .NET 9
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Resolve version
+        id: ver
+        run: |
+          set -euo pipefail
+          INPUT_VERSION="${{ github.event.inputs.version }}"
+          REF_TAG="${GITHUB_REF##*/}"
+          if [[ -n "$INPUT_VERSION" ]]; then
+            VERSION="$INPUT_VERSION"
+          elif [[ "$REF_TAG" == plugin-v* ]]; then
+            # Tag like "plugin-v10.11.0.1" → version "10.11.0.1"
+            VERSION="${REF_TAG#plugin-v}"
+          else
+            # Pull straight out of the .csproj as a last resort.
+            VERSION=$(grep -oP '<Version>\K[^<]+' jellyfin-plugin/Jellyfin.Plugin.MediaPreviewBridge.csproj)
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Plugin version resolved: $VERSION"
+
+      - name: Build
+        working-directory: jellyfin-plugin
+        run: |
+          dotnet restore
+          dotnet build -c Release \
+            -p:Version=${{ steps.ver.outputs.version }} \
+            -p:FileVersion=${{ steps.ver.outputs.version }} \
+            -p:AssemblyVersion=${{ steps.ver.outputs.version }} \
+            --no-restore
+
+      - name: Pack zip
+        id: pack
+        working-directory: jellyfin-plugin
+        run: |
+          set -euo pipefail
+          ZIP="media-preview-bridge_${{ steps.ver.outputs.version }}.zip"
+          (cd bin/Release/net9.0 && zip -j "../../../$ZIP" Jellyfin.Plugin.MediaPreviewBridge.dll)
+          SHA=$(sha256sum "$ZIP" | awk '{print toupper($1)}')
+          echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "$ZIP → $SHA"
+
+      - name: Create / update GitHub release
+        id: release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: plugin-v${{ steps.ver.outputs.version }}
+          name: "Media Preview Bridge ${{ steps.ver.outputs.version }}"
+          body: |
+            Jellyfin plugin DLL — install via Jellyfin admin → Plugins → Repositories.
+
+            Repository URL (paste this once):
+            `https://stevezau.github.io/plex_generate_vid_previews/jellyfin-plugin/manifest.json`
+
+            Once the repo is added, **Media Preview Bridge** appears in
+            the catalogue and updates automatically.
+          files: jellyfin-plugin/${{ steps.pack.outputs.zip }}
+          fail_on_unmatched_files: true
+
+      - name: Update manifest.json on gh-pages
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          SHA: ${{ steps.pack.outputs.sha }}
+        run: |
+          set -euo pipefail
+          # Source URL: GitHub release asset, public + immutable per tag.
+          SOURCE_URL="https://github.com/${{ github.repository }}/releases/download/plugin-v${VERSION}/media-preview-bridge_${VERSION}.zip"
+          TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          # Worktree out gh-pages so we don't lose dev/main state.
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin gh-pages 2>/dev/null || true
+
+          if git show-ref --verify --quiet refs/remotes/origin/gh-pages; then
+            git worktree add /tmp/gh-pages origin/gh-pages
+          else
+            git worktree add --orphan -b gh-pages /tmp/gh-pages
+            (cd /tmp/gh-pages && git rm -rf . 2>/dev/null || true)
+          fi
+
+          mkdir -p /tmp/gh-pages/jellyfin-plugin
+
+          # Read existing manifest.json or seed from template, then prepend the new version.
+          if [[ -f /tmp/gh-pages/jellyfin-plugin/manifest.json ]]; then
+            CURRENT="/tmp/gh-pages/jellyfin-plugin/manifest.json"
+          else
+            CURRENT="jellyfin-plugin/manifest.template.json"
+          fi
+
+          python3 <<PY
+          import json, sys
+          from pathlib import Path
+
+          source = Path("$CURRENT")
+          target = Path("/tmp/gh-pages/jellyfin-plugin/manifest.json")
+
+          data = json.loads(source.read_text())
+          plugin = data[0]
+          plugin.setdefault("versions", [])
+
+          new_version = {
+              "version": "$VERSION",
+              "changelog": "Automated release for plugin-v$VERSION.",
+              "targetAbi": "10.11.0.0",
+              "sourceUrl": "$SOURCE_URL",
+              "checksum": "$SHA",
+              "timestamp": "$TIMESTAMP"
+          }
+
+          # Drop any existing entry with the same version (re-runs of the
+          # same tag should overwrite, not duplicate).
+          plugin["versions"] = [v for v in plugin["versions"] if v.get("version") != new_version["version"]]
+          # Newest first — Jellyfin's plugin catalogue UI displays in array order.
+          plugin["versions"].insert(0, new_version)
+
+          target.write_text(json.dumps(data, indent=4) + "\n")
+          PY
+
+          cd /tmp/gh-pages
+          git add jellyfin-plugin/manifest.json
+          if git diff --cached --quiet; then
+            echo "No manifest changes (idempotent re-run)."
+          else
+            git commit -m "Publish Media Preview Bridge ${VERSION}"
+            git push origin gh-pages
+          fi
+
+      - name: Summary
+        run: |
+          {
+            echo "## Media Preview Bridge ${{ steps.ver.outputs.version }} published"
+            echo ""
+            echo "- Release: https://github.com/${{ github.repository }}/releases/tag/plugin-v${{ steps.ver.outputs.version }}"
+            echo "- Manifest: https://stevezau.github.io/plex_generate_vid_previews/jellyfin-plugin/manifest.json"
+            echo "- SHA-256: \`${{ steps.pack.outputs.sha }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
