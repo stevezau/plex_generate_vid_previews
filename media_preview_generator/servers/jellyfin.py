@@ -5,9 +5,11 @@ Emby) and lives in :mod:`._embyish`. This module specialises that base
 with the Jellyfin-only bits:
 
 * :class:`ServerType` enum value.
-* :meth:`trigger_refresh` — Jellyfin has no path-based equivalent of
-  Emby's ``/Library/Media/Updated``; uses ``/Items/{id}/Refresh`` or
-  full ``/Library/Refresh`` instead.
+* :meth:`trigger_refresh` — prefers Jellyfin's path-based
+  ``/Library/Media/Updated`` (same shape as Emby's; the inherited
+  Emby docstring used to claim Jellyfin lacked this — it doesn't),
+  falls back to ``/Items/{id}/Refresh`` and finally the rate-limited
+  full ``/Library/Refresh``.
 * :meth:`parse_webhook` — jellyfin-plugin-webhook payload shape
   (``NotificationType`` / ``ItemId`` / ``ServerId``).
 
@@ -66,7 +68,7 @@ class JellyfinServer(EmbyApiClient):
     def trigger_refresh(self, *, item_id: str | None, remote_path: str | None) -> None:
         """Notify Jellyfin to re-scan an item AND register published trickplay.
 
-        Two paths run, both best-effort:
+        Three best-effort steps in order:
 
         1. ``POST /MediaPreviewBridge/Trickplay/{itemId}`` — the
            Jellyfin Plugin Bridge installed alongside this tool.
@@ -80,13 +82,21 @@ class JellyfinServer(EmbyApiClient):
            ``ExtractTrickplayImagesDuringLibraryScan`` flag's caveats).
 
         2. ``POST /Items/{id}/Refresh`` — standard metadata refresh
-           so any other side effects (artwork rescans, etc.) fire.
+           when we already know the item id (post-publish path).
 
-        ``remote_path`` is unused — accepted for the abstract
-        :meth:`MediaServer.trigger_refresh` signature.
+        3. ``POST /Library/Media/Updated`` with ``{"Updates":[{"Path":
+           remote_path,"UpdateType":"Created"}]}`` — Jellyfin's
+           path-based scan-nudge (same shape as Emby's, despite the
+           old docstring claiming otherwise). Used when the item
+           isn't in Jellyfin's library yet (the
+           SKIPPED_NOT_IN_LIBRARY branch in multi_server). This
+           triggers a per-file scan instead of a global library scan
+           — no thrash, no cooldown needed.
+
+        4. Last-resort full ``/Library/Refresh`` (rate-limited via
+           ``_full_refresh_lock``). Only fires when neither item_id
+           nor remote_path was usable.
         """
-        del remote_path  # Jellyfin's API doesn't expose a path-keyed refresh
-
         if item_id:
             # 1. Plugin bridge — instant trickplay registration.
             try:
@@ -128,7 +138,33 @@ class JellyfinServer(EmbyApiClient):
             except Exception as exc:
                 logger.debug("Jellyfin per-item refresh failed for {}: {}", item_id, exc)
 
-        # Fallback: nudge a full scan. Rate-limited because a webhook
+        # 3. Path-based scan-nudge for items not yet in the library.
+        # Jellyfin has /Library/Media/Updated (same shape as Emby's,
+        # despite this module's old docstring) — feeds the same path
+        # into Jellyfin's library monitor that real-time-monitor's
+        # inotify watcher would post. Per-file, no global scan, no
+        # cooldown needed.
+        if remote_path:
+            try:
+                response = self._request(
+                    "POST",
+                    "/Library/Media/Updated",
+                    json_body={"Updates": [{"Path": remote_path, "UpdateType": "Created"}]},
+                )
+                response.raise_for_status()
+                logger.debug(
+                    "Jellyfin /Library/Media/Updated nudged scan for {}",
+                    remote_path,
+                )
+                return
+            except Exception as exc:
+                logger.debug(
+                    "Jellyfin /Library/Media/Updated failed for {}: {} — falling back to /Library/Refresh",
+                    remote_path,
+                    exc,
+                )
+
+        # 4. Last-resort full scan. Rate-limited because a webhook
         # burst (e.g. Sonarr season-pack import) would otherwise trigger
         # one full library scan per file — pins Jellyfin for minutes
         # and quickly outpaces what a real scan can cover.

@@ -294,7 +294,10 @@ class TestTriggerRefresh:
             assert req.call_count == 2
             assert req.call_args_list[1].args == ("POST", "/Items/42/Refresh")
 
-    def test_falls_back_to_library_refresh_without_id(self, jelly):
+    def test_path_based_nudge_when_no_item_id(self, jelly):
+        # With a remote_path but no item_id we use Jellyfin's
+        # path-based scan-nudge (/Library/Media/Updated, same shape
+        # as Emby's). Per-file, no global library scan.
         with patch.object(JellyfinServer, "_request") as req:
             response = MagicMock()
             response.raise_for_status.return_value = None
@@ -302,27 +305,69 @@ class TestTriggerRefresh:
 
             jelly.trigger_refresh(item_id=None, remote_path="/some/path.mkv")
 
-            req.assert_called_once_with("POST", "/Library/Refresh")
+            req.assert_called_once_with(
+                "POST",
+                "/Library/Media/Updated",
+                json_body={"Updates": [{"Path": "/some/path.mkv", "UpdateType": "Created"}]},
+            )
 
-    def test_full_refresh_is_rate_limited_per_server(self, jelly):
-        # /Library/Refresh is heavyweight (full library scan, no path
-        # filter). A webhook burst — e.g. Sonarr importing a season pack
-        # where every file hits SKIPPED_NOT_IN_LIBRARY — must NOT trigger
-        # one /Library/Refresh per file or Jellyfin pins for minutes.
-        # The cooldown lives on the server instance so concurrent
-        # webhooks for the same server collapse to a single scan.
+    def test_falls_back_to_full_refresh_when_no_path_and_no_id(self, jelly):
+        # Neither item_id nor remote_path given — last-resort full
+        # /Library/Refresh fires (rate-limited).
         with patch.object(JellyfinServer, "_request") as req:
             response = MagicMock()
             response.raise_for_status.return_value = None
             req.return_value = response
 
-            jelly.trigger_refresh(item_id=None, remote_path="/path/a.mkv")
-            jelly.trigger_refresh(item_id=None, remote_path="/path/b.mkv")
-            jelly.trigger_refresh(item_id=None, remote_path="/path/c.mkv")
+            jelly.trigger_refresh(item_id=None, remote_path=None)
+
+            req.assert_called_once_with("POST", "/Library/Refresh")
+
+    def test_full_refresh_is_rate_limited_per_server(self, jelly):
+        # /Library/Refresh is heavyweight (full library scan, no path
+        # filter). A burst of nudges with neither item_id nor
+        # remote_path — the only branch that reaches the full refresh —
+        # must NOT trigger one /Library/Refresh per call or Jellyfin
+        # pins for minutes. The cooldown lives on the server instance
+        # so concurrent calls for the same server collapse to a single
+        # scan.
+        with patch.object(JellyfinServer, "_request") as req:
+            response = MagicMock()
+            response.raise_for_status.return_value = None
+            req.return_value = response
+
+            jelly.trigger_refresh(item_id=None, remote_path=None)
+            jelly.trigger_refresh(item_id=None, remote_path=None)
+            jelly.trigger_refresh(item_id=None, remote_path=None)
 
             # Only the first nudge fires the API call; the next two
             # land inside the cooldown window and short-circuit.
             req.assert_called_once_with("POST", "/Library/Refresh")
+
+    def test_path_nudge_failure_falls_back_to_full_refresh(self, jelly):
+        # Path-based nudge raises (e.g. older Jellyfin without the
+        # endpoint, or Jellyfin returns 5xx) — fall back to the
+        # rate-limited full refresh so the SKIPPED_NOT_IN_LIBRARY
+        # retry path still gets *some* scan triggered.
+        path_exc = RuntimeError("path nudge failed")
+        full_resp = MagicMock(raise_for_status=MagicMock(return_value=None))
+        responses = [path_exc, full_resp]
+
+        def side_effect(*args, **kwargs):
+            value = responses.pop(0)
+            if isinstance(value, Exception):
+                raise value
+            return value
+
+        with patch.object(JellyfinServer, "_request", side_effect=side_effect) as req:
+            jelly.trigger_refresh(item_id=None, remote_path="/some/path.mkv")
+
+            assert req.call_count == 2
+            assert req.call_args_list[0].args == (
+                "POST",
+                "/Library/Media/Updated",
+            )
+            assert req.call_args_list[1].args == ("POST", "/Library/Refresh")
 
     def test_falls_back_to_library_refresh_when_per_item_fails(self, jelly):
         # Plugin call + per-item refresh both raise → full library
