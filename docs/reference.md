@@ -594,7 +594,7 @@ Test Plex connection. Request: `{"url": "...", "token": "..."}`. Returns `{"succ
 `config.job_type` accepts:
 
 - `"full_library"` *(default — optional, omit to get the same behaviour)* — schedule runs a full library scan via the standard job pipeline, processing every item in `library_id` that's missing previews.
-- `"recently_added"` — schedule runs a Recently Added scan instead. Requires `config.lookback_hours` (float, clamped to 0.25–720). Scans only items whose Plex `addedAt` falls within the lookback window, queuing each through the webhook job pipeline. When `library_id` is `null`, the scan falls back to the globally selected libraries in Settings (or every supported library when no global filter is set); when set, only that section is scanned.
+- `"recently_added"` — schedule runs a Recently Added scan instead. Requires `config.lookback_hours` (float, clamped to 0.25–720). Scans only items added within the lookback window (Plex `addedAt`, Emby/Jellyfin `DateCreated`), queuing each through the webhook job pipeline. When `library_id` is `null`, the scan falls back to the globally selected libraries in Settings (or every supported library when no global filter is set); when set, only that section is scanned. Works for Plex, Emby, and Jellyfin — each vendor's processor implements `scan_recently_added` against its native API.
 
 ### System Endpoints
 
@@ -619,7 +619,7 @@ For full design and per-vendor details see [Multi-Media-Server](multi-server.md)
 | POST | `/api/servers/test-connection` | Test a candidate config without saving |
 | POST | `/api/servers/<id>/refresh-libraries` | Re-fetch the server's library list |
 | GET | `/api/servers/owners?path=...` | Diagnose which servers own a given path |
-| GET | `/api/servers/<id>/output-status?path=...` | Whether publisher output files exist for a path on this server |
+| GET | `/api/servers/<id>/output-status?path=...&item_id=...` | Whether publisher output files exist for a path on this server. `item_id` is required for **Plex** servers (the bundle hash is keyed by item id); optional for Emby and Jellyfin. Plex requests without `item_id` return `{"needs_item_id": true}`. |
 | POST | `/api/servers/auth/emby/password` | Username+password → Emby token |
 | POST | `/api/servers/auth/jellyfin/password` | Username+password → Jellyfin token |
 | POST | `/api/servers/auth/jellyfin/quick-connect/initiate` | Begin Quick Connect ceremony |

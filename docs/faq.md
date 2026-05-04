@@ -119,7 +119,7 @@ Typical per-worker RSS with hardware decode:
 | 4K HDR10 / DV P7+8 | ~250–300 MB |
 | 4K DV Profile 5 (libplacebo) | ~350–500 MB |
 
-Earlier builds held ~1 GB per worker on 4K HDR content because decoded frames were downloaded from the GPU at source resolution. As of the GPU-scale fix ([#218](https://github.com/stevezau/media_preview_generator/issues/218)), the downscale runs on the GPU and only the 320×240 frame is moved back to system RAM, so the memory ceiling on an 8 GB container comfortably supports 12+ GPU workers.
+Earlier builds used ~1 GB per worker on 4K HDR content because frames were downloaded from the GPU at full source resolution. A recent fix moved the downscale onto the GPU itself, so only the small thumbnail-sized frame moves back to system RAM. An 8 GB container now comfortably supports 12+ GPU workers.
 
 **What's thumbnail quality 1-10?**
 

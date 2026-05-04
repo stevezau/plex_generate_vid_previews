@@ -56,10 +56,17 @@ docker run --rm -v "$PWD:/src" -w /src mcr.microsoft.com/dotnet/sdk:9.0 \
 
 The DLL lands at `bin/Release/net9.0/Jellyfin.Plugin.MediaPreviewBridge.dll`. Drop it into `<jellyfin-config>/plugins/MediaPreviewBridge_<version>/` and restart Jellyfin.
 
+`<jellyfin-config>` is wherever Jellyfin stores its config:
+
+- **Docker** — your mapped `/config` volume (e.g. `/mnt/user/appdata/jellyfin/config` on Unraid, `/var/lib/docker/volumes/jellyfin_config/_data` on a typical Linux Docker install).
+- **Linux package install** — usually `/var/lib/jellyfin/`.
+- **Windows** — `%ProgramData%\Jellyfin\Server\`.
+- **macOS** — `~/.config/jellyfin/`.
+
 ## Compatibility
 
-- Requires Jellyfin **10.11.x** or newer (uses `ITrickplayManager.SaveTrickplayInfo` and the `Jellyfin.Database.Implementations` namespace which both landed in 10.10).
-- Targets **net9.0** (matches Jellyfin 10.11's runtime).
+- Requires Jellyfin **10.11.x** or newer (uses internal trickplay-registration APIs that were added in Jellyfin 10.10).
+- Targets **.NET 9** (matches Jellyfin 10.11's runtime).
 - Single small DLL, zero runtime configuration, no UI page.
 
 ## Release process

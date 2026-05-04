@@ -531,7 +531,7 @@ Use this table to diagnose common failures quickly.
 | New files are imported but previews are not generated | Plex indexing delay or wrong library mapping | Increase webhook delay and verify Radarr/Sonarr library mapping in Webhooks settings. |
 | Radarr/Sonarr cannot reach webhook URL | Network routing or hostname issue | Use host IP or reachable Docker hostname (not `localhost`), then verify firewall and port `8080`. |
 | New job starts after I paused | Global pause not set or UI not refreshed | Use **Pause Processing** (Current Job or Job Queue header). Pause is global and persisted; in-flight files finish before workers idle. |
-| DV Profile 5 thumbnails have a bright green rectangle or overall green cast | libplacebo is falling back to `llvmpipe` (software Vulkan) because the container has no real Vulkan device | Forward an iGPU or render node to the container with `--device /dev/dri:/dev/dri` (Intel/AMD) or ensure the NVIDIA runtime exposes the Vulkan ICD with `NVIDIA_DRIVER_CAPABILITIES=compute,video,utility,graphics`. Most users already forward `/dev/dri` for VAAPI, which brings Mesa's Vulkan driver along for free. |
+| DV Profile 5 thumbnails have a bright green rectangle or overall green cast | The container can't reach a real Vulkan-capable GPU, so DV tone mapping falls back to a slow software path that has a known rendering bug | Pass an iGPU to the container with `--device /dev/dri:/dev/dri` (Intel/AMD), or for NVIDIA set `NVIDIA_DRIVER_CAPABILITIES=all` so the NVIDIA Vulkan driver gets injected. Most users already pass `/dev/dri` for hardware video acceleration, which brings the Vulkan driver along for free. |
 
 ### Validate Plex Config Path
 

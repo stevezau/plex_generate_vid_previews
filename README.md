@@ -44,7 +44,7 @@ Generates video preview thumbnails for **Plex, Emby, and Jellyfin**. These are t
 - **Emby** has no GPU support for thumbnail generation at all.
 - **Jellyfin** does support hardware-accelerated trickplay, but it shares CPU/GPU with playback — and on a busy server that's resources you'd rather give to the player.
 
-**The Solution:** This tool runs preview generation **off the media server** on a machine of your choosing, uses every GPU it finds, and processes files in parallel. When two or more servers contain the same file, FFmpeg runs only once — the result is then written out in each server's expected format (BIF for Plex/Emby, JPG tile-grid for Jellyfin).
+**The Solution:** This tool runs preview generation **off the media server** on a machine of your choosing, uses every GPU it finds, and processes files in parallel. When two or more servers contain the same file, FFmpeg runs only once — the result is then written out in each server's own expected format, automatically.
 
 > [!NOTE]
 > This project was originally hand-written. Recent development is AI-assisted (Cursor + Claude). All changes are reviewed and tested.
@@ -59,7 +59,7 @@ Generates video preview thumbnails for **Plex, Emby, and Jellyfin**. These are t
 | **One Pass, Many Servers** | A single FFmpeg pass produces output for every server that owns the file |
 | **Multi-GPU** | NVIDIA, AMD, Intel, and Windows GPUs |
 | **Parallel Processing** | Configurable GPU and CPU worker threads |
-| **GPU to CPU Fallback** | Automatic in-place CPU retry when a GPU worker hits an unsupported codec |
+| **GPU to CPU Fallback** | If a file fails on the GPU (unsupported codec, driver hiccup), the same worker automatically retries it on the CPU — no extra config |
 | **Hardware Acceleration** | CUDA, VAAPI, D3D11VA, VideoToolbox |
 | **Library Filtering** | Per-library enable/disable per server |
 | **Quality Control** | Adjustable thumbnail quality (1-10) |
@@ -67,7 +67,7 @@ Generates video preview thumbnails for **Plex, Emby, and Jellyfin**. These are t
 | **Web Dashboard** | Manage jobs, schedules, and status |
 | **Scheduling** | Cron and interval-based automation |
 | **Smart Skipping** | Automatically skips files that already have thumbnails |
-| **Source-Aware Dedup** | Tracks source file changes so duplicate webhook calls don't re-process the same file — but a Sonarr quality upgrade (file replaced in place) does trigger regeneration |
+| **Source-Aware Dedup** | Skips re-processing when the same file is requested again, but detects when a file has been swapped (e.g. Sonarr/Radarr quality upgrade) and regenerates automatically |
 | **Automatic Retry on Slow Indexing** | If your media server hasn't finished scanning a new file yet, the app retries automatically (30 s → 2 m → 5 m → 15 m → 60 m). No manual re-runs. |
 | **Universal Webhooks** | One URL handles Plex / Emby / Jellyfin / Sonarr / Radarr — vendor auto-detected |
 | **Plex direct webhook** | Auto-trigger on `library.new` (Plex Pass) for media added without Sonarr/Radarr |
@@ -157,7 +157,7 @@ See [Getting Started — GPU Acceleration](docs/getting-started.md#gpu-accelerat
 
 ### GPU + CPU Fallback
 
-CPU fallback is automatic and built into every GPU worker — there is no separate "fallback" pool to configure. If FFmpeg fails on the GPU (unsupported codec, hardware-accelerator error, driver crash), the same worker retries the file on CPU in-place and the dashboard shows a yellow **CPU fallback** badge.
+CPU fallback is automatic and built into every GPU worker — there is no separate "fallback" pool to configure. If a file fails on the GPU for any reason (unsupported codec, hardware error, driver crash), the same worker automatically retries it on the CPU and the dashboard shows a yellow **CPU fallback** badge so you know it happened.
 
 If you have a lot of content that never decodes on the GPU, raise **CPU Workers** above `0` so that those files route straight to dedicated CPU workers instead of blocking a GPU worker each time.
 

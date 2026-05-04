@@ -97,7 +97,7 @@ Use the existing **Setup Wizard** at `/setup`. Plex OAuth via plex.tv
 issues a token; nothing changes from the single-Plex flow. The migration
 to `media_servers[]` happens automatically when the server first boots
 the new code (the legacy `plex_*` keys are auto-translated by schema
-migration v7).
+migration).
 
 ### Emby
 

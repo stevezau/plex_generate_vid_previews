@@ -27,19 +27,19 @@ GPU-accelerated video preview thumbnail generation for **Plex, Emby, and Jellyfi
 | **Plex OAuth** | One sign-in lists every Plex server your account can reach; tick which ones to add |
 | **Jellyfin Quick Connect** | Friendliest auth — no password ever leaves your browser |
 | **Jellyfin trickplay one-click fix** | Detects + auto-flips Jellyfin's library settings so the previews you publish actually appear in Jellyfin's web UI (the most common Jellyfin gotcha) |
-| **Smart Caching** | A second webhook for a file recently processed by a sibling server reuses the previously-extracted frames instead of running FFmpeg again. Cache size and timeout are configurable. |
-| **Automatic Retry on Slow Indexing** | If your media server hasn't finished scanning a new file yet, the app retries automatically (30 s → 2 m → 5 m → 15 m → 60 m) instead of dropping the request |
+| **Smart Caching** | If two servers contain the same file, the second one reuses the result of the first instead of running FFmpeg again. Cache size and timeout are configurable. |
+| **Automatic Retry on Slow Indexing** | If your media server hasn't finished scanning a new file yet, the app retries automatically (30 s → 2 m → 5 m → 15 m → 60 m) instead of giving up |
 | **Multi-Server Preview Viewer** | Inspect published previews for any file across any server from one viewer |
 | **Multi-GPU** | NVIDIA, AMD, Intel — per-GPU enable/disable and worker count |
 | **Parallel Processing** | Configurable GPU and CPU worker threads |
-| **GPU to CPU Fallback** | Automatic in-place CPU retry when a GPU worker hits an unsupported codec |
+| **GPU to CPU Fallback** | If a file fails on the GPU, the same worker automatically retries it on the CPU — no extra config |
 | **Hardware Acceleration** | CUDA, VAAPI, QuickSync, plus Vulkan support for Dolby Vision colour handling |
 | **Per-Server Filtering** | Library toggles, path mappings, and exclude rules scoped per server |
 | **Quality Control** | Adjustable thumbnail quality (1-10) and frame interval (1-60 s) |
 | **Docker Ready** | Pre-built images with GPU support |
 | **Web Dashboard** | Manage jobs, schedules, status, and recent-webhook history |
 | **Scheduling** | Cron and interval-based automation |
-| **Smart Skipping** | Skips files that already have a fresh preview, but a Sonarr/Radarr quality upgrade (file replaced in place) still triggers regeneration |
+| **Smart Skipping** | Skips files that already have a fresh preview, but detects when a file has been swapped (e.g. Sonarr/Radarr quality upgrade) and regenerates automatically |
 | **Radarr/Sonarr Webhooks** | Auto-process new content on import |
 | **Plex Direct Webhook** | Auto-trigger on `library.new` (requires Plex Pass) for media added outside Sonarr/Radarr |
 | **Recently Added Scanner** | Polling fallback that catches manually-added items without needing Plex Pass |
@@ -177,7 +177,7 @@ docker run -d \
 
 ### GPU + CPU Fallback
 
-CPU fallback is automatic. If FFmpeg fails on a GPU worker (unsupported codec, driver crash, etc.), the same worker retries the file on CPU in-place and the dashboard shows a yellow "CPU fallback" badge. No separate worker pool to configure — increase **CPU Workers** above `0` only if you have a lot of content that never decodes on the GPU and you want those files to route straight to dedicated CPU workers.
+CPU fallback is automatic. If a file fails on the GPU (unsupported codec, driver crash, etc.), the same worker automatically retries it on the CPU and the dashboard shows a yellow "CPU fallback" badge so you know it happened. No separate worker pool to configure — increase **CPU Workers** above `0` only if you have a lot of content that never decodes on the GPU and you want those files to route straight to dedicated CPU workers.
 
 ## Environment Variables
 
@@ -221,7 +221,7 @@ Configure GPU and CPU workers per-GPU in the web UI under **Settings**.
 
 ## Important Notes
 
-- **Don't use `init: true`** in docker-compose -- this container uses s6-overlay and `init: true` will break it.
+- **Don't add `init: true`** to your docker-compose file — this container manages its own processes internally, and `init: true` conflicts with that.
 - **Use your host IP for Plex** -- the container cannot reach `localhost` on your host. Use `http://192.168.1.100:32400`, not `http://localhost:32400`.
 - **Recommended Plex setting** -- set "Generate video preview thumbnails" to **Never** in Plex settings. This tool replaces that with GPU-accelerated processing.
 

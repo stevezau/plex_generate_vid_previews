@@ -299,11 +299,11 @@
                     <label for="webhookRetryCount" class="form-label">Retry count
                         <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
                            data-bs-toggle="tooltip" data-bs-placement="top"
-                           title="If a file can't be found in Plex when the webhook fires (e.g. Plex hasn't indexed it yet), how many times to retry. 0 = no retries."></i>
+                           title="If a file can't be found on the media server when the webhook fires (e.g. the server hasn't finished indexing it yet), how many times to retry. 0 = no retries."></i>
                     </label>
                     <input type="number" class="form-control" id="webhookRetryCount" min="0" max="10" value="3" style="max-width: 6rem;">
                     <div class="form-text">
-                        How many times to retry if Plex hasn't indexed the file yet. 0 disables retries.
+                        How many times to retry if the media server hasn't indexed the file yet. 0 disables retries.
                     </div>
                 </div>
 

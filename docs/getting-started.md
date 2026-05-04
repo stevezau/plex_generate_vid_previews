@@ -97,7 +97,7 @@ After setup, add additional servers (any vendor) any time from **Settings → Me
 
 In **Plex Settings → Library**, set **"Generate video preview thumbnails"** to **Never**. This tool replaces Plex's built-in generation with GPU-accelerated processing. If Plex's option is left on, Plex may use CPU to generate thumbnails for new media, which can conflict with or duplicate this app's work.
 
-This tool generates **video preview thumbnails only** — the small frames you see when you drag the scrub bar. (Plex stores these in a file format called **BIF**; Emby uses a similar BIF sidecar; Jellyfin uses a folder of JPG tile sheets called **trickplay**.) It does not generate chapter thumbnails, intro/credit detection, or other media analysis.
+This tool generates **video preview thumbnails only** — the small frames you see when you drag the scrub bar. (Plex stores these in a file format called **BIF**; Emby reads a similar BIF file written next to your media file; Jellyfin reads a folder of JPG tile sheets called **trickplay** placed next to your media file.) It does not generate chapter thumbnails, intro/credit detection, or other media analysis.
 
 > [!TIP]
 > **After setup, you probably want one or both of:**
@@ -148,7 +148,7 @@ See [docker-compose.example.yml](../docker-compose.example.yml) for ready-to-use
 Copy the file, uncomment the section for your hardware, and adjust volume paths.
 
 > [!WARNING]
-> **Don't set `init: true`.** This container runs s6-overlay as its own init; `init: true` conflicts with it and prevents the container from starting.
+> **Don't set `init: true`.** This container manages its own processes internally; `init: true` conflicts with that and prevents the container from starting.
 
 ---
 
@@ -441,8 +441,12 @@ For users following [TRaSH Guides](https://trash-guides.info/):
 
 3. **Set Permissions:**
    ```bash
-   chmod -R 777 /mnt/cache/appdata/plex/Library/Application\ Support/Plex\ Media\ Server/Media/
+   # Make the Plex Media folder writable by the Unraid 'users' group (PGID=100)
+   # so this app's container (running as PUID=99 / PGID=100) can write previews into it.
+   chown -R 99:100 /mnt/cache/appdata/plex/Library/Application\ Support/Plex\ Media\ Server/Media/
+   chmod -R 775   /mnt/cache/appdata/plex/Library/Application\ Support/Plex\ Media\ Server/Media/
    ```
+   (Older guides recommended `chmod 777` — that works but grants world-writable access; `chown` + `775` is the safer equivalent.)
 
 ---
 
