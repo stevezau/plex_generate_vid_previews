@@ -394,6 +394,52 @@ class TestResolveItemToRemotePath:
             assert call_args.args[1] == "/Users/u-1/Items/42", call_args
 
 
+class TestResolveRemotePathToItemIdViaExactPath:
+    """Emby override that uses the native ``GET /Items?Path=<exact>``
+    filter (single indexed-column lookup, ~1 ms) before falling back
+    to the public ``searchTerm`` API. Confirmed working on Emby per
+    https://emby.media/community/index.php?/topic/70680-search-item-by-file-path/
+    — Jellyfin does not support this param (it was lost in the .NET
+    Core rewrite of ItemsController), which is why only EmbyServer
+    overrides this method, not Jellyfin's.
+    """
+
+    def test_uses_exact_path_filter_when_item_found(self, emby):
+        path_resp = MagicMock()
+        path_resp.json.return_value = {"Items": [{"Id": "abc-123", "Path": "/m/movie.mkv"}]}
+        path_resp.raise_for_status.return_value = None
+        with patch.object(EmbyServer, "_request", return_value=path_resp) as req:
+            got = emby._uncached_resolve_remote_path_to_item_id("/m/movie.mkv")
+            assert got == "abc-123"
+            # Single network call — the exact-Path query, not the legacy
+            # two-pass searchTerm path.
+            assert req.call_count == 1
+            args, kwargs = req.call_args
+            assert args == ("GET", "/Items")
+            assert kwargs["params"]["Path"] == "/m/movie.mkv"
+            # Don't accidentally hit a slow full-enumeration cap here.
+            assert kwargs["params"].get("Limit") == 1
+
+    def test_falls_back_to_search_when_exact_path_returns_empty(self, emby):
+        empty_path_resp = MagicMock()
+        empty_path_resp.json.return_value = {"Items": []}
+        empty_path_resp.raise_for_status.return_value = None
+        # Base class's Pass-1 + Pass-2 also miss for this test.
+        empty_search_resp = MagicMock()
+        empty_search_resp.json.return_value = {"Items": []}
+        empty_search_resp.raise_for_status.return_value = None
+        with patch.object(
+            EmbyServer,
+            "_request",
+            side_effect=[empty_path_resp, empty_search_resp, empty_search_resp],
+        ) as req:
+            got = emby._uncached_resolve_remote_path_to_item_id("/missing.mkv")
+            assert got is None
+            assert req.call_count >= 2
+            # First call was the exact-Path fast path.
+            assert req.call_args_list[0].kwargs["params"]["Path"] == "/missing.mkv"
+
+
 class TestTriggerRefresh:
     def test_uses_library_media_updated_when_path_known(self, emby):
         with patch.object(EmbyServer, "_request") as req:

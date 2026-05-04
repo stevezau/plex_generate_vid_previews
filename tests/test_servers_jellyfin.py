@@ -265,6 +265,59 @@ class TestResolveItemToRemotePath:
             assert jelly.resolve_item_to_remote_path("42") is None
 
 
+class TestResolveRemotePathToItemIdViaPlugin:
+    """Jellyfin override that prefers the Media Preview Bridge plugin's
+    ``/MediaPreviewBridge/ResolvePath`` (single indexed-column lookup,
+    ~1 ms) over the public ``/Items?searchTerm=…`` API (full-text
+    title index that drops 4K/HDR/DV tokens, plus ~30 s Pass-2 walk
+    when Pass 1 misses).
+    """
+
+    def test_uses_plugin_resolve_path_when_installed(self, jelly):
+        plugin_resp = MagicMock(status_code=200)
+        plugin_resp.json.return_value = {"itemId": "abc-123", "name": "Inception", "type": "Movie"}
+        with patch.object(JellyfinServer, "_request", return_value=plugin_resp) as req:
+            got = jelly._uncached_resolve_remote_path_to_item_id("/data/movies/inception.mkv")
+            assert got == "abc-123"
+            # Exactly ONE network call — the plugin endpoint, not the
+            # legacy two-pass searchTerm path.
+            assert req.call_count == 1
+            args, kwargs = req.call_args
+            assert args == ("GET", "/MediaPreviewBridge/ResolvePath")
+            assert kwargs["params"]["path"] == "/data/movies/inception.mkv"
+
+    def test_falls_back_to_public_api_when_plugin_returns_404(self, jelly):
+        # 404 = either plugin not installed or no item at this path.
+        # Either way: fall through to the public API on the base class
+        # so the lookup still completes (the base class's library-prefix
+        # short-circuit handles the "no item" case in microseconds).
+        plugin_resp = MagicMock(status_code=404)
+        # Empty Pass-1 search response — base class's fallback path.
+        empty_resp = MagicMock()
+        empty_resp.json.return_value = {"Items": []}
+        empty_resp.raise_for_status.return_value = None
+        with patch.object(JellyfinServer, "_request", side_effect=[plugin_resp, empty_resp, empty_resp]) as req:
+            got = jelly._uncached_resolve_remote_path_to_item_id("/nope.mkv")
+            assert got is None
+            # First call was the plugin probe, then the base class kicked
+            # in (Pass 1 + Pass 2).
+            assert req.call_count >= 2
+            assert req.call_args_list[0].args == ("GET", "/MediaPreviewBridge/ResolvePath")
+
+    def test_falls_back_when_plugin_request_raises(self, jelly):
+        # Network/transport error → quietly degrade to the public API.
+        empty_resp = MagicMock()
+        empty_resp.json.return_value = {"Items": []}
+        empty_resp.raise_for_status.return_value = None
+        with patch.object(
+            JellyfinServer,
+            "_request",
+            side_effect=[RuntimeError("connection refused"), empty_resp, empty_resp],
+        ):
+            got = jelly._uncached_resolve_remote_path_to_item_id("/x.mkv")
+            assert got is None  # base class also misses; that's fine for this assertion
+
+
 class TestTriggerRefresh:
     def test_calls_plugin_bridge_then_per_item_refresh_when_id_known(self, jelly):
         # Two requests fire when an item_id is supplied: the Media Preview

@@ -30,6 +30,52 @@ class EmbyServer(EmbyApiClient):
     def type(self) -> ServerType:
         return ServerType.EMBY
 
+    def _uncached_resolve_remote_path_to_item_id(self, remote_path: str) -> str | None:
+        """Path → item id via Emby's exact-path filter on ``/Items``.
+
+        Per the Emby team
+        (https://emby.media/community/index.php?/topic/70680-search-item-by-file-path/),
+        ``GET /Items?Path=<exact>&Recursive=true`` filters by the item's
+        stored Path column — same indexed equality lookup the
+        Jellyfin plugin uses internally, but exposed natively by Emby.
+        Sub-millisecond on libraries of any size, immune to the
+        searchTerm full-text index dropping tokens.
+
+        This was confirmed working on Emby; it does NOT work on Jellyfin
+        (the Jellyfin .NET-Core rewrite of ItemsController dropped the
+        ``[FromQuery] string Path`` binding), which is why the Jellyfin
+        client uses the Media Preview Bridge plugin instead.
+
+        Falls back to the base class's library-scoped search when the
+        exact-path query returns no hit.
+        """
+        if not remote_path:
+            return None
+        try:
+            response = self._request(
+                "GET",
+                "/Items",
+                params={
+                    "Path": remote_path,
+                    "Recursive": "true",
+                    "Fields": "Path",
+                    "Limit": 1,
+                },
+            )
+            response.raise_for_status()
+            items = response.json().get("Items") or []
+            if items and isinstance(items[0], dict):
+                item_id = str(items[0].get("Id") or "")
+                if item_id:
+                    return item_id
+        except Exception as exc:
+            logger.debug(
+                "Emby exact-Path lookup failed for {!r}: {} — falling back to public API",
+                remote_path,
+                exc,
+            )
+        return super()._uncached_resolve_remote_path_to_item_id(remote_path)
+
     def trigger_refresh(self, *, item_id: str | None, remote_path: str | None) -> None:
         """Notify Emby that a media path changed.
 

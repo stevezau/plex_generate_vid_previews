@@ -186,6 +186,64 @@ class JellyfinServer(EmbyApiClient):
         except Exception as exc:
             logger.debug("Jellyfin /Library/Refresh failed: {}", exc)
 
+    def _uncached_resolve_remote_path_to_item_id(self, remote_path: str) -> str | None:
+        """Path → item id with the Media Preview Bridge plugin shortcut.
+
+        Tries the plugin's ``GET /MediaPreviewBridge/ResolvePath`` first.
+        That endpoint calls ``ILibraryManager.FindByPath`` internally —
+        a single equality lookup against the indexed Path column on
+        Jellyfin's BaseItems table (sub-millisecond on libraries of any
+        size, and immune to the searchTerm full-text index dropping
+        tokens like 4K / HDR / DV / release-group brackets).
+
+        Falls back to the library-scoped ``searchTerm`` + enumeration
+        path on the base class when the plugin isn't installed (404)
+        or any other transport error. Caller-side cache wraps both
+        paths so repeat queries within the TTL are free.
+        """
+        if not remote_path:
+            return None
+        try:
+            response = self._request(
+                "GET",
+                "/MediaPreviewBridge/ResolvePath",
+                params={"path": remote_path},
+            )
+        except Exception as exc:
+            logger.debug(
+                "Media Preview Bridge ResolvePath failed for {!r}: {} — falling back to public API",
+                remote_path,
+                exc,
+            )
+            return super()._uncached_resolve_remote_path_to_item_id(remote_path)
+        if response.status_code == 200:
+            try:
+                payload = response.json()
+                item_id = str(payload.get("itemId") or "")
+                if item_id:
+                    return item_id
+            except (ValueError, AttributeError) as exc:
+                logger.debug(
+                    "Media Preview Bridge ResolvePath returned bad JSON for {!r}: {}",
+                    remote_path,
+                    exc,
+                )
+        elif response.status_code == 404:
+            # Two possible meanings: (a) plugin not installed (no route
+            # registered), or (b) plugin installed and definitively no
+            # item at this path. Either way, fall through to the base
+            # class — its library-prefix short-circuit handles (b)
+            # correctly in microseconds, and its scoped-search handles
+            # (a) without the user seeing a delay.
+            return super()._uncached_resolve_remote_path_to_item_id(remote_path)
+        else:
+            logger.debug(
+                "Media Preview Bridge ResolvePath returned HTTP {} for {!r} — falling back",
+                response.status_code,
+                remote_path,
+            )
+        return super()._uncached_resolve_remote_path_to_item_id(remote_path)
+
     # ------------------------------------------------------------------
     # Media Preview Bridge plugin — install + status helpers
     # ------------------------------------------------------------------

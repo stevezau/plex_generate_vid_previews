@@ -71,6 +71,45 @@ public class TrickplayBridgeController : ControllerBase
     }
 
     /// <summary>
+    /// Resolve an absolute file path to its Jellyfin item id.
+    ///
+    /// Wraps <c>ILibraryManager.FindByPath</c>, which is a single
+    /// equality lookup against an indexed column on the BaseItems
+    /// table — sub-millisecond on libraries of any size. Lets the
+    /// publisher skip the public <c>/Items?searchTerm=…</c> API,
+    /// whose full-text title index silently strips tokens like
+    /// <c>4K</c>, <c>HDR</c>, <c>DV</c> and release-group brackets
+    /// (so a filename like <c>Test (2024) [imdb-…][HDR10][x265]-NAHOM.mkv</c>
+    /// returns no hits even though the item is indexed).
+    /// </summary>
+    /// <param name="path">Absolute file path as Jellyfin sees it (must match the indexed Path column exactly).</param>
+    /// <returns>200 with <c>{itemId, name, type}</c> on a hit, 404 when no item has that path.</returns>
+    [HttpGet("ResolvePath")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public IActionResult ResolvePath([FromQuery] string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return BadRequest(new { error = "path query parameter is required" });
+        }
+
+        var item = _libraryManager.FindByPath(path, isFolder: false);
+        if (item is null)
+        {
+            return NotFound(new { error = $"no item with path {path}" });
+        }
+
+        return Ok(new
+        {
+            itemId = item.Id,
+            name = item.Name,
+            type = item.GetType().Name,
+        });
+    }
+
+    /// <summary>
     /// Register the trickplay tiles a publisher just wrote next to a
     /// media file. Jellyfin scans the per-resolution sub-directory
     /// (<c>&lt;basename&gt;.trickplay/&lt;width&gt; - &lt;tileW&gt;x&lt;tileH&gt;</c>),
