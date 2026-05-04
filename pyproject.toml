@@ -114,6 +114,7 @@ markers = [
     "real_prewarm: opt out of the autouse _prewarm_caches no-op in conftest",
     "real_logging: opt out of the autouse setup_logging no-op in conftest",
     "real_job_async: opt out of the autouse _start_job_async no-op in conftest",
+    "journey: cross-module integration journey tests (light unit-of-the-seam style)",
 ]
 
 [tool.coverage.run]
