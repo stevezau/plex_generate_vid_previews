@@ -344,6 +344,25 @@ The `{{{args.inputFileObj._id}}}` template variable is replaced by Tdarr at runt
 > [!TIP]
 > If the webhook request fails (e.g. the server is temporarily down), add a **Reset Flow Error** plugin after the Send Web Request step so Tdarr doesn't mark the entire transcode as failed.
 
+#### Configure FileFlows
+
+FileFlows uses two nodes at the end of your flow: a **Set Variable** node to construct the final output path, then a **Web Request** node to POST it to the custom endpoint.
+
+1. In FileFlows, install the **Web** plugin (Plugins page → search "Web") so the **Web Request** node becomes available
+2. Open the **Flow** you want to trigger previews from
+3. Add a **Set Variable** node just before where the Web Request will go. FileFlows doesn't expose a built-in "final output path" variable, so build it from the folder + final filename + extension:
+   - **Variable**: `output_file`
+   - **Value**: `{folder.Orig.FullName}/{file.NameNoExtension}{ext}`
+4. Add a **Web Request** node after the Set Variable node:
+   - **Method**: `POST`
+   - **URL**: paste the Custom Webhook URL (e.g. `http://your-server:8080/api/webhooks/custom`)
+   - **Content Type**: `JSON`
+   - **Headers**: key `X-Auth-Token`, value `YOUR_TOKEN`
+   - **Body**: `{"file_path": "{output_file}"}`
+5. Save the flow
+
+The `{output_file}` placeholder is substituted by FileFlows at runtime with the absolute path of the file as it exists at the end of the flow (after any rename / re-extension steps).
+
 #### curl Example
 
 ```bash

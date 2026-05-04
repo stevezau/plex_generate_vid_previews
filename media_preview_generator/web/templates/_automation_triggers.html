@@ -21,7 +21,7 @@
                         <div class="decision-recommendation"><a href="#section-webhooks-sonarr-radarr"><i class="bi bi-arrow-right-circle me-1"></i>Use the *arr webhook</a></div>
                     </div>
                     <div class="decision-row">
-                        <div class="decision-scenario">Tdarr or a script transcodes files
+                        <div class="decision-scenario">Tdarr, FileFlows, or a script transcodes files
                             <div class="text-muted small">Works for any server.</div>
                         </div>
                         <div class="decision-arrow">→</div>
@@ -203,7 +203,7 @@
                 <span class="badge bg-secondary ms-2">Any HTTP client</span>
             </div>
             <div class="card-body">
-                <p>Use this endpoint to trigger preview generation from any tool that can send an HTTP POST — Tdarr, shell scripts, Bash hooks, anything. Send a file path and the app queues it through the same pipeline as Sonarr/Radarr.</p>
+                <p>Use this endpoint to trigger preview generation from any tool that can send an HTTP POST — Tdarr, FileFlows, shell scripts, Bash hooks, anything. Send a file path and the app queues it through the same pipeline as Sonarr/Radarr.</p>
 
                 <label class="form-label">Custom Webhook URL</label>
                 <div class="input-group mb-2">
@@ -253,6 +253,34 @@
                             <li>Save the flow</li>
                         </ol>
                         <p class="small text-muted mb-0">The <code>{% raw %}{{{args.inputFileObj._id}}}{% endraw %}</code> template is replaced by Tdarr at runtime with the full file path of the transcoded file.</p>
+                    </div>
+                </details>
+
+                <details class="mb-2">
+                    <summary class="small fw-semibold" style="cursor:pointer;">FileFlows setup</summary>
+                    <div class="mt-2">
+                        <p class="small mb-2">In FileFlows, install the <strong>Web</strong> plugin (Plugins page → search "Web") so the <strong>Web Request</strong> node becomes available, then add two nodes to the end of your flow:</p>
+                        <ol class="small">
+                            <li><strong>Add a Set Variable node</strong> just before the Web Request node — FileFlows doesn't expose a built-in "final output path" variable, so build it from the folder + final filename + extension:
+                                <ul class="mt-1">
+                                    <li><strong>Variable</strong>: <code>output_file</code></li>
+                                    <li><strong>Value</strong>: <code>{% raw %}{folder.Orig.FullName}/{file.NameNoExtension}{ext}{% endraw %}</code></li>
+                                </ul>
+                            </li>
+                            <li><strong>Add a Web Request node</strong> after the Set Variable node:
+                                <ul class="mt-1">
+                                    <li><strong>Method</strong>: <code>POST</code></li>
+                                    <li><strong>URL</strong>: copy the Custom Webhook URL above</li>
+                                    <li><strong>Content Type</strong>: <code>JSON</code></li>
+                                    <li><strong>Headers</strong>: key <code>X-Auth-Token</code>, value <code>YOUR_TOKEN</code></li>
+                                    <li><strong>Body</strong>:
+                                        <pre class="bg-body-tertiary p-2 rounded small mt-1 mb-1"><code>{% raw %}{"file_path": "{output_file}"}{% endraw %}</code></pre>
+                                    </li>
+                                </ul>
+                            </li>
+                            <li>Save the flow</li>
+                        </ol>
+                        <p class="small text-muted mb-0">The <code>{% raw %}{output_file}{% endraw %}</code> placeholder is substituted by FileFlows at runtime with the absolute path of the file as it exists at the end of the flow (after any rename / re-extension steps).</p>
                     </div>
                 </details>
 
