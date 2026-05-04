@@ -56,7 +56,11 @@ class TestMediaItem:
     def test_required_fields(self):
         item = MediaItem(id="42", library_id="1", title="Foo", remote_path="/m/foo.mkv")
         assert item.id == "42"
+        assert item.library_id == "1"
+        assert item.title == "Foo"
         assert item.remote_path == "/m/foo.mkv"
+        # Default for the optional pre-fetched bundle metadata is an empty tuple.
+        assert item.bundle_metadata == ()
 
 
 class TestWebhookEvent:
@@ -67,7 +71,10 @@ class TestWebhookEvent:
 
     def test_item_id_only_event(self):
         ev = WebhookEvent(event_type="ItemAdded", item_id="42")
+        assert ev.event_type == "ItemAdded"
+        assert ev.item_id == "42"
         assert ev.remote_path is None
+        assert ev.raw is None
 
 
 class TestConnectionResult:
@@ -83,8 +90,12 @@ class TestConnectionResult:
             server_name="Home Plex",
             version="1.40.0",
         )
-        assert r.ok
+        assert r.ok is True
         assert r.server_id == "abc123"
+        assert r.server_name == "Home Plex"
+        assert r.version == "1.40.0"
+        # ``message`` defaults to empty string when only identity fields are set.
+        assert r.message == ""
 
 
 class TestServerConfig:
@@ -234,7 +245,15 @@ class TestOutputAdapterABC:
             frame_count=540,
         )
         assert b.canonical_path == "/m/foo.mkv"
+        assert b.frame_dir == tmp_path
         assert b.bif_path is None
+        assert b.frame_interval == 10
+        assert b.width == 320
+        assert b.height == 180
+        assert b.frame_count == 540
+        # Defaults for vendor-pre-fetched metadata and the display-name hint.
+        assert b.prefetched_bundle_metadata == ()
+        assert b.server_display_name is None
 
     def test_concrete_adapter_works(self, tmp_path):
         adapter = _FakeAdapter()

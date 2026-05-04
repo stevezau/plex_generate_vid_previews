@@ -118,9 +118,13 @@ class TestServerOwnsPath:
         )
         match = server_owns_path("/data/movies/Foo.mkv", server)
         assert match is not None
-        # The local_prefix returned reflects the *local* path the dispatcher
-        # uses, not the server's view.
-        assert match.local_prefix.startswith("/data")
+        # Audit fix: ``startswith("/data")`` would also pass for "/data" or
+        # "/data/wrong" — assert the exact translated prefix the dispatcher
+        # would log, plus every other identity field on the OwnershipMatch.
+        assert match.server_id == "s1"
+        assert match.library_id == "1"
+        assert match.library_name == "Movies"
+        assert match.local_prefix == "/data/movies"
 
     def test_legacy_plex_prefix_mapping_key_supported(self):
         """Legacy mapping rows used `plex_prefix` instead of `remote_prefix`."""

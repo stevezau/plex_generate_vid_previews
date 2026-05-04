@@ -12,11 +12,16 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 import requests
 
+from media_preview_generator.config.paths import (
+    expand_path_mapping_candidates,
+    plex_path_to_local,
+)
 from media_preview_generator.plex_client import (
     VIDEO_EXTENSIONS,
     WebhookResolutionResult,
     _detect_path_prefix_mismatches,
     _expand_directory_to_media_files,
+    _map_plex_path_to_local,
     _mismatch_covered_by_mappings,
     filter_duplicate_locations,
     get_library_sections,
@@ -33,14 +38,26 @@ class TestPlexServerConnection:
     @patch("plexapi.server.PlexServer")
     @patch("requests.Session")
     def test_plex_server_connection_success(self, mock_session, mock_plex_server, mock_config):
-        """Test successful connection to Plex server."""
+        """Test successful connection to Plex server.
+
+        Pin the kwargs the SUT controls: URL/token (positional), timeout, and the
+        configured session. A regression that flipped any of these to a default
+        (e.g. dropping the timeout, or constructing a fresh session that bypasses
+        retry/SSL config) would still satisfy a bare ``assert_called_once``.
+        """
         mock_plex = MagicMock()
         mock_plex_server.return_value = mock_plex
+        session_instance = mock_session.return_value
 
         result = plex_server(mock_config)
 
-        assert result == mock_plex
-        mock_plex_server.assert_called_once()
+        assert result is mock_plex
+        mock_plex_server.assert_called_once_with(
+            mock_config.plex_url,
+            mock_config.plex_token,
+            timeout=mock_config.plex_timeout,
+            session=session_instance,
+        )
 
     @patch("plexapi.server.PlexServer")
     @patch("requests.Session")
@@ -533,151 +550,116 @@ class TestGetLibrarySections:
         assert kwargs.get("sort") == "addedAt:desc"
 
 
-class TestPathMapping:
-    """Test path mapping/translation for Docker/Unraid deployments.
+class TestPathMappingProduction:
+    """Tests against the real path-mapping helpers in ``config.paths``.
 
-    Path mapping is essential for Docker containers where the Plex server
-    sees media files at one path (e.g., /data/media) while the container
-    sees them at another path (e.g., /media).
-
-    These tests validate that path translation works correctly for common
-    Unraid/Docker path mapping scenarios.
+    The previous ``TestPathMapping`` class only exercised ``str.replace`` —
+    it never invoked any project code, and one case actively bug-locked the
+    wrong behaviour (``/database`` -> ``/mediabase``). These tests pin the
+    contract of the production helpers (``plex_path_to_local``,
+    ``expand_path_mapping_candidates``) and the ``_map_plex_path_to_local``
+    wrapper used by ``plex_client``.
     """
 
-    def test_path_mapping_unraid_standard(self):
-        """Test standard Unraid path mapping (Plex path -> container path)."""
-        # Plex sees: /data/Movies/movie.mkv
-        # Container sees: /media/Movies/movie.mkv
-        plex_path = "/data/Movies/movie.mkv"
-        plex_videos_path_mapping = "/data"
-        plex_local_videos_path_mapping = "/media"
+    def _row(self, plex_prefix: str, local_prefix: str, webhook_prefixes=None) -> dict:
+        """Build a single normalised path-mapping row."""
+        return {
+            "plex_prefix": plex_prefix,
+            "local_prefix": local_prefix,
+            "webhook_prefixes": list(webhook_prefixes or []),
+        }
 
-        mapped_path = plex_path.replace(plex_videos_path_mapping, plex_local_videos_path_mapping)
+    def test_plex_path_to_local_basic_mapping(self):
+        """Standard Plex prefix -> local prefix substitution."""
+        mappings = [self._row("/data", "/media")]
+        assert plex_path_to_local("/data/Movies/x.mkv", mappings) == "/media/Movies/x.mkv"
 
-        assert mapped_path == "/media/Movies/movie.mkv"
+    def test_plex_path_to_local_partial_prefix_avoidance(self):
+        """``/database`` must NOT be mapped by a ``/data`` rule.
 
-    def test_path_mapping_nested_paths(self):
-        """Test path mapping with nested directory structures."""
-        # Plex sees: /mnt/user/media/tv/Show/Season 1/Episode.mkv
-        # Container sees: /media/tv/Show/Season 1/Episode.mkv
-        plex_path = "/mnt/user/media/tv/Show/Season 1/Episode.mkv"
-        plex_videos_path_mapping = "/mnt/user/media"
-        plex_local_videos_path_mapping = "/media"
+        Pins the production fix to the bug-locking case the deleted
+        ``test_path_mapping_partial_match_avoided`` froze in place. If
+        ``_path_matches_prefix`` regresses to a substring check this fails.
+        """
+        mappings = [self._row("/data", "/media")]
+        assert plex_path_to_local("/database/x.mkv", mappings) == "/database/x.mkv"
 
-        mapped_path = plex_path.replace(plex_videos_path_mapping, plex_local_videos_path_mapping)
+    def test_plex_path_to_local_trailing_slash_equivalence(self):
+        """``/data`` and ``/data/`` in the prefix produce the same output."""
+        without_slash = [self._row("/data", "/media")]
+        with_slash = [self._row("/data/", "/media/")]
+        assert plex_path_to_local("/data/Movies/x.mkv", without_slash) == "/media/Movies/x.mkv"
+        assert plex_path_to_local("/data/Movies/x.mkv", with_slash) == "/media/Movies/x.mkv"
+        assert plex_path_to_local("/data/Movies/x.mkv", without_slash) == plex_path_to_local(
+            "/data/Movies/x.mkv", with_slash
+        )
 
-        assert mapped_path == "/media/tv/Show/Season 1/Episode.mkv"
+    def test_plex_path_to_local_no_mappings_returns_input(self):
+        """Empty mapping list returns the path unchanged."""
+        assert plex_path_to_local("/anywhere/x.mkv", []) == "/anywhere/x.mkv"
 
-    def test_path_mapping_with_spaces(self):
-        """Test path mapping handles spaces in paths correctly."""
-        plex_path = "/mnt/user/My Media/Movies/A Movie Title (2024)/movie.mkv"
-        plex_videos_path_mapping = "/mnt/user/My Media"
-        plex_local_videos_path_mapping = "/media"
+    def test_plex_path_to_local_nested_paths_preserved(self):
+        """Deeply nested suffix is preserved verbatim after the prefix swap."""
+        mappings = [self._row("/mnt/user/media", "/media")]
+        actual = plex_path_to_local("/mnt/user/media/tv/show/Episode.mkv", mappings)
+        assert actual == "/media/tv/show/Episode.mkv"
 
-        mapped_path = plex_path.replace(plex_videos_path_mapping, plex_local_videos_path_mapping)
+    def test_plex_path_to_local_case_sensitivity_preserved(self):
+        """Linux semantics: case mismatch means no mapping is applied."""
+        mappings = [self._row("/data", "/media")]
+        # ``/Data`` differs from ``/data`` by case — no mapping should fire.
+        assert plex_path_to_local("/Data/x.mkv", mappings) == "/Data/x.mkv"
 
-        assert mapped_path == "/media/Movies/A Movie Title (2024)/movie.mkv"
+    def test_map_plex_path_to_local_wrapper_forwards_to_helper(self, mock_config):
+        """``_map_plex_path_to_local`` reads ``config.path_mappings`` and delegates.
 
-    def test_path_mapping_trailing_slash_consistency(self):
-        """Test that trailing slashes are handled consistently."""
-        plex_path = "/data/Movies/movie.mkv"
+        Smoke-tests the plex_client wrapper at lines 415-418 — confirms the
+        wrapper actually forwards the configured mappings instead of swallowing
+        them. With no mappings, returns input unchanged.
+        """
+        mock_config.path_mappings = [self._row("/data", "/media")]
+        assert _map_plex_path_to_local("/data/Movies/x.mkv", mock_config) == "/media/Movies/x.mkv"
 
-        # Without trailing slashes - this works correctly
-        plex_mapping = "/data"
-        local_mapping = "/media"
-        mapped = plex_path.replace(plex_mapping, local_mapping)
-        assert mapped == "/media/Movies/movie.mkv"
+        mock_config.path_mappings = []
+        assert _map_plex_path_to_local("/data/Movies/x.mkv", mock_config) == "/data/Movies/x.mkv"
 
-        # With trailing slashes - also works, but more specific
-        plex_mapping_slash = "/data/"
-        local_mapping_slash = "/media/"
-        mapped_slash = plex_path.replace(plex_mapping_slash, local_mapping_slash)
-        assert mapped_slash == "/media/Movies/movie.mkv"
+    def test_expand_path_mapping_candidates_bidirectional_fanout(self):
+        """A mapping row fans out a path into both Plex and local equivalents.
 
-        # Demonstrating that path starts with /data/ (with slash)
-        assert plex_path.startswith("/data/")  # True - starts with /data/
+        Whichever side of the mapping the input path matches, the helper must
+        produce the equivalent on the other side. The original input is always
+        first, and duplicates are de-duplicated.
+        """
+        mappings = [self._row("/data", "/media")]
 
-    def test_path_mapping_no_mapping_needed(self):
-        """Test when no path mapping is configured (same paths)."""
-        plex_path = "/media/Movies/movie.mkv"
-        # Empty mappings mean no transformation needed
-        plex_videos_path_mapping = ""
-        plex_local_videos_path_mapping = ""
+        from_plex = expand_path_mapping_candidates("/data/Movies/x.mkv", mappings)
+        assert from_plex[0] == "/data/Movies/x.mkv"
+        assert "/media/Movies/x.mkv" in from_plex
 
-        # When both are empty, no replacement should occur
-        if plex_videos_path_mapping and plex_local_videos_path_mapping:
-            mapped_path = plex_path.replace(plex_videos_path_mapping, plex_local_videos_path_mapping)
-        else:
-            mapped_path = plex_path
+        from_local = expand_path_mapping_candidates("/media/Movies/x.mkv", mappings)
+        assert from_local[0] == "/media/Movies/x.mkv"
+        assert "/data/Movies/x.mkv" in from_local
 
-        assert mapped_path == "/media/Movies/movie.mkv"
+        # No duplicates introduced.
+        assert len(from_plex) == len(set(from_plex))
+        assert len(from_local) == len(set(from_local))
 
-    def test_path_mapping_unraid_smb_share(self):
-        """Test mapping SMB/network share paths in Unraid."""
-        # Plex container using SMB path
-        plex_path = "//server/media/Movies/movie.mkv"
-        plex_videos_path_mapping = "//server/media"
-        plex_local_videos_path_mapping = "/mnt/media"
+    def test_expand_path_mapping_candidates_webhook_alias(self):
+        """Webhook prefix should expand into the local-prefix equivalent.
 
-        mapped_path = plex_path.replace(plex_videos_path_mapping, plex_local_videos_path_mapping)
-
-        assert mapped_path == "/mnt/media/Movies/movie.mkv"
-
-    def test_path_mapping_case_sensitivity(self):
-        """Test that path mapping is case-sensitive (Linux filesystems)."""
-        plex_path = "/Data/Movies/movie.mkv"
-        plex_videos_path_mapping = "/data"  # lowercase
-        plex_local_videos_path_mapping = "/media"
-
-        # Should NOT replace because case doesn't match
-        mapped_path = plex_path.replace(plex_videos_path_mapping, plex_local_videos_path_mapping)
-
-        # Path unchanged because /data != /Data
-        assert mapped_path == "/Data/Movies/movie.mkv"
-
-    def test_path_mapping_partial_match_avoided(self):
-        """Test that partial path matches are handled correctly."""
-        # Ensure /data doesn't match /database
-        plex_path = "/database/Movies/movie.mkv"
-        plex_videos_path_mapping = "/data"
-        plex_local_videos_path_mapping = "/media"
-
-        mapped_path = plex_path.replace(plex_videos_path_mapping, plex_local_videos_path_mapping)
-
-        # This demonstrates a limitation - str.replace will match prefix of /database
-        # Real implementation should use startswith() or proper path prefix matching
-        # For now, document this behavior - /database becomes /mediabase
-        assert mapped_path == "/mediabase/Movies/movie.mkv"
-
-    def test_path_mapping_docker_volume_mounts(self):
-        """Test common Docker volume mount scenarios."""
-        # Scenario: linuxserver/plex mounts media at /data/media
-        # This container mounts same media at /media
-        test_cases = [
-            # (plex_path, plex_mapping, local_mapping, expected)
-            (
-                "/data/media/movies/film.mkv",
-                "/data/media",
-                "/media",
-                "/media/movies/film.mkv",
-            ),
-            (
-                "/data/media/tv/show/s01e01.mkv",
-                "/data/media",
-                "/media",
-                "/media/tv/show/s01e01.mkv",
-            ),
-            (
-                "/config/media/Movies/film.mkv",
-                "/config/media",
-                "/media",
-                "/media/Movies/film.mkv",
-            ),
+        Row: webhook ``/data`` aliases the on-disk ``/data_16tb`` mount. A
+        webhook payload of ``/data/x.mkv`` must produce a ``/data_16tb/x.mkv``
+        candidate so we can match it against the actual file.
+        """
+        mappings = [
+            self._row("/plex_data", "/data_16tb", webhook_prefixes=["/data"]),
         ]
-
-        for plex_path, plex_mapping, local_mapping, expected in test_cases:
-            mapped = plex_path.replace(plex_mapping, local_mapping)
-            assert mapped == expected, f"Failed for {plex_path}"
+        candidates = expand_path_mapping_candidates("/data/x.mkv", mappings)
+        assert candidates[0] == "/data/x.mkv"
+        assert "/data_16tb/x.mkv" in candidates
+        # Webhook -> Plex form also fans out (used for cross-matching against
+        # Plex-reported locations).
+        assert "/plex_data/x.mkv" in candidates
 
 
 class TestGetLibrarySectionsExtended:

@@ -201,22 +201,38 @@ class TestWorker:
         thread.join.assert_called_once_with(timeout=60)
 
     def test_worker_format_gpu_name(self):
-        """Test GPU name formatting for display."""
+        """Test GPU name formatting for display.
+
+        Audit fix — original AMD/Intel branches only asserted
+        ``len(name) == 10`` which would pass even if the formatter
+        returned ``"          "`` (10 spaces) or truncated to the wrong
+        substring. The display-width invariant matters, but losing the
+        brand identifier on the worker progress row would have been
+        invisible to the test. Pin the brand substring per branch so a
+        regex regression in the formatter (e.g. dropping the AMD/Intel
+        rules from the patterns list at worker.py:223-224) gets caught.
+        """
         # Test NVIDIA GPU
         worker = Worker(0, "GPU", "NVIDIA", "cuda", 0, "NVIDIA GeForce RTX 3080")
         name = worker._format_gpu_name_for_display()
         assert len(name) == 10
         assert "RTX" in name or "NVIDIA" in name
 
-        # Test AMD GPU
+        # Test AMD GPU — formatter pattern ``r".*AMD.*"`` collapses any
+        # AMD-branded card to the literal "AMD" + padding.
         worker = Worker(1, "GPU", "AMD", "/dev/dri/renderD128", 0, "AMD Radeon RX 6800 XT")
         name = worker._format_gpu_name_for_display()
         assert len(name) == 10
+        assert "AMD" in name, (
+            f"AMD GPU display must retain the 'AMD' brand identifier; got {name!r}. "
+            f"Without this the worker row reads as anonymous padding."
+        )
 
-        # Test Intel GPU
+        # Test Intel GPU — formatter pattern ``r".*Intel.*"`` collapses to "Intel".
         worker = Worker(2, "GPU", "INTEL", "/dev/dri/renderD128", 0, "Intel UHD Graphics 770")
         name = worker._format_gpu_name_for_display()
         assert len(name) == 10
+        assert "Intel" in name, f"Intel GPU display must retain the 'Intel' brand identifier; got {name!r}."
 
     @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_worker_thread_execution(self, mock_process):
@@ -865,9 +881,21 @@ class TestWorkerPool:
 
         pool.process_items(_pi_list_or_passthrough(items), config, registry, worker_progress, main_progress)
 
-        # Some should fail
+        # Audit fix — was ``assert total_failed > 0`` (loose; passes if
+        # only 1/4 fails or all 4 fail). The mock fails deterministically
+        # on every even-numbered call (call #2 and #4) and succeeds on
+        # odd, so the exact answer is 2 completed + 2 failed across the
+        # pool. Pin both totals so a regression that swallows failures
+        # (or double-counts retries) gets caught loudly.
         total_failed = sum(w.failed for w in pool.workers)
-        assert total_failed > 0
+        total_completed = sum(w.completed for w in pool.workers)
+        assert total_failed == 2, (
+            f"Mock fails on calls #2 and #4 of 4 → expected 2 failed; got {total_failed}. "
+            f"Pool may be silently swallowing or double-counting failures."
+        )
+        assert total_completed == 2, (
+            f"Mock succeeds on calls #1 and #3 of 4 → expected 2 completed; got {total_completed}."
+        )
 
     @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_worker_pool_progress_updates(self, mock_process):
@@ -896,20 +924,14 @@ class TestWorkerPool:
         assert worker_progress.add_task.call_count == 1
         assert worker_progress.remove_task.call_count == 1
 
-    def test_worker_statistics(self):
-        """Test worker completed/failed statistics."""
-        pool = WorkerPool(gpu_workers=0, cpu_workers=2, selected_gpus=[])
-
-        pool.workers[0].completed = 5
-        pool.workers[0].failed = 1
-        pool.workers[1].completed = 3
-        pool.workers[1].failed = 2
-
-        total_completed = sum(w.completed for w in pool.workers)
-        total_failed = sum(w.failed for w in pool.workers)
-
-        assert total_completed == 8
-        assert total_failed == 3
+    # Audit fix — DELETED ``test_worker_statistics``. The original test
+    # set ``pool.workers[i].completed = 5`` etc directly, then asserted
+    # ``sum(w.completed for w in pool.workers) == 8``. That's testing
+    # Python's builtin ``sum()``, not any worker behaviour. Deterministic
+    # accounting from real workloads is already covered by
+    # ``test_worker_pool_task_completion`` (4 → all 4 complete) and
+    # ``test_worker_pool_error_handling`` (2 complete + 2 fail). No
+    # replacement needed.
 
     @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_worker_pool_cpu_fallback_on_codec_error(self, mock_process):
@@ -985,6 +1007,45 @@ class TestWorkerPool:
 
         total_completed = sum(w.completed for w in pool.workers)
         assert total_completed == 3
+
+        # Audit fix — original test only asserted total_completed == 3,
+        # which would pass even if items were dropped silently. Per-item
+        # invariants must hold regardless of which worker (GPU vs CPU)
+        # the scheduler picks for a given item — with 1 GPU + 2 CPU and
+        # 3 items, the assignment is non-deterministic, so we can't pin
+        # an exact (key, gpu) sequence. Instead pin the conditional
+        # invariant: key2 succeeds either after a GPU→CPU in-place
+        # fallback (when GPU picked it) OR in a single CPU call (when a
+        # CPU worker picked it). Both branches must terminate in success.
+        all_keys = {k for (k, _) in call_order}
+        assert all_keys == {"key1", "key2", "key3"}, (
+            f"All three items must be attempted; got keys={all_keys!r}. Full call_order: {call_order!r}"
+        )
+
+        key2_calls = [(k, g) for (k, g) in call_order if k == "key2"]
+        if key2_calls[0][1] == "NVIDIA":
+            # GPU picked key2 → must hit CodecNotSupportedError, then
+            # the SAME worker must retry in-place with gpu=None. If the
+            # in-place fallback path is regressed, this branch would
+            # show only [("key2", "NVIDIA")] and total_completed < 3.
+            assert key2_calls == [("key2", "NVIDIA"), ("key2", None)], (
+                f"key2 went to GPU first → must in-place retry on CPU with gpu=None; "
+                f"got {key2_calls!r}. Regression: in-place fallback dropped."
+            )
+        else:
+            # CPU picked key2 → succeeds in one shot, no GPU attempt.
+            assert key2_calls == [("key2", None)], (
+                f"key2 went to a CPU worker → must complete in a single gpu=None call; got {key2_calls!r}."
+            )
+
+        # key1 and key3 are codec-compatible — always exactly one call,
+        # whether GPU- or CPU-scheduled.
+        assert sum(1 for (k, _) in call_order if k == "key1") == 1, (
+            f"key1 should be processed exactly once; call_order={call_order!r}"
+        )
+        assert sum(1 for (k, _) in call_order if k == "key3") == 1, (
+            f"key3 should be processed exactly once; call_order={call_order!r}"
+        )
 
     @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_codec_error_fails_when_cpu_retry_also_fails(self, mock_process):

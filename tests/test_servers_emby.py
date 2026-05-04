@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -182,15 +183,31 @@ class TestTestConnection:
 
     def test_missing_url(self):
         s = EmbyServer(_emby_config(url=""))
-        result = s.test_connection()
+        # Patch _request so we can prove the short-circuit didn't pay
+        # for a network call before bailing.
+        with patch.object(EmbyServer, "_request") as req:
+            result = s.test_connection()
+
+        # Production format: "Emby URL is required".
         assert not result.ok
-        assert "url" in result.message.lower()
+        req.assert_not_called(), "missing-URL must short-circuit before any HTTP call"
+        assert re.search(r"\bURL\b", result.message), (
+            f"missing-URL error must mention 'URL' as a word, got {result.message!r}"
+        )
+        assert "required" in result.message.lower()
 
     def test_missing_token(self):
         s = EmbyServer(_emby_config(auth={}))
-        result = s.test_connection()
+        with patch.object(EmbyServer, "_request") as req:
+            result = s.test_connection()
+
+        # Production format: "Emby access token / API key is required".
         assert not result.ok
-        assert "token" in result.message.lower() or "api key" in result.message.lower()
+        req.assert_not_called(), "missing-token must short-circuit before any HTTP call"
+        assert re.search(r"\b(token|API key)\b", result.message, re.IGNORECASE), (
+            f"missing-token error must mention 'token' or 'API key', got {result.message!r}"
+        )
+        assert "required" in result.message.lower()
 
     def test_unauthorized(self, emby):
         with patch.object(EmbyServer, "_request") as req:
@@ -202,8 +219,11 @@ class TestTestConnection:
 
             result = emby.test_connection()
 
+        # Production format: "Emby rejected the access token (401)".
         assert not result.ok
-        assert "401" in result.message
+        assert req.call_count == 1, "401 path must hit _request once"
+        assert re.search(r"\b401\b", result.message), f"expected '401' as a standalone token in {result.message!r}"
+        assert "rejected" in result.message.lower(), f"401 must say the token was rejected, got {result.message!r}"
 
     def test_timeout(self, emby):
         with patch.object(EmbyServer, "_request") as req:
@@ -211,8 +231,12 @@ class TestTestConnection:
 
             result = emby.test_connection()
 
+        # Production format: "Connection to <url> timed out".
         assert not result.ok
-        assert "timed out" in result.message.lower()
+        assert req.call_count == 1, "timeout path must have hit _request"
+        assert re.search(r"\btimed out\b", result.message, re.IGNORECASE), (
+            f"timeout message must contain 'timed out' as a phrase, got {result.message!r}"
+        )
 
 
 class TestListLibraries:

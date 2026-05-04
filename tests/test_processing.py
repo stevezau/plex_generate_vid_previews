@@ -474,12 +474,23 @@ class TestLibraryScanFlow:
 
         with (
             patch(f"{MODULE}._enumerate_plex_full_scan_items", return_value=iter([])),
-            patch(f"{MODULE}.WorkerPool"),
+            patch(f"{MODULE}.WorkerPool") as MockPool,
         ):
             result = run_processing(config, selected_gpus=[])
 
         assert result is not None
         assert "outcome" in result
+        # Audit fix — original test only checked that ``result`` had an
+        # "outcome" key. With no items the dispatcher must NEVER call
+        # ``process_items_headless`` (no work to dispatch) and every
+        # outcome counter must be zero. Without these pins, a regression
+        # that dispatched empty lists (wasting a worker round-trip) or
+        # leaked outcome counts from a previous run would slip through.
+        MockPool.return_value.process_items_headless.assert_not_called()
+        outcome = result["outcome"]
+        assert all(v == 0 for v in outcome.values()), (
+            f"With no libraries, every outcome counter must be 0; got {outcome!r}"
+        )
 
     def test_sort_by_random_shuffles_combined_items(self, tmp_path):
         """sort_by='random' reorders the combined cross-library list before dispatch."""
@@ -746,7 +757,22 @@ class TestSummaryAndWarnings:
         assert any("path mapping" in msg.lower() for msg in captured)
 
     def test_cancellation_noted_in_summary(self, tmp_path):
-        """When dispatch reports cancellation, outcome is still returned."""
+        """When dispatch reports cancellation, the summary log line names it.
+
+        Audit fix — the test name claimed to verify the summary noted the
+        cancellation, but it only asserted ``"outcome" in result`` which
+        passes for any return shape. A regression that swallowed the
+        cancellation flag (so jobs reported "Processing complete" instead
+        of "Processing stopped by cancellation") would have been
+        invisible. Production wiring at orchestrator.py:1813:
+
+            if totals["cancelled"]:
+                logger.info("Processing stopped by cancellation: {}", summary)
+            else:
+                logger.info("Processing complete: {}", summary)
+
+        Capture the loguru sink and pin the cancellation phrase.
+        """
         config = _make_config(tmp_path)
         section = _make_section("Movies")
         items = [("k1", "M1", "movie")]
@@ -759,10 +785,20 @@ class TestSummaryAndWarnings:
             patch(f"{MODULE}.WorkerPool") as MockPool,
         ):
             MockPool.return_value.process_items_headless.return_value = _pool_result(completed=0, cancelled=True)
-            result = run_processing(config, selected_gpus=[])
+            with loguru_lines() as logs:
+                result = run_processing(config, selected_gpus=[])
 
         assert result is not None
         assert "outcome" in result
+        # The summary log MUST name the cancellation; the "complete"
+        # branch must NOT have fired.
+        assert any("stopped by cancellation" in line.lower() for line in logs), (
+            f"Cancellation was reported by the pool but the summary log line did not "
+            f"include 'stopped by cancellation'. Captured logs: {logs!r}"
+        )
+        assert not any("processing complete:" in line.lower() for line in logs), (
+            f"When cancellation is reported, the 'Processing complete:' summary must NOT fire — found it in: {logs!r}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -924,6 +960,7 @@ class TestJobDispatcherPath:
                 create=True,
             ) as mock_get_disp,
             patch("media_preview_generator.web.jobs.PRIORITY_NORMAL", 2, create=True),
+            patch(f"{MODULE}.WorkerPool") as MockPool,
         ):
             # Patch the import inside _dispatch_items
             with (
@@ -944,6 +981,16 @@ class TestJobDispatcherPath:
 
         assert result is not None
         on_start.assert_called_once()
+        # Audit fix — original test only asserted ``result is not None``.
+        # When a dispatcher already exists with a worker_pool, the
+        # production code reuses it (orchestrator.py:1700-1702) — it must
+        # NOT spin up a fresh WorkerPool. A regression that always
+        # constructs a new pool would silently double the worker count
+        # and waste GPU init. Pin: WorkerPool was never instantiated.
+        MockPool.assert_not_called()
+        # And the existing pool was actually handed back to get_dispatcher
+        # so the dispatcher knows which pool to schedule on.
+        mock_dispatcher.submit_items.assert_called_once()
 
     def test_dispatcher_creates_new_pool(self, tmp_path):
         """When no existing dispatcher, a new worker_pool is created."""
@@ -958,10 +1005,12 @@ class TestJobDispatcherPath:
         mock_dispatcher.submit_items.return_value = mock_tracker
 
         call_count = 0
+        pools_passed: list = []
 
         def fake_get_dispatcher(pool=None):
             nonlocal call_count
             call_count += 1
+            pools_passed.append(pool)
             if call_count == 1:
                 return None  # First call: no existing dispatcher
             return mock_dispatcher
@@ -971,7 +1020,7 @@ class TestJobDispatcherPath:
                 f"{MODULE}._enumerate_plex_full_scan_items",
                 return_value=iter([(section, items)]),
             ),
-            patch(f"{MODULE}.WorkerPool"),
+            patch(f"{MODULE}.WorkerPool") as MockPool,
         ):
             with patch.dict(
                 "sys.modules",
@@ -988,6 +1037,28 @@ class TestJobDispatcherPath:
                 )
 
         assert result is not None
+        # Audit fix — original test only asserted ``result is not None``.
+        # When the first ``get_dispatcher()`` returns None, the
+        # orchestrator must construct a new WorkerPool (orchestrator.py:1718)
+        # and pass it to ``get_dispatcher(worker_pool)`` on the second
+        # call. Without these pins, a regression that quietly returned
+        # success without ever creating a pool (or one that called
+        # WorkerPool() for both dispatcher branches) would slip through.
+        MockPool.assert_called_once()
+        new_pool = MockPool.return_value
+        # Second get_dispatcher() call must receive the freshly-built pool.
+        assert call_count >= 2, f"get_dispatcher must be called twice; got {call_count}"
+        # The pool handed to get_dispatcher() on the second call must be
+        # the freshly-built WorkerPool instance — proves "creates new pool"
+        # rather than passing None or a stray reference.
+        assert pools_passed[1] is new_pool, (
+            f"On the second get_dispatcher() call, the freshly-constructed WorkerPool must be "
+            f"passed in; got {pools_passed[1]!r} vs expected {new_pool!r}. "
+            f"Without this pin, a regression that calls get_dispatcher() with no pool would "
+            f"leave the dispatcher unbound to the new pool."
+        )
+        # submit_items ran on the dispatcher returned from the second call.
+        mock_dispatcher.submit_items.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

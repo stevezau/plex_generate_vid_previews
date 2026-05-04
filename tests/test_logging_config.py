@@ -97,7 +97,14 @@ class TestLoggingConfig:
     @patch("media_preview_generator.logging_config.os.makedirs")
     @patch("media_preview_generator.logging_config.logger")
     def test_setup_logging_with_console(self, mock_logger, mock_makedirs):
-        """Passing a Rich console should bind the stderr handler to it."""
+        """Passing a Rich console should bind the stderr handler to it.
+
+        Strengthened: prove the sink actually routes to ``console.print``
+        instead of just trusting that the level + handler-count checks
+        imply correct wiring. Production wraps the console in a
+        ``lambda msg: console.print(msg, end="")`` (logging_config.py:181) —
+        invoke the bound sink and verify console.print was called.
+        """
         mock_console = MagicMock()
 
         setup_logging("INFO", console=mock_console)
@@ -105,9 +112,16 @@ class TestLoggingConfig:
         mock_logger.remove.assert_called_once()
         assert mock_logger.add.call_count == 2
         stderr_call = mock_logger.add.call_args_list[0]
-        # When a console is supplied, the sink wraps console.print (or similar).
-        # The level still respects the requested log_level.
         assert stderr_call.kwargs.get("level") == "INFO"
+
+        # The sink must be a callable that forwards to console.print —
+        # invoke it and assert the console was actually called. A regression
+        # that bound the sink to sys.stderr (ignoring the console arg)
+        # would fail here.
+        sink = stderr_call.args[0]
+        assert callable(sink), f"first add() arg must be a callable sink, got {type(sink).__name__}"
+        sink("test log message\n")
+        mock_console.print.assert_called_once_with("test log message\n", end="")
 
     @patch("media_preview_generator.logging_config.os.makedirs")
     @patch("media_preview_generator.logging_config.logger")

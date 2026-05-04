@@ -365,7 +365,12 @@ def test_custom_webhook_appears_in_history(authed_client):
     assert resp.status_code == 200
     events = resp.get_json()["events"]
     custom_events = [e for e in events if e["source"] == "custom"]
-    assert len(custom_events) >= 1
+    # Pin to exactly one — `>= 1` would let a double-record regression
+    # (e.g. handler accidentally calling _add_history_entry twice) pass
+    # silently.
+    assert len(custom_events) == 1, (
+        f"expected exactly one custom history row, got {len(custom_events)}: {custom_events!r}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1387,14 +1392,23 @@ def test_create_vendor_webhook_job_server_id_filter_pins_publishers(mock_start, 
     into ``Config.server_id_filter`` so the dispatcher pins publishers."""
     import media_preview_generator.web.webhooks as wh
 
+    # Use DIFFERENT values for ``server_id`` (the source/originator hint) and
+    # ``server_id_filter`` (the publisher pin) so we can prove which kwarg
+    # actually ends up in ``overrides["server_id"]``. Production code at
+    # webhooks.py:422-423 confirms it must be ``server_id_filter`` —
+    # collapsing the two like the previous test did made it impossible to
+    # detect a regression where the wrong kwarg drove the publisher pin.
     with app.app_context():
         wh.create_vendor_webhook_job(
             source="jellyfin",
             canonical_path="/data/y.mkv",
             item_id_by_server={"jelly-1": "j1"},
-            server_id="jelly-1",
+            server_id="other-server",
             server_id_filter="jelly-1",
         )
 
     overrides = mock_start.call_args.args[1]
-    assert overrides.get("server_id") == "jelly-1"
+    assert overrides.get("server_id") == "jelly-1", (
+        "overrides['server_id'] must come from the server_id_filter kwarg, "
+        f"not the source server_id; got {overrides.get('server_id')!r}"
+    )

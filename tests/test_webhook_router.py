@@ -752,7 +752,24 @@ class TestPathFirstWebhook:
         assert response.status_code == 202
         body = response.get_json()
         assert body["kind"] == "path"
-        proc.assert_called_once()
+        assert proc.call_count == 1, f"expected exactly one job creation, got {proc.call_count}"
+
+        # Pin the kwargs the SUT controls — that the path the user posted
+        # round-trips into ``canonical_path`` and that the originator
+        # ``source`` is the path-first kind, not (e.g.) an autodetected
+        # vendor that would change retry/de-dup semantics downstream.
+        call = proc.call_args
+        assert call.kwargs["source"] == "path", (
+            f"path-first webhooks must dispatch with source='path'; got {call.kwargs.get('source')!r}"
+        )
+        assert call.kwargs["canonical_path"] == "/data/tv/Show/S01E01.mkv", (
+            f"posted path must reach create_vendor_webhook_job verbatim; "
+            f"got canonical_path={call.kwargs.get('canonical_path')!r}"
+        )
+        # No vendor item-id hints for raw path-first dispatch.
+        assert call.kwargs.get("item_id_by_server") in ({}, None), (
+            f"path-first dispatch should carry no item_id hints; got {call.kwargs.get('item_id_by_server')!r}"
+        )
 
 
 class TestWebhookPrefixTranslationReachesOwnerCheck:

@@ -313,7 +313,15 @@ def test_plex_webhook_no_paths_resolved_returns_200_ignored(mock_resolve, client
     resp = _multipart_post(client, payload)
     assert resp.status_code == 200
     body = resp.get_json()
-    assert "No file paths" in body["message"] or body["success"] is True
+    # Pin the exact production response shape: success=True (so Plex doesn't
+    # retry) AND a precise "No file paths found" message that includes the
+    # title and ratingKey for operator diagnosis. The previous OR clause
+    # passed for any success=True body and would have hidden a regression
+    # where the message changed to e.g. "queued" or "ignored".
+    assert body["success"] is True, f"PMS must not retry; got body={body!r}"
+    assert body["message"] == "No file paths found for 'No paths' (ratingKey=555)", (
+        f"unexpected no-paths message: {body['message']!r}"
+    )
 
 
 def test_resolve_plex_paths_from_rating_key_handles_failure():

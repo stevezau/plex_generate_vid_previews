@@ -74,13 +74,24 @@ class TestServerConfigFromDict:
 
 class TestServerConfigRoundTrip:
     def test_to_dict_inverse_of_from_dict(self):
+        """Round-trip every persisted field both directions.
+
+        Audit fix — the original test only asserted three keys, so a
+        regression dropping ``auth``, ``path_mappings``, ``exclude_paths``,
+        ``output``, or ``server_identity`` from serialisation would lose
+        persisted credentials/mappings silently. Now we assert
+        ``from_dict(to_dict(cfg)) == cfg`` AND
+        ``to_dict(from_dict(input)) == input`` (with the value-for-value
+        normalisations the loader is allowed to do — ServerType enum,
+        list/tuple shape on libraries).
+        """
         original_data = {
             "id": "s1",
             "type": "plex",
             "name": "Home",
             "enabled": True,
             "url": "http://x",
-            "auth": {"token": "t"},
+            "auth": {"token": "t", "method": "token"},
             "verify_ssl": False,
             "timeout": 90,
             "libraries": [
@@ -90,17 +101,60 @@ class TestServerConfigRoundTrip:
                     "remote_paths": ["/m"],
                     "enabled": True,
                     "kind": "movie",
-                }
+                },
+                {
+                    "id": "2",
+                    "name": "TV",
+                    "remote_paths": ["/tv", "/tv2"],
+                    "enabled": False,
+                    "kind": "show",
+                },
             ],
-            "path_mappings": [{"plex_prefix": "/p", "local_prefix": "/l"}],
-            "output": {"adapter": "plex_bundle"},
+            "path_mappings": [
+                {"plex_prefix": "/p", "local_prefix": "/l"},
+                {"remote_prefix": "/media", "local_prefix": "/data"},
+            ],
+            "exclude_paths": [
+                {"value": "/data/junk", "type": "path"},
+                {"value": r".*\.sample\..*", "type": "regex"},
+            ],
+            "output": {"adapter": "plex_bundle", "frame_interval": 5},
+            "server_identity": "machine-uuid-xyz",
         }
+
+        # Forward direction: dict -> ServerConfig -> dict must equal input.
         cfg = server_config_from_dict(original_data)
         round_tripped = server_config_to_dict(cfg)
-        # Library kind survives the round-trip.
-        assert round_tripped["libraries"][0]["kind"] == "movie"
-        assert round_tripped["url"] == "http://x"
-        assert round_tripped["timeout"] == 90
+        assert round_tripped == original_data, (
+            f"to_dict(from_dict(input)) should equal input.\n"
+            f"missing or differing keys: "
+            f"{set(original_data) ^ set(round_tripped)}\n"
+            f"got: {round_tripped!r}"
+        )
+
+        # Reverse direction: dict -> cfg -> dict -> cfg' should also be stable.
+        cfg_again = server_config_from_dict(round_tripped)
+        assert server_config_to_dict(cfg_again) == server_config_to_dict(cfg)
+
+        # Belt-and-braces: spot-check every load-bearing field on the
+        # ServerConfig instance survived hydration with the right type.
+        assert cfg.id == "s1"
+        assert cfg.type is ServerType.PLEX
+        assert cfg.name == "Home"
+        assert cfg.enabled is True
+        assert cfg.url == "http://x"
+        assert cfg.auth == {"token": "t", "method": "token"}
+        assert cfg.verify_ssl is False
+        assert cfg.timeout == 90
+        assert cfg.path_mappings == original_data["path_mappings"]
+        assert cfg.exclude_paths == original_data["exclude_paths"]
+        assert cfg.output == {"adapter": "plex_bundle", "frame_interval": 5}
+        assert cfg.server_identity == "machine-uuid-xyz"
+        assert len(cfg.libraries) == 2
+        assert cfg.libraries[0].id == "1"
+        assert cfg.libraries[0].kind == "movie"
+        assert cfg.libraries[1].enabled is False
+        assert cfg.libraries[1].remote_paths == ("/tv", "/tv2")
 
 
 class TestServerRegistryFromSettings:

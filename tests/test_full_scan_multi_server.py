@@ -1154,7 +1154,21 @@ class TestParallelismRespectsPerDeviceWorkerCount:
                 worker_callback=lambda w: snapshots.append(list(w)),
             )
 
-        assert any(snap for snap in snapshots), "no worker snapshots emitted at all"
+        # Pin the clamp behaviour, not just "something happened". The
+        # orchestrator's _read_workers_count must turn workers=0 into
+        # exactly 1 GPU slot for the cuda:0 device. The previous
+        # ``any(snapshots)`` check would still pass if the clamp were
+        # silently dropped (because the cpu_threads=1 default produces a
+        # CPU slot regardless, masking the missing GPU slot).
+        assert snapshots, "no worker snapshots emitted at all"
+        last_snap = snapshots[-1]
+        gpu_slots_for_device = [
+            w for w in last_snap if w.get("worker_type") == "GPU" and w.get("gpu_device") == "cuda:0"
+        ]
+        assert len(gpu_slots_for_device) == 1, (
+            f"workers=0 must clamp to exactly 1 GPU slot for cuda:0; got {len(gpu_slots_for_device)} "
+            f"(full snapshot={last_snap!r})"
+        )
 
     def test_slot_rows_persist_across_items_no_flashing(self, tmp_path):
         """User-reported bug: Workers panel rows flashed on/off as

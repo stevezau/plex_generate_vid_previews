@@ -135,10 +135,32 @@ class TestRunScheduledJob:
             os.environ,
             {"CONFIG_DIR": config_dir, "WEB_AUTH_TOKEN": "test-token-12345678"},
         ):
+            from media_preview_generator.web.jobs import get_job_manager
+
             app = create_app(config_dir=config_dir)
             with app.app_context():
                 run_scheduled_job(library_name="Movies")
+                # Audit fix — bug-blind D34 paradigm. Original test only
+                # asserted ``mock_start.assert_called_once()`` which would
+                # pass even if run_scheduled_job created a job with no
+                # library_name (or the wrong one) and forwarded a bogus
+                # job_id. Pin the kwargs the SUT controls: the positional
+                # job_id passed to _start_job_async must resolve to a real
+                # Job in the manager that carries the seeded library_name.
                 mock_start.assert_called_once()
+                job_id = mock_start.call_args.args[0]
+                assert isinstance(job_id, str) and job_id, (
+                    f"_start_job_async must receive a non-empty job_id; got {job_id!r}"
+                )
+                job = get_job_manager().get_job(job_id)
+                assert job is not None, (
+                    f"Job {job_id!r} created by run_scheduled_job is missing from JobManager — "
+                    f"the schedule callback returned a job_id that doesn't exist."
+                )
+                assert job.library_name == "Movies", (
+                    f"Schedule with library_name='Movies' must produce a Job carrying "
+                    f"library_name='Movies'; got library_name={job.library_name!r}."
+                )
 
     @patch("media_preview_generator.web.routes._start_job_async")
     def test_includes_library_id_in_config(self, mock_start, tmp_path):

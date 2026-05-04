@@ -57,15 +57,29 @@ class TestSettingsAPIRoutes:
     """Tests for settings API endpoints."""
 
     def test_get_settings(self, client, auth_headers):
-        """Test getting current settings."""
+        """Test getting current settings.
+
+        The fixture seeds only ``setup_complete=True``; everything else must
+        come back at the documented defaults baked into ``get_settings``
+        (api_settings.py:259). Pinning the actual values catches a regression
+        where a default flips silently — key-presence alone passes even if
+        ``thumbnail_interval`` quietly switched to None.
+        """
         response = client.get("/api/settings", headers=auth_headers)
 
         assert response.status_code == 200
         data = json.loads(response.data)
-        # Check that settings fields are present
-        assert "plex_url" in data
-        assert "gpu_threads" in data
-        assert "thumbnail_interval" in data
+        # Pin defaults from the fixture's untouched settings.json:
+        # - plex_url falls through to "" when neither media_servers nor the
+        #   legacy plex_url is set
+        # - gpu_threads is computed from gpu_config (empty -> 0)
+        # - thumbnail_interval default is 2 (settings_manager.py:344)
+        assert data["plex_url"] == ""
+        assert data["gpu_threads"] == 0
+        assert data["thumbnail_interval"] == 2
+        # Plex token must be returned masked (never raw) — the empty case
+        # returns "" which the frontend treats as "not yet set".
+        assert data["plex_token"] == ""
 
     def test_update_settings(self, client, auth_headers):
         """Test updating settings."""
@@ -106,32 +120,61 @@ class TestSettingsAPIRoutes:
         assert data["thumbnail_interval"] == 5
 
     def test_update_plex_url(self, client, auth_headers):
-        """Test updating plex_url setting."""
+        """Test updating plex_url setting.
+
+        Round-trip the value: POST then GET so we prove the URL was
+        actually persisted, not just acknowledged. ``success=True`` from
+        the POST is necessary but not sufficient — a regression that
+        accepts the request but drops the field on the floor would still
+        pass without the follow-up read.
+        """
+        target_url = "http://192.168.1.100:32400"
         response = client.post(
             "/api/settings",
             headers={**auth_headers, "Content-Type": "application/json"},
-            data=json.dumps({"plex_url": "http://192.168.1.100:32400"}),
+            data=json.dumps({"plex_url": target_url}),
         )
 
         assert response.status_code == 200
         data = json.loads(response.data)
         assert data["success"] is True
 
+        # Round-trip: GET must echo the saved value verbatim.
+        get_resp = client.get("/api/settings", headers=auth_headers)
+        assert get_resp.status_code == 200
+        get_data = json.loads(get_resp.data)
+        assert get_data["plex_url"] == target_url, (
+            f"plex_url not persisted: POST sent {target_url!r}, GET returned {get_data['plex_url']!r}"
+        )
+
 
 class TestSetupRoutes:
     """Tests for setup wizard API endpoints."""
 
     def test_get_setup_status(self, client):
-        """Test getting setup status (no auth required)."""
+        """Test getting setup status (no auth required).
+
+        Pin the exact values expected from the fixture's seeded state:
+        - The ``flask_app`` fixture sets ``setup_complete=True`` but does
+          NOT seed any plex_url/plex_token, so:
+            * ``setup_complete``     -> True   (explicit flag wins)
+            * ``configured``         -> False  (no media servers)
+            * ``current_step``       -> 0      (wizard never started)
+            * ``plex_authenticated`` -> False  (no plex_token)
+
+        Asserting the contract instead of bare key-presence catches a
+        regression that flips the booleans (e.g. ``plex_authenticated``
+        leaking True from a stale singleton) — the legacy assertion would
+        have passed silently.
+        """
         response = client.get("/api/setup/status")
 
         assert response.status_code == 200
         data = json.loads(response.data)
-        # Check actual API response fields
-        assert "configured" in data
-        assert "setup_complete" in data
-        assert "current_step" in data
-        assert "plex_authenticated" in data
+        assert data["setup_complete"] is True, "fixture explicitly marked setup complete"
+        assert data["configured"] is False, "no plex_url/plex_token seeded -> not configured"
+        assert data["current_step"] == 0, "wizard state was never written -> step 0"
+        assert data["plex_authenticated"] is False, "no plex_token seeded"
 
     def test_save_setup_state(self, client, auth_headers):
         """Test saving setup wizard state."""
@@ -450,14 +493,31 @@ class TestTokenAPIEndpoints:
     """Tests for token management API endpoints."""
 
     def test_setup_token_info_endpoint(self, client, auth_headers):
-        """Test GET /api/setup/token-info returns token information."""
+        """Test GET /api/setup/token-info returns token information.
+
+        Pin actual values, not just key presence. The fixture's auth token
+        is config-managed (no WEB_AUTH_TOKEN env var), so:
+        - ``env_controlled`` is False
+        - ``source`` is "config"
+        - ``token`` is masked (starts with "****")
+        - ``token_length`` matches the auto-generated token length
+
+        A regression that flipped ``env_controlled`` to True (or leaked the
+        raw token) would have passed the original key-presence assertion.
+        """
         response = client.get("/api/setup/token-info", headers=auth_headers)
 
         assert response.status_code == 200
         data = json.loads(response.data)
-        assert "env_controlled" in data
-        assert "token" in data
-        assert "source" in data
+        assert data["env_controlled"] is False, "no WEB_AUTH_TOKEN env -> not env-controlled"
+        assert data["source"] == "config", "fixture stores token in auth.json -> config source"
+        assert isinstance(data["token"], str)
+        assert data["token"].startswith("****"), f"token must be masked, got {data['token']!r}"
+        assert isinstance(data["token_length"], int)
+        assert data["token_length"] >= 8, "auto-generated tokens are at least 8 chars"
+        # Auth method is also part of the contract — pin it so a regression
+        # that drops the field is caught.
+        assert "auth_method" in data
 
     def test_setup_token_info_requires_auth(self, client):
         """Test token-info endpoint requires authentication."""
@@ -465,18 +525,33 @@ class TestTokenAPIEndpoints:
         assert response.status_code == 401
 
     def test_setup_set_token_success(self, client, auth_headers, monkeypatch):
-        """Test POST /api/setup/set-token with valid data succeeds."""
-        monkeypatch.delenv("WEB_AUTH_TOKEN", raising=False)
+        """Test POST /api/setup/set-token with valid data succeeds.
 
+        Round-trip the saved token: ``success=True`` from the POST proves the
+        request was accepted, but only re-reading via ``get_auth_token``
+        proves the token actually replaced the previous one. A regression
+        that returned success without persisting would slip past the
+        original assertion.
+        """
+        monkeypatch.delenv("WEB_AUTH_TOKEN", raising=False)
+        from media_preview_generator.web.auth import get_auth_token
+
+        new_token = "my-new-password-123"
         response = client.post(
             "/api/setup/set-token",
             headers={**auth_headers, "Content-Type": "application/json"},
-            data=json.dumps({"token": "my-new-password-123", "confirm_token": "my-new-password-123"}),
+            data=json.dumps({"token": new_token, "confirm_token": new_token}),
         )
 
         assert response.status_code == 200
         data = json.loads(response.data)
         assert data["success"] is True
+
+        # The token must actually be persisted — read it back.
+        assert get_auth_token() == new_token, (
+            f"set-token returned success but did not persist: "
+            f"sent {new_token!r}, get_auth_token returned {get_auth_token()!r}"
+        )
 
     def test_setup_set_token_mismatch(self, client, auth_headers, monkeypatch):
         """Test set-token fails when tokens don't match."""

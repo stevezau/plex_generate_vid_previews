@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from unittest.mock import MagicMock, patch
 
 from media_preview_generator.servers.jellyfin_auth import (
@@ -61,8 +62,13 @@ class TestPasswordAuth:
                 password="wrong",
             )
 
+        # Production format: "Jellyfin rejected the username/password (401)".
         assert not result.ok
-        assert "401" in result.message
+        assert post.call_count == 1, "401 path must have made the HTTP call"
+        assert re.search(r"\b401\b", result.message), f"expected '401' as a standalone token in {result.message!r}"
+        assert "rejected" in result.message.lower(), (
+            f"401 message must explain the credentials were rejected: {result.message!r}"
+        )
 
     def test_missing_url_short_circuits(self):
         """Missing URL → no HTTP call AND ok=False with useful message.
@@ -213,8 +219,19 @@ class TestExchangeQuickConnect:
             assert post.call_args.args[0] == "http://jellyfin:8096/Users/AuthenticateWithQuickConnect"
 
     def test_missing_secret(self):
-        result = exchange_quick_connect(base_url="http://jellyfin:8096", secret="")
+        """Missing secret → no HTTP call AND ok=False with useful message.
+
+        Audit fix — original asserted only ``not result.ok``. A regression that
+        wasted a network round-trip on an empty secret would have passed.
+        Mirror the ``test_missing_url_short_circuits`` pattern in this file:
+        patch ``requests.post`` and assert it was NOT called.
+        """
+        with patch("media_preview_generator.servers._mediabrowser_auth.requests.post") as post:
+            result = exchange_quick_connect(base_url="http://jellyfin:8096", secret="")
+
         assert not result.ok
+        post.assert_not_called(), "short-circuit must NOT make an HTTP call when secret is empty"
+        assert "secret" in result.message.lower(), f"missing-secret error must mention 'secret', got {result.message!r}"
 
 
 class TestQuickConnectBlocking:

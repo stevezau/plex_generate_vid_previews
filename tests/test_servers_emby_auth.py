@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from unittest.mock import MagicMock, patch
 
 import requests
@@ -94,8 +95,15 @@ class TestAuthenticateEmbyWithPassword:
                 password="wrong",
             )
 
+        # Production format: "Emby rejected the username/password (401)".
+        # Anchor on word-boundary so a regression returning "4015" or
+        # "HTTP 4010" (status drift) still trips this assertion.
         assert result.ok is False
-        assert "401" in result.message
+        assert post.call_count == 1, "401 path must have made the HTTP call (not short-circuited)"
+        assert re.search(r"\b401\b", result.message), f"expected '401' as a standalone token in {result.message!r}"
+        assert "rejected" in result.message.lower(), (
+            f"401 message must explain it was a credential rejection, not a generic 401: {result.message!r}"
+        )
 
     def test_403_returns_specific_message(self):
         with patch("media_preview_generator.servers._mediabrowser_auth.requests.post") as post:
@@ -108,8 +116,11 @@ class TestAuthenticateEmbyWithPassword:
                 password="pw",
             )
 
+        # Production format: "Access denied by Emby server (403)".
         assert result.ok is False
-        assert "403" in result.message
+        assert post.call_count == 1, "403 path must have made the HTTP call"
+        assert re.search(r"\b403\b", result.message), f"expected '403' as a standalone token in {result.message!r}"
+        assert "denied" in result.message.lower(), f"403 message must explain access was denied: {result.message!r}"
 
     def test_other_4xx_5xx_returns_status_in_message(self):
         with patch("media_preview_generator.servers._mediabrowser_auth.requests.post") as post:
@@ -122,8 +133,13 @@ class TestAuthenticateEmbyWithPassword:
                 password="pw",
             )
 
+        # Production format: "Emby returned HTTP 500: <body>".
         assert not result.ok
-        assert "500" in result.message
+        assert post.call_count == 1, "500 path must have made the HTTP call"
+        assert re.search(r"\b500\b", result.message), f"expected '500' as a standalone token in {result.message!r}"
+        # The body should be surfaced (truncated) so users can see what
+        # the server actually said.
+        assert "server fire" in result.message, f"server response body must be surfaced in error: {result.message!r}"
 
     def test_missing_access_token_treated_as_failure(self):
         with patch("media_preview_generator.servers._mediabrowser_auth.requests.post") as post:

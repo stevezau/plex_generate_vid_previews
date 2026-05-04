@@ -243,7 +243,14 @@ class TestJobEvents:
         assert payload["library_name"] == "Movies"
 
     def test_job_started_event(self, app, authed_socketio_client):
-        """Starting a job should emit a job_started event."""
+        """Starting a job should emit a job_started event carrying that job's id.
+
+        Audit fix — original only asserted the event name appeared in the
+        received batch. A regression that emitted ``job_started`` with the
+        wrong job id (or stripped the payload entirely) would still pass.
+        Mirror the sibling ``test_job_created_event``: pull the matching
+        events and assert the payload identifies the right job.
+        """
         from media_preview_generator.web.jobs import get_job_manager
 
         job_manager = get_job_manager()
@@ -255,6 +262,12 @@ class TestJobEvents:
         received = _wait_for_event(authed_socketio_client, "job_started")
         event_names = [r["name"] for r in received]
         assert "job_started" in event_names
+
+        started_events = [r for r in received if r["name"] == "job_started"]
+        payload = started_events[0]["args"][0]
+        assert payload["id"] == job.id, f"job_started carried wrong id: {payload!r}"
+        assert payload["status"] == "running", f"job_started should report status=running: {payload!r}"
+        assert payload["library_name"] == "TV", f"job_started should preserve library_name: {payload!r}"
 
     def test_progress_update_event(self, app, authed_socketio_client):
         """Progress updates should emit events with the right payload.

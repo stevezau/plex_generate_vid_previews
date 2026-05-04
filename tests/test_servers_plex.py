@@ -8,6 +8,7 @@ delegate correctly and convert results to the new dataclass types.
 from __future__ import annotations
 
 import json
+import re
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -75,10 +76,20 @@ class TestTestConnection:
         mock_config.plex_token = ""
         wrapper = PlexServer(mock_config)
 
-        result = wrapper.test_connection()
+        # Patch requests.get to prove the short-circuit avoided a wasted call.
+        with patch("media_preview_generator.servers.plex.requests.get") as get:
+            result = wrapper.test_connection()
 
+        # Production format: "Plex URL and token are required".
         assert result.ok is False
-        assert "required" in result.message.lower()
+        get.assert_not_called(), "missing-creds must short-circuit before any HTTP call"
+        assert re.search(r"\brequired\b", result.message, re.IGNORECASE), (
+            f"missing-creds error must contain 'required' as a word, got {result.message!r}"
+        )
+        assert re.search(r"\bURL\b", result.message), f"missing-creds error must mention 'URL', got {result.message!r}"
+        assert re.search(r"\btoken\b", result.message, re.IGNORECASE), (
+            f"missing-creds error must mention 'token', got {result.message!r}"
+        )
 
     def test_timeout_returns_failure(self, plex_wrapper):
         with patch("media_preview_generator.servers.plex.requests.get") as get:
@@ -86,8 +97,12 @@ class TestTestConnection:
 
             result = plex_wrapper.test_connection()
 
+        # Production format: "Connection to <url> timed out after <N>s".
         assert result.ok is False
-        assert "timed out" in result.message.lower()
+        assert get.call_count == 1, "timeout path must have hit the network"
+        assert re.search(r"\btimed out\b", result.message, re.IGNORECASE), (
+            f"timeout message must contain 'timed out' as a phrase, got {result.message!r}"
+        )
 
     def test_unauthorized_returns_specific_message(self, plex_wrapper):
         with patch("media_preview_generator.servers.plex.requests.get") as get:
@@ -99,8 +114,11 @@ class TestTestConnection:
 
             result = plex_wrapper.test_connection()
 
+        # Production format: "Plex rejected the authentication token (401)".
         assert result.ok is False
-        assert "401" in result.message
+        assert get.call_count == 1, "401 path must have hit the network"
+        assert re.search(r"\b401\b", result.message), f"expected '401' as a standalone token in {result.message!r}"
+        assert "rejected" in result.message.lower(), f"401 must say the token was rejected, got {result.message!r}"
 
     def test_ssl_error_returns_specific_message(self, plex_wrapper):
         with patch("media_preview_generator.servers.plex.requests.get") as get:
@@ -108,8 +126,15 @@ class TestTestConnection:
 
             result = plex_wrapper.test_connection()
 
+        # Production format: "SSL certificate verification failed: <exc>. ...".
         assert result.ok is False
-        assert "ssl" in result.message.lower()
+        assert get.call_count == 1, "SSL error path must have hit the network"
+        assert re.search(r"\bSSL\b", result.message), f"SSL error must surface 'SSL' as a word, got {result.message!r}"
+        # The underlying exception text MUST be surfaced so the user can
+        # see why verification failed (cert/hostname/etc).
+        assert "bad cert" in result.message, (
+            f"underlying SSL error must be surfaced for diagnosis, got {result.message!r}"
+        )
 
 
 class TestListLibraries:

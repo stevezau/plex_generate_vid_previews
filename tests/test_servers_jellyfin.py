@@ -9,6 +9,7 @@ webhook payload, ``/Items/{id}/Refresh`` instead of
 from __future__ import annotations
 
 import json
+import re
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -104,13 +105,30 @@ class TestTestConnection:
 
     def test_missing_url(self):
         s = JellyfinServer(_jelly_config(url=""))
-        result = s.test_connection()
+        # Patch _request to prove the short-circuit avoided a wasted network call.
+        with patch.object(JellyfinServer, "_request") as req:
+            result = s.test_connection()
+
+        # Production format: "Jellyfin URL is required".
         assert not result.ok
+        req.assert_not_called(), "missing-URL must short-circuit before any HTTP call"
+        assert re.search(r"\bURL\b", result.message), (
+            f"missing-URL error must mention 'URL' as a word, got {result.message!r}"
+        )
+        assert "required" in result.message.lower()
 
     def test_missing_token(self):
         s = JellyfinServer(_jelly_config(auth={}))
-        result = s.test_connection()
+        with patch.object(JellyfinServer, "_request") as req:
+            result = s.test_connection()
+
+        # Production format: "Jellyfin access token / API key is required".
         assert not result.ok
+        req.assert_not_called(), "missing-token must short-circuit before any HTTP call"
+        assert re.search(r"\b(token|API key)\b", result.message, re.IGNORECASE), (
+            f"missing-token error must mention 'token' or 'API key', got {result.message!r}"
+        )
+        assert "required" in result.message.lower()
 
     def test_unauthorized(self, jelly):
         with patch.object(JellyfinServer, "_request") as req:
@@ -122,8 +140,11 @@ class TestTestConnection:
 
             result = jelly.test_connection()
 
+        # Production format: "Jellyfin rejected the access token (401)".
         assert not result.ok
-        assert "401" in result.message
+        assert req.call_count == 1, "401 path must hit _request once"
+        assert re.search(r"\b401\b", result.message), f"expected '401' as a standalone token in {result.message!r}"
+        assert "rejected" in result.message.lower(), f"401 must say the token was rejected, got {result.message!r}"
 
 
 class TestListLibraries:
@@ -306,6 +327,12 @@ class TestResolveRemotePathToItemIdViaPlugin:
 
     def test_falls_back_when_plugin_request_raises(self, jelly):
         # Network/transport error → quietly degrade to the public API.
+        # Audit fix: ``assert got is None`` alone doesn't distinguish
+        # "plugin raised → fell through to base class which also missed"
+        # from "early-return None before ever hitting the base class".
+        # We assert the fallback was ACTUALLY exercised by checking the
+        # call sequence: 1st call = plugin (raises), 2nd+3rd = base
+        # class's Pass-1 + Pass-2 ``GET /Items`` searchTerm queries.
         empty_resp = MagicMock()
         empty_resp.json.return_value = {"Items": []}
         empty_resp.raise_for_status.return_value = None
@@ -313,9 +340,24 @@ class TestResolveRemotePathToItemIdViaPlugin:
             JellyfinServer,
             "_request",
             side_effect=[RuntimeError("connection refused"), empty_resp, empty_resp],
-        ):
+        ) as req:
             got = jelly._uncached_resolve_remote_path_to_item_id("/x.mkv")
             assert got is None  # base class also misses; that's fine for this assertion
+            # Three calls total: plugin probe + Pass-1 + Pass-2.
+            assert req.call_count == 3, (
+                f"expected plugin call + base class Pass-1 + Pass-2 = 3 calls, got {req.call_count} "
+                f"(call list: {[c.args for c in req.call_args_list]!r})"
+            )
+            # First call WAS the plugin probe — proves the plugin path
+            # ran and raised before fallback kicked in (rather than the
+            # SUT skipping the plugin altogether).
+            assert req.call_args_list[0].args == ("GET", "/MediaPreviewBridge/ResolvePath")
+            # Subsequent calls are the base class's public-API search,
+            # not another attempt at the plugin endpoint — proves the
+            # exception-swallow routed into the fallback rather than
+            # retrying the plugin in a loop.
+            assert req.call_args_list[1].args == ("GET", "/Items")
+            assert req.call_args_list[2].args == ("GET", "/Items")
 
 
 class TestTriggerRefresh:

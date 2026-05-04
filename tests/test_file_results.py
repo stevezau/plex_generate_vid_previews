@@ -77,12 +77,52 @@ class TestFileResultRecording:
         assert jm.get_file_results("nonexistent") == []
 
     def test_timestamp_present(self, config_dir):
+        """``ts`` field is present, well-formed, and reflects current UTC time.
+
+        Audit fix — original assertion was just ``assert results[0]["ts"]``
+        which passes for any truthy value (including a stale fixture
+        string, an exception message, or "{}"). Production format at
+        web/jobs.py:1394 is ``datetime.now(timezone.utc).strftime("%H:%M:%S")``
+        — pin the regex shape AND verify the recorded timestamp falls
+        within ±5 seconds of "now" (otherwise a clock-skew or
+        wrong-format regression slips through).
+        """
+        import re
+        from datetime import datetime, timezone
+
         os.makedirs(config_dir, exist_ok=True)
         jm = JobManager(config_dir=config_dir)
         job = jm.create_job(library_name="Test")
+        before = datetime.now(timezone.utc)
         jm.record_file_result(job.id, "/media/a.mkv", "generated")
+        after = datetime.now(timezone.utc)
         results = jm.get_file_results(job.id)
-        assert results[0]["ts"]
+        ts = results[0]["ts"]
+
+        assert isinstance(ts, str), f"ts must be a string; got {type(ts).__name__}: {ts!r}"
+        assert re.fullmatch(r"\d{2}:\d{2}:\d{2}", ts), (
+            f"ts must match HH:MM:SS (production format at web/jobs.py:1394); got {ts!r}"
+        )
+        # The recorded HH:MM:SS must fall within the [before, after]
+        # window we bracketed around the call (±1s slack for second-rollover).
+        recorded = datetime.strptime(ts, "%H:%M:%S").time()
+        # Compare on (h, m, s) to avoid date-rollover headaches at
+        # midnight-UTC; also accept ±1 second of slack.
+        before_secs = before.hour * 3600 + before.minute * 60 + before.second
+        after_secs = after.hour * 3600 + after.minute * 60 + after.second
+        recorded_secs = recorded.hour * 3600 + recorded.minute * 60 + recorded.second
+        # Handle midnight wrap by allowing either direction within 5s.
+        delta = min(
+            abs(recorded_secs - before_secs),
+            abs(recorded_secs - after_secs),
+            86400 - abs(recorded_secs - before_secs),
+            86400 - abs(recorded_secs - after_secs),
+        )
+        assert delta <= 5, (
+            f"ts {ts!r} must be within 5s of the recording call; "
+            f"before={before.strftime('%H:%M:%S')}, after={after.strftime('%H:%M:%S')}, "
+            f"delta_seconds={delta}"
+        )
 
     def test_malformed_jsonl_lines_skipped(self, config_dir):
         """Corrupt lines in the JSONL file are silently skipped."""
@@ -276,21 +316,34 @@ class TestFileResultCallback:
         assert len(captured) == 0
 
     def test_callback_exception_does_not_propagate(self):
-        """A failing callback must not crash the caller."""
+        """A failing callback must not crash the caller — and must have run.
+
+        Audit fix — original test only verified the call didn't raise.
+        That would have passed even if ``_notify_file_result`` short-
+        circuited and never invoked the callback at all (e.g. a global
+        kill-switch that bypassed callbacks entirely). Wrap the bad_cb
+        in a MagicMock so we can assert ``call_count == 1`` proving the
+        callback actually ran AND the exception was caught.
+        """
+        from unittest.mock import MagicMock
+
         from media_preview_generator.processing import (
             ProcessingResult,
             _notify_file_result,
             set_file_result_callback,
         )
 
-        def bad_cb(*_args):
-            raise RuntimeError("boom")
-
-        set_file_result_callback(bad_cb)
+        mock_cb = MagicMock(side_effect=RuntimeError("boom"))
+        set_file_result_callback(mock_cb)
         try:
             _notify_file_result("/a.mkv", ProcessingResult.GENERATED, "", "GPU 1")
         finally:
             set_file_result_callback(None)
+
+        assert mock_cb.call_count == 1, (
+            f"Callback must be invoked exactly once even though it raises; got call_count={mock_cb.call_count}. "
+            f"A regression that silently swallowed the call (skipping callback dispatch) would otherwise pass."
+        )
 
 
 class TestWorkerCallsNotifyFileResult:
@@ -310,30 +363,15 @@ class TestWorkerCallsNotifyFileResult:
     from every branch", so we exercise via captured callback instead.
     """
 
-    def test_worker_imports_and_calls_notify_file_result(self):
-        """Sanity: ``_notify_file_result`` is wired into worker.py.
-
-        Audit fix — was a textual grep test (``"_notify_file_result" in
-        worker_src`` + ``count("_persist(") >= 6``). A branch that added
-        a ``_persist(`` text but the call was dead code or scoped
-        wrong would still pass. Replaced with a runtime test that
-        exercises a representative outcome branch (success) end-to-end
-        via the public API and asserts the file-result was actually
-        recorded. Branch-coverage tests for skipped / failed / cancelled
-        live in ``TestFileResultServerAttribution`` below — that's the
-        per-branch matrix this used to attempt to cover textually.
-        """
-        # Cheap structural sanity: import + symbol exists. Catches an
-        # accidental name collision / removal at module import time.
-        from media_preview_generator.jobs import worker as worker_mod
-
-        assert hasattr(worker_mod, "_notify_file_result"), (
-            "worker module must expose _notify_file_result — the helper "
-            "every outcome branch in assign_task funnels through"
-        )
-        # The runtime "did it actually fire?" assertions live in the
-        # tests below (TestFileResultServerAttribution.test_*) which
-        # exercise the public API instead of grepping source.
+    # Audit fix — DELETED ``test_worker_imports_and_calls_notify_file_result``.
+    # The previous incarnation was a hasattr smoke test that did not
+    # exercise any runtime path (the audit doc on this test already said
+    # so). The "did the worker actually call _notify_file_result on
+    # every outcome branch (generated / skipped / failed / cancelled)"
+    # invariant is fully covered by the per-branch matrix in
+    # ``TestFileResultServerAttribution`` below, which exercises the
+    # public API end-to-end and pins the recorded file results. Keeping
+    # a hasattr smoke alongside that adds noise without coverage.
 
 
 class TestFileResultServerAttribution:

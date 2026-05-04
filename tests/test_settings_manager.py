@@ -138,7 +138,19 @@ class TestSettingsManagerProperties:
         assert settings_manager.plex_token == "test-token-123"
 
     def test_gpu_threads_property(self, settings_manager):
-        """Test gpu_threads computed from gpu_config and distributed by setter."""
+        """gpu_threads sums enabled-GPU workers, setter distributes evenly.
+
+        Audit fix — original test set gpu_threads=4 and asserted the
+        getter returned 4. That's a partial passthrough check that misses
+        the actual non-trivial behaviour: the setter calls
+        ``_distribute_gpu_threads_into_dict`` (settings_manager.py:19-44)
+        which does ``per_gpu = value // len(enabled)`` plus a remainder
+        round-robin. With 2 enabled GPUs and value=4, each GPU must end
+        up with workers=2. With value=5, one gets 3 and the other 2.
+        Pin the per-entry distribution so a regression in the
+        even-distribution math gets caught (e.g. dumping all workers
+        onto the first GPU).
+        """
         settings_manager.gpu_config = [
             {
                 "device": "/dev/dri/renderD128",
@@ -159,6 +171,29 @@ class TestSettingsManagerProperties:
         ]
         settings_manager.gpu_threads = 4
         assert settings_manager.gpu_threads == 4
+        # Even distribution: 4 // 2 = 2 each, remainder 0.
+        per_gpu_workers = [entry.get("workers") for entry in settings_manager.gpu_config]
+        assert per_gpu_workers == [2, 2], (
+            f"gpu_threads=4 across 2 enabled GPUs must distribute evenly to [2, 2]; "
+            f"got {per_gpu_workers!r}. Regression in _distribute_gpu_threads math."
+        )
+
+        # Round-robin remainder: 5 // 2 = 2 base, remainder 1 → first GPU gets +1.
+        settings_manager.gpu_threads = 5
+        assert settings_manager.gpu_threads == 5
+        per_gpu_workers = [entry.get("workers") for entry in settings_manager.gpu_config]
+        assert per_gpu_workers == [3, 2], (
+            f"gpu_threads=5 across 2 enabled GPUs must distribute as [3, 2] (remainder to first); "
+            f"got {per_gpu_workers!r}."
+        )
+
+        # Type coercion: string-shaped int must be accepted (the setter
+        # does ``int(value)`` defensively because the web form delivers
+        # strings). Pin so a refactor that drops the cast surfaces.
+        settings_manager.gpu_threads = "6"
+        assert settings_manager.gpu_threads == 6
+        per_gpu_workers = [entry.get("workers") for entry in settings_manager.gpu_config]
+        assert per_gpu_workers == [3, 3], f"String '6' must coerce and distribute as [3, 3]; got {per_gpu_workers!r}."
 
     def test_plex_verify_ssl_property(self, settings_manager):
         """Test plex_verify_ssl property with bool conversion."""
@@ -509,13 +544,38 @@ class TestClientIdentifier:
     """Tests for client identifier management."""
 
     def test_get_client_identifier_generates_id(self, tmp_path):
-        """Test that get_client_identifier generates a new ID."""
+        """get_client_identifier returns a well-formed UUID4-suffixed ID.
+
+        Audit fix — original test only checked the
+        ``"plex-preview-generator-"`` prefix. That passes for
+        ``"plex-preview-generator-"`` (empty suffix), or any garbage
+        suffix like ``"plex-preview-generator-foo"``. Production format
+        at settings_manager.py:610 is
+        ``f"plex-preview-generator-{uuid.uuid4()}"`` — pin both the
+        regex shape AND that the suffix parses as a valid UUID so a
+        regression to a sequential counter / wrong-version UUID surfaces.
+        """
+        import re
+        import uuid
+
         from media_preview_generator.web.settings_manager import SettingsManager
 
         manager = SettingsManager(config_dir=str(tmp_path))
 
         client_id = manager.get_client_identifier()
-        assert client_id.startswith("plex-preview-generator-")
+        prefix = "plex-preview-generator-"
+        assert client_id.startswith(prefix), f"client_id must start with {prefix!r}; got {client_id!r}"
+        # Full string must match the canonical UUID-suffixed shape.
+        assert re.fullmatch(
+            r"plex-preview-generator-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", client_id
+        ), f"client_id must match 'plex-preview-generator-<uuid4>'; got {client_id!r}"
+        # Suffix must parse as a real UUID (catches regression to a
+        # truncated or non-uuid suffix that happens to match the regex).
+        suffix = client_id[len(prefix) :]
+        parsed = uuid.UUID(suffix)
+        assert parsed.version == 4, (
+            f"client_id suffix must be a UUID4 (version=4); got version={parsed.version} from {suffix!r}"
+        )
 
     def test_client_identifier_persists(self, tmp_path):
         """Test that client identifier persists across instances."""

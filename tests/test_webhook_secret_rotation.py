@@ -251,10 +251,18 @@ class TestPostSettingsTriggersReregistration:
                 )
 
         assert response.status_code == 200, f"Settings save should succeed; got {response.status_code}"
-        (
-            mock_hook.assert_called_once(),
-            (
-                "Posting webhook_secret to /api/settings must trigger the re-register hook. "
-                "Without this wiring, rotated secrets silently break Plex webhooks."
-            ),
+        assert mock_hook.call_count == 1, (
+            "Posting webhook_secret to /api/settings must trigger the re-register hook exactly once. "
+            "Without this wiring, rotated secrets silently break Plex webhooks."
+        )
+
+        # Pin the settings instance handed to the hook actually carries the
+        # NEW secret — otherwise a subtle ordering bug (hook called BEFORE
+        # settings.update) would leave Plex re-registered with the old
+        # token, defeating the whole rotation.
+        call = mock_hook.call_args
+        passed_settings = call.args[0] if call.args else call.kwargs.get("settings")
+        assert passed_settings is not None, "re-register hook was called with no settings argument"
+        assert passed_settings.get("webhook_secret") == "brand-new-secret", (
+            f"re-register hook must see the freshly-saved secret; got {passed_settings.get('webhook_secret')!r}"
         )
