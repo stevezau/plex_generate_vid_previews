@@ -1202,6 +1202,15 @@ class WorkerPool:
                     else:
                         display_name = cpu_worker_label(idx)
 
+                    # ``ffmpeg_started`` flips True the first time the
+                    # FFmpeg progress parser fires. Without surfacing it,
+                    # the UI can't tell pre-FFmpeg work (item-id lookups,
+                    # cross-server BIF unpack, publishing) from
+                    # actually-running-FFmpeg-at-0% — both look like
+                    # "0.0% / 0.0x" and the user thinks the worker is
+                    # stuck. Surfacing it lets the UI show a "Working…"
+                    # spinner during pre-FFmpeg work and only switch to
+                    # the progress bar once FFmpeg is actually reporting.
                     worker_statuses.append(
                         {
                             "worker_id": worker.worker_id,
@@ -1215,6 +1224,7 @@ class WorkerPool:
                             "remaining_time": progress_data["remaining_time"] if is_busy else 0.0,
                             "fallback_active": bool(getattr(worker, "fallback_active", False)),
                             "fallback_reason": getattr(worker, "fallback_reason", None),
+                            "ffmpeg_started": bool(getattr(worker, "ffmpeg_started", False)) if is_busy else False,
                         }
                     )
                 worker_callback(worker_statuses)

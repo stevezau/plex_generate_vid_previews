@@ -80,6 +80,13 @@ class WorkerStatus:
     progress_percent: float = 0.0
     speed: str = "0.0x"
     eta: str = ""
+    # True once FFmpeg's progress parser has reported at least once
+    # for this task. Lets the UI distinguish "doing pre-FFmpeg setup
+    # work" (resolving item ids, unpacking a sibling BIF, publishing
+    # — all of which leave progress at 0%) from "FFmpeg is actually
+    # encoding right now and we're between progress events." Without
+    # it both render as "0.0% / 0.0x" and look like a stuck worker.
+    ffmpeg_started: bool = False
 
     def to_dict(self) -> dict:
         """Serialize to dictionary."""

@@ -2162,20 +2162,36 @@ function _patchWorkerCard(col, worker) {
 
     // Progress bar — width + colour. Visibility kept (just zero width)
     // when idle so the row height stays the same.
+    // ``ffmpeg_started`` distinguishes pre-FFmpeg setup work
+    // (resolving item-ids, unpacking a sibling BIF, publishing — all
+    // 0% / 0.0x) from FFmpeg-actually-running. When still in the
+    // pre-FFmpeg phase we show "Working…" instead of "0.0% / 0.0x"
+    // so the user can tell the worker isn't stuck.
+    const ffmpegStarted = !!worker.ffmpeg_started;
     const progressPercent = isProcessing ? (worker.progress_percent || 0) : 0;
-    const desiredWidth = `${progressPercent.toFixed(1)}%`;
+    const showProgress = isProcessing && ffmpegStarted;
+    const desiredWidth = showProgress ? `${progressPercent.toFixed(1)}%` : '0%';
     if (progress.style.width !== desiredWidth) {
         progress.style.width = desiredWidth;
     }
     progress.classList.toggle('bg-warning', fallbackActive);
 
-    // Footer numbers
-    const percentText = `${progressPercent.toFixed(1)}%`;
-    if (percent.textContent !== percentText) percent.textContent = percentText;
-    const speedText = isProcessing ? (worker.speed || '0.0x') : '—';
-    if (speed.textContent !== speedText) speed.textContent = speedText;
-    const etaText = isProcessing ? (worker.eta || '-') : '-';
-    if (eta.textContent !== etaText) eta.textContent = etaText;
+    // Footer numbers — hide percent/speed/ETA until FFmpeg has reported,
+    // showing a neutral "Working…" instead so 0.0% / 0.0x doesn't read
+    // as a stuck worker during pre-FFmpeg phases (cross-server BIF
+    // reuse, item-id lookups, publishing).
+    if (isProcessing && !ffmpegStarted) {
+        if (percent.textContent !== 'Working…') percent.textContent = 'Working…';
+        if (speed.textContent !== '—') speed.textContent = '—';
+        if (eta.textContent !== '-') eta.textContent = '-';
+    } else {
+        const percentText = `${progressPercent.toFixed(1)}%`;
+        if (percent.textContent !== percentText) percent.textContent = percentText;
+        const speedText = isProcessing ? (worker.speed || '0.0x') : '—';
+        if (speed.textContent !== speedText) speed.textContent = speedText;
+        const etaText = isProcessing ? (worker.eta || '-') : '-';
+        if (eta.textContent !== etaText) eta.textContent = etaText;
+    }
 }
 
 async function loadWorkerStatuses() {

@@ -60,9 +60,23 @@ def run_scheduled_job(
     job_manager = get_job_manager()
 
     # Resolve server context once so the job UI shows the originating server.
+    # When the schedule didn't pin a server explicitly but DID specify a
+    # library, infer the server from the library — without this, a
+    # scheduled "TV Shows on Plex" job fans out to every configured
+    # publisher (Emby/Jellyfin), which costs ~5s/item in not-in-library
+    # lookups for files those servers don't have. The manual /api/jobs
+    # POST path does the same inference (api_jobs.py); we mirror it
+    # here so the schedule path matches.
     server_name = None
     server_type = None
-    if server_id:
+    if not server_id and library_id:
+        try:
+            from .routes.api_jobs import _infer_server_from_library_id
+
+            server_id, server_name, server_type = _infer_server_from_library_id(library_id)
+        except Exception:
+            pass
+    if server_id and not server_name:
         try:
             from .settings_manager import get_settings_manager
 
