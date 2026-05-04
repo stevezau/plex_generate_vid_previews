@@ -311,12 +311,29 @@ class TestJobLogsAndWorkers:
         assert response.status_code == 404
 
     def test_get_worker_statuses(self, client, auth_headers):
-        """Test getting worker statuses returns array."""
+        """Worker-statuses endpoint returns the contract shape, not just a list.
+
+        Audit fix — the original assertion (``isinstance(workers, list)``)
+        is tautological: a response of ``{"workers": []}`` always passes
+        even when there are real workers being silently dropped. Verify
+        the route returns a well-shaped envelope so a regression that
+        flipped the field name (e.g. ``worker_statuses``) or returned a
+        bare list at top level would fail.
+        """
         response = client.get("/api/jobs/workers", headers=auth_headers)
         assert response.status_code == 200
         data = json.loads(response.data)
+        # Stable envelope shape — caller-side JS depends on this.
+        assert isinstance(data, dict), f"expected dict envelope, got {type(data).__name__}"
         assert "workers" in data
         assert isinstance(data["workers"], list)
+        # When workers ARE present, each must carry the dispatcher's
+        # contract shape — but the test fixture has no workers, so just
+        # assert the list shape doesn't accidentally include garbage.
+        for entry in data["workers"]:
+            assert isinstance(entry, dict)
+            assert "worker_id" in entry, f"worker entry missing worker_id: {entry!r}"
+            assert "status" in entry, f"worker entry missing status: {entry!r}"
 
     def test_job_logs_requires_auth(self, client):
         """Test that job logs endpoint requires authentication."""
@@ -386,15 +403,27 @@ class TestAuthTokenFunctions:
         assert "different from the current" in result["error"]
 
     def test_get_token_info_structure(self, mock_auth_config, monkeypatch):
-        """Test get_token_info returns correct structure."""
+        """``get_token_info`` returns a well-shaped dict AND the values are right.
+
+        Audit fix — original asserted only key presence. A regression
+        returning ``{"env_controlled": "yes", "token": None, ...}`` would
+        have passed. Now also assert types + that the token is masked
+        (last-4 visible, rest replaced with ``*``).
+        """
         monkeypatch.delenv("WEB_AUTH_TOKEN", raising=False)
         from media_preview_generator.web.auth import get_token_info
 
         info = get_token_info()
-        assert "env_controlled" in info
-        assert "token" in info
-        assert "token_length" in info
-        assert "source" in info
+        # Shape assertions
+        assert isinstance(info["env_controlled"], bool), (
+            f"env_controlled must be bool, got {type(info['env_controlled']).__name__}"
+        )
+        assert isinstance(info["token"], str)
+        assert isinstance(info["token_length"], int)
+        assert info["source"] in ("config", "environment"), f"unexpected source: {info['source']!r}"
+        # Token must be masked — never expose more than the last 4 chars.
+        assert info["token"].startswith("*"), f"token leaked unmasked: {info['token']!r}"
+        assert info["token_length"] >= 8, "auto-generated tokens are at least 8 chars"
 
     def test_get_token_info_config_source(self, mock_auth_config, monkeypatch):
         """Test get_token_info returns config source when not env controlled."""

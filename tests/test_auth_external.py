@@ -212,17 +212,29 @@ class TestWebhookAuthNotBypassed:
     def test_custom_webhook_not_auto_authenticated(self, client):
         """POST /api/webhooks/custom is not bypassed by external auth.
 
-        The custom endpoint is not CSRF-exempt (pre-existing), so without a
-        browser session it returns 302 rather than 401.  Either way, the
-        request must NOT succeed (200) -- proving _authenticate_webhook is
-        independent from is_authenticated().
+        Audit fix — the original ``response.status_code != 200`` is a
+        dangerous negation: a 500 crash passes, a 302 to login passes,
+        only the actual contract (401/403/302) is meaningful. Now the
+        test enumerates the acceptable rejection codes explicitly so a
+        regression that returned 500 silently can't slip through.
+
+        The custom endpoint is not CSRF-exempt (pre-existing), so without
+        a browser session it returns 302 rather than 401. Either is fine
+        — both reject. A 500 is NOT.
         """
         response = client.post(
             "/api/webhooks/custom",
             data=json.dumps({"eventType": "Test"}),
             content_type="application/json",
         )
-        assert response.status_code != 200
+        assert response.status_code in (
+            302,
+            401,
+            403,
+        ), (
+            f"custom webhook must reject unauthenticated POST with 302/401/403; "
+            f"got {response.status_code} (a 500 indicates a crash, not a security boundary)"
+        )
 
     def test_radarr_webhook_succeeds_with_valid_token(self, client, auth_headers):
         """POST /api/webhooks/radarr succeeds with valid token even when external."""

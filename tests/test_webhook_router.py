@@ -958,7 +958,13 @@ class TestServerIdentityRouting:
         # No identity matches; ambiguous fallback (>1 candidate of this
         # type) → router can't safely pick one. The handler returns 202
         # for "could not match a configured server" rather than 200.
+        # Audit fix — also assert the body explicitly says "ignored" so a
+        # regression that silently routed to server A wouldn't pass.
         assert response.status_code == 202
+        body = response.get_json() or {}
+        assert body.get("status") == "ignored", (
+            f"router silently picked a server despite ambiguous identity — body={body!r}"
+        )
 
     def test_identity_collision_refuses_to_route(self, client, auth_headers):
         """Two configured servers share the same ``server_identity``
@@ -1005,7 +1011,14 @@ class TestServerIdentityRouting:
         # Router refuses to route under collision. Same 202 path as
         # "no match found" since the user-visible outcome is the same:
         # use the per-server fallback URL or fix one server's identity.
+        # Audit fix — also assert "ignored" body status. Without this, a
+        # regression that silently picked the FIRST cloned server would
+        # pass: 202 is also returned by the queued path. Distinguish.
         assert response.status_code == 202
+        body = response.get_json() or {}
+        assert body.get("status") == "ignored", (
+            f"router silently picked a server despite identity collision — body={body!r}"
+        )
 
 
 class TestAuth:

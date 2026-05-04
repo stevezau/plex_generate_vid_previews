@@ -966,6 +966,12 @@ class TestExecuteScheduledJobDispatch:
         kwargs = mock_callback.call_args.kwargs
         assert kwargs["library_id"] == "123"
         assert kwargs["library_name"] == "Movies"
+        # Audit fix — D20 contract: ``parent_schedule_id`` MUST be forwarded
+        # so the schedule's stop_time can cancel its dispatched job. Without
+        # this, the job runs unkillable past stop_time.
+        assert kwargs.get("parent_schedule_id") == schedule["id"], (
+            f"parent_schedule_id missing — schedule's stop_time can't cancel this job. kwargs={kwargs!r}"
+        )
 
     def test_dispatches_recently_added_calls_multi_server_scan(self, scheduler_manager, monkeypatch):
         """A schedule with job_type='recently_added' invokes the multi-server
@@ -1004,6 +1010,13 @@ class TestExecuteScheduledJobDispatch:
         kwargs = mock_scan.call_args.kwargs
         assert kwargs["library_ids"] == ["2"]
         assert kwargs["lookback_hours"] == 2.0
+        # Audit note — recently-added dispatch runs INLINE (not via the
+        # job runner), so D20's ``parent_schedule_id`` cancellation
+        # doesn't apply: there's no Job DB row to cancel by id. The
+        # equivalent stop mechanism for inline runs is the scheduler's
+        # own pause/cancel hook, separately tested. The full-library
+        # branch ABOVE asserts parent_schedule_id propagation because
+        # THAT branch creates a real Job.
 
     def test_dispatches_recently_added_with_no_library_passes_none(self, scheduler_manager, monkeypatch):
         """No library_id = library_ids=None reaches the multi-server scan."""

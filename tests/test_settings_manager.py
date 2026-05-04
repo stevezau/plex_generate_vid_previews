@@ -428,6 +428,73 @@ class TestSettingsManagerConfigStatus:
         )
         assert settings_manager.is_configured() is False
 
+    def test_is_configured_false_when_jellyfin_missing_api_key(self, settings_manager):
+        """Audit fix — original suite tested this for Emby only. Jellyfin
+        has the same auth contract and the same misconfiguration mode;
+        without a per-vendor cell it'd silently regress."""
+        settings_manager.set(
+            "media_servers",
+            [
+                {
+                    "id": "jf-1",
+                    "type": "jellyfin",
+                    "url": "http://jf.local:8096",
+                    "auth": {},
+                    "enabled": True,
+                }
+            ],
+        )
+        assert settings_manager.is_configured() is False
+
+    def test_is_configured_false_when_plex_missing_token(self, settings_manager):
+        """Audit fix — same matrix gap for Plex. A Plex entry with no
+        token is misconfigured and is_configured must reject."""
+        settings_manager.set(
+            "media_servers",
+            [
+                {
+                    "id": "plex-1",
+                    "type": "plex",
+                    "url": "http://plex.local:32400",
+                    "auth": {},
+                    "enabled": True,
+                }
+            ],
+        )
+        # Plex authentication can also come from the legacy plex_token
+        # setting, so don't seed that. is_configured should be False.
+        assert settings_manager.is_configured() is False
+
+    def test_is_configured_true_when_one_of_many_is_well_configured(self, settings_manager):
+        """Audit fix — multi-vendor matrix. The actual contract (per
+        ``is_configured``'s docstring) is "at least one enabled server
+        passes." A mixed list with one good + one broken still returns
+        True. This test pins that contract so a regression that flipped
+        to "all must pass" wouldn't ship a UX downgrade silently."""
+        settings_manager.set(
+            "media_servers",
+            [
+                {
+                    "id": "emby-good",
+                    "type": "emby",
+                    "url": "http://emby.local:8096",
+                    "auth": {"api_key": "valid-key"},
+                    "enabled": True,
+                },
+                {
+                    "id": "jf-broken",
+                    "type": "jellyfin",
+                    "url": "http://jf.local:8096",
+                    "auth": {},  # missing api_key — silently skipped
+                    "enabled": True,
+                },
+            ],
+        )
+        assert settings_manager.is_configured() is True, (
+            "is_configured contract: at least one enabled server must pass — "
+            "the well-configured Emby above is enough; the broken Jellyfin is silently skipped"
+        )
+
     def test_is_plex_authenticated_false(self, settings_manager):
         """Test is_plex_authenticated returns False when no token."""
         assert settings_manager.is_plex_authenticated() is False

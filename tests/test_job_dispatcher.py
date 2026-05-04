@@ -566,11 +566,17 @@ class TestJobDispatcher:
         )
         assert tracker.wait(timeout=10)
         result = tracker.get_result()
-        # With no CPU workers, the GPU codec error leads to a failed item:
-        # either the GPU marks it failed directly (when no fallback queue) or
-        # the dispatcher drains the orphaned fallback item as failed.
-        assert result["completed"] + result["failed"] == 1
-        assert result["failed"] >= 1
+        # Audit fix — original asserted ``result["completed"] + result["failed"] == 1``
+        # AND ``result["failed"] >= 1`` which technically allows BOTH paths
+        # ("GPU marks failed" OR "dispatcher drains as failed"). That OR
+        # absorbs whichever implementation is current — a regression that
+        # silently switched paths would still pass.
+        # Tighten: with no CPU workers + GPU codec error, the contract is
+        # exactly 1 failed, 0 completed. If the implementation legitimately
+        # changes (e.g. orphan retry path completes the item), update this
+        # assertion deliberately rather than letting the OR absorb it.
+        assert result["completed"] == 0, f"with no CPU fallback, GPU codec error must NOT mark complete; got {result!r}"
+        assert result["failed"] == 1, f"GPU codec error with no fallback should mark exactly 1 failed; got {result!r}"
         dispatcher.shutdown()
 
     @patch("media_preview_generator.processing.multi_server.process_canonical_path")

@@ -630,7 +630,13 @@ class TestEmbyApplyRecommended:
 
 class TestRegistryWiring:
     def test_registry_can_construct_emby_server(self):
-        from media_preview_generator.servers import ServerRegistry
+        """Audit fix — was an instantiation-only smoke. Now also asserts
+        the constructed Emby actually works: ``type`` enum and configured
+        URL/auth survive the registry round-trip, otherwise a regression
+        in the registry's ``from_settings`` factory could ship a server
+        with wrong type/url and this test would still pass.
+        """
+        from media_preview_generator.servers import ServerRegistry, ServerType
 
         registry = ServerRegistry.from_settings(
             [
@@ -647,4 +653,11 @@ class TestRegistryWiring:
         )
         servers = registry.servers()
         assert len(servers) == 1
-        assert isinstance(servers[0], EmbyServer)
+        srv = servers[0]
+        assert isinstance(srv, EmbyServer)
+        assert srv.type is ServerType.EMBY
+        assert srv.id == "emby-1"
+        # Configured URL / auth survived — not just any-Emby returned.
+        cfg = registry.get_config("emby-1")
+        assert cfg is not None
+        assert cfg.url == "http://emby:8096"

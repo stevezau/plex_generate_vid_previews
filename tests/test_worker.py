@@ -129,7 +129,14 @@ class TestWorker:
         assert worker.is_busy is False
 
     def test_worker_progress_data(self):
-        """Test getting progress data."""
+        """``get_progress_data`` returns the dispatcher-contract dict shape.
+
+        Audit fix — original test set 4 fields and asserted those same 4
+        fields back. Tautological (write 50, read 50). Now also assert
+        the contract SHAPE: required keys are always present (even when
+        worker is fresh and never touched), the types are right, and
+        keys the dispatcher relies on for emit_worker_updates exist.
+        """
         worker = Worker(0, "GPU", "NVIDIA", "cuda", 0, "RTX 3080")
         worker.progress_percent = 50
         worker.speed = "2.5x"
@@ -138,12 +145,26 @@ class TestWorker:
 
         data = worker.get_progress_data()
 
+        # Round-trip values
         assert data["progress_percent"] == 50
         assert data["speed"] == "2.5x"
         assert data["frame"] == 1000
         assert abs(data["fps"] - 30.0) < 0.1
         assert data["worker_id"] == 0
         assert data["worker_type"] == "GPU"
+
+        # Contract shape — these keys MUST always be present so the
+        # dispatcher's _build_worker_statuses doesn't KeyError. A fresh
+        # worker should also produce the full shape.
+        fresh = Worker(99, "CPU", "CPU", "", 0, "CPU")
+        fresh_data = fresh.get_progress_data()
+        for required_key in ("worker_id", "worker_type", "progress_percent", "speed"):
+            assert required_key in fresh_data, (
+                f"fresh worker missing {required_key!r} — dispatcher will KeyError "
+                f"in _build_worker_statuses. data={fresh_data!r}"
+            )
+        assert fresh_data["worker_id"] == 99
+        assert fresh_data["worker_type"] == "CPU"
 
     def test_worker_find_available(self):
         """Test finding first available worker."""

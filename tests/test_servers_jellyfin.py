@@ -678,7 +678,9 @@ class TestApplyRecommendedSettings:
 
 class TestRegistryWiring:
     def test_registry_can_construct_jellyfin_server(self):
-        from media_preview_generator.servers import ServerRegistry
+        """Audit fix — was instantiation-only smoke. Now also asserts
+        configured fields survive the registry round-trip."""
+        from media_preview_generator.servers import ServerRegistry, ServerType
 
         registry = ServerRegistry.from_settings(
             [
@@ -695,4 +697,10 @@ class TestRegistryWiring:
         )
         servers = registry.servers()
         assert len(servers) == 1
-        assert isinstance(servers[0], JellyfinServer)
+        srv = servers[0]
+        assert isinstance(srv, JellyfinServer)
+        assert srv.type is ServerType.JELLYFIN
+        assert srv.id == "jelly-1"
+        cfg = registry.get_config("jelly-1")
+        assert cfg is not None
+        assert cfg.url == "http://jellyfin:8096"

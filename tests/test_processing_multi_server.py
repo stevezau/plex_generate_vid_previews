@@ -247,11 +247,17 @@ class TestSiblingMountProbe:
             config=mock_config_for_processing,
         )
         # Probe rebound canonical_path to the live mount; result is NOT
-        # SKIPPED_FILE_NOT_FOUND. (May be other status depending on
-        # what the rest of the pipeline does with the rebound path.)
+        # SKIPPED_FILE_NOT_FOUND. Audit fix — previously asserted only
+        # the negation, which would pass even if the rebound landed at a
+        # WRONG path (different file with same basename, etc.). Also
+        # assert the rebound canonical_path equals ``live_file`` so a
+        # regression that picked the wrong sibling would fail.
         assert result.status is not MultiServerStatus.SKIPPED_FILE_NOT_FOUND, (
             "sibling-mount probe should have found the file at the live mount; "
             f"got status={result.status} message={result.message!r}"
+        )
+        assert result.canonical_path == str(live_file), (
+            f"rebound to wrong path: expected {live_file!s}, got {result.canonical_path!r}"
         )
 
     def test_single_mount_falls_through_to_skipped(self, mock_config_for_processing, tmp_path):

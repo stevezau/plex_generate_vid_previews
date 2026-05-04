@@ -272,3 +272,108 @@ class TestUnicodeNormalization:
             libraries=[Library(id="1", name="Movies", remote_paths=("/Movies",), enabled=True)],
         )
         assert server_owns_path("/movies/foo/bar.mkv", server) is None
+
+
+class TestPathMappingMatrix:
+    """Audit fix — was the highest-priority gap. The user-reported
+    "webhook_prefixes don't apply" regression class lives here.
+
+    These tests cover the path-mapping CELLS the original suite missed:
+    chained mappings, ordering when one is a strict prefix of another,
+    multiple servers with different mappings owning the same canonical
+    path, and the inverse (server reports local path).
+    """
+
+    def test_two_mappings_where_one_is_prefix_of_other_picks_specific(self):
+        """Mapping A: /media → /data, mapping B: /media/4k → /data/4k.
+
+        A canonical path under /data/4k must match the B-derived candidate,
+        not silently land under A's. ``apply_path_mappings`` returns ALL
+        candidates; ``server_owns_path`` then matches the canonical against
+        each — order doesn't matter as long as at least one candidate matches.
+        Test asserts the OWNERSHIP, not the candidate ordering.
+        """
+        server = _server(
+            libraries=[Library(id="1", name="4K", remote_paths=("/media/4k",), enabled=True)],
+            path_mappings=[
+                {"remote_prefix": "/media", "local_prefix": "/data"},
+                {"remote_prefix": "/media/4k", "local_prefix": "/data/4k"},
+            ],
+        )
+        match = server_owns_path("/data/4k/Foo.mkv", server)
+        assert match is not None, "/data/4k path must own via at least one of the mapping candidates"
+
+    def test_chained_mappings_each_applied_independently(self):
+        """User has two libraries on different mount roots, each needing
+        its own mapping. Both must work simultaneously."""
+        server = _server(
+            libraries=[
+                Library(id="1", name="Movies", remote_paths=("/media/movies",), enabled=True),
+                Library(id="2", name="TV", remote_paths=("/media/tv",), enabled=True),
+            ],
+            path_mappings=[
+                {"remote_prefix": "/media/movies", "local_prefix": "/mnt/movies"},
+                {"remote_prefix": "/media/tv", "local_prefix": "/mnt/tv"},
+            ],
+        )
+        assert server_owns_path("/mnt/movies/Foo.mkv", server) is not None
+        assert server_owns_path("/mnt/tv/Show/S01E01.mkv", server) is not None
+        assert server_owns_path("/mnt/anywhere/else.mkv", server) is None
+
+    def test_two_servers_share_path_with_DIFFERENT_per_server_mappings(self):
+        """The most common real-world configuration: Plex sees the disk
+        at one path, Jellyfin sees the same disk at another. Both should
+        own a canonical path that lives within their mapped view.
+
+        This was the audit's "single biggest hole" — the missing matrix
+        row that real users hit but no test covered.
+        """
+        plex = _server(
+            server_id="plex-1",
+            libraries=[Library(id="p1", name="Movies", remote_paths=("/plex-data/movies",), enabled=True)],
+            path_mappings=[{"remote_prefix": "/plex-data", "local_prefix": "/data"}],
+        )
+        jellyfin = _server(
+            server_id="jf-1",
+            server_type=ServerType.JELLYFIN,
+            libraries=[Library(id="j1", name="Movies", remote_paths=("/media/movies",), enabled=True)],
+            path_mappings=[{"remote_prefix": "/media", "local_prefix": "/data"}],
+        )
+        # Both servers' libraries map to the same local /data/movies path.
+        # A canonical path there must fan out to BOTH.
+        matches = find_owning_servers("/data/movies/Foo.mkv", [plex, jellyfin])
+        ids = {m.server_id for m in matches}
+        assert ids == {"plex-1", "jf-1"}, (
+            f"per-server path_mappings broke fan-out — expected both servers to own, got {ids!r}"
+        )
+
+    def test_canonical_path_inside_local_view_no_mapping_needed(self):
+        """When server's remote_paths ALREADY use the local view (common
+        when there's no NFS/SMB indirection), no mapping is needed and
+        ownership still works — the dispatcher doesn't accidentally REQUIRE
+        a path_mappings entry."""
+        server = _server(
+            libraries=[Library(id="1", name="Movies", remote_paths=("/data/movies",), enabled=True)],
+            path_mappings=[],  # explicitly empty
+        )
+        assert server_owns_path("/data/movies/Foo.mkv", server) is not None
+
+    def test_mapping_with_trailing_slash_normalised(self):
+        """A user typing ``/media/`` instead of ``/media`` in Settings
+        must produce the same ownership decision."""
+        with_slash = _server(
+            libraries=[Library(id="1", name="Movies", remote_paths=("/media/movies/",), enabled=True)],
+            path_mappings=[{"remote_prefix": "/media/", "local_prefix": "/data/"}],
+        )
+        # Trailing slash on the library path may or may not match depending
+        # on _normalize semantics. Assert behaviour is consistent — either
+        # both forms match or neither does. The dispatcher's contract is
+        # that operators shouldn't have to remember the trailing-slash
+        # convention.
+        result = server_owns_path("/data/movies/Foo.mkv", with_slash)
+        # Document the actual contract: trailing slashes ARE handled by the
+        # _normalize step on both sides.
+        assert result is not None, (
+            "trailing slash on library path / mapping prefix breaks ownership — "
+            "user-typed paths must work regardless of trailing slash"
+        )

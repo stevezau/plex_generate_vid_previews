@@ -563,7 +563,7 @@ class TestProcessCanonicalPathIntegration:
         ):
             from media_preview_generator.processing.multi_server import process_canonical_path
 
-            process_canonical_path(
+            result = process_canonical_path(
                 canonical_path="/x.mkv",
                 registry=registry,
                 config=config,
@@ -571,4 +571,18 @@ class TestProcessCanonicalPathIntegration:
                 schedule_retry_on_not_indexed=False,
             )
 
-        assert schedule_calls == []
+        # Audit fix — original asserted only ``schedule_calls == []``.
+        # A regression where the disabled flag silently ALSO short-circuited
+        # publishing entirely (skipping the not-indexed branch) would have
+        # passed. Now also assert the not-indexed branch DID run by checking
+        # the dispatcher's status / publisher accounting.
+        assert schedule_calls == [], "schedule_retry_for_unindexed must NOT fire when disabled"
+        # The not-indexed branch should have run and produced a SKIPPED-
+        # variant status (it's the disabled retry-scheduler we're testing,
+        # not disabled publishing). The exact variant depends on the
+        # adapter's signal — accept any SKIPPED_* or the bare SKIPPED.
+        status_name = result.status.name
+        assert status_name == "SKIPPED" or status_name.startswith("SKIPPED_"), (
+            f"the disabled-retry path should still attempt publishing and report SKIPPED_*; "
+            f"got {result.status} — the disabled flag silently short-circuited the whole publish loop"
+        )
