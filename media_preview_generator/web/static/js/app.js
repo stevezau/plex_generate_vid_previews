@@ -2249,15 +2249,30 @@ function _patchWorkerCard(col, worker) {
     }
     progress.classList.toggle('bg-warning', fallbackActive);
 
-    // Footer numbers — hide percent/speed/ETA until FFmpeg has reported,
-    // showing a neutral "Working…" instead so 0.0% / 0.0x doesn't read
-    // as a stuck worker during pre-FFmpeg phases (cross-server BIF
-    // reuse, item-id lookups, publishing).
+    // Footer — when FFmpeg hasn't started yet, show the live sub-phase
+    // string the worker emitted (e.g. "Resolving item id on EmbyTest…",
+    // "Reusing cached frames", "Publishing to Plex…") in place of a
+    // generic "Working…", so a 30s wait on a slow reverse-lookup
+    // actually reads as that, not as a hung worker. Hide speed + ETA
+    // chips during this phase — they're meaningless without FFmpeg
+    // reporting and would otherwise crowd the phase text.
+    const etaWrap = eta.parentElement;
     if (isProcessing && !ffmpegStarted) {
-        if (percent.textContent !== 'Working…') percent.textContent = 'Working…';
-        if (speed.textContent !== '—') speed.textContent = '—';
-        if (eta.textContent !== '-') eta.textContent = '-';
+        const phase = (worker.current_phase || '').trim() || 'Working…';
+        if (percent.textContent !== phase) percent.textContent = phase;
+        if (percent.title !== phase) percent.title = phase;
+        percent.classList.add('text-truncate');
+        percent.style.flex = '1 1 auto';
+        percent.style.minWidth = '0';
+        speed.style.display = 'none';
+        if (etaWrap) etaWrap.style.display = 'none';
     } else {
+        if (percent.title) percent.title = '';
+        percent.classList.remove('text-truncate');
+        percent.style.flex = '';
+        percent.style.minWidth = '';
+        speed.style.display = '';
+        if (etaWrap) etaWrap.style.display = '';
         const percentText = `${progressPercent.toFixed(1)}%`;
         if (percent.textContent !== percentText) percent.textContent = percentText;
         const speedText = isProcessing ? (worker.speed || '0.0x') : '—';

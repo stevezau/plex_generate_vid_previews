@@ -279,7 +279,7 @@ def _resolve_item_id_for(server: MediaServer, canonical_path: str, hint: str | N
     return result
 
 
-def _make_item_id_resolver(canonical_path: str):
+def _make_item_id_resolver(canonical_path: str, phase_callback=None):
     """Per-dispatch memoising wrapper around ``_resolve_item_id_for``.
 
     ``process_canonical_path`` calls ``_resolve_item_id_for`` from up to
@@ -300,6 +300,15 @@ def _make_item_id_resolver(canonical_path: str):
     def resolve(server: MediaServer, hint: str | None) -> str | None:
         if server.id in cache:
             return cache[server.id]
+        # Stamp the worker UI just before the (potentially slow) lookup
+        # — Jellyfin's Pass-2 enumeration cold-burns ~30s, and without
+        # this the worker card sits on a generic "Working…" the whole
+        # time, indistinguishable from a hung thread.
+        if phase_callback and not hint:
+            try:
+                phase_callback(f"Resolving item id on {server.name}…")
+            except Exception:
+                pass
         result = _resolve_item_id_for(server, canonical_path, hint)
         cache[server.id] = result
         return result
@@ -647,6 +656,7 @@ def process_canonical_path(
     schedule_retry_on_not_indexed: bool = True,
     retry_attempt: int = 0,
     server_id_filter: str | None = None,
+    phase_callback=None,
 ) -> MultiServerResult:
     """Process ``canonical_path`` and publish to every owning server.
 
@@ -805,9 +815,18 @@ def process_canonical_path(
     # Per-dispatch memoiser for server reverse-lookups. Without this,
     # the "all_fresh" check, BIF-reuse probe, and publish loop each
     # re-burn the same Jellyfin Pass-2 enumeration (~30s cold).
-    resolve_item_id = _make_item_id_resolver(canonical_path)
+    resolve_item_id = _make_item_id_resolver(canonical_path, phase_callback=phase_callback)
+
+    def _phase(text: str) -> None:
+        if phase_callback is None:
+            return
+        try:
+            phase_callback(text)
+        except Exception:
+            pass
 
     if not regenerate:
+        _phase("Checking existing previews…")
         all_fresh = True
         for server, adapter, item_id_hint in publishers:
             try:
@@ -898,6 +917,7 @@ def process_canonical_path(
                 tmp_path = str(cached.frame_dir)
                 frame_count = cached.frame_count
                 cache_hit = True
+                _phase("Reusing cached frames")
                 logger.info(
                     "Frames: REUSED from cache for {} ({} frames, no FFmpeg)",
                     canonical_path,
@@ -905,6 +925,7 @@ def process_canonical_path(
                 )
 
         if not cache_hit and use_frame_cache and not regenerate and len(publishers) > 1:
+            _phase("Looking for sibling BIF to reuse…")
             # Cross-server BIF reuse: if another publisher (typically
             # Plex) already has a fresh BIF for this canonical_path,
             # unpack it into the frame cache instead of re-running
@@ -932,6 +953,7 @@ def process_canonical_path(
                 frame_count = recovered
                 cache_hit = True
                 cache.put(canonical_path, frame_dir=Path(unpack_dest), frame_count=recovered)
+                _phase("Reusing sibling BIF")
                 logger.info(
                     "Frames: REUSED from existing BIF for {} ({} frames, no FFmpeg)",
                     canonical_path,
@@ -946,6 +968,7 @@ def process_canonical_path(
                 tmp_path = _tmp_path_for(canonical_path, config.working_tmp_folder)
                 cleanup_path = tmp_path  # only ad-hoc tmps get auto-cleaned
             os.makedirs(tmp_path, exist_ok=True)
+            _phase("Extracting frames with FFmpeg…")
             logger.info("Frames: EXTRACTING (cache miss) for {}", canonical_path)
 
         if not cache_hit:
@@ -1078,6 +1101,7 @@ def process_canonical_path(
 
         results: list[PublisherResult] = []
         for server, adapter, item_id_hint in publishers:
+            _phase(f"Publishing to {server.name}…")
             item_id = resolve_item_id(server, item_id_hint)
             outcome = _publish_one(
                 server,

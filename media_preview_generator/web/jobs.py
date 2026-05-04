@@ -97,6 +97,13 @@ class WorkerStatus:
     # encoding right now and we're between progress events." Without
     # it both render as "0.0% / 0.0x" and look like a stuck worker.
     ffmpeg_started: bool = False
+    # Live sub-phase string set by the multi-server processor at each
+    # stage transition (cache check, frame extract/reuse, per-server
+    # publish, item-id resolution). The UI shows this in place of a
+    # generic "Working…" so an op can tell at a glance *what* the
+    # worker is busy with — e.g. "Resolving item id on EmbyTest…"
+    # explains a 30s gap that would otherwise look like a hang.
+    current_phase: str = ""
 
     def to_dict(self) -> dict:
         """Serialize to dictionary."""

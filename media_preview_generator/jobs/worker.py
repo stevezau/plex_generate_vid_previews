@@ -127,6 +127,11 @@ class Worker:
         self.progress_task_id = None
         self.ffmpeg_started = False  # Track if FFmpeg has started outputting progress
         self.task_start_time = 0  # Track when task started
+        # Free-form sub-phase string emitted by the multi-server
+        # processor (e.g. "Resolving item id on EmbyTest…"). Surfaced
+        # to the UI so the user sees what the worker is actually doing
+        # before FFmpeg starts reporting.
+        self.current_phase: str = ""
 
         # FFmpeg data fields for display
         self.frame = 0
@@ -282,6 +287,7 @@ class Worker:
         # this one's chip set or Details cell.
         self.last_publishers = []
         self.last_ms_message = ""
+        self.current_phase = ""
 
         self.is_busy = True
         self.current_task = item.canonical_path
@@ -381,6 +387,10 @@ class Worker:
                     return ProcessingResult.NO_MEDIA_PARTS
                 return ProcessingResult.FAILED
 
+            def _phase_cb(text: str) -> None:
+                # Single-writer (worker thread) → no lock needed.
+                self.current_phase = text or ""
+
             def _run_once(gpu, gpu_device):
                 return process_canonical_path(
                     canonical_path=item.canonical_path,
@@ -394,6 +404,7 @@ class Worker:
                     cancel_check=self.cancel_check,
                     pause_check=self.pause_check,
                     regenerate=bool(getattr(config, "regenerate_thumbnails", False)),
+                    phase_callback=_phase_cb,
                 )
 
             # Persist the per-file outcome via the job-runner-installed
@@ -580,6 +591,7 @@ class Worker:
             # Thread finished, mark as completed
             self.is_busy = False
             self.current_task = None
+            self.current_phase = ""
             return True
 
         return False
@@ -1225,6 +1237,7 @@ class WorkerPool:
                             "fallback_active": bool(getattr(worker, "fallback_active", False)),
                             "fallback_reason": getattr(worker, "fallback_reason", None),
                             "ffmpeg_started": bool(getattr(worker, "ffmpeg_started", False)) if is_busy else False,
+                            "current_phase": (getattr(worker, "current_phase", "") or "") if is_busy else "",
                         }
                     )
                 worker_callback(worker_statuses)
