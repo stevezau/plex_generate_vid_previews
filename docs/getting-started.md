@@ -35,9 +35,9 @@ Get preview thumbnails generating in minutes — for **Plex, Emby, Jellyfin**, o
 ## Prerequisites
 
 1. **At least one media server** reachable from this container — any of:
-   - **Plex Media Server** (a Plex account is needed for OAuth sign-in; a manual URL + token also works)
-   - **Emby Server** (URL + API key)
-   - **Jellyfin Server** (URL + API key, or use **Quick Connect** in the Setup Wizard)
+   - **Plex Media Server** — sign in with your Plex account in the Setup Wizard, or paste a server URL + token if you'd rather skip the sign-in
+   - **Emby Server** — server URL + API key
+   - **Jellyfin Server** — use **Quick Connect** in the Setup Wizard (a friendlier sign-in code, no token to copy), or paste a server URL + API key
 2. Docker installed on your server
 
 You can configure several servers — even a mix of vendors — and a single FFmpeg pass will publish to every server that owns the file.
@@ -85,7 +85,7 @@ Find your token using the [Authentication Token](#authentication-token) section 
      - **Emby** → enter URL + API key.
      - **Jellyfin** → enter URL + **Quick Connect** code (or URL + API key).
    - **Step 2 — Server & Libraries** *(Plex only)*: pick which server (if multiple) and which libraries to enable. Emby/Jellyfin flows skip this step — libraries are managed later from the Servers page.
-   - **Step 3 — Path Configuration** *(Plex only)*: confirm the Plex application data folder (where the BIF files are written) and any media path mappings.
+   - **Step 3 — Path Configuration** *(Plex only)*: confirm the Plex application data folder (the directory Plex stores its config in — usually mounted as `/plex` on this container) and any media path mappings.
    - **Step 4 — Processing Options**: GPU/CPU workers, FFmpeg threads, thumbnail interval, quality.
    - **Step 5 — Security**: view or replace your access token (optional).
 
@@ -97,7 +97,7 @@ After setup, add additional servers (any vendor) any time from **Settings → Me
 
 In **Plex Settings → Library**, set **"Generate video preview thumbnails"** to **Never**. This tool replaces Plex's built-in generation with GPU-accelerated processing. If Plex's option is left on, Plex may use CPU to generate thumbnails for new media, which can conflict with or duplicate this app's work.
 
-This tool generates **video preview thumbnails only** — the small frames Plex shows when you drag the scrub bar (stored as BIF files). It does not generate chapter thumbnails, intro/credit detection, or other Plex media analysis.
+This tool generates **video preview thumbnails only** — the small frames you see when you drag the scrub bar. (Plex stores these in a file format called **BIF**; Emby uses a similar BIF sidecar; Jellyfin uses a folder of JPG tile sheets called **trickplay**.) It does not generate chapter thumbnails, intro/credit detection, or other media analysis.
 
 > [!TIP]
 > **After setup, you probably want one or both of:**
@@ -111,11 +111,11 @@ This tool generates **video preview thumbnails only** — the small frames Plex 
 | Container Path | Purpose | Mode |
 |----------------|---------|------|
 | `/media` | Your media files | `ro` (read-only) |
-| `/plex` | Plex application data (where Plex BIF files are stored) | `rw` |
+| `/plex` | Plex application data (where Plex stores its preview thumbnail files) | `rw` |
 | `/config` | App settings, schedules, job history | `rw` |
 
 > [!NOTE]
-> **Emby / Jellyfin output is delivered via HTTP**, not a shared mount — the container POSTs the generated `.bif` sidecar (Emby) or trickplay tile sheets + manifest (Jellyfin) to the server's REST API. You only need a writable Plex application-data mount when you have at least one Plex server configured. Containers serving Emby/Jellyfin only can omit `/plex`.
+> **Emby and Jellyfin don't need a shared mount.** This app talks to them over HTTP — the generated preview files are placed next to the media file (Jellyfin) or written to the Emby server via its API. The `/plex` mount is only needed when you have at least one Plex server configured. If you only run Emby and/or Jellyfin, you can omit `/plex` entirely.
 
 ---
 
@@ -223,9 +223,11 @@ docker run -d \
   stevezzau/media_preview_generator:latest
 ```
 
-> **Why `NVIDIA_DRIVER_CAPABILITIES=all`?** The `graphics` capability (included in `all`) is required for the NVIDIA Container Toolkit to inject the NVIDIA Vulkan driver into the container. Dolby Vision Profile 5 thumbnails use libplacebo Vulkan tone-mapping, so without `graphics` they fall back to software rendering and may show a green overlay. The older `compute,video,utility` trio is enough for NVDEC/NVENC but **not** enough for DV Profile 5 thumbnails.
+> [!TIP]
+> **Why `NVIDIA_DRIVER_CAPABILITIES=all`?** Dolby Vision videos need the NVIDIA Vulkan driver to render colours correctly; the `all` value is what makes that driver available inside the container. Without it, Dolby Vision thumbnails may show with a green tint. (The older `compute,video,utility` setting is fine for everything except Dolby Vision.)
 
-> **Multi-GPU?** Hosts with two or more NVIDIA cards are detected automatically via `nvidia-smi` — each card appears as a separate row in **Settings → GPUs** with its own enable toggle, worker count, and FFmpeg thread setting. Work is dispatched per-GPU using FFmpeg's `-hwaccel_device` flag, so the load actually spreads across cards.
+> [!TIP]
+> **Multi-GPU?** Hosts with two or more NVIDIA cards are detected automatically — each card appears as a separate row in **Settings → GPUs** with its own enable toggle, worker count, and FFmpeg thread setting. Work spreads across cards.
 
 Docker Compose:
 
@@ -272,6 +274,8 @@ Apple Silicon and Intel Macs use VideoToolbox for GPU-accelerated decoding. This
 > Docker on macOS runs in a Linux VM and cannot access VideoToolbox. If you run the Docker image on macOS, processing will use CPU only. Apple Silicon users still benefit from the native ARM64 Docker image (no Rosetta emulation overhead). For GPU acceleration on macOS, install from source with Python and FFmpeg.
 
 ### Worker Configuration
+
+A **worker** is a parallel slot that processes one file at a time — more workers means more files processed simultaneously, but higher CPU/GPU load.
 
 In **Settings** → **Processing Options**, the GPU panel lists all detected GPUs. Enable or disable each GPU independently and set **workers** and **FFmpeg threads** per GPU. For CPU-only mode, disable every GPU (or set workers to 0) and set **CPU Workers** to your desired value (e.g. `8`).
 

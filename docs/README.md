@@ -10,7 +10,7 @@ Pick the right doc for what you're trying to do.
 |---|---|
 | **Install and run it** — Docker, Docker Compose, GPU setup, Unraid | [Getting Started](getting-started.md) |
 | **Operate it day-to-day** — Web UI, webhooks, schedules, Plex direct, Recently Added | [Guides](guides.md) |
-| **Add Emby or Jellyfin (and/or multiple Plex servers)** — multi-vendor pipeline, output formats, Quick Connect, vendor-specific webhooks | [Multi-Media-Server](multi-server.md) |
+| **Add Emby or Jellyfin (and/or multiple Plex servers)** — how to connect each server, sign-in tips, and what to expect when more than one server contains the same file | [Multi-Media-Server](multi-server.md) |
 | **Look up a setting or endpoint** — config keys, env vars, REST API, WebSocket events | [Reference](reference.md) |
 | **Troubleshoot something** — common errors and fixes | [Guides — Troubleshooting](guides.md#troubleshooting) |
 | **Read common questions** — "does it work with…", "how many workers…", HDR behavior | [FAQ](faq.md) |
