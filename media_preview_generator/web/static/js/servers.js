@@ -229,12 +229,10 @@
     }
 
     function serverCard(server) {
-        const typeBadgeColor = { plex: 'warning', emby: 'success', jellyfin: 'info' }[server.type] || 'secondary';
         const libCount = (server.libraries || []).length;
         const enabledLibs = (server.libraries || []).filter((l) => l.enabled).length;
-        // Vendor SVG logo (24px) prepended to the server name. Falls back
-        // to nothing when type is unknown — the type-coloured badge on the
-        // right keeps the vendor signal.
+        // Vendor SVG logo (24px) prepended to the server name — the logo IS
+        // the vendor signal, no need for a redundant text badge alongside.
         const vendorLogo = ['plex', 'emby', 'jellyfin'].includes((server.type || '').toLowerCase())
             ? `<img src="/static/images/vendors/${escapeHtml(server.type.toLowerCase())}.svg" alt="${escapeHtml(server.type)}" width="24" height="24" style="margin-right: 8px; vertical-align: -5px;">`
             : '';
@@ -248,13 +246,10 @@
             <div class="col-md-6 col-lg-4">
                 <div class="card card-interactive h-100">
                     <div class="card-body">
-                        <div class="d-flex justify-content-between align-items-start mb-2 gap-2">
-                            <h5 class="card-title mb-0 d-flex align-items-center" style="min-width:0;">
-                                <span style="white-space:nowrap;">${vendorLogo}</span>
-                                <span class="text-truncate">${escapeHtml(server.name)}</span>
-                            </h5>
-                            <span class="badge bg-${typeBadgeColor} flex-shrink-0">${escapeHtml(server.type)}</span>
-                        </div>
+                        <h5 class="card-title mb-2 d-flex align-items-center" style="min-width:0;">
+                            <span style="white-space:nowrap;">${vendorLogo}</span>
+                            <span class="text-truncate">${escapeHtml(server.name)}</span>
+                        </h5>
                         <div class="text-muted small mb-2 text-truncate" title="${escapeHtml(server.url)}">${escapeHtml(server.url)}</div>
                         <div class="d-flex align-items-center justify-content-between mb-2 gap-2 flex-wrap">
                             <span class="badge bg-secondary" id="${statusPillId}" title="Connection status">
@@ -1047,15 +1042,19 @@
         _editState = { server, allServers };
 
         $('#editServerName').textContent = server.name || '';
-        const typeBadge = $('#editServerTypeBadge');
-        if (typeBadge) {
+        // Show the vendor logo next to the title — replaces the old text
+        // type-badge ("plex" / "emby" / "jellyfin") which was redundant
+        // because the icon already conveys the vendor.
+        const vendorLogo = $('#editServerVendorLogo');
+        if (vendorLogo) {
             const t = (server.type || '').toLowerCase();
-            const colorMap = { plex: 'warning', emby: 'success', jellyfin: 'info' };
-            const color = colorMap[t] || 'secondary';
-            typeBadge.textContent = t;
-            typeBadge.className = `badge bg-${color} text-uppercase ms-1`;
-            typeBadge.style.fontSize = '0.65rem';
-            typeBadge.style.letterSpacing = '0.05em';
+            if (['plex', 'emby', 'jellyfin'].includes(t)) {
+                vendorLogo.src = `/static/images/vendors/${t}.svg`;
+                vendorLogo.alt = t;
+                vendorLogo.classList.remove('d-none');
+            } else {
+                vendorLogo.classList.add('d-none');
+            }
         }
         $('#editServerId').value = server.id || '';
         $('#editServerType').value = server.type || '';
