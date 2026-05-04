@@ -90,7 +90,7 @@ class EmbyBifAdapter(OutputAdapter):
         generate_bif(
             str(sidecar),
             str(bundle.frame_dir),
-            BifIntervalConfig(self._frame_interval),
+            BifIntervalConfig(self._frame_interval, server_display_name=bundle.server_display_name),
         )
 
         # Sanity: filename must follow Emby's <basename>-<w>-<i>.bif pattern.

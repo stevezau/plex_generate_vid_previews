@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -248,11 +249,20 @@ def _resolve_item_id_for(server: MediaServer, canonical_path: str, hint: str | N
     without a reverse-lookup implementation return ``None`` (only
     Plex's bundle path and Jellyfin's manifest actually need the id,
     and the corresponding adapters degrade gracefully when missing).
+
+    INFO logs bracket the network call so an op tailing the log can
+    tell *why* the dispatch is sitting idle when the lookup is slow.
+    Jellyfin's Pass 2 fallback (1000-item enumeration) burns ~30s
+    cold per call when the file isn't in the library — without these
+    log lines that gap looks like a hang.
     """
     if hint:
         return hint
+    basename = os.path.basename(canonical_path)
+    logger.info("Resolving item id for '{}' on {}…", basename, server.name)
+    t0 = time.monotonic()
     try:
-        return server.resolve_remote_path_to_item_id(canonical_path)
+        result = server.resolve_remote_path_to_item_id(canonical_path)
     except Exception as exc:
         logger.debug(
             "resolve_remote_path_to_item_id failed for {} on {}: {}",
@@ -261,6 +271,40 @@ def _resolve_item_id_for(server: MediaServer, canonical_path: str, hint: str | N
             exc,
         )
         return None
+    elapsed = time.monotonic() - t0
+    if result:
+        logger.info("Resolved '{}' on {} → item {} ({:.1f}s)", basename, server.name, result, elapsed)
+    else:
+        logger.info("'{}' not found on {} ({:.1f}s)", basename, server.name, elapsed)
+    return result
+
+
+def _make_item_id_resolver(canonical_path: str):
+    """Per-dispatch memoising wrapper around ``_resolve_item_id_for``.
+
+    ``process_canonical_path`` calls ``_resolve_item_id_for`` from up to
+    five sub-phases (freshness short-circuit, regenerate-cleanup,
+    BIF-reuse probe, publish loop, not-fresh re-build). Each call to a
+    Jellyfin server with no item-id hint can burn ~30s on the Pass 2
+    enumeration when the file isn't in the library — multiplying that
+    by 3-5 sub-phases turns a logically instantaneous "skip, output
+    already exists" into a 60-90s wait (job 54b9ed8b).
+
+    Cache is local to a single dispatch (fresh dict per call to
+    ``process_canonical_path``) so a stale negative result can never
+    leak across files or jobs — within one dispatch the answer cannot
+    change.
+    """
+    cache: dict[str, str | None] = {}
+
+    def resolve(server: MediaServer, hint: str | None) -> str | None:
+        if server.id in cache:
+            return cache[server.id]
+        result = _resolve_item_id_for(server, canonical_path, hint)
+        cache[server.id] = result
+        return result
+
+    return resolve
 
 
 def _try_reuse_existing_bif(
@@ -268,6 +312,7 @@ def _try_reuse_existing_bif(
     canonical_path: str,
     out_dir: str,
     probe_bundle_factory,
+    resolve_item_id,
 ) -> int:
     """Unpack the first fresh ``.bif`` we can find from a publisher into ``out_dir``.
 
@@ -290,6 +335,9 @@ def _try_reuse_existing_bif(
         probe_bundle_factory: Zero-arg callable returning a placeholder
             :class:`BifBundle` for ``compute_output_paths`` (only the
             canonical_path is consulted in the Plex bundle code path).
+        resolve_item_id: Per-dispatch memoising resolver from
+            :func:`_make_item_id_resolver` so repeated calls across
+            sub-phases don't re-burn slow Jellyfin Pass 2 enumerations.
 
     Returns:
         Frame count when a reusable BIF was found and unpacked. Zero when
@@ -298,7 +346,7 @@ def _try_reuse_existing_bif(
     """
     for server, adapter, item_id_hint in publishers:
         try:
-            item_id = _resolve_item_id_for(server, canonical_path, item_id_hint)
+            item_id = resolve_item_id(server, item_id_hint)
             paths = adapter.compute_output_paths(probe_bundle_factory(), server, item_id)
         except Exception as exc:
             logger.debug(
@@ -754,11 +802,16 @@ def process_canonical_path(
             prefetched_bundle_metadata=prefetched,
         )
 
+    # Per-dispatch memoiser for server reverse-lookups. Without this,
+    # the "all_fresh" check, BIF-reuse probe, and publish loop each
+    # re-burn the same Jellyfin Pass-2 enumeration (~30s cold).
+    resolve_item_id = _make_item_id_resolver(canonical_path)
+
     if not regenerate:
         all_fresh = True
         for server, adapter, item_id_hint in publishers:
             try:
-                item_id = _resolve_item_id_for(server, canonical_path, item_id_hint)
+                item_id = resolve_item_id(server, item_id_hint)
                 paths = adapter.compute_output_paths(_probe_bundle(server.id), server, item_id)
             except Exception:
                 all_fresh = False
@@ -773,7 +826,7 @@ def process_canonical_path(
             )
             results = []
             for server, adapter, item_id_hint in publishers:
-                item_id = _resolve_item_id_for(server, canonical_path, item_id_hint)
+                item_id = resolve_item_id(server, item_id_hint)
                 paths = adapter.compute_output_paths(_probe_bundle(server.id), server, item_id)
                 results.append(
                     PublisherResult(
@@ -799,7 +852,7 @@ def process_canonical_path(
         # short-circuit check. Best-effort.
         for server, adapter, item_id_hint in publishers:
             try:
-                item_id = _resolve_item_id_for(server, canonical_path, item_id_hint)
+                item_id = resolve_item_id(server, item_id_hint)
                 clear_meta(adapter.compute_output_paths(_probe_bundle(server.id), server, item_id))
             except Exception:
                 continue
@@ -872,6 +925,7 @@ def process_canonical_path(
                 canonical_path,
                 unpack_dest,
                 _probe_bundle,
+                resolve_item_id,
             )
             if recovered:
                 tmp_path = unpack_dest
@@ -997,10 +1051,12 @@ def process_canonical_path(
 
         # Per-server bundle factory: every publisher gets its own BifBundle
         # populated with that server's pre-fetched bundle metadata (Plex
-        # only). Sharing one bundle across publishers would force a single
-        # prefetched_bundle_metadata value, defeating the per-server hint.
-        # Building a fresh dataclass per publisher is cheap.
-        def _bundle_for_server(server_id: str) -> BifBundle:
+        # only) and its display name (so generate_bif's log line can name
+        # the destination server). Sharing one bundle across publishers
+        # would force a single prefetched_bundle_metadata value, defeating
+        # the per-server hint. Building a fresh dataclass per publisher is
+        # cheap.
+        def _bundle_for_server(server: MediaServer) -> BifBundle:
             return BifBundle(
                 canonical_path=canonical_path,
                 frame_dir=Path(tmp_path),
@@ -1009,7 +1065,8 @@ def process_canonical_path(
                 width=gen_width,
                 height=180,
                 frame_count=frame_count,
-                prefetched_bundle_metadata=_bundle_meta_by_server.get(server_id, ()),
+                prefetched_bundle_metadata=_bundle_meta_by_server.get(server.id, ()),
+                server_display_name=server.name,
             )
 
         # Tag each publisher's result with where its frames came from so
@@ -1021,18 +1078,20 @@ def process_canonical_path(
 
         results: list[PublisherResult] = []
         for server, adapter, item_id_hint in publishers:
-            item_id = _resolve_item_id_for(server, canonical_path, item_id_hint)
+            item_id = resolve_item_id(server, item_id_hint)
             outcome = _publish_one(
                 server,
                 adapter,
-                _bundle_for_server(server.id),
+                _bundle_for_server(server),
                 item_id,
                 skip_if_exists=not regenerate,
                 frame_source=upstream_frame_source,
             )
             # One INFO line per publisher so an op debugging "which
             # server got the BIF and which didn't?" can scan the log
-            # by canonical_path.
+            # by canonical_path. ``output`` makes the destination
+            # explicit on the same line — no need to cross-reference
+            # the preceding "Generated BIF file:" line.
             log_fn = logger.info if outcome.status is PublisherStatus.PUBLISHED else logger.warning
             if outcome.status in (
                 PublisherStatus.SKIPPED_OUTPUT_EXISTS,
@@ -1041,11 +1100,12 @@ def process_canonical_path(
             ):
                 log_fn = logger.info  # skipped is normal, not an error
             log_fn(
-                "Publisher result: server={} adapter={} status={} item_id={} message={!r}",
+                "Publisher result: server={} adapter={} status={} item_id={} output={} message={!r}",
                 server.name,
                 adapter.name,
                 outcome.status.value,
                 item_id or "-",
+                str(outcome.output_paths[0]) if outcome.output_paths else "-",
                 outcome.message,
             )
             results.append(outcome)

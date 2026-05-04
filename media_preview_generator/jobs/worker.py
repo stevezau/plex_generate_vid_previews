@@ -1538,21 +1538,24 @@ class WorkerPool:
             # Mark that FFmpeg has started outputting progress
             worker.ffmpeg_started = True
 
-            # Emit periodic progress logs every 5 seconds
+            # Emit periodic progress logs every 5 seconds.
+            # Read worker.speed (the last-known-good value, kept across
+            # FFmpeg "speed=N/A" lines) rather than the callback's
+            # ``speed`` parameter so the throttled log doesn't print
+            # "0.0x" the moment FFmpeg emits an unmeasurable line.
             current_time = time.time()
             if current_time - worker.last_verbose_log_time >= 5.0:
                 worker.last_verbose_log_time = current_time
-                speed_display = speed if speed else "0.0x"
                 if worker.worker_type == "GPU":
                     logger.info(
                         "[GPU {}]: {} - {}% (speed={})",
                         worker.gpu_index,
                         worker.media_title,
                         progress_percent,
-                        speed_display,
+                        worker.speed,
                     )
                 else:
-                    logger.info("[CPU]: {} - {}% (speed={})", worker.media_title, progress_percent, speed_display)
+                    logger.info("[CPU]: {} - {}% (speed={})", worker.media_title, progress_percent, worker.speed)
 
     def shutdown(self) -> None:
         """Shutdown all workers gracefully."""

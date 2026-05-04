@@ -49,6 +49,12 @@ class BifBundle:
     # Empty tuple for non-Plex adapters and for paths that didn't come
     # from a fresh enumeration (e.g. Sonarr/Radarr webhooks).
     prefetched_bundle_metadata: tuple[tuple[str, str], ...] = ()
+    # Owning server's display name, threaded through purely for log
+    # attribution in the BIF packing helper (``generate_bif`` prefixes its
+    # "Generated BIF file:" line with ``[server_display_name]`` so an op
+    # reading the log can tell which server's BIF was just written without
+    # cross-referencing the next "Publisher result:" line).
+    server_display_name: str | None = None
 
 
 class OutputAdapter(ABC):

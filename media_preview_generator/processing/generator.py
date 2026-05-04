@@ -556,13 +556,21 @@ def parse_ffmpeg_progress_line(line: str, total_duration: float, progress_callba
                 speed_val = float(speed_match.group(1)) if speed_match else 0
                 remaining_time = remaining_media / speed_val if speed_val > 0 else remaining_media
 
-            # Call progress callback with all FFmpeg data
+            # Call progress callback with all FFmpeg data.
+            #
+            # Pass speed as ``None`` (not "0.0x") when FFmpeg emitted
+            # ``speed=N/A`` — common during hwaccel warm-up and on very
+            # fast runs where FFmpeg's measurement window can't resolve
+            # a number. The downstream worker keeps its last-known-good
+            # speed when the callback receives None; substituting "0.0x"
+            # here would clobber that and freeze the UI display at 0.0x
+            # for the rest of the run.
             if progress_callback:
                 progress_callback(
                     progress_percent,
                     current_time,
                     total_duration,
-                    speed or "0.0x",
+                    speed,
                     remaining_time,
                     frame,
                     fps,

@@ -132,7 +132,7 @@ class PlexBundleAdapter(OutputAdapter):
         generate_bif(
             str(index_bif),
             str(bundle.frame_dir),
-            BifIntervalConfig(self._frame_interval),
+            BifIntervalConfig(self._frame_interval, server_display_name=bundle.server_display_name),
         )
         logger.debug("Plex BIF written to {}", index_bif)
 
@@ -197,11 +197,13 @@ class PlexBundleAdapter(OutputAdapter):
 class BifIntervalConfig:
     """Minimal shim exposing :attr:`plex_bif_frame_interval` for ``generate_bif``.
 
-    ``generate_bif`` consumes only this one attribute from its config
-    parameter; rather than passing a full :class:`Config` object we hand it
-    this tiny adapter so the BIF packing helper can be reused without forcing
-    callers to materialise an entire config.
+    ``generate_bif`` consumes only ``plex_bif_frame_interval`` and (optionally)
+    ``server_display_name`` from its config parameter; rather than passing a
+    full :class:`Config` object we hand it this tiny adapter so the BIF
+    packing helper can be reused without forcing callers to materialise an
+    entire config.
     """
 
-    def __init__(self, frame_interval: int) -> None:
+    def __init__(self, frame_interval: int, *, server_display_name: str | None = None) -> None:
         self.plex_bif_frame_interval = int(frame_interval)
+        self.server_display_name = server_display_name
