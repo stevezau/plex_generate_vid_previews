@@ -1548,11 +1548,9 @@
 
         const r = await api('GET', `/api/servers/${encodeURIComponent(serverId)}/vendor-extraction/status`);
         if (!r.ok || !r.data) {
-            // Probe failed (server unreachable) — fall back to the
-            // legacy "show Disable as primary, Re-enable as link"
-            // pair so the user can still take action manually.
+            // Probe failed — show both buttons so the user can still act manually.
             disableBtn.classList.remove('d-none');
-            enableBtn.classList.remove('d-none');
+            enableBtn.className = 'btn btn-sm btn-outline-secondary';
             if (stateMsg) { stateMsg.className = 'small text-warning'; stateMsg.textContent = 'Could not check current state — try Test Connection above.'; }
             return;
         }
@@ -1574,11 +1572,9 @@
             disableBtn.disabled = false;
             disableBtn.innerHTML = '<i class="bi bi-stop-circle me-1"></i>Disable on this server';
         } else {
-            // Every library is at the recommended state. Show success
-            // copy in place of the Disable CTA + a tucked-away
-            // Re-enable link for the rare revert.
+            // All libraries at recommended state — hide Disable, keep Re-enable available for revert.
             disableBtn.classList.add('d-none');
-            enableBtn.classList.remove('d-none');
+            enableBtn.className = 'btn btn-sm btn-outline-secondary';
             enableBtn.disabled = false;
             enableBtn.innerHTML = 'Re-enable';
             if (stateMsg) {
