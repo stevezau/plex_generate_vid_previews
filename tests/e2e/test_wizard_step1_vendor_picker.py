@@ -15,6 +15,7 @@ import pytest
 from playwright.sync_api import Page, expect
 
 from ._mocks import mock_setup_skip
+from .conftest import accept_app_confirm
 
 
 @pytest.fixture
@@ -95,8 +96,9 @@ class TestSkipSetup:
         wizard_page.goto(f"{app_url_wizard}/setup")
         wizard_page.wait_for_load_state("domcontentloaded")
 
-        # Auto-confirm the JS confirm() dialog.
-        wizard_page.on("dialog", lambda d: d.accept())
+        # Skip uses appConfirm (Bootstrap modal), not window.confirm. Click
+        # the modal's OK button to actually fire the POST.
         wizard_page.locator("#skipSetupBtn").click()
+        accept_app_confirm(wizard_page)
         wizard_page.wait_for_url("**/servers", timeout=5000)
         assert called, "POST /api/setup/skip was never called"

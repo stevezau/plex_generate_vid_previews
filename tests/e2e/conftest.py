@@ -208,6 +208,24 @@ def wizard_page(page: Page, context: BrowserContext, app_url_wizard: str, sessio
 
 
 # ---------------------------------------------------------------------------
+# UI helpers
+# ---------------------------------------------------------------------------
+
+
+def accept_app_confirm(page: Page, timeout: int = 3000) -> None:
+    """Click the in-app ``appConfirm`` Bootstrap modal's OK button.
+
+    The app uses a custom modal (``#appConfirmModal``) instead of the
+    native ``window.confirm()`` dialog, so ``page.on('dialog', ...)`` is
+    a no-op for those flows. Tests that trigger a confirm-required
+    action must call this helper after the click that opens the modal.
+    """
+    btn = page.locator("#appConfirmModalOkBtn")
+    btn.wait_for(state="visible", timeout=timeout)
+    btn.click()
+
+
+# ---------------------------------------------------------------------------
 # Browser config
 # ---------------------------------------------------------------------------
 

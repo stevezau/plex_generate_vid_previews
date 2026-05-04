@@ -15,6 +15,7 @@ from ._mocks import (
     mock_token_regenerate,
     mock_token_set,
 )
+from .conftest import accept_app_confirm
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -100,11 +101,12 @@ class TestSettingsAuth:
         authed_page.wait_for_load_state("domcontentloaded")
 
         # Settings page uses customAuthToken + customAuthTokenConfirm.
-        # Auto-confirm the "log out all sessions" prompt.
-        authed_page.on("dialog", lambda d: d.accept())
+        # The "log out all sessions" prompt is an appConfirm modal — click
+        # its OK button after triggering setCustomToken().
         authed_page.locator("#customAuthToken").fill("brand-new-tok-1")
         authed_page.locator("#customAuthTokenConfirm").fill("brand-new-tok-1")
         authed_page.evaluate("setCustomToken()")
+        accept_app_confirm(authed_page)
         authed_page.wait_for_timeout(500)
         assert captured, "POST /api/token/set never fired"
 
@@ -115,12 +117,13 @@ class TestSettingsAuth:
         mock_settings_backups(authed_page)
         capture_settings_save(authed_page)
         called = mock_token_regenerate(authed_page)
-        authed_page.on("dialog", lambda d: d.accept())  # confirm pop-up
         authed_page.goto(f"{app_url}/settings")
         authed_page.wait_for_load_state("domcontentloaded")
 
-        # Direct invoke to bypass any visibility/scroll issues.
+        # Direct invoke to bypass any visibility/scroll issues. The confirm
+        # is an appConfirm modal, not native window.confirm.
         authed_page.evaluate("regenerateToken()")
+        accept_app_confirm(authed_page)
         authed_page.wait_for_timeout(500)
         assert called, "POST /api/token/regenerate never fired"
 
@@ -140,12 +143,13 @@ class TestSettingsBackupsPanel:
 
     def test_restore_specific_backup_posts_filename(self, settings_page: Page) -> None:
         captured = capture_settings_backups_restore(settings_page)
-        settings_page.on("dialog", lambda d: d.accept())
         # D17 — the dropdown defaults to the first <option> (the newest
         # 20260201-100000 timestamp from the default mock). The lone
         # "Restore selected" button reads the select's value, so a
-        # plain click on it posts the newest backup filename.
+        # plain click on it posts the newest backup filename. Restore
+        # is gated by an appConfirm modal — accept it to fire the POST.
         settings_page.locator("#backupRestorePanel button:has-text('Restore')").first.click()
+        accept_app_confirm(settings_page)
         settings_page.wait_for_timeout(500)
         assert captured, "POST /api/settings/backups/restore never fired"
         assert captured[0]["file"] == "settings.json"

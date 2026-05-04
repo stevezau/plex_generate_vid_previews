@@ -53,9 +53,11 @@ class TestServerHealthPill:
         pill = authed_page.locator(".server-health-pill").first
         expect(pill).to_be_visible(timeout=3000)
         expect(pill).to_contain_text("issue")
-        # Critical issues paint the pill red (bg-danger).
+        # Critical issues paint the pill red. The pill renders as a
+        # Bootstrap button now, so the colour is conveyed by ``btn-danger``
+        # (button styling) rather than ``bg-danger`` (background utility).
         pill_class = pill.get_attribute("class") or ""
-        assert "bg-danger" in pill_class, f"expected critical pill colour, got class={pill_class!r}"
+        assert "btn-danger" in pill_class, f"expected critical pill colour, got class={pill_class!r}"
 
     def test_health_pill_hidden_when_all_good(self, authed_page: Page, app_url: str) -> None:
         """Regression of the older 'button always visible even after fix'
