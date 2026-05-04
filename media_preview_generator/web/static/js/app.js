@@ -1977,6 +1977,19 @@ function updateJobProgress(jobId, progress) {
     // DOM is ready — clear any pending cache for this job.
     delete _pendingProgress[jobId];
 
+    // While the worker is sleeping out a retry backoff it emits one
+    // job_progress event per tick (percent=0, current_item="Retry starting
+    // in Ns..."). Mutating the bar/labels in place from those events
+    // overwrites the proper retry-waiting card the renderer just built —
+    // the card visibly flips between the amber countdown and a stale
+    // "0.0% / Retry starting in Ns / Items: 0 / ?" twice a second.
+    // The per-second _updateElapsedTimers ticker already keeps the
+    // countdown bar + label live, so this in-place update is redundant
+    // for retry-waiting jobs. Skip and let the next poll redraw.
+    if (progress && progress.retry_eta && new Date(progress.retry_eta).getTime() > Date.now() - 1500) {
+        return;
+    }
+
     const percent = progress.percent.toFixed(1);
     progressBar.style.width = `${percent}%`;
     progressBar.textContent = `${percent}%`;
