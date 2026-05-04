@@ -261,6 +261,54 @@ class TestSafeResolveWithin:
         result = _safe_resolve_within(str(tmp_path / "sub" / ".." / "sub" / "x.mkv"), str(tmp_path))
         assert result is not None, "in-root path with redundant '..' segment must be allowed after normalisation"
 
+    def test_prefix_confusion_with_sibling_path_rejected(self, tmp_path):
+        """A path that shares the allowed_root's name as a PREFIX but is in
+        a sibling directory must be rejected.
+
+        Classic security boundary bug — without the trailing separator
+        in the startswith check (``root_real + os.sep`` at _helpers.py
+        line 88), an allowed_root of ``/data`` would let ``/data-attacker``
+        through because ``"/data-attacker".startswith("/data")`` is True.
+        Production correctly appends the os.sep to defeat this; the
+        test pins it so a refactor that drops the sep is caught loudly.
+        """
+        from media_preview_generator.web.routes._helpers import _safe_resolve_within
+
+        # Build sibling: tmp_path is /tmp/.../X; sibling is /tmp/.../X-evil
+        sibling = tmp_path.parent / (tmp_path.name + "-evil")
+        sibling.mkdir()
+        (sibling / "secret.txt").write_text("secret")
+
+        # /tmp/.../X-evil/secret.txt is OUTSIDE /tmp/.../X — must reject
+        # despite the shared name prefix.
+        result = _safe_resolve_within(str(sibling / "secret.txt"), str(tmp_path))
+        assert result is None, (
+            f"prefix confusion: {sibling}/secret.txt was allowed under {tmp_path} — "
+            "the trailing-separator guard at _helpers.py is missing or broken"
+        )
+
+    def test_nonexistent_path_inside_root_still_resolves(self, tmp_path):
+        """A path that doesn't exist on disk yet must still resolve when it
+        WOULD be inside allowed_root — webhook routes are called for
+        files Sonarr/Radarr just downloaded, and the BIF write path
+        always references not-yet-existing output filenames.
+
+        ``os.path.realpath`` of a nonexistent path returns the path
+        as-given (with .. collapsed). The startswith guard should still
+        pass cleanly. A regression that started requiring the path to
+        exist would break every fresh-download webhook.
+        """
+        from media_preview_generator.web.routes._helpers import _safe_resolve_within
+
+        not_yet = tmp_path / "subdir" / "fresh_download.mkv"
+        # Don't create it — that's the whole point.
+        result = _safe_resolve_within(str(not_yet), str(tmp_path))
+        assert result is not None, (
+            "a nonexistent in-root path must still resolve — Sonarr webhook fires before "
+            "the file lands locally; we still need to map+queue it"
+        )
+        assert str(not_yet) in result or str(not_yet.parent) in result
+
 
 class TestIsWindows:
     """Test Windows platform detection."""

@@ -155,6 +155,54 @@ class TestCacheValidity:
         media.unlink()
         assert cache.get(str(media)) is None
 
+    def test_sub_second_mtime_drift_still_hits(self, tmp_path):
+        """A 0.5s mtime drift counts as the SAME file — within the 1.0s
+        tolerance window in :meth:`get`.
+
+        Why this matters: NFS, SMB, and FAT filesystems all round mtime
+        to whole seconds. Without the ``> 1.0`` slack at frame_cache.py
+        line ~177, every NFS-backed library would see false invalidations
+        whenever any non-rounded code path touched the file. A regression
+        tightening the comparison to strict equality would silently
+        thrash the cache for the whole NFS user base.
+        """
+        cache = FrameCache(tmp_path / "cache")
+        media = tmp_path / "nfs_like.mkv"
+        media.write_bytes(b"x")
+        slot = cache.frame_dir_for(str(media))
+        _populate_real_jpgs(slot, count=1)
+
+        # Put with the actual mtime, then nudge the cached mtime by 0.5s
+        # to simulate the cross-filesystem drift the tolerance protects.
+        cache.put(str(media), frame_dir=slot, frame_count=1)
+        key = list(cache._entries.keys())[0]
+        original = cache._entries[key]
+        cache._entries[key] = type(original)(
+            canonical_path=original.canonical_path,
+            frame_dir=original.frame_dir,
+            frame_count=original.frame_count,
+            source_mtime=original.source_mtime - 0.5,  # 0.5s off — within tolerance
+            cached_at=original.cached_at,
+        )
+
+        assert cache.get(str(media)) is not None, (
+            "0.5s mtime drift should be tolerated — NFS rounding would otherwise thrash the cache"
+        )
+
+        # And confirm the boundary: a 1.5s drift IS treated as a real change.
+        cache._entries[key] = type(original)(
+            canonical_path=original.canonical_path,
+            frame_dir=original.frame_dir,
+            frame_count=original.frame_count,
+            source_mtime=original.source_mtime - 1.5,  # past tolerance
+            cached_at=original.cached_at,
+        )
+        # Re-populate slot since the previous get() may have evicted it
+        # (it shouldn't have, but be defensive — the boundary check is
+        # the assertion that matters).
+        _populate_real_jpgs(slot, count=1)
+        assert cache.get(str(media)) is None, "1.5s drift should be treated as a real source change"
+
 
 class TestLruEviction:
     def test_oldest_entry_evicted_when_full(self, tmp_path):
@@ -250,6 +298,85 @@ class TestLruEviction:
         # …but the lock for the same path is still the same object —
         # i.e. lock identity preserved across the eviction.
         assert cache.generation_lock("/a.mkv") is lock_a
+
+    def test_generation_lock_actually_serializes_same_path(self, tmp_path):
+        """Two threads asking for ``generation_lock(P)`` get the SAME lock so
+        only one FFmpeg pass runs even when webhooks for path P arrive
+        simultaneously.
+
+        Why this matters: without serialisation, a Plex webhook + a Sonarr
+        webhook arriving in the same 50 ms window both miss the cache,
+        both call ``generate_images``, and the user pays 2x. The
+        per-path lock in :meth:`generation_lock` is the only thing
+        preventing that race. The existing eviction test proves lock
+        IDENTITY survives, but never exercises the actual mutual-exclusion
+        behaviour. This test does — thread B must block while A holds
+        the lock, then enter once A releases.
+        """
+        import threading
+
+        cache = FrameCache(tmp_path / "cache")
+        lock = cache.generation_lock("/data/movies/x.mkv")
+
+        a_acquired = threading.Event()
+        a_release = threading.Event()
+        b_acquired = threading.Event()
+
+        def thread_a():
+            with lock:
+                a_acquired.set()
+                # Hold the lock until the test releases us.
+                a_release.wait(timeout=5)
+
+        def thread_b():
+            # B asks for the SAME canonical path → SAME lock.
+            with cache.generation_lock("/data/movies/x.mkv"):
+                b_acquired.set()
+
+        ta = threading.Thread(target=thread_a)
+        tb = threading.Thread(target=thread_b)
+        ta.start()
+        a_acquired.wait(timeout=2), "thread A must acquire its lock"
+        # Start B AFTER A has the lock.
+        tb.start()
+        # Give B a generous chance to acquire — it MUST NOT, because A
+        # is still holding the same lock object.
+        assert not b_acquired.wait(timeout=0.3), (
+            "thread B acquired the per-path generation lock while A still held it — "
+            "concurrent FFmpeg passes would race; the lock isn't serialising"
+        )
+        # Release A; B should immediately enter.
+        a_release.set()
+        assert b_acquired.wait(timeout=2), "thread B never acquired after A released — lock didn't hand off"
+        ta.join(timeout=2)
+        tb.join(timeout=2)
+
+    def test_generation_lock_distinct_paths_do_not_serialize(self, tmp_path):
+        """Different canonical paths get DIFFERENT locks so two unrelated
+        webhooks (one for /movies/A.mkv, one for /movies/B.mkv) can both
+        run FFmpeg in parallel. A regression that returned a global lock
+        would serialise the whole worker pool to one extraction at a
+        time — devastating for throughput.
+        """
+        import threading
+
+        cache = FrameCache(tmp_path / "cache")
+        lock_a = cache.generation_lock("/data/movies/a.mkv")
+
+        b_acquired = threading.Event()
+
+        def thread_b():
+            with cache.generation_lock("/data/movies/b.mkv"):
+                b_acquired.set()
+
+        with lock_a:
+            tb = threading.Thread(target=thread_b)
+            tb.start()
+            # B is on a DIFFERENT path → must NOT block on A's lock.
+            assert b_acquired.wait(timeout=2), (
+                "thread B blocked even though it asked for a different path — locks aren't per-path"
+            )
+            tb.join(timeout=2)
 
 
 class TestSingletonAccessor:
@@ -500,6 +627,104 @@ class TestConfigurableFrameReuse:
             ttl, disk = _read_frame_reuse_setting()
         assert ttl == 120 * 60
         assert disk == 4096
+
+    def test_settings_treats_zero_ttl_as_missing_and_uses_default(self):
+        """ttl_minutes=0 in settings is treated as "use default" (60 min),
+        NOT as a literal 0 that would make every cache lookup an instant
+        miss.
+
+        The defence is implicit in ``int(block.get("ttl_minutes", 60) or 60)``
+        — the ``or 60`` short-circuit eats any falsy value (0, None, "")
+        BEFORE the ``max(1, ttl_min)`` clamp on the next line ever sees
+        it. Net effect: 0 → 60 minutes (the default), never 0 → 1 minute
+        (the clamp floor). The comment on the next line is misleading —
+        the clamp is unreachable for 0.
+
+        Why this matters: a user typing 0 in settings.json would otherwise
+        turn the entire cache into a no-op, silently doubling FFmpeg load.
+        Either defence (default fallback OR clamp) prevents that; this
+        test pins which one production actually uses so a future
+        refactor doesn't accidentally collapse 0 to 0.
+        """
+        from unittest.mock import patch as _patch
+
+        from media_preview_generator.processing.frame_cache import (
+            _DEFAULT_TTL_SECONDS,
+            _read_frame_reuse_setting,
+        )
+
+        with _patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm:
+            mock_sm.return_value.get.return_value = {"enabled": True, "ttl_minutes": 0}
+            ttl, _ = _read_frame_reuse_setting()
+        assert ttl == _DEFAULT_TTL_SECONDS, (
+            f"ttl_minutes=0 must produce default TTL ({_DEFAULT_TTL_SECONDS}s), got {ttl}s — "
+            f"a regression that returned 0s would silently disable the cache"
+        )
+
+        # Same contract for None and "" — anything falsy goes to default.
+        for falsy in (None, ""):
+            with _patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm:
+                mock_sm.return_value.get.return_value = {"enabled": True, "ttl_minutes": falsy}
+                ttl, _ = _read_frame_reuse_setting()
+            assert ttl == _DEFAULT_TTL_SECONDS, f"ttl_minutes={falsy!r} should fall back to default; got {ttl}s"
+
+    def test_settings_clamps_pathological_small_disk_cap(self):
+        """max_cache_disk_mb < 64 is clamped to 64 MB — protects users
+        from accidentally setting a sub-1-frame disk cap that would
+        evict every entry on every put. Mirrors the TTL clamp; same
+        rationale.
+        """
+        from unittest.mock import patch as _patch
+
+        from media_preview_generator.processing.frame_cache import _read_frame_reuse_setting
+
+        with _patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm:
+            mock_sm.return_value.get.return_value = {
+                "enabled": True,
+                "ttl_minutes": 60,
+                "max_cache_disk_mb": 1,
+            }
+            _, disk = _read_frame_reuse_setting()
+        assert disk == 64, f"max_cache_disk_mb=1 must be clamped to floor of 64, got {disk}"
+
+    def test_settings_returns_defaults_when_block_not_a_dict(self):
+        """Garbage in settings (e.g. ``frame_reuse: "yes"``) falls back to
+        defaults instead of crashing. Same defensive contract the docstring
+        promises at frame_cache.py line ~330.
+        """
+        from unittest.mock import patch as _patch
+
+        from media_preview_generator.processing.frame_cache import (
+            _DEFAULT_MAX_DISK_MB,
+            _DEFAULT_TTL_SECONDS,
+            _read_frame_reuse_setting,
+        )
+
+        with _patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm:
+            mock_sm.return_value.get.return_value = "not-a-dict"
+            ttl, disk = _read_frame_reuse_setting()
+        assert ttl == _DEFAULT_TTL_SECONDS
+        assert disk == _DEFAULT_MAX_DISK_MB
+
+    def test_settings_returns_defaults_when_manager_raises(self):
+        """If the settings manager isn't reachable (early-boot, test
+        contexts), defaults are returned silently. The cache must keep
+        working even when the settings store is unavailable — otherwise
+        early-init dispatchers would crash with confusing errors.
+        """
+        from unittest.mock import patch as _patch
+
+        from media_preview_generator.processing.frame_cache import (
+            _DEFAULT_MAX_DISK_MB,
+            _DEFAULT_TTL_SECONDS,
+            _read_frame_reuse_setting,
+        )
+
+        with _patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm:
+            mock_sm.side_effect = RuntimeError("no settings yet")
+            ttl, disk = _read_frame_reuse_setting()
+        assert ttl == _DEFAULT_TTL_SECONDS
+        assert disk == _DEFAULT_MAX_DISK_MB
 
     def test_disk_cap_evicts_when_over(self, tmp_path):
         """Disk cap LRU-evicts oldest entries (oldest-first) until total <= cap.

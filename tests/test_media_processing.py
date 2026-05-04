@@ -3415,6 +3415,153 @@ class TestCancellation:
 
         assert mock_popen.call_count == 2
 
+    @patch("media_preview_generator.processing.generator.MediaInfo")
+    @patch("subprocess.Popen")
+    @patch("subprocess.run")
+    @patch("os.path.exists")
+    @patch("builtins.open", new_callable=mock_open)
+    @patch("time.sleep")
+    def test_cancel_after_pause_resumes_before_terminating(
+        self,
+        mock_sleep,
+        mock_file,
+        mock_exists,
+        mock_run,
+        mock_popen,
+        mock_mediainfo,
+        temp_dir,
+        mock_config,
+    ):
+        """Cancel while paused must SIGCONT BEFORE terminate(), otherwise the
+        SIGTERM is queued behind SIGSTOP and the FFmpeg process hangs forever.
+
+        Production handles this at ffmpeg_runner.py line ~485-491:
+        ``if paused_locally: proc.send_signal(SIGCONT) … proc.terminate()``.
+        Without this ordering, a user who clicks Pause then Cancel ends up
+        with FFmpeg silently stuck and the worker slot wedged for the rest
+        of the run. This test pins the ordering: SIGCONT MUST precede
+        terminate when the process was paused at the moment of cancel.
+        """
+        import signal as _signal
+
+        mock_run.return_value = MagicMock(returncode=0)
+        mock_info = MagicMock()
+        mock_info.video_tracks = [MagicMock(hdr_format=None)]
+        mock_mediainfo.parse.return_value = mock_info
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None  # never exits on its own
+        mock_proc.wait.return_value = None
+        mock_popen.return_value = mock_proc
+
+        mock_exists.return_value = False
+
+        # First call to pause_check is True (so SIGSTOP fires); subsequent
+        # calls are False (so we leave the pause-branch on the next loop).
+        # cancel_check fires True on the second iteration so we hit cancel
+        # while paused_locally is True.
+        pause_calls = {"n": 0}
+
+        def pause_check():
+            pause_calls["n"] += 1
+            return pause_calls["n"] == 1  # True only on first call
+
+        cancel_calls = {"n": 0}
+
+        def cancel_check():
+            cancel_calls["n"] += 1
+            return cancel_calls["n"] >= 2  # cancel on the second loop
+
+        with pytest.raises(CancellationError):
+            generate_images(
+                "/test/video.mp4",
+                temp_dir,
+                None,
+                None,
+                mock_config,
+                cancel_check=cancel_check,
+                pause_check=pause_check,
+            )
+
+        # Verify the SIGCONT-before-terminate ordering in the call stream.
+        sigcont_call_indices: list[int] = []
+        terminate_call_indices: list[int] = []
+        for idx, call in enumerate(mock_proc.method_calls):
+            if call[0] == "send_signal" and call[1] and call[1][0] == _signal.SIGCONT:
+                sigcont_call_indices.append(idx)
+            if call[0] == "terminate":
+                terminate_call_indices.append(idx)
+
+        assert sigcont_call_indices, (
+            "SIGCONT was never sent — paused FFmpeg can't receive SIGTERM and would hang forever"
+        )
+        assert terminate_call_indices, "terminate() was never called after cancel"
+        assert sigcont_call_indices[0] < terminate_call_indices[0], (
+            "SIGCONT must precede terminate(); otherwise SIGTERM queues behind SIGSTOP and FFmpeg hangs"
+        )
+
+    @patch("media_preview_generator.processing.generator.MediaInfo")
+    @patch("subprocess.Popen")
+    @patch("subprocess.run")
+    @patch("os.path.exists")
+    @patch("builtins.open", new_callable=mock_open)
+    @patch("time.sleep")
+    def test_cancel_falls_back_to_kill_when_terminate_times_out(
+        self,
+        mock_sleep,
+        mock_file,
+        mock_exists,
+        mock_run,
+        mock_popen,
+        mock_mediainfo,
+        temp_dir,
+        mock_config,
+    ):
+        """If FFmpeg ignores SIGTERM for 5s, we MUST escalate to SIGKILL.
+
+        Production at ffmpeg_runner.py line ~493-497:
+            try: proc.wait(timeout=5)
+            except subprocess.TimeoutExpired: proc.kill(); proc.wait()
+
+        Without this fallback, a stuck FFmpeg (e.g. blocked on broken
+        hardware decoder) leaks a worker slot and a GPU context until
+        the entire app restarts. This test pins the kill() escalation
+        so a refactor that drops the timeout/except branch is caught.
+        """
+        import subprocess as _subprocess
+
+        mock_run.return_value = MagicMock(returncode=0)
+        mock_info = MagicMock()
+        mock_info.video_tracks = [MagicMock(hdr_format=None)]
+        mock_mediainfo.parse.return_value = mock_info
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        # First wait() (after terminate) raises TimeoutExpired to force
+        # the kill escalation; second wait() (after kill) returns cleanly.
+        mock_proc.wait.side_effect = [_subprocess.TimeoutExpired(cmd="ffmpeg", timeout=5), None]
+        mock_popen.return_value = mock_proc
+
+        mock_exists.return_value = False
+
+        with pytest.raises(CancellationError):
+            generate_images(
+                "/test/video.mp4",
+                temp_dir,
+                None,
+                None,
+                mock_config,
+                cancel_check=lambda: True,
+            )
+
+        mock_proc.terminate.assert_called_once()
+        (
+            mock_proc.kill.assert_called_once(),
+            ("terminate() timed out → kill() escalation missing; FFmpeg would leak indefinitely"),
+        )
+        # And the wait() after kill MUST be called (otherwise we leak a zombie).
+        assert mock_proc.wait.call_count >= 2, "wait() must be called again after kill() to reap the zombie"
+
 
 class TestFailureScope:
     """Per-job failure scoping — verifies concurrent jobs can't cross-contaminate
