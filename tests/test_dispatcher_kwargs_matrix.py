@@ -84,8 +84,11 @@ def _drive_dispatcher(
     """Drive ``_run_full_scan_multi_server`` and return the captured
     ``process_canonical_path`` call's kwargs.
 
-    Returns ``(call_kwargs, server_cfg)`` so each cell-specific test can
-    assert on both.
+    Returns ``(call_kwargs, server_cfg, expected_registry, expected_config)``
+    so each cell-specific test can assert IDENTITY (not just truthiness)
+    on the registry + config kwargs. A regression that silently swapped
+    in a different registry/config would pass a truthy check but break
+    here.
     """
     # When the caller pins explicitly, the configured server id MUST match
     # the pin — otherwise _run_full_scan_multi_server filters it out before
@@ -108,6 +111,7 @@ def _drive_dispatcher(
     proc.list_canonical_paths.return_value = iter([item])
 
     settings_entry = {"id": server_id, "type": server_type.value, "enabled": True}
+    expected_config = _config(**(cfg_kwargs or {}))
 
     with (
         patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
@@ -120,13 +124,13 @@ def _drive_dispatcher(
         mock_process.return_value = MagicMock(publishers=[])
 
         _run_full_scan_multi_server(
-            _config(**(cfg_kwargs or {})),
+            expected_config,
             selected_gpus=[],
             server_id_filter=caller_pin,
         )
 
     mock_process.assert_called_once()
-    return mock_process.call_args.kwargs, cfg
+    return mock_process.call_args.kwargs, cfg, registry_mock, expected_config
 
 
 # ---------------------------------------------------------------------------
@@ -134,10 +138,21 @@ def _drive_dispatcher(
 # ---------------------------------------------------------------------------
 
 
-def _assert_common_kwargs_shape(kwargs: dict, *, expected_path: str = "/data/movies/x.mkv"):
+def _assert_common_kwargs_shape(
+    kwargs: dict,
+    *,
+    expected_path: str = "/data/movies/x.mkv",
+    expected_registry=None,
+    expected_config=None,
+):
     """Pin the kwargs that should be present + correctly shaped on every
     dispatcher call regardless of cell. A regression that drops ANY of
     these fails here, even before the cell-specific assertion.
+
+    When ``expected_registry`` / ``expected_config`` are provided, asserts
+    OBJECT IDENTITY (not just truthiness) — a regression that silently
+    constructed a fresh empty Config / Registry would pass a `is not None`
+    check but break here.
     """
     # canonical_path — must equal the item's canonical_path verbatim.
     assert kwargs.get("canonical_path") == expected_path, (
@@ -145,10 +160,24 @@ def _assert_common_kwargs_shape(kwargs: dict, *, expected_path: str = "/data/mov
         f"Pre-fix: a regression that mutated canonical_path mid-dispatch would skip the "
         f"freshness short-circuit and re-run FFmpeg unnecessarily."
     )
-    # registry — must be passed (truthy MagicMock from the helper).
-    assert kwargs.get("registry") is not None, "registry kwarg missing"
-    # config — must be passed.
-    assert kwargs.get("config") is not None, "config kwarg missing"
+    # registry — must be the same object the dispatcher was called with.
+    if expected_registry is not None:
+        assert kwargs.get("registry") is expected_registry, (
+            "registry kwarg identity drift — dispatcher passed a different object than expected. "
+            "A regression that silently constructed a fresh empty registry would publish to "
+            "zero servers (silent NO_OWNERS for every item)."
+        )
+    else:
+        assert kwargs.get("registry") is not None, "registry kwarg missing"
+    # config — must be the same object the dispatcher was called with.
+    if expected_config is not None:
+        assert kwargs.get("config") is expected_config, (
+            "config kwarg identity drift — dispatcher passed a different Config than expected. "
+            "A regression that silently constructed a fresh Config would lose user GPU/worker/path "
+            "settings and FFmpeg would run with defaults."
+        )
+    else:
+        assert kwargs.get("config") is not None, "config kwarg missing"
     # progress_callback — must be a callable so the worker UI ticks.
     pc = kwargs.get("progress_callback")
     assert callable(pc), f"progress_callback must be callable; got {pc!r}"
@@ -161,8 +190,8 @@ def _assert_common_kwargs_shape(kwargs: dict, *, expected_path: str = "/data/mov
 
 class TestPlexNoPinFansOut:
     def test_plex_no_caller_pin_forwards_server_id_filter_none(self):
-        kwargs, cfg = _drive_dispatcher(server_type=ServerType.PLEX, caller_pin=None)
-        _assert_common_kwargs_shape(kwargs)
+        kwargs, cfg, registry, config = _drive_dispatcher(server_type=ServerType.PLEX, caller_pin=None)
+        _assert_common_kwargs_shape(kwargs, expected_registry=registry, expected_config=config)
 
         assert kwargs.get("server_id_filter") is None, (
             f"Plex originator + no caller pin must fan out (server_id_filter=None); "
@@ -172,7 +201,7 @@ class TestPlexNoPinFansOut:
         )
 
     def test_regenerate_default_propagates_as_false(self):
-        kwargs, _ = _drive_dispatcher(server_type=ServerType.PLEX, caller_pin=None)
+        kwargs, _, registry, config = _drive_dispatcher(server_type=ServerType.PLEX, caller_pin=None)
         # regenerate kwarg pinned to False (audit P0.10 contract — also pinned
         # in test_full_scan_multi_server.py, but verified here at every cell).
         assert kwargs.get("regenerate") is False, (
@@ -180,7 +209,7 @@ class TestPlexNoPinFansOut:
         )
 
     def test_regenerate_true_propagates_when_config_set(self):
-        kwargs, _ = _drive_dispatcher(
+        kwargs, _, registry, config = _drive_dispatcher(
             server_type=ServerType.PLEX,
             caller_pin=None,
             cfg_kwargs={"regenerate": True},
@@ -195,8 +224,8 @@ class TestPlexNoPinFansOut:
 
 class TestPlexWithCallerPin:
     def test_plex_caller_pin_wins_over_originator_default(self):
-        kwargs, cfg = _drive_dispatcher(server_type=ServerType.PLEX, caller_pin="explicit-pin")
-        _assert_common_kwargs_shape(kwargs)
+        kwargs, cfg, registry, config = _drive_dispatcher(server_type=ServerType.PLEX, caller_pin="explicit-pin")
+        _assert_common_kwargs_shape(kwargs, expected_registry=registry, expected_config=config)
 
         assert kwargs.get("server_id_filter") == "explicit-pin", (
             f"Caller-supplied server_id_filter must always win for Plex originator; "
@@ -212,8 +241,8 @@ class TestPlexWithCallerPin:
 
 class TestEmbyNoPinScopes:
     def test_emby_no_caller_pin_scopes_to_originator(self):
-        kwargs, cfg = _drive_dispatcher(server_type=ServerType.EMBY, caller_pin=None)
-        _assert_common_kwargs_shape(kwargs)
+        kwargs, cfg, registry, config = _drive_dispatcher(server_type=ServerType.EMBY, caller_pin=None)
+        _assert_common_kwargs_shape(kwargs, expected_registry=registry, expected_config=config)
 
         assert kwargs.get("server_id_filter") == cfg.id, (
             f"Non-Plex originator + no caller pin must scope to the originator "
@@ -230,8 +259,8 @@ class TestEmbyNoPinScopes:
 
 class TestEmbyWithCallerPin:
     def test_emby_caller_pin_wins_over_originator_scope(self):
-        kwargs, cfg = _drive_dispatcher(server_type=ServerType.EMBY, caller_pin="emby-explicit")
-        _assert_common_kwargs_shape(kwargs)
+        kwargs, cfg, registry, config = _drive_dispatcher(server_type=ServerType.EMBY, caller_pin="emby-explicit")
+        _assert_common_kwargs_shape(kwargs, expected_registry=registry, expected_config=config)
 
         assert kwargs.get("server_id_filter") == "emby-explicit", (
             f"Caller pin must override originator scoping for Emby; got {kwargs.get('server_id_filter')!r}"
@@ -245,8 +274,8 @@ class TestEmbyWithCallerPin:
 
 class TestJellyfinNoPinScopes:
     def test_jellyfin_no_caller_pin_scopes_to_originator(self):
-        kwargs, cfg = _drive_dispatcher(server_type=ServerType.JELLYFIN, caller_pin=None)
-        _assert_common_kwargs_shape(kwargs)
+        kwargs, cfg, registry, config = _drive_dispatcher(server_type=ServerType.JELLYFIN, caller_pin=None)
+        _assert_common_kwargs_shape(kwargs, expected_registry=registry, expected_config=config)
 
         assert kwargs.get("server_id_filter") == cfg.id, (
             f"Jellyfin originator + no caller pin must scope to itself; got {kwargs.get('server_id_filter')!r}"
@@ -260,8 +289,8 @@ class TestJellyfinNoPinScopes:
 
 class TestJellyfinWithCallerPin:
     def test_jellyfin_caller_pin_wins(self):
-        kwargs, cfg = _drive_dispatcher(server_type=ServerType.JELLYFIN, caller_pin="jelly-explicit")
-        _assert_common_kwargs_shape(kwargs)
+        kwargs, cfg, registry, config = _drive_dispatcher(server_type=ServerType.JELLYFIN, caller_pin="jelly-explicit")
+        _assert_common_kwargs_shape(kwargs, expected_registry=registry, expected_config=config)
 
         assert kwargs.get("server_id_filter") == "jelly-explicit"
 
@@ -278,7 +307,7 @@ class TestItemFieldsPropagate:
     Plex roundtrip."""
 
     def test_item_id_by_server_hint_propagates(self):
-        kwargs, _ = _drive_dispatcher(
+        kwargs, _, registry, config = _drive_dispatcher(
             server_type=ServerType.PLEX,
             caller_pin=None,
             item_kwargs={"item_id_by_server": {"plex-only": "rk-12345"}},
@@ -288,7 +317,7 @@ class TestItemFieldsPropagate:
         )
 
     def test_item_id_by_server_none_when_unset(self):
-        kwargs, _ = _drive_dispatcher(server_type=ServerType.PLEX, caller_pin=None)
+        kwargs, _, registry, config = _drive_dispatcher(server_type=ServerType.PLEX, caller_pin=None)
         # Empty dict on ProcessableItem → coerced to None at call site
         # (orchestrator line 716: ``item.item_id_by_server or None``).
         assert kwargs.get("item_id_by_server") is None, (
@@ -297,7 +326,7 @@ class TestItemFieldsPropagate:
         )
 
     def test_bundle_metadata_by_server_propagates(self):
-        kwargs, _ = _drive_dispatcher(
+        kwargs, _, registry, config = _drive_dispatcher(
             server_type=ServerType.PLEX,
             caller_pin=None,
             item_kwargs={"bundle_metadata_by_server": {"plex-only": ("hash", 0.123)}},
@@ -319,7 +348,7 @@ class TestGpuKwargsPropagate:
     """
 
     def test_gpu_none_when_no_selected_gpus(self):
-        kwargs, _ = _drive_dispatcher(server_type=ServerType.PLEX, caller_pin=None)
+        kwargs, _, registry, config = _drive_dispatcher(server_type=ServerType.PLEX, caller_pin=None)
         # When no GPUs selected, dispatcher uses CPU fallback (gpu=None, device=None).
         assert kwargs.get("gpu") is None, f"gpu must be None when no GPUs selected; got {kwargs.get('gpu')!r}"
         assert kwargs.get("gpu_device_path") is None
@@ -355,8 +384,8 @@ def test_full_pin_matrix(server_type, caller_pin, expected_forward):
     case where adding a new branch (e.g. a new ServerType) silently
     breaks one cell while leaving the others passing.
     """
-    kwargs, cfg = _drive_dispatcher(server_type=server_type, caller_pin=caller_pin)
-    _assert_common_kwargs_shape(kwargs)
+    kwargs, cfg, registry, config = _drive_dispatcher(server_type=server_type, caller_pin=caller_pin)
+    _assert_common_kwargs_shape(kwargs, expected_registry=registry, expected_config=config)
     assert kwargs.get("server_id_filter") == expected_forward, (
         f"Cell ({server_type.value}, caller_pin={caller_pin!r}): expected "
         f"server_id_filter={expected_forward!r}, got {kwargs.get('server_id_filter')!r}"

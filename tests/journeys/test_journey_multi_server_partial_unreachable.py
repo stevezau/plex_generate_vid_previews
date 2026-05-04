@@ -181,8 +181,19 @@ def test_one_publisher_unreachable_others_succeed_aggregate_is_published(mock_co
 
     # The Emby row's message must mention the connection error so an op
     # diagnosing "why didn't Emby get the preview?" can find the cause.
+    # A bare ``assert emby_row.message`` (truthy) would pass even for
+    # useless content like "OK" or "all good" — strengthen so the message
+    # carries diagnostic context.
     emby_row = next(p for p in result.publishers if p.server_id == "emby-down")
     assert emby_row.message, "FAILED publisher must include a message"
+    msg_lower = emby_row.message.lower()
+    # Production wraps the publish exception via _publish_one's catch
+    # block at multi_server.py:602 with "Could not write preview file:".
+    assert "could not write" in msg_lower or "preview file" in msg_lower, (
+        f"FAILED message should explain WHAT went wrong (write failure context); "
+        f"got {emby_row.message!r}. A user reading the per-server pill needs to "
+        f"know it's a write/network problem, not a generic 'failed'."
+    )
 
 
 def test_all_publishers_fail_aggregate_is_failed(mock_config, tmp_path):

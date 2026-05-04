@@ -192,11 +192,16 @@ class TestSonarrWebhookToJobJourney:
             f"Pre-fix: a regression that batched paths under a different key would silently never run."
         )
 
-        # Job row exists with the Sonarr-derived clean title.
+        # Job row exists with the Sonarr-derived clean title. Strict
+        # equality (NOT substring "X in y") so a regression that produced
+        # "The Show ... extra junk ... S01E05" or wrapped the title in
+        # noise wouldn't slip through.
         job = get_job_manager().get_job(job_id)
         assert job is not None, f"Job {job_id} missing from job manager"
-        assert "The Show" in job.library_name and "S01E05" in job.library_name, (
-            f"Job library_name should be Sonarr-derived 'The Show S01E05'; got {job.library_name!r}"
+        assert job.library_name == "The Show S01E05", (
+            f"Job library_name must be the Sonarr-derived 'The Show S01E05' verbatim; "
+            f"got {job.library_name!r}. Substring drift would still show 'The Show' in the "
+            f"Jobs UI but with messy noise — the title-cleaner contract is exact equality."
         )
         # Source attribution — used by the Jobs UI to render the Sonarr chip.
         assert job.config.get("source") == "sonarr", (
