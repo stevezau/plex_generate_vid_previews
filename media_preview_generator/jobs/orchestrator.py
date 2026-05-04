@@ -1396,43 +1396,49 @@ def _run_webhook_paths_phase(
     # Vendor-webhook short-circuit: when the inbound payload supplied
     # ``{server_id: item_id}`` hints (Plex/Emby/Jellyfin native webhooks),
     # the canonical path is already known to belong to those servers —
-    # there's nothing to learn from a Plex resolution pass. Bypass it,
-    # call the multi-server dispatcher directly, and forward the hints so
-    # ``process_canonical_path`` can skip its reverse-lookup step too.
+    # there's nothing to learn from a Plex resolution pass. Build
+    # ProcessableItems carrying the hint and run them through the same
+    # ``dispatch_items`` worker pool the Plex-resolved path uses, so the
+    # job gets real GPU/CPU worker rows in the Jobs UI instead of
+    # silently executing on the orchestrator thread.
     hints = getattr(config, "webhook_item_id_hints", None) or None
     if hints:
+        from ..processing.types import ProcessableItem as _PI
+
         if progress_callback:
             path_count = len(config.webhook_paths)
             progress_callback(0, 0, f"Dispatching {path_count} pre-resolved path(s)…")
         _log_webhook_owning_servers(config, config.webhook_paths)
-        try:
-            counts = _dispatch_webhook_paths_multi_server(
-                config,
-                progress_callback=progress_callback,
-                cancel_check=cancel_check,
-                pause_check=pause_check,
-                job_id=job_id,
-                paths=list(config.webhook_paths or []),
-                item_id_hints=hints,
+
+        webhook_items: list[_PI] = []
+        for path in config.webhook_paths or []:
+            per_path = hints.get(path) or {}
+            # Pick a server_id for the ProcessableItem. The first hint key
+            # is the originating vendor (Plex/Emby/Jellyfin) — empty when
+            # callers pass paths with no hint, in which case the orchestrator
+            # will still walk every owning server inside process_canonical_path.
+            server_id = next(iter(per_path), "")
+            webhook_items.append(
+                _PI(
+                    canonical_path=path,
+                    server_id=server_id,
+                    item_id_by_server=dict(per_path),
+                    title=os.path.basename(path),
+                    library_id=None,
+                )
             )
-            for k, v in (counts or {}).items():
+
+        if not webhook_items:
+            logger.info("Vendor webhook short-circuit fired but produced no items — skipping dispatch.")
+        else:
+            result = dispatch_items(webhook_items, "Webhook Targets")
+            totals["successful"] += result["completed"]
+            totals["failed"] += result["failed"]
+            totals["processed"] += result["completed"] + result["failed"]
+            totals["cancelled"] = totals["cancelled"] or result["cancelled"]
+            for k, v in (result.get("outcome") or {}).items():
                 aggregate_outcome[k] = aggregate_outcome.get(k, 0) + v
-                if k == ProcessingResult.SUCCESS.value:
-                    totals["successful"] += v
-                    totals["processed"] += v
-                elif k == ProcessingResult.FAILED.value:
-                    totals["failed"] += v
-                    totals["processed"] += v
-                elif k == ProcessingResult.SKIPPED.value:
-                    # Skipped (output exists / not in library) doesn't count
-                    # as failure — mirror the per-vendor counters in the
-                    # dispatch path.
-                    totals["processed"] += v
-        except Exception:
-            logger.warning(
-                "Vendor webhook dispatch failed. The path will go through the retry queue as usual.",
-                exc_info=True,
-            )
+
         return {
             "unresolved_paths": [],
             "skipped_paths": [],
