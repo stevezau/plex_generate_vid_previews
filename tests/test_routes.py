@@ -136,7 +136,12 @@ class TestPageRoutes:
     def test_login_page_renders(self, client):
         resp = client.get("/login")
         assert resp.status_code == 200
-        assert b"token" in resp.data.lower() or b"login" in resp.data.lower()
+        # Pin stable form markers — disjunctive substring match on the
+        # word "login"/"token" was so loose any error page passed.
+        body = resp.data
+        assert b'name="token"' in body, "login form must include the token input"
+        assert b'type="password"' in body, "token input must be type=password"
+        assert b'method="POST"' in body, "login form must POST"
 
     def test_settings_requires_auth(self, client):
         resp = client.get("/settings", follow_redirects=False)
@@ -146,18 +151,31 @@ class TestPageRoutes:
     def test_settings_accessible_when_authenticated(self, authed_client):
         resp = authed_client.get("/settings")
         assert resp.status_code == 200
-        # A regression that returns 200 with a stub/error page would pass
-        # the bare status check. Asserting page content catches that.
-        assert b"Settings" in resp.data or b"setting" in resp.data.lower()
+        # Pin stable settings-page markers — substring "setting" is too
+        # permissive (any error page mentioning the word "setting"
+        # passes). The sidebar nav anchors are the load-bearing structure
+        # the page is built around.
+        body = resp.data
+        assert b'id="settings-sidebar"' in body, "settings page must include the sidebar nav"
+        assert b'id="section-processing"' in body, "settings page must include the Processing section"
 
     def test_servers_page_accepts_add_query_param(self, authed_client):
         """Setup wizard step 1's vendor picker redirects to
         /servers?add=<vendor> when the user picks Emby/Jellyfin. The page
         itself must render normally — the actual modal-open is JS-side
-        (we only verify the route doesn't choke on the param)."""
+        (we only verify the route doesn't choke on the param).
+
+        Pin a stable page marker so a regression that 200s with an empty
+        body / wrong template (and the modal-open JS therefore fails
+        silently) is still caught.
+        """
         for vendor in ("plex", "emby", "jellyfin", "invalid", ""):
             resp = authed_client.get(f"/servers?add={vendor}")
             assert resp.status_code == 200, f"vendor={vendor!r} returned {resp.status_code}"
+            # The Add Server modal MUST be present in every render — the
+            # whole point of the ?add= deep link is that JS opens it on load.
+            assert b'id="addServerModal"' in resp.data, f"vendor={vendor!r} body missing modal"
+            assert b'id="serverList"' in resp.data, f"vendor={vendor!r} body missing serverList container"
 
     def test_gpu_config_panel_js_served(self, client):
         """The shared per-GPU panel JS is loaded by both /setup and /settings.
@@ -237,7 +255,12 @@ class TestLoginLogout:
     def test_login_post_invalid_token(self, client):
         resp = client.post("/login", data={"token": "wrong"})
         assert resp.status_code == 200
-        assert b"didn" in resp.data or b"invalid" in resp.data or b"Invalid" in resp.data
+        # Pin a stable Bootstrap alert marker — substring "didn"/"invalid"
+        # lets unrelated content pass. The error alert div is what the
+        # template only renders when ``error`` is set in the context.
+        body = resp.data
+        assert b'class="alert alert-danger' in body, "invalid-token POST must render the danger alert"
+        assert b'role="alert"' in body
 
     def test_already_authenticated_redirects_from_login(self, authed_client):
         resp = authed_client.get("/login", follow_redirects=False)
@@ -254,18 +277,30 @@ class TestLoginLogout:
         assert "/login" in resp2.headers.get("Location", "")
 
     def test_login_rate_limit_exceeded(self, client):
-        """After 5 POSTs to /login, 6th returns 429."""
-        for _ in range(5):
-            client.post("/login", data={"token": "wrong"})
+        """After 5 POSTs to /login, 6th returns 429.
+
+        Assert the matrix: each of the first 5 POSTs returns 200 (legitimate
+        invalid-token render), and only the 6th flips to 429. Without this
+        ordering check a regression that bumped the limit to 50 would still
+        pass the previous test (it only checked that the 6th was 429).
+        """
+        for i in range(5):
+            r = client.post("/login", data={"token": "wrong"})
+            assert r.status_code == 200, f"attempt {i + 1} should still be allowed, got {r.status_code}"
         resp = client.post("/login", data={"token": "wrong"})
-        assert resp.status_code == 429
+        assert resp.status_code == 429, "6th attempt must be rate-limited"
 
     def test_api_login_rate_limit_exceeded(self, client):
-        """After 10 POSTs to /api/auth/login, 11th returns 429."""
-        for _ in range(10):
-            client.post("/api/auth/login", json={"token": "wrong"})
+        """After 10 POSTs to /api/auth/login, 11th returns 429.
+
+        Assert the matrix: each of the first 10 POSTs returns 401
+        (legitimate invalid-token), only the 11th returns 429.
+        """
+        for i in range(10):
+            r = client.post("/api/auth/login", json={"token": "wrong"})
+            assert r.status_code == 401, f"attempt {i + 1} should be 401 (invalid token), got {r.status_code}"
         resp = client.post("/api/auth/login", json={"token": "wrong"})
-        assert resp.status_code == 429
+        assert resp.status_code == 429, "11th attempt must be rate-limited"
 
 
 # ---------------------------------------------------------------------------
@@ -300,6 +335,12 @@ class TestAuthAPI:
         resp = authed_client.post("/api/auth/logout")
         assert resp.status_code == 200
         assert resp.get_json()["success"] is True
+        # Verify the session was actually cleared — bare success=True
+        # was bug-blind to a no-op endpoint that always returns success.
+        status = authed_client.get("/api/auth/status")
+        assert status.get_json()["authenticated"] is False, (
+            "logout must invalidate the session — subsequent /api/auth/status still reports authenticated=True"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -360,9 +401,14 @@ class TestTokenEndpoints:
         resp = client.get("/api/setup/token-info", headers=_api_headers())
         assert resp.status_code == 200
         data = resp.get_json()
-        assert "token" in data
         assert data["token"].startswith("****")
-        assert "source" in data
+        # The fixture sets WEB_AUTH_TOKEN, so source is "environment".
+        # Pin the enumerated value, not just key-presence — a regression
+        # returning source="leaked" would have passed.
+        assert data["source"] == "environment", data
+        assert data["env_controlled"] is True
+        # Token length must reflect the real token, not the masked one.
+        assert data["token_length"] == len("test-token-12345678")
 
     def test_set_custom_token_requires_auth(self, client):
         # No auth header → 401 regardless of env-var state.
@@ -420,6 +466,10 @@ class TestTokenEndpoints:
             json={"token": "short", "confirm_token": "short"},
         )
         assert resp.status_code == 400
+        # Pin the validation reason — bare 400 was bug-blind to the "match"
+        # path firing instead of the "too short" path.
+        body = resp.get_json()
+        assert "8 characters" in body["error"], body
 
     def test_setup_skip_marks_complete(self, client):
         """Phase H8: /api/setup/skip lets Emby/Jellyfin users bypass the
@@ -504,6 +554,13 @@ class TestTokenEndpoints:
             f"{method} {path} got 302 to {resp.headers.get('Location')!r} — "
             "endpoint is missing from check_setup's exempt_endpoints list"
         )
+        # And catch the other failure mode — a generic 500 means the
+        # endpoint is exempt but crashing. Pin the legitimate set so a
+        # regression that 500s every wizard endpoint fails loudly here.
+        assert resp.status_code in {200, 400, 401, 502}, (
+            f"{method} {path} returned unexpected {resp.status_code} — "
+            "wizard endpoints must reach the route and return a real status code"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -535,7 +592,10 @@ class TestJobsAPI:
         assert resp.status_code == 201
         data = resp.get_json()
         assert data["status"] == "pending"
-        assert "id" in data
+        # Pin id is a non-empty string — bare key-presence was bug-blind
+        # to a regression returning id=None or id="".
+        assert isinstance(data["id"], str) and data["id"], data
+        assert data["library_name"] == "Movies"
 
     def test_create_job_library_ids_propagate_to_overrides(self, client):
         """Phase H6 Fix-4: library_ids array → selected_library_ids in overrides
@@ -636,6 +696,11 @@ class TestJobsAPI:
             body = resp.get_json()
             assert body["server_id"] is None
             assert body["server_type"] is None
+            # Audit fix — the third cell of the matrix. Production sets
+            # all three from ``_resolve_server_context``; missing the
+            # ``server_name`` assertion left a pinhole for a regression
+            # that left the stale display name attached.
+            assert body["server_name"] is None
         finally:
             get_settings_manager().update({"media_servers": []})
 
@@ -664,7 +729,7 @@ class TestJobsAPI:
             }
         )
         try:
-            with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
+            with patch("media_preview_generator.web.routes.api_jobs._start_job_async") as mock_start:
                 # Library 100 belongs to Plex-A but caller pinned to Plex-B
                 resp = client.post(
                     "/api/jobs",
@@ -678,6 +743,15 @@ class TestJobsAPI:
             assert resp.status_code == 201
             body = resp.get_json()
             assert body["server_id"] == "plex-B", "Explicit server_id from caller must win over the library inference."
+            # Audit fix — also pin the dispatcher-bound override kwargs.
+            # The stored Job.server_id is one half of the contract; the
+            # OTHER half is the override fed to _start_job_async (which
+            # the dispatcher reads to pin the run to a specific server).
+            # A regression that resolved the Job correctly but leaked
+            # the inferred id into the dispatcher overrides would have
+            # passed the previous server_id-only check.
+            overrides = mock_start.call_args[0][1]
+            assert overrides.get("server_id") == "plex-B", overrides
         finally:
             get_settings_manager().update({"media_servers": []})
 
@@ -773,9 +847,22 @@ class TestJobsAPI:
         assert resp.status_code == 404
 
     def test_clear_jobs(self, client):
+        # Seed three terminal jobs (cancelled), then clear and verify the
+        # exact count came back — key-presence alone would let a regression
+        # returning {"cleared": -1} or 0 pass silently.
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
+            ids = [client.post("/api/jobs", headers=_api_headers(), json={}).get_json()["id"] for _ in range(3)]
+        for jid in ids:
+            client.post(f"/api/jobs/{jid}/cancel", headers=_api_headers())
+
         resp = client.post("/api/jobs/clear", headers=_api_headers())
         assert resp.status_code == 200
-        assert "cleared" in resp.get_json()
+        body = resp.get_json()
+        assert body["success"] is True
+        assert body["cleared"] == 3, body
+        # And the jobs are actually gone now.
+        list_resp = client.get("/api/jobs", headers=_api_headers())
+        assert list_resp.get_json()["total"] == 0
 
     def test_clear_jobs_with_status_filter(self, client):
         """Test clearing only specific statuses."""
@@ -800,10 +887,34 @@ class TestJobsAPI:
         assert resp.get_json()["cleared"] == 3
 
     def test_clear_jobs_empty_statuses_clears_all_terminal(self, client):
-        """Empty body clears all terminal (completed/failed/cancelled) jobs."""
+        """Empty body clears all terminal (completed/failed/cancelled) jobs.
+
+        Seed jobs in completed + failed + cancelled + a running one;
+        verify the three terminal jobs are cleared and the running one
+        survives. Without the survivors check the test is identical to
+        an endpoint that just truncates _jobs unconditionally.
+        """
+        from media_preview_generator.web.jobs import get_job_manager
+
+        jm = get_job_manager()
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
+            ids = [client.post("/api/jobs", headers=_api_headers(), json={}).get_json()["id"] for _ in range(4)]
+        completed_id, failed_id, cancelled_id, running_id = ids
+        jm.start_job(completed_id)
+        jm.complete_job(completed_id)
+        jm.start_job(failed_id)
+        jm.complete_job(failed_id, error="boom")
+        jm.start_job(cancelled_id)
+        jm.cancel_job(cancelled_id)
+        jm.start_job(running_id)  # left RUNNING
+
         resp = client.post("/api/jobs/clear", headers=_api_headers(), json={})
         assert resp.status_code == 200
-        assert "cleared" in resp.get_json()
+        body = resp.get_json()
+        assert body["cleared"] == 3, body
+        # The running job survived; only the three terminal ones were removed.
+        remaining = {j["id"] for j in client.get("/api/jobs", headers=_api_headers()).get_json()["jobs"]}
+        assert remaining == {running_id}, remaining
 
     def test_get_jobs_pagination(self, client):
         """Pagination returns correct slices and metadata."""
@@ -875,17 +986,73 @@ class TestJobsAPI:
         assert statuses[2] == "completed"
 
     def test_get_job_stats(self, client):
+        # Empty seed state — every counter must be 0, not None / missing.
+        # The dashboard renders these directly; a regression where
+        # ``get_stats()`` returned ``{"total": None}`` previously passed
+        # because the test only checked key presence.
         resp = client.get("/api/jobs/stats", headers=_api_headers())
         assert resp.status_code == 200
         data = resp.get_json()
-        assert "total" in data
+        assert data["total"] == 0
+        assert data["pending"] == 0
+        assert data["running"] == 0
+        assert data["completed"] == 0
+        assert data["failed"] == 0
+        assert data["cancelled"] == 0
+
+        # Seed one of each terminal state and re-check the per-status counters.
+        from media_preview_generator.web.jobs import get_job_manager
+
+        jm = get_job_manager()
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
+            ids = [client.post("/api/jobs", headers=_api_headers(), json={}).get_json()["id"] for _ in range(3)]
+        completed_id, failed_id, cancelled_id = ids
+        jm.start_job(completed_id)
+        jm.complete_job(completed_id)
+        jm.start_job(failed_id)
+        jm.complete_job(failed_id, error="boom")
+        jm.start_job(cancelled_id)
+        jm.cancel_job(cancelled_id)
+
+        data2 = client.get("/api/jobs/stats", headers=_api_headers()).get_json()
+        assert data2["total"] == 3
+        assert data2["completed"] == 1
+        assert data2["failed"] == 1
+        assert data2["cancelled"] == 1
+        assert data2["running"] == 0
+        assert data2["pending"] == 0
 
     def test_get_worker_statuses(self, client):
+        # Idle path: with no running job + no dispatcher pool, the route
+        # synthesises idle workers from the configured gpu_config + cpu_threads
+        # (see api_jobs._build_idle_workers_from_config).
+        # Pin per-entry shape so an empty list (or wrong-shape entries) fails
+        # — key-presence + isinstance(list) was bug-blind to both.
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        # Force a known CPU thread count so we can pin the idle worker count.
+        sm.set("cpu_threads", 3)
+        sm.set("gpu_config", [])
+
         resp = client.get("/api/jobs/workers", headers=_api_headers())
         assert resp.status_code == 200
         data = resp.get_json()
-        assert "workers" in data
         assert isinstance(data["workers"], list)
+        # 3 CPU workers + 0 GPUs = 3 entries.
+        assert len(data["workers"]) == 3, data
+        # Every entry must be a dict carrying the synth-idle-worker
+        # contract the UI binds to: worker_id, worker_type, worker_name,
+        # status, current_title, progress_percent, speed.
+        for entry in data["workers"]:
+            assert isinstance(entry, dict), entry
+            assert isinstance(entry["worker_id"], int), entry
+            assert entry["worker_type"] in {"GPU", "CPU"}, entry
+            assert isinstance(entry["worker_name"], str) and entry["worker_name"], entry
+            assert entry["status"] == "idle", entry
+            assert entry["current_title"] == "", entry
+            assert entry["progress_percent"] == 0, entry
+            assert entry["speed"] == "0.0x", entry
 
     def test_get_job_logs(self, client):
         with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
@@ -946,12 +1113,27 @@ class TestJobsAPI:
         assert sm.processing_paused is False
 
     def test_processing_state_get(self, client):
-        """GET /api/processing/state returns global pause state."""
+        """GET /api/processing/state returns global pause state.
+
+        Round-trips both branches — a regression that hard-coded the
+        return value (always True or always False) would have passed
+        the previous "key in body + isinstance bool" assertion.
+        """
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        sm.processing_paused = False
         resp = client.get("/api/processing/state", headers=_api_headers())
         assert resp.status_code == 200
-        data = resp.get_json()
-        assert "paused" in data
-        assert isinstance(data["paused"], bool)
+        assert resp.get_json()["paused"] is False
+
+        sm.processing_paused = True
+        try:
+            resp2 = client.get("/api/processing/state", headers=_api_headers())
+            assert resp2.status_code == 200
+            assert resp2.get_json()["paused"] is True
+        finally:
+            sm.processing_paused = False
 
     def test_processing_pause_resume(self, client):
         """POST /api/processing/pause and resume set and return global state."""
@@ -1229,13 +1411,16 @@ class TestManualTriggerAPI:
         assert "required" in resp.get_json()["error"].lower()
 
     def test_manual_trigger_missing_body(self, client):
-        """Missing JSON body returns 400."""
+        """Missing JSON body returns 400 with a meaningful error."""
         resp = client.post(
             "/api/jobs/manual",
             headers=_api_headers(),
             json={},
         )
         assert resp.status_code == 400
+        # Pin the validation reason — bare 400 collides with any other
+        # 400-emitting branch (auth, server inference, etc.).
+        assert "file_paths is required" in resp.get_json()["error"]
 
     def test_manual_trigger_path_outside_media_root(self, client, tmp_path):
         """Path traversal outside MEDIA_ROOT returns 400."""
@@ -1260,33 +1445,20 @@ class TestManualTriggerAPI:
         )
         assert resp.status_code == 401
 
-    def test_manual_trigger_force_regenerate(self, client, tmp_path):
-        """force_regenerate flag is passed through to config overrides."""
-        test_file = tmp_path / "movie.mkv"
-        test_file.touch()
-
-        with patch("media_preview_generator.web.routes.api_jobs._start_job_async") as mock_start:
-            with patch("media_preview_generator.web.routes.api_jobs.MEDIA_ROOT", str(tmp_path)):
-                resp = client.post(
-                    "/api/jobs/manual",
-                    headers=_api_headers(),
-                    json={
-                        "file_paths": [str(test_file)],
-                        "force_regenerate": True,
-                    },
-                )
-        assert resp.status_code == 201
-        config_overrides = mock_start.call_args[0][1]
-        assert config_overrides["force_generate"] is True
-
     def test_manual_trigger_multiple_paths(self, client, tmp_path):
-        """Multiple file paths produce a job labeled with file count."""
+        """Multiple file paths produce a job labeled with file count, AND
+        the dispatcher overrides carry BOTH paths through.
+
+        Audit fix — previously only the label substring was checked, so a
+        regression that dropped the second file (and the dispatcher
+        therefore never processed it) would have passed silently.
+        """
         f1 = tmp_path / "a.mkv"
         f2 = tmp_path / "b.mkv"
         f1.touch()
         f2.touch()
 
-        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async") as mock_start:
             with patch("media_preview_generator.web.routes.api_jobs.MEDIA_ROOT", str(tmp_path)):
                 resp = client.post(
                     "/api/jobs/manual",
@@ -1296,6 +1468,11 @@ class TestManualTriggerAPI:
         assert resp.status_code == 201
         data = resp.get_json()
         assert "2 files" in data.get("library_name", "")
+        # Pin the dispatcher overrides shape — both files must appear in
+        # webhook_paths in the order the caller supplied them.
+        mock_start.assert_called_once()
+        config_overrides = mock_start.call_args[0][1]
+        assert config_overrides["webhook_paths"] == [str(f1), str(f2)], config_overrides
 
 
 # ---------------------------------------------------------------------------
@@ -1310,8 +1487,10 @@ class TestSettingsAPI:
         resp = client.get("/api/settings", headers=_api_headers())
         assert resp.status_code == 200
         data = resp.get_json()
-        assert "gpu_threads" in data
-        assert "cpu_threads" in data
+        # Pin the types that downstream UI math/widgets bind to —
+        # bare key-presence let a regression returning None / "" pass.
+        assert isinstance(data["gpu_threads"], int)
+        assert isinstance(data["cpu_threads"], int)
         assert data["plex_verify_ssl"] is True
 
     def test_get_settings_returns_path_mappings(self, client):
@@ -1572,6 +1751,10 @@ class TestSettingsAPI:
         assert data["plex_verify_ssl"] is False
 
     def test_save_settings_ignores_unknown_fields(self, client):
+        # The route must silently drop unrecognised keys (forward-compat
+        # against future UI fields) — but the previous test only asserted
+        # 200, which is bug-blind to a regression that PERSISTED the
+        # unknown field into settings.json (creating dual-state pollution).
         resp = client.post(
             "/api/settings",
             headers=_api_headers(),
@@ -1582,6 +1765,14 @@ class TestSettingsAPI:
             },
         )
         assert resp.status_code == 200
+
+        # GET back and assert the unknown field never lands in the response.
+        get_resp = client.get("/api/settings", headers=_api_headers())
+        assert get_resp.status_code == 200
+        body = get_resp.get_json()
+        assert "unknown_field" not in body, f"unknown field leaked into settings: {body!r}"
+        # Sanity: the legitimate fields DID persist.
+        assert body["plex_verify_ssl"] is False
 
     def test_save_settings_warns_zero_cpu_and_zero_gpu(self, client):
         """Saving with both CPU and GPU workers at zero succeeds with a warning."""
@@ -1616,6 +1807,9 @@ class TestSettingsAPI:
             json={"gpu_config": "not_a_list"},
         )
         assert resp.status_code == 400
+        # Pin the error reason — bare 400 collides with other settings
+        # validators that return 400 for unrelated reasons.
+        assert "gpu_config must be a list" in resp.get_json()["error"]
 
     def test_save_gpu_config_filters_invalid_entries(self, client):
         """gpu_config entries without device key are filtered out."""
@@ -1645,7 +1839,12 @@ class TestSettingsAPI:
         assert saved[0]["device"] == "cuda"
 
     def test_save_log_settings(self, client):
-        """Test that log_level, log_rotation_size, log_retention_count are persisted."""
+        """Test that log_level, log_rotation_size, log_retention_count are persisted.
+
+        Save-without-readback is the documented anti-pattern that hid the
+        D34 dispatcher bug for months — assert the GET round-trip matches
+        the POSTed values, not just that the POST returned ``success=True``.
+        """
         resp = client.post(
             "/api/settings",
             headers=_api_headers(),
@@ -1657,6 +1856,14 @@ class TestSettingsAPI:
         )
         assert resp.status_code == 200
         assert resp.get_json()["success"] is True
+
+        # Round-trip: GET back and verify each value persisted.
+        get_resp = client.get("/api/settings", headers=_api_headers())
+        assert get_resp.status_code == 200
+        body = get_resp.get_json()
+        assert body["log_level"] == "DEBUG"
+        assert body["log_rotation_size"] == "5 MB"
+        assert body["log_retention_count"] == 4
 
     @patch("media_preview_generator.logging_config.setup_logging")
     def test_update_log_level(self, mock_setup_logging, client):
@@ -1680,6 +1887,10 @@ class TestSettingsAPI:
             json={"log_level": "INVALID"},
         )
         assert resp.status_code == 400
+        # Pin the validation reason — production returns the list of
+        # valid levels in the message; a regression that 400s for an
+        # unrelated reason (e.g. shape validation) would have passed.
+        assert "Invalid log level" in resp.get_json()["error"]
 
     def test_get_settings_returns_webhook_retry_defaults(self, client):
         """GET /api/settings returns default webhook_retry_count and webhook_retry_delay."""
@@ -2002,10 +2213,20 @@ class TestSetupWizardAPI:
         )
 
     def test_get_setup_state(self, client):
+        # Seed step=2 first so we can verify the GET surfaces the value
+        # — key-presence alone never proved the route reads from storage.
+        client.post(
+            "/api/setup/state",
+            headers=_api_headers(),
+            json={"step": 2, "data": {"plex_url": "http://seeded:32400"}},
+        )
         resp = client.get("/api/setup/state", headers=_api_headers())
         assert resp.status_code == 200
         data = resp.get_json()
-        assert "step" in data
+        assert data["step"] == 2
+        # Also pin the data shape — it must always be a dict, not None.
+        assert isinstance(data.get("data"), dict)
+        assert data["data"].get("plex_url") == "http://seeded:32400"
 
     def test_save_setup_state(self, client):
         resp = client.post(
@@ -2069,13 +2290,22 @@ class TestSetupWizardAPI:
         assert resp.status_code == 400
         assert "match" in resp.get_json()["error"].lower()
 
-    def test_set_setup_token_too_short(self, client):
+    def test_set_setup_token_too_short(self, client, monkeypatch):
+        # The fixture sets WEB_AUTH_TOKEN, so the env-control gate would
+        # otherwise short-circuit with a different error. Bypass it so
+        # we exercise the real length-validation branch.
+        monkeypatch.setattr(
+            "media_preview_generator.web.auth.is_token_env_controlled",
+            lambda: False,
+        )
         resp = client.post(
             "/api/setup/set-token",
             headers=_api_headers(),
             json={"token": "short", "confirm_token": "short"},
         )
         assert resp.status_code == 400
+        # Pin the reason — bare 400 collides with the mismatch / env paths.
+        assert "8 characters" in resp.get_json()["error"]
 
 
 # ---------------------------------------------------------------------------
@@ -2092,7 +2322,11 @@ class TestQuietHoursAPI:
         body = resp.get_json()
         assert body["enabled"] is False
         assert body["windows"] == []
-        assert "currently_in_quiet_window" in body
+        # With no windows configured the dashboard badge MUST report False
+        # (key-presence let a regression returning True here pass — the
+        # badge would mis-render as "in quiet window" while no window was
+        # actually defined).
+        assert body["currently_in_quiet_window"] is False
 
     def test_post_legacy_single_window_body_still_accepted(self, client):
         # Backwards-compat: D21-era front-ends posting {start, end} at the
@@ -2161,6 +2395,10 @@ class TestQuietHoursAPI:
             json={"enabled": True, "start": "25:00", "end": "01:00"},
         )
         assert resp.status_code == 400
+        # Pin error substring — legacy single-window POSTs route through
+        # the same validator as the multi-window form, so the response
+        # uses the "Window #1: ..." prefix.
+        assert "Window #1" in resp.get_json().get("error", "")
 
 
 class TestSchedulesAPI:
@@ -2178,10 +2416,16 @@ class TestSchedulesAPI:
             json={"cron_expression": "0 */6 * * *"},
         )
         assert resp.status_code == 400
+        # Pin reason — bare 400 collides with the missing-trigger branch.
+        assert "Name is required" in resp.get_json()["error"]
 
     def test_create_schedule_missing_trigger(self, client):
         resp = client.post("/api/schedules", headers=_api_headers(), json={"name": "Test"})
         assert resp.status_code == 400
+        # Pin reason — both validators 400, so without this assert a
+        # regression that always fired the name validator would pass.
+        body = resp.get_json()
+        assert "cron_expression" in body["error"] or "interval_minutes" in body["error"]
 
     def test_update_schedule_invalid_cron_returns_400(self, client):
         """PUT /api/schedules/<id> with malformed cron must surface 400, not 500.
@@ -2400,6 +2644,10 @@ class TestPathValidation:
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["valid"] is False
+        # Pin error reason — bare valid=False would fail for ANY reason
+        # and the test would pass even if the route rejected for the
+        # wrong cause (e.g. a coincidental sandbox failure).
+        assert any("Plex Data Path is required" in e for e in data["errors"]), data["errors"]
 
     def test_validate_paths_null_bytes_rejected(self, client):
         resp = client.post(
@@ -2410,6 +2658,10 @@ class TestPathValidation:
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["valid"] is False
+        # Pin specific rejection reason — bare valid=False would let a
+        # regression that caught the null byte via a different (less
+        # secure) code path slip through.
+        assert any("Invalid Plex Data Path" in e for e in data["errors"]), data["errors"]
 
     def test_validate_paths_requires_auth_after_setup(self, client):
         """When setup is complete, validate_paths requires authentication."""
@@ -2444,8 +2696,17 @@ class TestPathValidation:
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["valid"] is False
-        # Path mapping row validation: either folder not found or outside allowed root
-        assert any("Folder not found" in e or "Path in this app" in e or "Row 1" in e for e in data["errors"])
+        # MEDIA_ROOT defaults to "/" so the path is "inside" the sandbox;
+        # the surfaced error is the existence check failing. Pin the
+        # exact production string instead of the previous 3-way
+        # disjunctive substring (which was bug-blind to a regression
+        # that 200'd with a meaningless error label).
+        joined = " ".join(data["errors"])
+        assert "Row 1" in joined, joined
+        assert "folder not found" in joined, joined
+        # The user-supplied path must be visible in the error so it's
+        # actionable in the UI.
+        assert "/nonexistent_xyz_path_123" in joined, joined
 
     def test_validate_paths_path_mappings_null_byte_in_local(self, client, tmp_path, monkeypatch):
         """path_mappings row with null byte in local_prefix returns invalid path error."""
@@ -2577,7 +2838,14 @@ class TestSchedulesCRUD:
         assert resp.status_code == 201
         data = resp.get_json()
         assert data["name"] == "Nightly"
-        assert "id" in data
+        # Pin id is non-empty + the schedule actually appears in the list
+        # — bare key-presence on "id" was bug-blind to id=None or "".
+        assert isinstance(data["id"], str) and data["id"], data
+        sched_id = data["id"]
+        list_resp = client.get("/api/schedules", headers=_api_headers())
+        assert list_resp.status_code == 200
+        listed_ids = {s["id"] for s in list_resp.get_json()["schedules"]}
+        assert sched_id in listed_ids, list_resp.get_json()
 
     def test_create_schedule_interval(self, client):
         resp = client.post(
@@ -2586,6 +2854,22 @@ class TestSchedulesCRUD:
             json={"name": "Every 6h", "interval_minutes": 360},
         )
         assert resp.status_code == 201
+        # Pin response body — previously only status was checked, so a
+        # regression returning {} or persisting nothing would have passed.
+        body = resp.get_json()
+        assert body["name"] == "Every 6h"
+        assert body["id"]
+        sched_id = body["id"]
+        assert body["trigger_type"] == "interval"
+        assert body["trigger_value"] == "360"
+
+        # Confirm it really persisted by fetching it back.
+        get_resp = client.get(f"/api/schedules/{sched_id}", headers=_api_headers())
+        assert get_resp.status_code == 200
+        got = get_resp.get_json()
+        assert got["name"] == "Every 6h"
+        assert got["trigger_type"] == "interval"
+        assert got["trigger_value"] == "360"
 
     def test_get_specific_schedule(self, client):
         create_resp = client.post(
@@ -2678,9 +2962,37 @@ class TestSchedulesCRUD:
             json={"name": "RunMe", "cron_expression": "0 0 * * *"},
         )
         schedule_id = create_resp.get_json()["id"]
+        # Pre-state: schedule has never run yet.
+        before = client.get(f"/api/schedules/{schedule_id}", headers=_api_headers()).get_json()
+        assert before["last_run"] is None
+
+        # Patch the run_job_callback at the boundary so the route reaches
+        # ``execute_scheduled_job`` and we can verify it actually
+        # dispatched (rather than no-opping with success=True).
+        from media_preview_generator.web.scheduler import get_schedule_manager
+
+        sm = get_schedule_manager()
+        called: list[dict] = []
+
+        def fake_run_job(**kwargs):
+            called.append(kwargs)
+
+        sm.run_job_callback = fake_run_job
+
         resp = client.post(f"/api/schedules/{schedule_id}/run", headers=_api_headers())
         assert resp.status_code == 200
         assert resp.get_json()["success"] is True
+
+        # The route must have invoked the schedule's run_job_callback with
+        # the expected schedule_id propagated as parent_schedule_id —
+        # bare success=True was tautological because a no-op route
+        # would have looked identical to a working one.
+        assert len(called) == 1, called
+        assert called[0]["parent_schedule_id"] == schedule_id
+
+        # And schedule's last_run advanced.
+        after = client.get(f"/api/schedules/{schedule_id}", headers=_api_headers()).get_json()
+        assert after["last_run"] is not None, after
 
     def test_run_now_nonexistent(self, client):
         resp = client.post("/api/schedules/nonexistent/run", headers=_api_headers())
@@ -2697,7 +3009,24 @@ class TestReprocessJob:
 
     def test_reprocess_completed_job(self, client):
         with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
-            create_resp = client.post("/api/jobs", headers=_api_headers(), json={"library_name": "Movies"})
+            create_resp = client.post(
+                "/api/jobs",
+                headers=_api_headers(),
+                json={
+                    "library_name": "Movies",
+                    "config": {
+                        # Seed the retry-marker keys that production strips
+                        # on reprocess. If the SUT forgets to strip them
+                        # the new job re-uses retry state and behaves
+                        # differently from a fresh manual reprocess.
+                        "is_retry": True,
+                        "retry_attempt": 2,
+                        "max_retries": 3,
+                        "parent_job_id": "phantom-parent",
+                        "webhook_paths": ["/data/movie.mkv"],
+                    },
+                },
+            )
         job_id = create_resp.get_json()["id"]
 
         from media_preview_generator.web.jobs import get_job_manager
@@ -2709,7 +3038,24 @@ class TestReprocessJob:
         with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             resp = client.post(f"/api/jobs/{job_id}/reprocess", headers=_api_headers())
         assert resp.status_code == 201
-        assert resp.get_json()["id"] != job_id
+        body = resp.get_json()
+        new_id = body["id"]
+        assert new_id != job_id
+
+        # Audit fix — the whole point of the reprocess endpoint is the
+        # config-cloning + retry-key-stripping. Bare id != old_id was
+        # bug-blind to a regression that just emitted a fresh empty job.
+        assert body["library_name"] == "Movies", body
+        # Inspect the persisted new-job config — the retry-marker keys
+        # must be stripped so the new run starts fresh.
+        new_job = jm.get_job(new_id)
+        assert new_job is not None
+        for stripped_key in ("is_retry", "retry_attempt", "max_retries", "parent_job_id"):
+            assert stripped_key not in new_job.config, (
+                f"reprocess must strip {stripped_key!r}; left in {new_job.config!r}"
+            )
+        # And the non-retry config (webhook_paths) is preserved.
+        assert new_job.config.get("webhook_paths") == ["/data/movie.mkv"]
 
     def test_reprocess_nonexistent_job(self, client):
         resp = client.post("/api/jobs/nonexistent/reprocess", headers=_api_headers())
@@ -2727,6 +3073,8 @@ class TestReprocessJob:
 
         resp = client.post(f"/api/jobs/{job_id}/reprocess", headers=_api_headers())
         assert resp.status_code == 409
+        # Pin error reason — bare 409 collides with any other 409 path.
+        assert "running or pending" in resp.get_json()["error"]
 
 
 # ---------------------------------------------------------------------------
@@ -2753,6 +3101,8 @@ class TestWorkerScalingValidation:
             json={"worker_type": "CPU", "count": 0},
         )
         assert resp.status_code == 400
+        # Pin reason — bare 400 collides with the worker_type / shape paths.
+        assert "count must be greater than 0" in resp.get_json()["error"]
 
     def test_add_workers_invalid_type_rejected(self, client):
         with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
@@ -2770,6 +3120,7 @@ class TestWorkerScalingValidation:
             json={"worker_type": "INVALID", "count": 1},
         )
         assert resp.status_code == 400
+        assert "Invalid worker_type" in resp.get_json()["error"]
 
     def test_add_workers_no_pool_returns_409(self, client):
         with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
@@ -2787,6 +3138,8 @@ class TestWorkerScalingValidation:
             json={"worker_type": "CPU", "count": 1},
         )
         assert resp.status_code == 409
+        # Pin reason — production says "Worker pool not available for this job".
+        assert "not available" in resp.get_json()["error"].lower()
 
     def test_remove_workers_zero_count_rejected(self, client):
         with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
@@ -2804,6 +3157,7 @@ class TestWorkerScalingValidation:
             json={"worker_type": "CPU", "count": 0},
         )
         assert resp.status_code == 400
+        assert "count must be greater than 0" in resp.get_json()["error"]
 
     def test_global_add_workers_invalid_type(self, client):
         with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
@@ -2823,6 +3177,7 @@ class TestWorkerScalingValidation:
             json={"worker_type": "BADTYPE", "count": 1},
         )
         assert resp.status_code == 400
+        assert "Invalid worker_type" in resp.get_json()["error"]
 
     def test_global_remove_workers_zero_count(self, client):
         with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
@@ -2840,6 +3195,7 @@ class TestWorkerScalingValidation:
             json={"worker_type": "CPU", "count": 0},
         )
         assert resp.status_code == 400
+        assert "count must be greater than 0" in resp.get_json()["error"]
 
     def test_add_workers_non_numeric_count_returns_400(self, client):
         """Non-numeric count must be rejected with 400, not crash with 500.
@@ -2909,7 +3265,9 @@ class TestValidatePathsBranches:
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["valid"] is False
-        assert any("Media" in e for e in data["errors"])
+        # Pin the exact production string — substring "Media" was so loose
+        # that any unrelated error mentioning "Media" passed.
+        assert any('missing "Media" subfolder' in e for e in data["errors"]), data["errors"]
 
     def test_validate_paths_missing_localhost(self, client, tmp_path, monkeypatch):
         """Plex directory has Media but missing localhost subfolder."""
@@ -2926,7 +3284,8 @@ class TestValidatePathsBranches:
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["valid"] is False
-        assert any("localhost" in e for e in data["errors"])
+        # Pin the exact production string — same critique as above.
+        assert any('missing "Media/localhost" subfolder' in e for e in data["errors"]), data["errors"]
 
     def test_validate_paths_incomplete_structure_warns(self, client, tmp_path, monkeypatch):
         """Plex directory with few hash dirs warns."""
@@ -2966,20 +3325,36 @@ class TestValidatePathsBranches:
         assert any("No path mapping" in i for i in data["info"])
 
     def test_validate_paths_traversal_rejected(self, client, tmp_path, monkeypatch):
-        """Path traversal attempt is rejected."""
+        """Path traversal attempt is rejected with a meaningful error.
+
+        Security-relevant — bare ``valid is False`` was bug-blind: would
+        pass even if the route silently echoed the attacker-supplied
+        traversal path back into the response. Pin both the rejection
+        reason AND that the raw traversal token is not echoed verbatim.
+        """
         (tmp_path / "Media" / "localhost").mkdir(parents=True)
         monkeypatch.setattr(
             "media_preview_generator.web.routes.api_settings.PLEX_DATA_ROOT",
             str(tmp_path),
         )
+        traversal_input = str(tmp_path / ".." / ".." / "etc")
         resp = client.post(
             "/api/setup/validate-paths",
             headers=_api_headers(),
-            json={"plex_config_folder": str(tmp_path / ".." / ".." / "etc")},
+            json={"plex_config_folder": traversal_input},
         )
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["valid"] is False
+        # The error must explain WHY (path is outside the allowed root) so
+        # users can fix it — and so a regression that flips to a different
+        # validation path (e.g. "Folder not found") is caught.
+        joined_errors = " ".join(data["errors"])
+        assert "must be within the configured root" in joined_errors, joined_errors
+        # Defence-in-depth: the raw "..//..//etc" token from the user
+        # input should NOT round-trip into the response body — that
+        # would let an attacker plant arbitrary text in a UI surface.
+        assert "/../../etc" not in joined_errors, joined_errors
 
     def test_validate_paths_legacy_null_byte_in_local_media(self, client, tmp_path, monkeypatch):
         """Legacy local_media_path with null byte is rejected via the path_mappings branch."""
@@ -3077,6 +3452,11 @@ class TestPageRoutesAdditional:
     def test_logs_page_accessible_when_authenticated(self, authed_client):
         resp = authed_client.get("/logs")
         assert resp.status_code == 200
+        # Pin a stable logs-template marker — bare 200 was bug-blind to a
+        # regression that rendered the wrong template (or an empty stub).
+        body = resp.data
+        assert b'id="logSearch"' in body, "logs page must include the live filter input"
+        assert b"log-level-btn" in body, "logs page must include the level toggle row"
 
     def test_setup_wizard_page_redirects_when_configured(self, authed_client):
         # Authed + setup_complete (set by the `app` fixture) -> /setup must
@@ -3199,6 +3579,17 @@ class TestLogHistoryAPI:
         assert len(data["lines"]) == 3
         assert data["lines"][0]["msg"] == "first"
         assert data["lines"][2]["msg"] == "third"
+        # Audit fix — the dashboard renders the level/mod/func/line per
+        # entry. msg-only assertions were bug-blind to a regression that
+        # dropped the surrounding fields.
+        first = data["lines"][0]
+        assert first["level"] == "INFO"
+        assert first["mod"] == "a"
+        assert first["func"] == "f"
+        assert first["line"] == 1
+        # And spot-check the WARNING-level middle entry too.
+        assert data["lines"][1]["level"] == "WARNING"
+        assert data["lines"][1]["mod"] == "b"
 
     def test_log_history_level_filter(self, app, authed_client, tmp_path):
         fake = str(tmp_path / "logs" / "app.log")
@@ -3319,6 +3710,10 @@ class TestLogHistoryAPI:
         data = resp.get_json()
         assert len(data["lines"]) == 5
         assert data["lines"][-1]["msg"] == "line19"
+        # 20 entries on disk + limit=5 → has_more must be True so the UI
+        # offers an "older logs" button. Audit fix — without this assert
+        # a regression that always returned has_more=False would slip past.
+        assert data["has_more"] is True, data
 
 
 # ---------------------------------------------------------------------------
@@ -3451,6 +3846,10 @@ class TestPlexTestConnection:
             os.environ.pop("PLEX_TOKEN", None)
             resp = client.post("/api/plex/test", headers=_api_headers(), json={})
         assert resp.status_code == 400
+        # Pin reason — bare 400 collides with any other 400 path.
+        body = resp.get_json()
+        assert body["success"] is False
+        assert "URL and token required" in body["error"]
 
     @patch("requests.get")
     def test_plex_test_connection_failure(self, mock_get, client):
@@ -3566,6 +3965,11 @@ class TestPlexTestConnection:
         body = resp.get_json()
         assert body["success"] is False
         assert "404" in body["error"]
+        # Production: "URL reachable but did not return Plex server identity (404). Check ..."
+        # Pin the "did not return Plex" guidance phrase the docstring promises;
+        # bare "404" substring would let a regression returning a generic
+        # HTTP error pass with no actionable hint.
+        assert "did not return Plex" in body["error"]
 
     @patch("requests.get")
     def test_plex_test_invalid_json_returns_not_plex_message(self, mock_get, client):
@@ -3785,6 +4189,10 @@ class TestPlexLibrariesAPI:
             os.environ.pop("PLEX_TOKEN", None)
             resp = client.get("/api/plex/libraries", headers=_api_headers())
         assert resp.status_code == 400
+        # Pin reason — bare 400 collides with shape errors / sandbox failures.
+        body = resp.get_json()
+        assert "Plex URL and token required" in body["error"]
+        assert body["libraries"] == []
 
     @patch("requests.get")
     def test_get_plex_libraries_ssl_error_returns_specific_message(self, mock_get, client):
@@ -4118,6 +4526,11 @@ class TestGetVersionInfo:
 
         assert result["install_type"] == "docker"
         assert result["update_available"] is False
+        # Audit fix — pin current_version too so the matrix matches the
+        # sibling test_docker_release_with_update_available. A regression
+        # that returned wrong current_version (but happened to also flip
+        # update_available correctly) would have passed.
+        assert result["current_version"] == "3.4.1"
 
     def test_dev_docker_when_branch_is_not_a_version(self, monkeypatch):
         """Non-version GIT_BRANCH + GIT_SHA → dev_docker, update when head differs."""
@@ -4152,6 +4565,8 @@ class TestGetVersionInfo:
 
         assert result["install_type"] == "dev_docker"
         assert result["update_available"] is False
+        # Audit fix — pin current_version (matrix complete with sibling test).
+        assert result["current_version"] == "dev@abc1234"
 
     def test_dev_docker_when_branch_is_main(self, monkeypatch):
         """GIT_BRANCH=main routes through dev_docker, same as other non-version branches."""
@@ -4640,6 +5055,10 @@ class TestBifSearchPhases:
             os.environ.pop("PLEX_TOKEN", None)
             resp = client.get("/api/bif/search?q=Inception", headers=_api_headers())
         assert resp.status_code == 400
+        # Pin reason — bare 400 collides with the short-query path.
+        body = resp.get_json()
+        assert "Plex not configured" in body["error"]
+        assert body["results"] == []
 
     @patch("requests.get")
     def test_plex_network_failure_returns_502(self, mock_get, client):
@@ -4651,6 +5070,15 @@ class TestBifSearchPhases:
         resp = client.get("/api/bif/search?q=Inception", headers=_api_headers())
 
         assert resp.status_code == 502
+        # Pin upstream-failure substring AND verify the Plex token from
+        # the seeded settings doesn't get echoed back into the response
+        # body (defence-in-depth: the route formats the exception into
+        # the error message and we want to be sure no auth secret leaks).
+        body = resp.get_json()
+        assert "Plex search failed" in body["error"]
+        assert body["results"] == []
+        raw = resp.data
+        assert b"test-plex-token" not in raw, "Plex token leaked in 502 response body"
 
 
 # ---------------------------------------------------------------------------
@@ -4720,6 +5148,10 @@ class TestFolderBrowse:
             headers=_api_headers(),
         )
         assert resp.status_code == 404
+        # Pin reason — bare 404 collides with the denylist branch (403).
+        body = resp.get_json()
+        assert body["error"] == "Folder not found"
+        assert body["entries"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -4770,7 +5202,10 @@ class TestValidatePlexConfigFolder:
         body = resp.get_json()
         assert body["exists"] is True
         assert body["valid_plex_structure"] is False
-        assert "Media" in body["error"]
+        # Pin the exact production wording — substring "Media" was so
+        # permissive that any error mentioning the word "media" passed.
+        assert 'Missing "Media" subfolder' in body["error"], body["error"]
+        assert "does not look like a Plex config folder" in body["error"], body["error"]
 
     def test_outside_root_existing_folder_suggests_docker_bind(self, client, tmp_path, monkeypatch):
         """When the typed path is a real folder but outside PLEX_DATA_ROOT,
@@ -5047,6 +5482,10 @@ class TestBackupRestore:
             json={"file": "/etc/passwd"},
         )
         assert resp.status_code == 400
+        # Security-relevant: pin reason — bare 400 collides with shape errors.
+        body = resp.get_json()
+        assert body["success"] is False
+        assert "Refusing to restore unknown file" in body["error"]
 
     def test_restore_rejects_unknown_backup_name(self, client, monkeypatch, tmp_path):
         """Can't be talked into copying an arbitrary file by passing its basename."""
@@ -5065,6 +5504,10 @@ class TestBackupRestore:
             json={"file": "settings.json", "backup": "passwd"},
         )
         assert resp.status_code == 404
+        # Pin reason — bare 404 collides with the no-backups branch.
+        body = resp.get_json()
+        assert body["success"] is False
+        assert "No backup named" in body["error"]
 
     def test_restore_404_when_no_backups(self, client, monkeypatch, tmp_path):
         from media_preview_generator.web.settings_manager import get_settings_manager
@@ -5079,6 +5522,10 @@ class TestBackupRestore:
             json={"file": "settings.json"},
         )
         assert resp.status_code == 404
+        # Pin reason — bare 404 collides with the unknown-name branch above.
+        body = resp.get_json()
+        assert body["success"] is False
+        assert "No backups available" in body["error"]
 
 
 class TestSettingsManagerWebhookMigration:

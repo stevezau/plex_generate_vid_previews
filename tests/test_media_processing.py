@@ -700,9 +700,23 @@ class TestGenerateImages:
         generate_images("/test/video.mp4", temp_dir, "AMD", "/dev/dri/renderD128", mock_config)
 
         args = mock_popen.call_args[0][0]
-        assert "-hwaccel" in args
-        assert "vaapi" in args
-        assert "/dev/dri/renderD128" in args
+        # Mirror the NVIDIA test (line ~581): assert adjacency rather than
+        # bare presence. A token-reorder regression that drops -hwaccel but
+        # leaves "vaapi" floating in argv would silently pass the old
+        # "vaapi" in args check (e.g. via -init_hw_device vaapi=...).
+        assert "-hwaccel" in args, f"AMD path missing -hwaccel: {args!r}"
+        assert args[args.index("-hwaccel") + 1] == "vaapi", (
+            f"-hwaccel must be followed by 'vaapi'; got {args[args.index('-hwaccel') + 1]!r}"
+        )
+        # The SUT (ffmpeg_runner.py:323-328) uses the modern -hwaccel_device
+        # (NOT the deprecated -vaapi_device) to carry the device path.
+        assert "-hwaccel_device" in args, f"AMD path missing -hwaccel_device: {args!r}"
+        assert args[args.index("-hwaccel_device") + 1] == "/dev/dri/renderD128", (
+            f"-hwaccel_device must be followed by the render path; got {args[args.index('-hwaccel_device') + 1]!r}"
+        )
+        # And the source must still flow through -i — the GPU branch must
+        # not accidentally clobber the input wiring.
+        assert "-i" in args and args[args.index("-i") + 1] == "/test/video.mp4"
 
     @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")

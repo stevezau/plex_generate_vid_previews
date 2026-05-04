@@ -135,19 +135,43 @@ class TestHwaccelFunctionality:
 
     @patch("subprocess.run")
     def test_test_hwaccel_functionality_cuda_success(self, mock_run):
-        """Test CUDA functionality test success."""
+        """Test CUDA functionality test success.
+
+        Also pins the FFmpeg cmd structure built by the SUT — without this,
+        a regression that drops ``-hwaccel`` (and thus silently falls back
+        to software decode that "succeeds") would be undetectable.
+        """
         mock_run.return_value = MagicMock(returncode=0)
 
         result = _test_hwaccel_functionality("cuda")
         assert result is True
 
+        cmd = mock_run.call_args.args[0]
+        assert cmd[0] == "ffmpeg", f"expected ffmpeg as argv[0], got {cmd[0]!r}"
+        assert "-hwaccel" in cmd, f"-hwaccel missing from cmd: {cmd!r}"
+        assert cmd[cmd.index("-hwaccel") + 1] == "cuda", (
+            f"-hwaccel must be followed by 'cuda'; got {cmd[cmd.index('-hwaccel') + 1]!r}"
+        )
+        # Generic CUDA (no index) must NOT add -hwaccel_device.
+        assert "-hwaccel_device" not in cmd
+        assert "-i" in cmd, f"-i (input) missing from cmd: {cmd!r}"
+
     @patch("subprocess.run")
     def test_test_hwaccel_functionality_cuda_failure(self, mock_run):
-        """Test CUDA functionality test failure."""
+        """Test CUDA functionality test failure.
+
+        Pins cmd shape on the failure path too so a regression that builds
+        the wrong cmd, fails for the wrong reason, and returns False isn't
+        masked.
+        """
         mock_run.return_value = MagicMock(returncode=1, stderr=b"Error")
 
         result = _test_hwaccel_functionality("cuda")
         assert result is False
+
+        cmd = mock_run.call_args.args[0]
+        assert cmd[0] == "ffmpeg"
+        assert "-hwaccel" in cmd and cmd[cmd.index("-hwaccel") + 1] == "cuda"
 
     @patch("subprocess.run")
     def test_test_hwaccel_functionality_cuda_devnull_error(self, mock_run):
@@ -160,6 +184,10 @@ class TestHwaccelFunctionality:
         result = _test_hwaccel_functionality("cuda")
         assert result is False
 
+        cmd = mock_run.call_args.args[0]
+        assert cmd[0] == "ffmpeg"
+        assert "-hwaccel" in cmd and cmd[cmd.index("-hwaccel") + 1] == "cuda"
+
     @patch("subprocess.run")
     def test_test_hwaccel_functionality_cuda_init_error(self, mock_run):
         """Test CUDA initialization failure."""
@@ -168,17 +196,34 @@ class TestHwaccelFunctionality:
         result = _test_hwaccel_functionality("cuda")
         assert result is False
 
+        cmd = mock_run.call_args.args[0]
+        assert cmd[0] == "ffmpeg"
+        assert "-hwaccel" in cmd and cmd[cmd.index("-hwaccel") + 1] == "cuda"
+
     @patch("os.access")
     @patch("os.path.exists")
     @patch("subprocess.run")
     def test_test_hwaccel_functionality_vaapi_success(self, mock_run, mock_exists, mock_access):
-        """Test VAAPI functionality test success."""
+        """Test VAAPI functionality test success.
+
+        Pins the cmd shape: ``-hwaccel vaapi -vaapi_device <path>`` adjacency.
+        Without this, a regression that drops ``-vaapi_device`` would silently
+        pass with ``result is True``.
+        """
         mock_exists.return_value = True  # Device exists
         mock_access.return_value = True  # Device is accessible
         mock_run.return_value = MagicMock(returncode=0)
 
         result = _test_hwaccel_functionality("vaapi", "/dev/dri/renderD128")
         assert result is True
+
+        cmd = mock_run.call_args.args[0]
+        assert cmd[0] == "ffmpeg"
+        assert "-hwaccel" in cmd and cmd[cmd.index("-hwaccel") + 1] == "vaapi"
+        assert "-vaapi_device" in cmd, f"VAAPI cmd missing -vaapi_device: {cmd!r}"
+        assert cmd[cmd.index("-vaapi_device") + 1] == "/dev/dri/renderD128", (
+            f"-vaapi_device must be followed by the device path; got {cmd[cmd.index('-vaapi_device') + 1]!r}"
+        )
 
     @patch("os.access")
     @patch("os.path.exists")
@@ -218,6 +263,12 @@ class TestHwaccelFunctionality:
         result = _test_hwaccel_functionality("vaapi", "/dev/dri/renderD128")
         assert result is False
 
+        cmd = mock_run.call_args.args[0]
+        assert cmd[0] == "ffmpeg"
+        assert "-hwaccel" in cmd and cmd[cmd.index("-hwaccel") + 1] == "vaapi"
+        assert "-vaapi_device" in cmd
+        assert cmd[cmd.index("-vaapi_device") + 1] == "/dev/dri/renderD128"
+
     @patch("subprocess.run")
     def test_test_hwaccel_functionality_timeout(self, mock_run):
         """Test timeout handling."""
@@ -235,6 +286,14 @@ class TestHwaccelFunctionality:
 
         result = _test_hwaccel_functionality("d3d11va")
         assert result is False
+
+        cmd = mock_run.call_args.args[0]
+        assert cmd[0] == "ffmpeg"
+        assert "-hwaccel" in cmd and cmd[cmd.index("-hwaccel") + 1] == "d3d11va"
+        # D3D11VA needs to download frames from GPU mem; the SUT injects
+        # -hwaccel_output_format d3d11 to keep that pipeline stable.
+        assert "-hwaccel_output_format" in cmd
+        assert cmd[cmd.index("-hwaccel_output_format") + 1] == "d3d11"
 
     @patch("subprocess.run")
     def test_test_hwaccel_functionality_sigpipe(self, mock_run):
@@ -279,6 +338,12 @@ class TestHwaccelFunctionality:
 
         result = _test_hwaccel_functionality("vaapi", "/dev/dri/renderD128")
         assert result is False
+
+        cmd = mock_run.call_args.args[0]
+        assert cmd[0] == "ffmpeg"
+        assert "-hwaccel" in cmd and cmd[cmd.index("-hwaccel") + 1] == "vaapi"
+        assert "-vaapi_device" in cmd
+        assert cmd[cmd.index("-vaapi_device") + 1] == "/dev/dri/renderD128"
 
 
 class TestGetGPUDevices:
@@ -635,63 +700,151 @@ class TestLspciGPUDetection:
 class TestLogSystemInfo:
     """Test system info logging."""
 
-    @patch("platform.system")
-    @patch("platform.release")
+    @patch("media_preview_generator.gpu.enumeration.platform.python_version")
+    @patch("media_preview_generator.gpu.enumeration.platform.platform")
     @patch("media_preview_generator.gpu.enumeration.logger")
-    def test_log_system_info(self, mock_logger, mock_release, mock_system):
-        """_log_system_info should emit the system + release in at least one debug line."""
+    def test_log_system_info(self, mock_logger, mock_platform, mock_python_version):
+        """_log_system_info must funnel the mocked platform.platform() and
+        platform.python_version() values into actual debug calls — not just
+        emit literal labels from a format string.
+
+        Earlier versions of this test mocked ``platform.system`` and
+        ``platform.release``, but the SUT (``enumeration.py:526``) calls
+        ``platform.platform()`` and ``platform.python_version()``. The test
+        passed solely because the assertion accepted the literal label
+        ``"Platform"`` from the SUT's format string, regardless of whether
+        any mocked value flowed through.
+        """
         from media_preview_generator.gpu import _log_system_info
 
-        mock_system.return_value = "Linux"
-        mock_release.return_value = "5.15.0"
+        platform_sentinel = "Linux-99.99.99-test-sentinel"
+        python_sentinel = "9.99.99-test-sentinel"
+        mock_platform.return_value = platform_sentinel
+        mock_python_version.return_value = python_sentinel
 
         _log_system_info()
 
-        # At least one debug line must mention either the OS or kernel version,
-        # otherwise the function is silently a no-op.
-        all_debug = " ".join(str(call.args[0]) if call.args else "" for call in mock_logger.debug.call_args_list)
-        all_args = " ".join(str(arg) for call in mock_logger.debug.call_args_list for arg in call.args[1:])
-        combined = all_debug + " " + all_args
-        assert "Linux" in combined or "5.15.0" in combined or "Platform" in combined or "Kernel" in combined, (
-            f"No platform info in debug calls: {mock_logger.debug.call_args_list}"
+        # Render every debug call by interpolating the loguru-style ``{}``
+        # placeholders with the trailing args (this is what the user actually
+        # sees in the log).  At least one rendered line must contain the
+        # platform sentinel and one must contain the python sentinel —
+        # proving the SUT actually consumed the mocked return values.
+        rendered = []
+        for call in mock_logger.debug.call_args_list:
+            if not call.args:
+                continue
+            template = str(call.args[0])
+            try:
+                rendered.append(template.format(*call.args[1:]))
+            except (IndexError, KeyError):
+                rendered.append(template + " " + " ".join(str(a) for a in call.args[1:]))
+
+        assert any(platform_sentinel in line for line in rendered), (
+            f"platform.platform() sentinel not found in any debug line; got {rendered!r}"
         )
+        assert any(python_sentinel in line for line in rendered), (
+            f"platform.python_version() sentinel not found in any debug line; got {rendered!r}"
+        )
+        # Each was emitted in its own debug call (not concatenated into one).
+        assert mock_platform.called, "SUT must call platform.platform()"
+        assert mock_python_version.called, "SUT must call platform.python_version()"
 
 
 class TestParseLspciGPUName:
-    """Test parsing lspci GPU names."""
+    """Test parsing lspci GPU names.
+
+    The class is split into two halves:
+      * ``test_parse_lspci_gpu_name_*_falls_back_when_lspci_fails`` — exercise
+        the rc=1 fallback branch (returns ``"<TYPE> GPU"``).
+      * ``test_parse_lspci_gpu_name_*_extracts_model`` — exercise the actual
+        parser (rc=0 with a realistic ``lspci`` line) so a regression in the
+        ``parts = line.split(":")`` / ``parts[2].strip()`` parser is caught.
+    """
+
+    # ---- fallback branch (rc=1) ----
 
     @patch("subprocess.run")
-    def test_parse_lspci_gpu_name_nvidia(self, mock_run):
-        """Test parsing NVIDIA GPU name."""
+    def test_parse_lspci_gpu_name_nvidia_falls_back_when_lspci_fails(self, mock_run):
         from media_preview_generator.gpu import _parse_lspci_gpu_name
 
-        # Mock lspci failure - should return fallback
         mock_run.return_value = MagicMock(returncode=1)
 
         result = _parse_lspci_gpu_name("NVIDIA")
         assert result == "NVIDIA GPU"
 
     @patch("subprocess.run")
-    def test_parse_lspci_gpu_name_amd(self, mock_run):
-        """Test parsing AMD GPU name."""
+    def test_parse_lspci_gpu_name_amd_falls_back_when_lspci_fails(self, mock_run):
         from media_preview_generator.gpu import _parse_lspci_gpu_name
 
-        # Mock lspci failure - should return fallback
         mock_run.return_value = MagicMock(returncode=1)
 
         result = _parse_lspci_gpu_name("AMD")
         assert result == "AMD GPU"
 
     @patch("subprocess.run")
-    def test_parse_lspci_gpu_name_intel(self, mock_run):
-        """Test parsing Intel GPU name."""
+    def test_parse_lspci_gpu_name_intel_falls_back_when_lspci_fails(self, mock_run):
         from media_preview_generator.gpu import _parse_lspci_gpu_name
 
-        # Mock lspci failure - should return fallback
         mock_run.return_value = MagicMock(returncode=1)
 
         result = _parse_lspci_gpu_name("INTEL")
         assert result == "INTEL GPU"
+
+    # ---- positive parse branch (rc=0 + realistic lspci stdout) ----
+    #
+    # The SUT at ``enumeration.py:392-396`` splits each line on ":",
+    # filters for "VGA" + the vendor token, and returns ``parts[2].strip()``.
+    # For a line like ``"01:00.0 VGA compatible controller: Advanced Micro
+    # Devices [AMD/ATI] Radeon RX 6800"`` the split yields four parts:
+    #   parts[0] = "01"
+    #   parts[1] = "00.0 VGA compatible controller"
+    #   parts[2] = " Advanced Micro Devices [AMD/ATI] Radeon RX 6800"
+    # so the returned model is the trimmed parts[2].
+
+    @patch("subprocess.run")
+    def test_parse_lspci_gpu_name_amd_extracts_model(self, mock_run):
+        """rc=0 + realistic AMD VGA line → parser returns the model substring."""
+        from media_preview_generator.gpu import _parse_lspci_gpu_name
+
+        lspci_stdout = (
+            "00:02.0 Host bridge: Intel Corp. Skylake [no match]\n"
+            "01:00.0 VGA compatible controller: Advanced Micro Devices [AMD/ATI] Radeon RX 6800\n"
+            "02:00.0 Audio device: AMD HDMI Audio [no VGA, must be skipped]\n"
+        )
+        mock_run.return_value = MagicMock(returncode=0, stdout=lspci_stdout)
+
+        result = _parse_lspci_gpu_name("AMD")
+        # Must be the parsed model string, not the fallback "AMD GPU".
+        assert result != "AMD GPU", f"parser fell through to fallback; got {result!r}"
+        assert "Radeon RX 6800" in result, f"expected RX 6800 model in {result!r}"
+        assert "AMD/ATI" in result, f"expected vendor token in {result!r}"
+
+    @patch("subprocess.run")
+    def test_parse_lspci_gpu_name_intel_extracts_model(self, mock_run):
+        """rc=0 + realistic Intel VGA line → parser returns the model substring."""
+        from media_preview_generator.gpu import _parse_lspci_gpu_name
+
+        lspci_stdout = (
+            "00:00.0 Host bridge: Intel Corp. 8th Gen Core [no match]\n"
+            "00:02.0 VGA compatible controller: Intel Corporation UHD Graphics 630 (rev 02)\n"
+        )
+        mock_run.return_value = MagicMock(returncode=0, stdout=lspci_stdout)
+
+        result = _parse_lspci_gpu_name("INTEL")
+        assert result != "INTEL GPU", f"parser fell through to fallback; got {result!r}"
+        assert "UHD Graphics 630" in result, f"expected UHD model in {result!r}"
+
+    @patch("subprocess.run")
+    def test_parse_lspci_gpu_name_no_matching_vendor_falls_back(self, mock_run):
+        """rc=0 but no VGA line matches the requested vendor → fallback string."""
+        from media_preview_generator.gpu import _parse_lspci_gpu_name
+
+        # Asking for AMD but only an Intel VGA line exists.
+        lspci_stdout = "00:02.0 VGA compatible controller: Intel Corporation UHD Graphics 630\n"
+        mock_run.return_value = MagicMock(returncode=0, stdout=lspci_stdout)
+
+        result = _parse_lspci_gpu_name("AMD")
+        assert result == "AMD GPU"
 
 
 class TestAccelerationMethodTesting:
