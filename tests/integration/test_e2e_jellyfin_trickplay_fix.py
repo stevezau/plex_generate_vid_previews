@@ -8,9 +8,11 @@ tool as broken.
 
 This test verifies:
 
-1. ``check_trickplay_extraction_status`` actually detects the
-   misconfiguration on the live Jellyfin.
-2. ``enable_trickplay_extraction`` flips the flag.
+1. The unified :meth:`MediaServer.check_settings_health` audit detects
+   the ``EnableTrickplayImageExtraction`` misconfiguration on the
+   live Jellyfin (one of four flags it surfaces — see
+   :data:`JellyfinServer._RECOMMENDED_SETTINGS`).
+2. :meth:`MediaServer.apply_recommended_settings` flips the flag.
 3. After the flip + a library refresh, Jellyfin populates the
    ``Trickplay`` field on the item AND serves the tile sheet via its
    HTTP API (the byte-stream the web UI fetches when scrubbing).
@@ -111,19 +113,23 @@ def restore_jellyfin_library_options(jellyfin_credentials):
 @pytest.mark.integration
 class TestJellyfinTrickplayMisconfigDetection:
     def test_detects_disabled_trickplay_extraction(self, jf_registry):
-        """check_trickplay_extraction_status reports the live default = False."""
+        """check_settings_health surfaces the EnableTrickplayImageExtraction issue.
+
+        Default Jellyfin libraries ship with ``EnableTrickplayImageExtraction=False``
+        — the unified health-check must flag it as a *critical* issue (the
+        flag is destructive when off; Jellyfin DELETES our published
+        trickplay on the next refresh).
+        """
         server = jf_registry.get("jf-trickfix")
-        statuses = server.check_trickplay_extraction_status()
-        assert statuses, "Jellyfin returned no library statuses"
-        # We expect at least one library with extraction disabled (the
-        # default). If the test container has been reconfigured this
-        # could flip; the test then verifies the API at minimum surfaces
-        # a status row per library.
-        for s in statuses:
-            assert "extraction_enabled" in s
-            assert "scan_extraction_enabled" in s
-            assert s["id"]
-            assert s["name"]
+        issues = server.check_settings_health()
+        assert issues, (
+            "Jellyfin returned no health-check issues — expected at least one for the default-off trickplay flag"
+        )
+        # Critical issue surfaced for the destructive flag.
+        critical = [i for i in issues if i.flag == "EnableTrickplayImageExtraction"]
+        assert critical, f"expected EnableTrickplayImageExtraction in issues, got {[i.flag for i in issues]}"
+        assert critical[0].severity == "critical"
+        assert critical[0].fixable is True
 
 
 @pytest.mark.integration
@@ -163,16 +169,19 @@ class TestJellyfinTrickplayAutoFixEndToEnd:
         assert (trickplay_dir / "Test Movie H264 (2024)-320.json").exists()
 
         try:
-            # ----- 2. Apply the fix -----
-            statuses_before = server.check_trickplay_extraction_status()
-            target_libs = [s["id"] for s in statuses_before]
-            assert target_libs, "no libraries to fix"
+            # ----- 2. Apply the fix via the unified health-check -----
+            issues_before = server.check_settings_health()
+            critical_before = [i for i in issues_before if i.flag == "EnableTrickplayImageExtraction"]
+            assert critical_before, (
+                f"expected EnableTrickplayImageExtraction issue, got {[i.flag for i in issues_before]}"
+            )
 
-            fix_results = server.enable_trickplay_extraction(library_ids=target_libs)
+            fix_results = server.apply_recommended_settings(flags=["EnableTrickplayImageExtraction"])
             assert all(v == "ok" for v in fix_results.values()), fix_results
 
-            statuses_after = server.check_trickplay_extraction_status()
-            assert all(s["extraction_enabled"] for s in statuses_after), statuses_after
+            issues_after = server.check_settings_health()
+            critical_after = [i for i in issues_after if i.flag == "EnableTrickplayImageExtraction"]
+            assert not critical_after, f"flag still mis-set after fix: {critical_after}"
 
             # ----- 3. Trigger a refresh + poll for JF to pick up the trickplay -----
             requests.post(

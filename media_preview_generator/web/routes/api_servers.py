@@ -746,34 +746,12 @@ def test_server_connection():
         "version": result.version,
         "message": result.message,
     }
-
-    # Jellyfin-only setup gotcha: libraries default
-    # ``EnableTrickplayImageExtraction`` to false, so Jellyfin won't
-    # see our sidecar trickplay even when the files are correct. Surface
-    # the misconfiguration here so the wizard can show a "Fix it for me"
-    # button before the user saves the server.
-    if result.ok and cfg.type is ServerType.JELLYFIN and hasattr(live, "check_trickplay_extraction_status"):
-        try:
-            statuses = live.check_trickplay_extraction_status()
-        except Exception as exc:
-            logger.debug("Trickplay status probe raised: {}", exc)
-            statuses = []
-
-        misconfigured = [s for s in statuses if not s.get("extraction_enabled")]
-        if misconfigured:
-            response_body["warnings"] = [
-                {
-                    "code": "jellyfin_trickplay_disabled",
-                    "message": (
-                        "Some Jellyfin libraries have trickplay extraction disabled — "
-                        "without it Jellyfin won't display preview thumbnails for files "
-                        "we publish. Enable it via the 'Fix it for me' button or in "
-                        "Jellyfin's library settings."
-                    ),
-                    "libraries": [{"id": s["id"], "name": s["name"]} for s in misconfigured],
-                }
-            ]
-
+    # Trickplay-disabled / settings-misconfigured surfacing moved to
+    # the unified `/api/servers/<id>/health-check` panel on the Edit
+    # Server modal (works for Plex/Emby/Jellyfin instead of just one
+    # vendor + one flag). The wizard's pre-save warning was set-but-
+    # never-read dead code anyway — the user opens Edit-Server right
+    # after Save and sees the full health-check there.
     return jsonify(response_body)
 
 
@@ -969,115 +947,6 @@ def set_vendor_extraction(server_id: str):
             "scan_extraction": payload["scan_extraction"],
         }
     )
-
-
-@api.route("/servers/<server_id>/jellyfin/trickplay-status", methods=["GET"])
-@setup_or_auth_required
-def get_jellyfin_trickplay_status(server_id: str):
-    """Per-library trickplay-extraction status for a saved Jellyfin server.
-
-    The ``/servers`` page calls this once per Jellyfin card after the
-    list renders, so the "Fix trickplay" button only appears when at
-    least one library actually needs fixing — without it, the button
-    showed up on every Jellyfin card forever even after a successful
-    fix.
-
-    Returns ``{"libraries": [{id, name, extraction_enabled, ...}]}``
-    on success or ``{"error": "..."}`` with a 4xx/5xx status. Callers
-    are expected to derive ``needs_fix = any(not l.extraction_enabled
-    for l in libraries)``.
-    """
-    raw_servers = _get_media_servers()
-    target = next((s for s in raw_servers if isinstance(s, dict) and s.get("id") == server_id), None)
-    if target is None:
-        return jsonify({"error": f"server {server_id!r} not found"}), 404
-
-    try:
-        cfg = server_config_from_dict(target)
-    except Exception as exc:
-        return jsonify({"error": f"invalid server config: {exc}"}), 400
-
-    if cfg.type is not ServerType.JELLYFIN:
-        return jsonify({"error": f"server {server_id} is not a Jellyfin server"}), 400
-
-    live = _instantiate_for_probe(cfg)
-    if live is None or not hasattr(live, "check_trickplay_extraction_status"):
-        return jsonify({"error": "could not instantiate Jellyfin client"}), 500
-
-    try:
-        statuses = live.check_trickplay_extraction_status()
-    except Exception as exc:
-        # Upstream Jellyfin failure — surface as 502 so monitoring/clients
-        # see "bad gateway" rather than a 200 with an error body (the rest
-        # of this file uses 502 for the same shape; was 200 by oversight).
-        logger.warning(
-            "Trickplay status probe failed for Jellyfin server {!r}: {}: {}",
-            cfg.name or server_id,
-            type(exc).__name__,
-            exc,
-        )
-        return jsonify({"error": str(exc)}), 502
-
-    return jsonify({"libraries": statuses})
-
-
-@api.route("/servers/<server_id>/jellyfin/fix-trickplay", methods=["POST"])
-@setup_or_auth_required
-def fix_jellyfin_trickplay(server_id: str):
-    """One-click fix for the ``EnableTrickplayImageExtraction`` gotcha.
-
-    Body: optional ``{"library_ids": ["<id>", ...]}`` to scope the fix
-    to specific libraries; absent body flips every library on the
-    server. Calls :meth:`JellyfinServer.enable_trickplay_extraction`
-    which POSTs the updated ``LibraryOptions`` to Jellyfin.
-
-    Returns ``{"ok": true|false, "results": {<lib_id>: "ok"|<error>}}``.
-    The endpoint reports 200 even on partial failure — the per-library
-    results dict carries the actual story so the UI can show a row-by-row
-    summary.
-    """
-    raw_servers = _get_media_servers()
-    target = next((s for s in raw_servers if isinstance(s, dict) and s.get("id") == server_id), None)
-    if target is None:
-        return jsonify({"error": f"server {server_id!r} not found"}), 404
-
-    try:
-        cfg = server_config_from_dict(target)
-    except Exception as exc:
-        return jsonify({"error": f"invalid server config: {exc}"}), 400
-
-    if cfg.type is not ServerType.JELLYFIN:
-        return jsonify({"error": f"server {server_id} is not a Jellyfin server"}), 400
-
-    live = _instantiate_for_probe(cfg)
-    if live is None or not hasattr(live, "enable_trickplay_extraction"):
-        return jsonify({"error": "could not instantiate Jellyfin client"}), 500
-
-    body = request.get_json(silent=True) or {}
-    library_ids = body.get("library_ids") if isinstance(body, dict) else None
-    if library_ids is not None and not isinstance(library_ids, list):
-        return jsonify({"error": "library_ids must be a list"}), 400
-
-    try:
-        results = live.enable_trickplay_extraction(library_ids=library_ids)
-    except Exception as exc:
-        logger.warning(
-            "Fix-trickplay: could not enable Jellyfin's trickplay-extraction setting on server {!r} "
-            "({}: {}). No Jellyfin settings were changed. "
-            "As a manual fallback, enable it in Jellyfin's web UI: "
-            "Dashboard → Libraries → edit each library → tick 'Trickplay image extraction'.",
-            cfg.name or server_id,
-            type(exc).__name__,
-            exc,
-        )
-        # Total upstream failure (network/auth) — return 502 so the JS path
-        # `r.ok === false` triggers and the user sees the toast. Per-library
-        # partial failure still returns 200 (handled below) because the
-        # response carries `ok: bool` + per-library results.
-        return jsonify({"ok": False, "error": str(exc)}), 502
-
-    all_ok = all(v == "ok" for v in results.values())
-    return jsonify({"ok": all_ok, "results": results})
 
 
 @api.route("/servers/<server_id>/health-check", methods=["GET"])

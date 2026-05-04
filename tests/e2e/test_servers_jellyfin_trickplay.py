@@ -1,4 +1,10 @@
-"""E2E tests for the Jellyfin "Fix trickplay" button on a server card."""
+"""E2E tests for the per-server settings health-check pill on a Servers card.
+
+Replaces the previous Jellyfin-only "Fix trickplay" button tests once
+the unified ``/health-check`` panel covered the same ground for every
+vendor (Jellyfin/Plex/Emby) with one common UI surface. Filename kept
+for git-history continuity.
+"""
 
 from __future__ import annotations
 
@@ -6,8 +12,7 @@ import pytest
 from playwright.sync_api import Page, expect
 
 from ._mocks import (
-    mock_jellyfin_trickplay_fix,
-    mock_jellyfin_trickplay_status,
+    mock_server_health_check,
     mock_servers_list,
 )
 
@@ -33,54 +38,36 @@ def _stub_jellyfin_card(page: Page) -> None:
 
 
 @pytest.mark.e2e
-class TestJellyfinTrickplayFix:
-    def test_fix_trickplay_button_calls_endpoint(self, authed_page: Page, app_url: str) -> None:
-        """A Jellyfin server whose live trickplay-status probe finds at
-        least one disabled library shows the Fix button. Clicking it
-        POSTs the per-server endpoint and re-runs the probe."""
+class TestServerHealthPill:
+    def test_health_pill_visible_when_critical_issue(self, authed_page: Page, app_url: str) -> None:
+        """Card shows a red 'N issue' pill when the live health check
+        finds a critical mis-set flag. Replaces the older Jellyfin-only
+        "Fix trickplay" button visibility test."""
         _stub_jellyfin_card(authed_page)
-        # Probe: at least one library has extraction disabled.
-        mock_jellyfin_trickplay_status(authed_page, needs_fix=True)
-        called = mock_jellyfin_trickplay_fix(authed_page)
+        mock_server_health_check(authed_page)  # default: 1 critical issue
 
         authed_page.goto(f"{app_url}/servers")
         authed_page.wait_for_load_state("domcontentloaded")
         expect(authed_page.locator("#serverList")).to_contain_text("Jellyfin Test", timeout=3000)
 
-        # Locate by class — the button text changes to "Fixed" after the
-        # successful POST, and a text-based locator would lose its target.
-        fix_btn = authed_page.locator(".fix-trickplay-btn").first
-        # The button is hidden by default and revealed by the probe.
-        expect(fix_btn).to_be_visible(timeout=3000)
+        pill = authed_page.locator(".server-health-pill").first
+        expect(pill).to_be_visible(timeout=3000)
+        expect(pill).to_contain_text("issue")
+        # Critical issues paint the pill red (bg-danger).
+        pill_class = pill.get_attribute("class") or ""
+        assert "bg-danger" in pill_class, f"expected critical pill colour, got class={pill_class!r}"
 
-        # Capture console errors so we catch regressions like the
-        # `Cannot set properties of null (setting 'innerHTML')` crash.
-        errors: list[str] = []
-        authed_page.on(
-            "console",
-            lambda msg: errors.append(msg.text) if msg.type == "error" else None,
-        )
-        authed_page.on("dialog", lambda d: d.accept())
-        fix_btn.click()
-        authed_page.wait_for_timeout(800)
-        assert called, "POST /api/servers/<id>/jellyfin/fix-trickplay never fired"
-        expect(fix_btn).to_contain_text("Fixed", timeout=2000)
-        assert not errors, f"console errors during trickplay fix: {errors}"
-
-    def test_fix_button_hidden_when_all_libraries_already_enabled(self, authed_page: Page, app_url: str) -> None:
-        """Regression: the button used to be rendered visible for every
-        Jellyfin card regardless of whether trickplay was actually
-        disabled, so it kept reappearing on refresh even after a
-        successful fix. The per-card probe now hides it whenever the
-        live status reports every library is already enabled."""
+    def test_health_pill_hidden_when_all_good(self, authed_page: Page, app_url: str) -> None:
+        """Regression of the older 'button always visible even after fix'
+        bug. With zero issues the pill must stay hidden."""
         _stub_jellyfin_card(authed_page)
-        mock_jellyfin_trickplay_status(authed_page, needs_fix=False)
+        mock_server_health_check(authed_page, issues=[])
 
         authed_page.goto(f"{app_url}/servers")
         authed_page.wait_for_load_state("domcontentloaded")
         expect(authed_page.locator("#serverList")).to_contain_text("Jellyfin Test", timeout=3000)
 
-        fix_btn = authed_page.locator(".fix-trickplay-btn").first
-        # Give the per-card probe time to resolve and hide the button.
+        pill = authed_page.locator(".server-health-pill").first
+        # Give the per-card probe time to resolve and hide the pill.
         authed_page.wait_for_timeout(500)
-        expect(fix_btn).to_be_hidden()
+        expect(pill).to_be_hidden()

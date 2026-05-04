@@ -285,21 +285,24 @@ edit each library → enable "Trickplay image extraction"*.
 
 Or use the **one-click auto-fix** built into this tool:
 
-* Add Server wizard surfaces a `jellyfin_trickplay_disabled` warning
-  in the connection-test response when libraries have it off.
-* Servers list page shows a **"Fix trickplay"** button on every
-  Jellyfin card. One click flips `EnableTrickplayImageExtraction` and
-  `ExtractTrickplayImagesDuringLibraryScan` to `true` on every library
-  via Jellyfin's `/Library/VirtualFolders/LibraryOptions` POST.
+* Servers list page shows a coloured **"N issue(s)"** pill on every card
+  whose live audit finds mis-set settings (red = critical, yellow =
+  recommended). Clicking the pill opens the **Edit Server → Server
+  health check** panel.
+* The panel lists every misconfigured flag with current → recommended
+  values, an ⓘ tooltip explaining why each setting matters, and an
+  **"Apply recommended"** button that flips them via the appropriate
+  vendor API call.
 * Or call the API directly:
   ```
-  POST /api/servers/<server_id>/jellyfin/fix-trickplay
+  GET  /api/servers/<server_id>/health-check          # audit
+  POST /api/servers/<server_id>/health-check/apply    # fix
   {
-    "library_ids": ["..."]   # optional; omit to fix every library
+    "flags": ["EnableTrickplayImageExtraction", ...]  # optional; omit to fix every issue
   }
   ```
 
-The button is idempotent — clicking on an already-correctly-configured
+The endpoint is idempotent — running it on an already-correctly-configured
 server is a no-op.
 
 ---
@@ -369,7 +372,8 @@ issue #215.
 | POST | `/api/servers/auth/jellyfin/quick-connect/initiate` | Start Quick Connect ceremony |
 | POST | `/api/servers/auth/jellyfin/quick-connect/poll` | Poll for approval |
 | POST | `/api/servers/auth/jellyfin/quick-connect/exchange` | Exchange approved secret for token |
-| POST | `/api/servers/<id>/jellyfin/fix-trickplay` | One-click flip of `EnableTrickplayImageExtraction` on a Jellyfin server's libraries |
+| GET | `/api/servers/<id>/health-check` | Per-server settings audit (all vendors) |
+| POST | `/api/servers/<id>/health-check/apply` | One-click fix of mis-set settings (all vendors) |
 | GET | `/api/bif/servers/<id>/search?q=...` | Multi-server BIF Viewer search; returns `preview_kind` per result |
 | GET | `/api/bif/trickplay/info?server_id=...&path=...` | Parse a Jellyfin trickplay manifest + sheet metadata |
 | GET | `/api/bif/trickplay/frame?server_id=...&sheets_dir=...&index=N&tile_width=10&tile_height=10` | Slice and serve a single thumbnail from a tile sheet |

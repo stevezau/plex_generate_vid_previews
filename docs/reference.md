@@ -625,8 +625,8 @@ For full design and per-vendor details see [Multi-Media-Server](multi-server.md)
 | POST | `/api/servers/auth/jellyfin/quick-connect/initiate` | Begin Quick Connect ceremony |
 | POST | `/api/servers/auth/jellyfin/quick-connect/poll` | Poll for approval |
 | POST | `/api/servers/auth/jellyfin/quick-connect/exchange` | Exchange approved secret for token |
-| GET | `/api/servers/<id>/jellyfin/trickplay-status` | Per-library trickplay-extraction status (used by the Servers page to decide when to surface "Fix trickplay") |
-| POST | `/api/servers/<id>/jellyfin/fix-trickplay` | Auto-flip `EnableTrickplayImageExtraction` on a Jellyfin server's libraries (one-click fix for the most common Jellyfin gotcha — see [docs/multi-server#jellyfin-trickplay-extraction-flag](multi-server.md#jellyfin-trickplay-extraction-flag-the-most-common-gotcha)) |
+| GET | `/api/servers/<id>/health-check` | Per-server settings audit. Returns `{vendor, issues, issue_count, fixable_count}`; `issues[]` carries `{flag, label, severity, current, recommended, rationale, library_id, library_name, fixable}`. Works for Plex (server-wide prefs via `/:/prefs`), Emby and Jellyfin (per-library `LibraryOptions`). Replaces the older Jellyfin-only `/jellyfin/trickplay-status` route. |
+| POST | `/api/servers/<id>/health-check/apply` | One-click apply of recommended settings. Optional body `{flags: ["FlagName", ...]}` restricts the fix; absent body fixes every issue currently surfaced by `health-check`. Returns `{ok, results}` keyed `<library_id>:<flag>` (or `:<flag>` for server-wide prefs). Replaces the older Jellyfin-only `/jellyfin/fix-trickplay` route. |
 | GET | `/api/bif/servers/<id>/search?q=<query>` | Multi-server BIF Viewer search; returns `preview_kind` (`bif` or `trickplay`) per result so the viewer renders the right format |
 | GET | `/api/bif/trickplay/info?server_id=...&path=...` | Parse a Jellyfin trickplay manifest + report sheet metadata |
 | GET | `/api/bif/trickplay/frame?server_id=...&sheets_dir=...&index=N&tile_width=10&tile_height=10` | Slice and serve a single thumbnail JPEG from a trickplay tile sheet |

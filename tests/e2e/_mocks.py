@@ -226,45 +226,59 @@ def mock_jellyfin_quick_connect(
     page.route("**/api/servers/auth/jellyfin/quick-connect/exchange", exchange)
 
 
-def mock_jellyfin_trickplay_fix(page: Page, ok: bool = True) -> list[bool]:
-    """POST /api/servers/<id>/jellyfin/fix-trickplay. Returns a list capturing each call."""
-    body = {"ok": ok, "fixed": ["lib1", "lib2"]} if ok else {"ok": False, "message": "Failed"}
+def mock_server_health_check(
+    page: Page,
+    *,
+    issues: list[dict] | None = None,
+    vendor: str = "jellyfin",
+) -> None:
+    """GET /api/servers/<id>/health-check.
+
+    Drives the per-card health pill on the Servers list. Defaults to
+    a single mis-set Jellyfin flag so the pill renders red; pass
+    ``issues=[]`` to simulate "all good" (the pill stays hidden).
+    """
+    if issues is None:
+        issues = [
+            {
+                "library_id": "lib1",
+                "library_name": "Movies",
+                "flag": "EnableTrickplayImageExtraction",
+                "label": "Trickplay enabled in Jellyfin",
+                "rationale": "Without this Jellyfin ignores our published trickplay sheets.",
+                "current": False,
+                "recommended": True,
+                "severity": "critical",
+                "fixable": True,
+            }
+        ]
+    payload = {
+        "vendor": vendor,
+        "issues": issues,
+        "issue_count": len(issues),
+        "fixable_count": sum(1 for i in issues if i.get("fixable")),
+    }
+    page.route(
+        "**/api/servers/*/health-check",
+        lambda route: _fulfill_json(route, payload),
+    )
+
+
+def mock_server_health_check_apply(page: Page, ok: bool = True) -> list[bool]:
+    """POST /api/servers/<id>/health-check/apply. Returns a list capturing each call."""
     called: list[bool] = []
+    body = (
+        {"ok": True, "results": {"lib1:EnableTrickplayImageExtraction": "ok"}}
+        if ok
+        else {"ok": False, "results": {"lib1:EnableTrickplayImageExtraction": "error: HTTP 500"}}
+    )
 
     def handler(route: Route) -> None:
         called.append(True)
         _fulfill_json(route, body)
 
-    page.route("**/api/servers/*/jellyfin/fix-trickplay", handler)
+    page.route("**/api/servers/*/health-check/apply", handler)
     return called
-
-
-def mock_jellyfin_trickplay_status(
-    page: Page,
-    *,
-    libraries: list[dict] | None = None,
-    needs_fix: bool = True,
-) -> None:
-    """GET /api/servers/<id>/jellyfin/trickplay-status.
-
-    The /servers JS calls this once per Jellyfin card to decide whether
-    to surface the Fix trickplay button. ``needs_fix`` is the easy
-    knob — it returns one disabled library by default.
-    """
-    if libraries is None:
-        libraries = [
-            {
-                "id": "lib1",
-                "name": "Movies",
-                "extraction_enabled": not needs_fix,
-                "scan_extraction_enabled": not needs_fix,
-            }
-        ]
-
-    page.route(
-        "**/api/servers/*/jellyfin/trickplay-status",
-        lambda route: _fulfill_json(route, {"libraries": libraries}),
-    )
 
 
 def mock_servers_refresh_libraries(page: Page, count: int = 2) -> list[bool]:

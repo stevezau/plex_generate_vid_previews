@@ -746,44 +746,14 @@
         if (r.ok && r.data && r.data.ok) {
             result.className = 'alert alert-success';
             result.innerHTML = `<i class="bi bi-check2-circle me-1"></i>Connected to <strong>${escapeHtml(r.data.server_name || wizard.name)}</strong>${r.data.version ? ' (v' + escapeHtml(r.data.version) + ')' : ''}.`;
-
-            // Surface server-side warnings (e.g. Jellyfin trickplay
-            // extraction disabled). The "Fix it for me" button posts
-            // to the per-vendor remediation endpoint and re-tests.
-            const warnings = Array.isArray(r.data.warnings) ? r.data.warnings : [];
-            if (warnings.length > 0) {
-                const warnDiv = document.createElement('div');
-                warnDiv.className = 'alert alert-warning mt-2';
-                warnings.forEach(w => {
-                    const wrap = document.createElement('div');
-                    wrap.innerHTML = `<i class="bi bi-exclamation-triangle me-1"></i>${escapeHtml(w.message || 'Setup warning')}`;
-                    if (w.code === 'jellyfin_trickplay_disabled') {
-                        const libs = Array.isArray(w.libraries) ? w.libraries : [];
-                        if (libs.length > 0) {
-                            const libNames = libs.map(l => escapeHtml(l.name || l.id)).join(', ');
-                            wrap.innerHTML += `<div class="small text-muted mt-1">Affected libraries: ${libNames}</div>`;
-                        }
-                        const btn = document.createElement('button');
-                        btn.type = 'button';
-                        btn.className = 'btn btn-sm btn-warning mt-2';
-                        btn.innerHTML = '<i class="bi bi-magic me-1"></i>Fix it for me';
-                        btn.dataset.libraryIds = libs.map(l => l.id).join(',');
-                        btn.addEventListener('click', async () => {
-                            btn.disabled = true;
-                            btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Fixing…';
-                            // The wizard's server hasn't been saved yet, so
-                            // we don't have a stored ``server_id``. Skip the
-                            // pre-save fix here and tell the user it'll be
-                            // applied after they click Save.
-                            wrap.innerHTML = '<i class="bi bi-info-circle me-1"></i>The trickplay flag will be enabled when you save this server.';
-                            wizard._pendingTrickplayFix = libs.map(l => l.id);
-                        });
-                        wrap.appendChild(btn);
-                    }
-                    warnDiv.appendChild(wrap);
-                });
-                result.appendChild(warnDiv);
-            }
+            // The wizard used to render an inline "Jellyfin trickplay
+            // disabled" warning + "Fix it for me" button here. The
+            // button's only side-effect was setting a `_pendingTrickplayFix`
+            // attribute that nothing read, so the user got an empty
+            // promise that the fix would land "after Save". The
+            // unified Server health-check panel on the Edit-Server
+            // modal (post-save) covers this case for every vendor and
+            // every flag — so we drop the misleading wizard surfacing.
         } else {
             result.className = 'alert alert-warning';
             result.innerHTML = `<i class="bi bi-exclamation-triangle me-1"></i>${escapeHtml((r.data && r.data.message) || 'Connection failed')}`;
