@@ -380,6 +380,138 @@ class TestPinnedFilterForwardedToProcessCanonicalPath:
         mock_process.assert_called_once()
         assert mock_process.call_args.kwargs["server_id_filter"] == "jelly-only"
 
+    def test_no_pin_emby_originator_scopes_to_originator(self, tmp_path):
+        """No pin + Emby originator → dispatcher pins to that originator.
+
+        Matrix completion: previously only the Jellyfin variant of this
+        contract was tested. Per CLAUDE.md "Cover the matrix, not one
+        cell" — write a test for every distinct value of the branching
+        variable (ServerType). Without this, an Emby-specific bug in
+        the per-originator scoping logic would slip through.
+        """
+        cfg = _server_config("emby-only", ServerType.EMBY)
+
+        registry_mock = MagicMock()
+        registry_mock.configs.return_value = [cfg]
+
+        proc = MagicMock()
+        proc.list_canonical_paths.return_value = iter(
+            [ProcessableItem(canonical_path="/data/x.mkv", server_id="emby-only")]
+        )
+
+        with (
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+            patch("media_preview_generator.servers.ServerRegistry") as mock_registry,
+            patch("media_preview_generator.processing.get_processor_for", return_value=proc),
+            patch("media_preview_generator.processing.multi_server.process_canonical_path") as mock_process,
+        ):
+            mock_sm.return_value.get.return_value = [
+                {"id": "emby-only", "type": "emby", "enabled": True},
+            ]
+            mock_registry.from_settings.return_value = registry_mock
+            mock_process.return_value = MagicMock(publishers=[])
+
+            _run_full_scan_multi_server(_config(), selected_gpus=[])
+
+        mock_process.assert_called_once()
+        assert mock_process.call_args.kwargs["server_id_filter"] == "emby-only"
+
+    def test_jellyfin_pinned_forwards_filter_to_process_canonical_path(self, tmp_path):
+        """Pin=jellyfin must forward the filter to process_canonical_path.
+
+        Matrix gap: prior tests covered Plex-pinned (the d9918149 bug
+        site) but had NO test for Jellyfin-pinned with sibling servers
+        present. A regression that drops the filter on the Jellyfin
+        branch would let publishes leak into the Plex/Emby siblings.
+        """
+        cfg_jelly = _server_config("jelly-pinned", ServerType.JELLYFIN)
+
+        registry_mock = MagicMock()
+        registry_mock.configs.return_value = [cfg_jelly]
+
+        proc = MagicMock()
+        proc.list_canonical_paths.return_value = iter(
+            [
+                ProcessableItem(canonical_path="/data/movies/x.mkv", server_id="jelly-pinned"),
+                ProcessableItem(canonical_path="/data/movies/y.mkv", server_id="jelly-pinned"),
+            ]
+        )
+
+        with (
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+            patch("media_preview_generator.servers.ServerRegistry") as mock_registry,
+            patch("media_preview_generator.processing.get_processor_for", return_value=proc),
+            patch("media_preview_generator.processing.multi_server.process_canonical_path") as mock_process,
+        ):
+            mock_sm.return_value.get.return_value = [
+                {"id": "plex-default", "type": "plex", "enabled": True},
+                {"id": "emby-other", "type": "emby", "enabled": True},
+                {"id": "jelly-pinned", "type": "jellyfin", "enabled": True},
+            ]
+            mock_registry.from_settings.return_value = registry_mock
+            mock_process.return_value = MagicMock(publishers=[])
+
+            _run_full_scan_multi_server(
+                _config(),
+                selected_gpus=[],
+                server_id_filter="jelly-pinned",
+            )
+
+        assert mock_process.call_count == 2
+        for call in mock_process.call_args_list:
+            assert call.kwargs["server_id_filter"] == "jelly-pinned", (
+                "Jellyfin-pinned dispatch leaked into Plex/Emby siblings — "
+                f"got server_id_filter={call.kwargs.get('server_id_filter')!r}"
+            )
+
+    def test_emby_pinned_forwards_filter_to_process_canonical_path(self, tmp_path):
+        """Pin=emby must forward the filter to process_canonical_path.
+
+        Matrix gap: the third leg of (Plex|Jellyfin|Emby) × pinned —
+        prior coverage missed this entirely. Same rationale as the
+        Jellyfin-pinned test above: catches per-vendor regressions in
+        the dispatcher's pin-precedence logic.
+        """
+        cfg_emby = _server_config("emby-pinned", ServerType.EMBY)
+
+        registry_mock = MagicMock()
+        registry_mock.configs.return_value = [cfg_emby]
+
+        proc = MagicMock()
+        proc.list_canonical_paths.return_value = iter(
+            [
+                ProcessableItem(canonical_path="/data/movies/x.mkv", server_id="emby-pinned"),
+                ProcessableItem(canonical_path="/data/movies/y.mkv", server_id="emby-pinned"),
+            ]
+        )
+
+        with (
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+            patch("media_preview_generator.servers.ServerRegistry") as mock_registry,
+            patch("media_preview_generator.processing.get_processor_for", return_value=proc),
+            patch("media_preview_generator.processing.multi_server.process_canonical_path") as mock_process,
+        ):
+            mock_sm.return_value.get.return_value = [
+                {"id": "plex-default", "type": "plex", "enabled": True},
+                {"id": "jelly-other", "type": "jellyfin", "enabled": True},
+                {"id": "emby-pinned", "type": "emby", "enabled": True},
+            ]
+            mock_registry.from_settings.return_value = registry_mock
+            mock_process.return_value = MagicMock(publishers=[])
+
+            _run_full_scan_multi_server(
+                _config(),
+                selected_gpus=[],
+                server_id_filter="emby-pinned",
+            )
+
+        assert mock_process.call_count == 2
+        for call in mock_process.call_args_list:
+            assert call.kwargs["server_id_filter"] == "emby-pinned", (
+                "Emby-pinned dispatch leaked into Plex/Jellyfin siblings — "
+                f"got server_id_filter={call.kwargs.get('server_id_filter')!r}"
+            )
+
 
 class TestEnumerationStatusBanner:
     """D28 — surface a "Querying {server} library…" status BEFORE each

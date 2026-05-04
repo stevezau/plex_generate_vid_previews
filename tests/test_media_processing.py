@@ -493,11 +493,22 @@ class TestGenerateImages:
 
         generate_images("/test/video.mp4", temp_dir, None, None, mock_config)
 
-        # Verify FFmpeg was called exactly once with the configured binary and source path.
+        # Verify FFmpeg was called with the configured binary AND a
+        # well-formed invocation — i.e. ``-i <source>`` (not just the
+        # source path floating in argv) and an output destination
+        # written into temp_dir. A regression that builds a malformed
+        # command (e.g. forgets ``-i`` or points the output elsewhere)
+        # would silently pass with the prior `_path in args` check.
         mock_popen.assert_called_once()
         args = mock_popen.call_args[0][0]
-        assert mock_config.ffmpeg_path in args
-        assert "/test/video.mp4" in args
+        assert args[0] == mock_config.ffmpeg_path, f"FFmpeg binary should be argv[0]; got {args[0]!r} (full: {args!r})"
+        assert "-i" in args, f"FFmpeg invocation missing -i: {args!r}"
+        i_index = args.index("-i")
+        assert args[i_index + 1] == "/test/video.mp4", f"-i must be followed by source path; got {args[i_index + 1]!r}"
+        # Output target must point under the requested temp_dir so a
+        # regression that writes to a system location is caught.
+        output_arg = args[-1]
+        assert temp_dir in output_arg, f"FFmpeg output {output_arg!r} not under {temp_dir!r}"
 
     @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("media_preview_generator.processing.ffmpeg_runner.time")
@@ -597,10 +608,19 @@ class TestGenerateImages:
         generate_images("/test/video.mp4", temp_dir, "NVIDIA", "cuda", mock_config)
 
         args = mock_popen.call_args[0][0]
-        assert "-hwaccel" in args
-        assert "cuda" in args
+        # -hwaccel must be IMMEDIATELY followed by "cuda" — checking
+        # that both tokens appear independently would pass even if the
+        # order were reversed (FFmpeg silently ignores trailing args
+        # before -i, masking the bug).
+        assert "-hwaccel" in args, f"NVIDIA path missing -hwaccel: {args!r}"
+        assert args[args.index("-hwaccel") + 1] == "cuda", (
+            f"-hwaccel must be followed by 'cuda'; got {args[args.index('-hwaccel') + 1]!r}"
+        )
         # Generic "cuda" (no index suffix) must NOT add -hwaccel_device.
         assert "-hwaccel_device" not in args
+        # And the source must still be wired through -i — the GPU
+        # branch must not accidentally clobber the input.
+        assert "-i" in args and args[args.index("-i") + 1] == "/test/video.mp4"
 
     @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
@@ -775,9 +795,23 @@ class TestGenerateImages:
         vf_index = args.index("-vf")
         vf_value = args[vf_index + 1]
 
-        # Should contain HDR processing filters
-        assert "zscale" in vf_value
-        assert "tonemap" in vf_value
+        # zscale → tonemap MUST appear in that order in the filter
+        # graph. A reversed chain (tonemap before zscale) silently
+        # produces wrong colours because tonemap expects linear-light
+        # input that zscale is responsible for producing. The previous
+        # form of this test (independent presence checks) would pass
+        # even with the chain reversed.
+        assert "zscale" in vf_value, f"HDR path missing zscale: {vf_value!r}"
+        assert "tonemap" in vf_value, f"HDR path missing tonemap: {vf_value!r}"
+        zscale_pos = vf_value.find("zscale")
+        tonemap_pos = vf_value.find("tonemap")
+        assert zscale_pos < tonemap_pos, (
+            f"HDR filter chain order wrong: zscale must come before tonemap; got {vf_value!r}"
+        )
+        # Tonemap must specify an algorithm — a bare ``tonemap`` with
+        # no operator falls back to FFmpeg's default which differs
+        # across versions; pin the contract.
+        assert "tonemap=" in vf_value, f"tonemap must specify an algorithm (e.g. tonemap=hable); got {vf_value!r}"
 
     @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")

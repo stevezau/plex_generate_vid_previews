@@ -494,7 +494,15 @@ def test_webhook_malformed_payload_logs_warning(mock_warning, client):
         headers=_auth_headers(),
     )
     assert resp.status_code == 400
+    # Assert the warning actually fired AND the message identifies the
+    # endpoint so an operator scanning logs can correlate. A bare
+    # ``assert_called_once()`` would still pass if the warning text were
+    # silently changed to something useless like "" — that's bug-blind.
     mock_warning.assert_called_once()
+    msg = " ".join(str(a) for a in mock_warning.call_args.args)
+    assert "sonarr" in msg.lower() or "webhook" in msg.lower(), (
+        f"Warning fired but message doesn't identify the endpoint: {msg!r}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -578,14 +586,25 @@ def test_radarr_download_missing_file_path_is_ignored(client):
 
 @patch("media_preview_generator.web.webhooks.logger.warning")
 def test_radarr_download_missing_file_path_logs_warning(mock_warning, client):
-    """Missing Radarr file path should emit a warning log."""
+    """Missing Radarr file path should emit a warning log.
+
+    The previous form of this assertion was an OR over two phrasings of
+    the same warning ("missing file path" / "didn't carry a file path").
+    That made the test pass regardless of which phrasing actually
+    survived — silently allowing the wording to drift apart from
+    operator runbooks. Lock the production wording to the canonical
+    phrase and add a same-test sentinel so a regression that changes
+    the message is loud, not silent.
+    """
     payload = {"eventType": "Download", "movie": {"title": "No Path Movie"}}
     resp = client.post("/api/webhooks/radarr", json=payload, headers=_auth_headers())
     assert resp.status_code == 200
-    assert any(
-        "missing file path" in str(call) or "didn't carry a file path" in str(call)
-        for call in mock_warning.call_args_list
+    all_msgs = " | ".join(str(call) for call in mock_warning.call_args_list)
+    assert "didn't carry a file path" in all_msgs, (
+        f"Expected canonical warning 'didn't carry a file path' in radarr logs, got: {all_msgs!r}"
     )
+    # Source identifier must appear too so log filters by source still work.
+    assert "radarr" in all_msgs.lower(), f"Warning must identify source as 'radarr', got: {all_msgs!r}"
 
 
 def test_sonarr_download_missing_file_path_is_ignored(client):

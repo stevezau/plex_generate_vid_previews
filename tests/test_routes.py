@@ -1484,6 +1484,56 @@ class TestSettingsAPI:
         assert data["plex_config_folder"] == "/x"
         assert data["selected_libraries"] == ["5"]
 
+    def test_get_settings_never_leaks_real_credentials_anywhere_in_response(self, client):
+        """GET /api/settings must never echo a real credential value in
+        any field of the response — masked sentinel only.
+
+        Defense-in-depth contract: prior tests check ``plex_token`` and
+        ``webhook_secret`` are masked individually. This test seeds the
+        store with sentinel values that should NEVER appear in the wire
+        response (e.g. ``"SECRET-TOKEN-DO-NOT-LEAK"``) and scans the
+        full JSON payload for them. A regression that adds a new
+        response field forwarding the raw token would be caught here
+        even if no individual-field assertion was written for it.
+        """
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        sentinels = {
+            "plex_token": "SECRET-PLEX-TOKEN-DO-NOT-LEAK",
+            "webhook_secret": "SECRET-WEBHOOK-DO-NOT-LEAK",
+        }
+        sm.update(
+            {
+                "media_servers": [
+                    {
+                        "id": "plex-default",
+                        "type": "plex",
+                        "name": "Plex",
+                        "enabled": True,
+                        "url": "http://plex:32400",
+                        "auth": {"token": sentinels["plex_token"]},
+                        "verify_ssl": True,
+                        "libraries": [],
+                        "path_mappings": [],
+                        "exclude_paths": [],
+                        "output": {"plex_config_folder": "/plex"},
+                    }
+                ],
+                "webhook_secret": sentinels["webhook_secret"],
+            }
+        )
+
+        resp = client.get("/api/settings", headers=_api_headers())
+        assert resp.status_code == 200
+        # Scan the raw bytes — robust against any nesting depth or
+        # field name. If a future field forwards the secret in any form
+        # (string, JSON-encoded, base64), the substring check still
+        # catches the plaintext leak.
+        body = resp.data
+        for label, secret in sentinels.items():
+            assert secret.encode() not in body, f"GET /api/settings leaked {label}: secret appeared in response body"
+
     def test_save_settings(self, client):
         # Pre-seed gpu_config so gpu_threads setter can distribute workers
         client.post(

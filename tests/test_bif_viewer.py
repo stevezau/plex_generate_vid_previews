@@ -90,6 +90,51 @@ class TestReadBifMetadata:
         with pytest.raises(ValueError, match="bad magic"):
             read_bif_metadata(str(bad))
 
+    def test_truncated_header_raises(self, tmp_path):
+        """A file shorter than the 64-byte BIF header must raise loudly.
+
+        Without an explicit short-read guard, struct.unpack("<I", b"") on
+        a partial read would raise struct.error — surfaced to the user
+        as a confusing low-level exception. Either way, the production
+        contract is "raise on truncated header"; a regression that
+        silently returns garbage metadata would fool the viewer into
+        rendering corruption.
+        """
+        bad = tmp_path / "truncated.bif"
+        # Valid magic, but only 8 bytes total — every subsequent uint32
+        # read should fail.
+        bad.write_bytes(b"\x89BIF\r\n\x1a\n")
+        with pytest.raises((ValueError, struct.error)):
+            read_bif_metadata(str(bad))
+
+    def test_missing_sentinel_in_index_table_raises(self, tmp_path):
+        """When the index table doesn't end with the 0xFFFFFFFF sentinel,
+        the parser must raise. Otherwise a corrupt BIF would silently be
+        treated as truncated and the last frame's size would be wrong
+        (off-by-one against the rest of the file).
+        """
+        magic = bytes([0x89, 0x42, 0x49, 0x46, 0x0D, 0x0A, 0x1A, 0x0A])
+        version = 0
+        count = 1
+        interval_ms = 1000
+        bad = tmp_path / "no_sentinel.bif"
+        with open(bad, "wb") as f:
+            f.write(magic)
+            f.write(struct.pack("<I", version))
+            f.write(struct.pack("<I", count))
+            f.write(struct.pack("<I", interval_ms))
+            f.write(b"\x00" * 44)
+            # Index entry: timestamp=0, offset=80
+            f.write(struct.pack("<I", 0))
+            f.write(struct.pack("<I", 80))
+            # Sentinel slot is filled with WRONG values (not 0xFFFFFFFF).
+            f.write(struct.pack("<I", 0))  # should be 0xFFFFFFFF
+            f.write(struct.pack("<I", 84))
+            # Frame data
+            f.write(b"\xff\xd8\xff\xe0")
+        with pytest.raises(ValueError, match="sentinel"):
+            read_bif_metadata(str(bad))
+
     def test_reference_bif(self, reference_bif):
         """Validate parsing against the checked-in reference fixture."""
         if not os.path.isfile(reference_bif):
