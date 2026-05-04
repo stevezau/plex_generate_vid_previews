@@ -512,6 +512,112 @@ class TestPinnedFilterForwardedToProcessCanonicalPath:
                 f"got server_id_filter={call.kwargs.get('server_id_filter')!r}"
             )
 
+    def test_regenerate_thumbnails_propagates_to_process_canonical_path(self, tmp_path):
+        """TEST_AUDIT P0.10 (commit 0092f8d "silent skip" class).
+
+        When the user toggles "Regenerate" in the scan modal, the chain is:
+        UI → /api/jobs config_overrides["regenerate_thumbnails"]=True →
+        job_runner setattr config.regenerate_thumbnails=True → orchestrator
+        passes ``regenerate=bool(config.regenerate_thumbnails)`` to
+        process_canonical_path.
+
+        Bug class: a regression at the orchestrator boundary (e.g. reading
+        the wrong attribute name, or hard-coding regenerate=False) means
+        the user clicks Regenerate, the job runs, but the dispatcher's
+        freshness short-circuit silently keeps the existing BIF and
+        returns SKIPPED. User sees "completed" but nothing changed —
+        confusing and impossible to diagnose without orchestrator logs.
+
+        This pins the orchestrator → process_canonical_path boundary so
+        any regression that drops the regenerate kwarg, reads the wrong
+        config field, or coerces it to False is caught loudly.
+        """
+        cfg = _server_config("jelly-only", ServerType.JELLYFIN)
+        registry_mock = MagicMock()
+        registry_mock.configs.return_value = [cfg]
+
+        proc = MagicMock()
+        proc.list_canonical_paths.return_value = iter(
+            [ProcessableItem(canonical_path="/data/movies/x.mkv", server_id="jelly-only")]
+        )
+
+        # Build a config that has regenerate_thumbnails=True — exactly
+        # what the job_runner sets after the UI toggle.
+        cfg_with_regen = SimpleNamespace(
+            gpu_threads=0,
+            cpu_threads=1,
+            working_tmp_folder="/tmp/work",
+            plex_url="",
+            plex_token="",
+            webhook_paths=None,
+            server_id_filter=None,
+            regenerate_thumbnails=True,
+        )
+
+        with (
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+            patch("media_preview_generator.servers.ServerRegistry") as mock_registry,
+            patch("media_preview_generator.processing.get_processor_for", return_value=proc),
+            patch("media_preview_generator.processing.multi_server.process_canonical_path") as mock_process,
+        ):
+            mock_sm.return_value.get.return_value = [
+                {"id": "jelly-only", "type": "jellyfin", "enabled": True},
+            ]
+            mock_registry.from_settings.return_value = registry_mock
+            mock_process.return_value = MagicMock(publishers=[])
+
+            _run_full_scan_multi_server(cfg_with_regen, selected_gpus=[])
+
+        mock_process.assert_called_once()
+        assert mock_process.call_args.kwargs.get("regenerate") is True, (
+            "regenerate_thumbnails=True on the config did NOT propagate to "
+            f"process_canonical_path(regenerate=...) — got "
+            f"regenerate={mock_process.call_args.kwargs.get('regenerate')!r}. "
+            "User clicks Regenerate, dispatcher silently keeps existing BIF (0092f8d class)."
+        )
+
+    def test_regenerate_default_false_when_attribute_missing(self, tmp_path):
+        """Mirror test for the contract floor: when config.regenerate_thumbnails
+        is missing/False, process_canonical_path is called with
+        ``regenerate=False`` (NOT True or None). Together with the test
+        above this pins both edges of the boundary.
+        """
+        cfg = _server_config("jelly-only", ServerType.JELLYFIN)
+        registry_mock = MagicMock()
+        registry_mock.configs.return_value = [cfg]
+
+        proc = MagicMock()
+        proc.list_canonical_paths.return_value = iter(
+            [ProcessableItem(canonical_path="/data/movies/x.mkv", server_id="jelly-only")]
+        )
+
+        # Config WITHOUT regenerate_thumbnails attribute — orchestrator's
+        # getattr default kicks in.
+        cfg_no_regen = _config()  # SimpleNamespace without the attr
+
+        with (
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+            patch("media_preview_generator.servers.ServerRegistry") as mock_registry,
+            patch("media_preview_generator.processing.get_processor_for", return_value=proc),
+            patch("media_preview_generator.processing.multi_server.process_canonical_path") as mock_process,
+        ):
+            mock_sm.return_value.get.return_value = [
+                {"id": "jelly-only", "type": "jellyfin", "enabled": True},
+            ]
+            mock_registry.from_settings.return_value = registry_mock
+            mock_process.return_value = MagicMock(publishers=[])
+
+            _run_full_scan_multi_server(cfg_no_regen, selected_gpus=[])
+
+        mock_process.assert_called_once()
+        # Strict equality — `is True` would also pass for some truthy values
+        # we don't want to accept (e.g. 1, "yes"). The orchestrator does
+        # bool(getattr(...)) so the kwarg should be a plain bool False.
+        assert mock_process.call_args.kwargs.get("regenerate") is False, (
+            f"missing regenerate_thumbnails should default to regenerate=False; "
+            f"got {mock_process.call_args.kwargs.get('regenerate')!r}"
+        )
+
 
 class TestEnumerationStatusBanner:
     """D28 — surface a "Querying {server} library…" status BEFORE each

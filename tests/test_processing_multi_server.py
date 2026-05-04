@@ -1158,3 +1158,144 @@ class TestSummariseResults:
         ]:
             msg = _summarise_results([self._result(pub_status)], ms_status)
             assert "publisher" not in msg.lower(), f"jargon leaked for {ms_status}: {msg!r}"
+
+
+class TestItemIdResolverMemoisation:
+    """TEST_AUDIT P0.5 — closes commit 1f09c3a "90s gap" bug class.
+
+    ``_make_item_id_resolver`` wraps ``_resolve_item_id_for`` with a per-
+    dispatch memoisation cache so the up-to-five sub-phases of
+    ``process_canonical_path`` (freshness probe, regenerate-cleanup,
+    BIF-reuse probe, publish loop, not-fresh re-build) don't each pay
+    for a fresh Pass-2 enumeration on Jellyfin.
+
+    The user-facing impact of a regression: a single dispatch that should
+    take 0.1 s (cached negative result) instead takes 60-90 s while the
+    Jellyfin server re-walks its library 4 extra times. The bug ships as
+    "the dispatcher is slow" and is brutal to diagnose without per-call
+    timing logs.
+
+    These tests pin both halves of the contract:
+    * Same server, queried N times → backend hit ONCE, cache hit N-1×.
+    * Different servers, each queried once → backend hit per server.
+    """
+
+    def test_same_server_queried_repeatedly_hits_backend_once(self):
+        """5 calls for the same server → 1 ``_resolve_item_id_for`` call.
+
+        Without the memoisation guard this would call the backend 5
+        times. Pin the contract so a refactor that drops the cache,
+        narrows the cache key, or adds a per-call short-circuit before
+        the cache check is caught loudly.
+        """
+        from unittest.mock import MagicMock
+
+        from media_preview_generator.processing import multi_server as ms
+
+        backend = MagicMock(return_value="item-42")
+        with patch.object(ms, "_resolve_item_id_for", side_effect=backend):
+            resolve = ms._make_item_id_resolver("/data/movies/x.mkv")
+
+            server = MagicMock()
+            server.id = "jelly-1"
+            server.name = "Jellyfin"
+
+            results = [resolve(server, hint=None) for _ in range(5)]
+
+        assert results == ["item-42"] * 5, f"all 5 lookups must return the same cached id; got {results!r}"
+        assert backend.call_count == 1, (
+            f"_resolve_item_id_for must be called ONCE (cache hit on calls 2-5); "
+            f"got {backend.call_count} calls — would burn 60-90s on Jellyfin per dispatch (1f09c3a class)"
+        )
+
+    def test_different_servers_each_query_their_own_backend(self):
+        """3 distinct servers each queried once → 3 backend calls.
+
+        The cache is keyed by ``server.id`` — distinct servers must NOT
+        share a cache slot. A regression that flattened the cache key
+        (e.g. cached only by canonical_path) would return Plex's item-id
+        when the dispatcher asked Jellyfin → publish to the wrong item.
+        """
+        from unittest.mock import MagicMock
+
+        from media_preview_generator.processing import multi_server as ms
+
+        # Distinct backend return per server so a cache mix-up surfaces
+        # as the wrong id, not just a wrong call-count.
+        per_server = {"plex-1": "p-99", "emby-1": "e-99", "jelly-1": "j-99"}
+        backend = MagicMock(side_effect=lambda server, _path, _hint: per_server[server.id])
+        with patch.object(ms, "_resolve_item_id_for", side_effect=backend):
+            resolve = ms._make_item_id_resolver("/data/movies/x.mkv")
+
+            servers = []
+            for sid in ("plex-1", "emby-1", "jelly-1"):
+                s = MagicMock()
+                s.id = sid
+                s.name = sid
+                servers.append(s)
+
+            results = [resolve(s, hint=None) for s in servers]
+
+        assert results == ["p-99", "e-99", "j-99"], (
+            f"each server must get its OWN id; cache leak would return wrong ids — got {results!r}"
+        )
+        assert backend.call_count == 3, f"3 distinct servers → 3 backend calls; got {backend.call_count}"
+
+    def test_cache_remembers_none_for_not_in_library(self):
+        """Negative results (None — "not in this library") MUST be cached.
+
+        This is THE bug 1f09c3a fixed. ``_resolve_item_id_for`` returns
+        None when the file isn't in the server's library — a perfectly
+        valid answer for cross-vendor dispatches where Plex has the file
+        but Jellyfin doesn't. Without caching the negative, the next
+        sub-phase re-asks Jellyfin and pays another 30s. Pin it.
+        """
+        from unittest.mock import MagicMock
+
+        from media_preview_generator.processing import multi_server as ms
+
+        backend = MagicMock(return_value=None)
+        with patch.object(ms, "_resolve_item_id_for", side_effect=backend):
+            resolve = ms._make_item_id_resolver("/data/movies/not_on_this_server.mkv")
+
+            server = MagicMock()
+            server.id = "jelly-1"
+            server.name = "Jellyfin"
+
+            results = [resolve(server, hint=None) for _ in range(4)]
+
+        assert results == [None, None, None, None]
+        assert backend.call_count == 1, (
+            f"None result must be cached so sub-phases 2-N hit cache; "
+            f"got {backend.call_count} backend calls — exactly the 1f09c3a regression"
+        )
+
+    def test_cache_is_per_dispatch_not_global(self):
+        """Two separate ``_make_item_id_resolver`` calls (= two dispatches)
+        get INDEPENDENT caches.
+
+        The docstring promises a fresh cache per dispatch so a stale
+        negative can't leak across files or jobs. Without this, a
+        Jellyfin library refresh between dispatches would still see
+        the cached "not in library" answer and never re-check.
+        """
+        from unittest.mock import MagicMock
+
+        from media_preview_generator.processing import multi_server as ms
+
+        backend = MagicMock(return_value=None)
+        with patch.object(ms, "_resolve_item_id_for", side_effect=backend):
+            resolve_a = ms._make_item_id_resolver("/data/movies/x.mkv")
+            resolve_b = ms._make_item_id_resolver("/data/movies/x.mkv")
+
+            server = MagicMock()
+            server.id = "jelly-1"
+            server.name = "Jellyfin"
+
+            resolve_a(server, hint=None)
+            resolve_b(server, hint=None)
+
+        assert backend.call_count == 2, (
+            f"each new resolver instance must have its own cache; "
+            f"got {backend.call_count} (cache leaked across dispatches)"
+        )

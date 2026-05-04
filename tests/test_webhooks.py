@@ -1197,6 +1197,128 @@ def test_create_vendor_webhook_job_does_NOT_dedup_across_sources(mock_start, app
     )
 
 
+# ---------------------------------------------------------------------------
+# TEST_AUDIT P0.7 — title fallback ACTUALLY WIRED IN
+#
+# The unit test ``test_clean_title_from_basename`` (above) only proves the
+# helper is correct in isolation. The bug class P0.7 protects against is:
+# helper exists, but ``create_vendor_webhook_job`` doesn't actually call
+# it. A regression at the call site (e.g. dropping the ``or`` fallback,
+# passing the raw basename instead, or hard-coding "Webhook job") would
+# leave Plex/Emby/Jellyfin Job rows showing the raw filename next to
+# Sonarr/Radarr siblings that render as "Show S01E05" — exactly the
+# inconsistency that prompted the helper.
+#
+# These tests pin the wiring at create_vendor_webhook_job → Job.library_name.
+# ---------------------------------------------------------------------------
+
+
+@patch("media_preview_generator.web.routes._start_job_async")
+def test_create_vendor_webhook_job_uses_clean_title_when_title_omitted(mock_start, app):
+    """When the caller doesn't supply a title (the typical Plex/Emby/Jellyfin
+    incoming-webhook code path), the Job row's ``library_name`` MUST be
+    derived via ``_clean_title_from_basename`` from the canonical path.
+
+    Without this wiring the user sees raw filenames in Job Queue while
+    Sonarr/Radarr Jobs alongside show clean titles. Pin the assertion so
+    a refactor that drops the ``or _clean_title_from_basename(...)`` clause
+    at webhooks.py:389 is caught loudly.
+    """
+    import media_preview_generator.web.webhooks as wh
+    from media_preview_generator.web.jobs import get_job_manager
+
+    with app.app_context():
+        job_id = wh.create_vendor_webhook_job(
+            source="plex",
+            canonical_path="/data/movies/Margarita (2024) - S02E01 - TBA [AMZN].mkv",
+            item_id_by_server={"plex-1": "12345"},
+        )
+        assert job_id is not None
+        job = get_job_manager().get_job(job_id)
+
+    # The same input the unit test uses for _clean_title_from_basename
+    # (line 117). If the helper is wired in, the Job row gets the cleaned
+    # title; if a regression drops the call, library_name would be the
+    # raw basename or empty.
+    assert job is not None
+    assert job.library_name == "Margarita S02E01", (
+        f"library_name should be the helper-cleaned title, not the raw basename. "
+        f"got {job.library_name!r}; helper would have produced 'Margarita S02E01'. "
+        f"Likely: webhooks.py:389 dropped the `or _clean_title_from_basename(...)` clause."
+    )
+
+
+@patch("media_preview_generator.web.routes._start_job_async")
+def test_create_vendor_webhook_job_uses_clean_title_for_movie_basename(mock_start, app):
+    """Movie filename → "Title (Year)" format. Mirror test for the
+    non-episode branch of _clean_title_from_basename so a regression
+    that fixed only the SxxEyy path can't slip through silently.
+    """
+    import media_preview_generator.web.webhooks as wh
+    from media_preview_generator.web.jobs import get_job_manager
+
+    with app.app_context():
+        job_id = wh.create_vendor_webhook_job(
+            source="plex",
+            canonical_path="/data/movies/Inception (2010) [imdb-tt1375666].mkv",
+            item_id_by_server={"plex-1": "1"},
+        )
+        job = get_job_manager().get_job(job_id)
+
+    assert job.library_name == "Inception (2010)", (
+        f"movie basename should produce 'Title (Year)'; got {job.library_name!r}"
+    )
+
+
+@patch("media_preview_generator.web.routes._start_job_async")
+def test_create_vendor_webhook_job_uses_explicit_title_when_provided(mock_start, app):
+    """When the caller DOES pass a title (e.g. Plex webhook had a clean
+    Metadata payload), it takes precedence over the basename helper. The
+    fallback is only for callers that have no title to give.
+    """
+    import media_preview_generator.web.webhooks as wh
+    from media_preview_generator.web.jobs import get_job_manager
+
+    with app.app_context():
+        job_id = wh.create_vendor_webhook_job(
+            source="plex",
+            canonical_path="/data/movies/raw_filename.mkv",
+            title="Pretty Movie Title from Plex Metadata",
+            item_id_by_server={"plex-1": "1"},
+        )
+        job = get_job_manager().get_job(job_id)
+
+    assert job.library_name == "Pretty Movie Title from Plex Metadata", (
+        f"explicit title must win over basename fallback; got {job.library_name!r}"
+    )
+
+
+@patch("media_preview_generator.web.routes._start_job_async")
+def test_create_vendor_webhook_job_clean_title_used_when_title_is_empty_string(mock_start, app):
+    """Empty string title (NOT None) should still trigger the basename
+    fallback — line 389 uses ``(title or "").strip() or _clean_title_from_basename(...)``
+    so both falsy paths are covered.
+
+    Catches a regression that special-cased only ``title is None`` but
+    accidentally passed the empty string through to library_name.
+    """
+    import media_preview_generator.web.webhooks as wh
+    from media_preview_generator.web.jobs import get_job_manager
+
+    with app.app_context():
+        job_id = wh.create_vendor_webhook_job(
+            source="plex",
+            canonical_path="/data/tv/The Show - S01E10 - Pilot.mkv",
+            title="",  # empty string, not None
+            item_id_by_server={"plex-1": "1"},
+        )
+        job = get_job_manager().get_job(job_id)
+
+    assert job.library_name == "The Show S01E10", (
+        f"empty-string title must fall through to basename helper; got {job.library_name!r}"
+    )
+
+
 @patch("media_preview_generator.web.routes._start_job_async")
 def test_create_vendor_webhook_job_handles_unicode_path(mock_start, app):
     """Audit L4 — unicode in canonical_path must round-trip cleanly through
