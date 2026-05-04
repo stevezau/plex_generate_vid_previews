@@ -1162,6 +1162,12 @@
             }).catch(() => {});
         }
 
+        // Health-check probe — generic per-vendor settings audit. Vendors
+        // that haven't implemented check_settings_health yet return an
+        // empty issues list; we just render "all good" in that case.
+        // Fire-and-forget so the modal opens instantly.
+        runHealthCheckProbe(server.id);
+
         // D24 — vendor-aware re-auth UI: show ONE block matching the
         // server's type, hide the others, and reset all input state so
         // an old value from a previous Edit doesn't leak across.
@@ -1595,6 +1601,153 @@
         }
     }
 
+    // ─── Server settings health check ──────────────────────────────────
+    // Generic per-vendor settings audit. Probed on Edit Modal open;
+    // renders one row per misconfigured library option with an "Apply
+    // recommended" button. Vendors that don't implement check_settings_health
+    // return an empty issues list; we render "all good" in that case so
+    // the panel doesn't stay greyed-out forever.
+    async function runHealthCheckProbe(serverId) {
+        const group = document.getElementById('editHealthCheckGroup');
+        const badge = document.getElementById('editHealthBadge');
+        const list = document.getElementById('editHealthIssueList');
+        const fixCtl = document.getElementById('editHealthFixControls');
+        const fixCount = document.getElementById('editHealthFixCount');
+        const fixResult = document.getElementById('editHealthFixResult');
+        if (!group || !badge || !list || !fixCtl) return;
+
+        // Reset state from any prior modal open.
+        group.classList.remove('d-none');
+        list.innerHTML = '';
+        fixCtl.classList.add('d-none');
+        if (fixResult) { fixResult.className = 'small text-muted'; fixResult.textContent = ''; }
+        badge.className = 'badge ms-1 bg-secondary';
+        badge.textContent = 'checking…';
+
+        const r = await api('GET', `/api/servers/${encodeURIComponent(serverId)}/health-check`);
+        if (!r.ok || !r.data) {
+            badge.className = 'badge ms-1 bg-warning text-dark';
+            badge.textContent = 'unavailable';
+            list.innerHTML = '<div class="small text-muted">Could not reach the server. Check connection and try again.</div>';
+            return;
+        }
+
+        const issues = r.data.issues || [];
+        const fixableCount = r.data.fixable_count || 0;
+
+        if (issues.length === 0) {
+            badge.className = 'badge ms-1 bg-success';
+            badge.textContent = 'all good';
+            list.innerHTML = '<div class="small text-success"><i class="bi bi-check-circle me-1"></i>Every preview-relevant setting on this server is already at the recommended value.</div>';
+            return;
+        }
+
+        // Bucket by severity for the badge.
+        const criticalCount = issues.filter((i) => i.severity === 'critical').length;
+        if (criticalCount > 0) {
+            badge.className = 'badge ms-1 bg-danger';
+            badge.textContent = `${criticalCount} critical${issues.length > criticalCount ? `, ${issues.length - criticalCount} recommended` : ''}`;
+        } else {
+            badge.className = 'badge ms-1 bg-warning text-dark';
+            badge.textContent = `${issues.length} recommended`;
+        }
+
+        // Render one row per issue.
+        list.innerHTML = '';
+        for (const issue of issues) {
+            const row = document.createElement('div');
+            row.className = 'border rounded p-2 small';
+            const sevClass = issue.severity === 'critical' ? 'bg-danger' : 'bg-warning text-dark';
+            const sevLabel = issue.severity === 'critical' ? 'Critical' : 'Recommended';
+            const lib = issue.library_name ? `<span class="text-muted">${escapeHtml(issue.library_name)}</span> · ` : '';
+            const cur = formatHealthValue(issue.current);
+            const rec = formatHealthValue(issue.recommended);
+            row.innerHTML = `
+                <div class="d-flex align-items-center gap-2 mb-1 flex-wrap">
+                    <span class="badge ${sevClass}" style="font-size:0.65rem;">${sevLabel}</span>
+                    <strong>${escapeHtml(issue.label)}</strong>
+                    <i class="bi bi-info-circle text-muted" data-bs-toggle="tooltip"
+                       title="${escapeAttr(issue.rationale)}"></i>
+                </div>
+                <div class="text-muted">
+                    ${lib}Currently <code>${cur}</code>
+                    <i class="bi bi-arrow-right mx-1"></i>
+                    will be <code>${rec}</code>
+                </div>
+            `;
+            list.appendChild(row);
+        }
+
+        // Re-init Bootstrap tooltips on the new ⓘ icons.
+        if (typeof _initBootstrapTooltips === 'function') {
+            _initBootstrapTooltips(list);
+        } else if (window.bootstrap && window.bootstrap.Tooltip) {
+            list.querySelectorAll('[data-bs-toggle="tooltip"]').forEach((el) => new window.bootstrap.Tooltip(el));
+        }
+
+        if (fixableCount > 0) {
+            fixCtl.classList.remove('d-none');
+            if (fixCount) fixCount.textContent = String(fixableCount);
+        }
+    }
+
+    function formatHealthValue(v) {
+        if (v === true) return 'on';
+        if (v === false) return 'off';
+        if (v === null || v === undefined) return '—';
+        return escapeHtml(String(v));
+    }
+
+    function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
+    function escapeAttr(s) {
+        return escapeHtml(s);
+    }
+
+    async function applyHealthFixes(serverId) {
+        const fixCtl = document.getElementById('editHealthFixControls');
+        const fixBtn = document.getElementById('editHealthFixAllBtn');
+        const fixResult = document.getElementById('editHealthFixResult');
+        if (!fixCtl || !fixBtn) return;
+
+        const original = fixBtn.innerHTML;
+        fixBtn.disabled = true;
+        fixBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Applying…';
+        if (fixResult) { fixResult.className = 'small text-muted'; fixResult.textContent = ''; }
+
+        try {
+            const r = await api('POST', `/api/servers/${encodeURIComponent(serverId)}/health-check/apply`, {});
+            if (!r.ok || !r.data) {
+                if (fixResult) {
+                    fixResult.className = 'small text-danger';
+                    fixResult.textContent = `Failed: HTTP ${r.status}`;
+                }
+                return;
+            }
+            const allOk = !!r.data.ok;
+            const okCount = Object.values(r.data.results || {}).filter((v) => v === 'ok').length;
+            const errCount = Object.values(r.data.results || {}).filter((v) => v !== 'ok').length;
+            if (fixResult) {
+                if (allOk) {
+                    fixResult.className = 'small text-success';
+                    fixResult.textContent = `✓ Applied ${okCount} setting${okCount === 1 ? '' : 's'}`;
+                } else if (okCount > 0) {
+                    fixResult.className = 'small text-warning';
+                    fixResult.textContent = `Applied ${okCount}, ${errCount} failed — see logs`;
+                } else {
+                    fixResult.className = 'small text-danger';
+                    fixResult.textContent = `Failed: ${errCount} error${errCount === 1 ? '' : 's'}`;
+                }
+            }
+            // Re-probe so the panel reflects the new state.
+            runHealthCheckProbe(serverId);
+        } finally {
+            fixBtn.disabled = false;
+            fixBtn.innerHTML = original;
+        }
+    }
+
     // ─── Media Preview Bridge plugin status / install ──────────────────
     // Drives the Jellyfin-only "Media Preview Bridge plugin" card in the
     // Edit Server modal. Visible only when the connection succeeded AND
@@ -1753,6 +1906,18 @@
         if (installPluginBtn) installPluginBtn.addEventListener('click', installJellyfinPlugin);
         const copyPluginUrlBtn = document.getElementById('editCopyPluginRepoUrlBtn');
         if (copyPluginUrlBtn) copyPluginUrlBtn.addEventListener('click', copyPluginRepoUrl);
+
+        // Health-check panel (per-server settings audit + one-click apply).
+        const healthFixBtn = document.getElementById('editHealthFixAllBtn');
+        if (healthFixBtn) healthFixBtn.addEventListener('click', () => {
+            const id = (_editState && _editState.server && _editState.server.id) || '';
+            if (id) applyHealthFixes(id);
+        });
+        const healthRecheckBtn = document.getElementById('editHealthRecheckBtn');
+        if (healthRecheckBtn) healthRecheckBtn.addEventListener('click', () => {
+            const id = (_editState && _editState.server && _editState.server.id) || '';
+            if (id) runHealthCheckProbe(id);
+        });
 
         // D24 — vendor-aware re-auth wiring inside the Edit modal.
         document.querySelectorAll('input[name="editReauthJfMethod"]').forEach((r) =>

@@ -590,6 +590,172 @@ class TestEnableTrickplayExtraction:
         assert results["2"].startswith("error:")
 
 
+class TestSettingsHealth:
+    """check_settings_health surfaces every mis-set preview-relevant flag."""
+
+    def test_no_issues_when_all_recommended(self, jelly):
+        all_good = {
+            "EnableTrickplayImageExtraction": True,
+            "SaveTrickplayWithMedia": True,
+            "ExtractTrickplayImagesDuringLibraryScan": False,
+            "EnableRealtimeMonitor": True,
+        }
+        with patch.object(JellyfinServer, "_request") as req:
+            req.return_value = MagicMock(
+                status_code=200,
+                json=MagicMock(return_value=[{"Name": "Movies", "ItemId": "1", "LibraryOptions": all_good}]),
+                raise_for_status=MagicMock(),
+            )
+            issues = jelly.check_settings_health()
+        assert issues == []
+
+    def test_reports_each_misset_flag_per_library(self, jelly):
+        # Movies has Realtime off (recommended); TV has both critical
+        # flags wrong AND scan extraction on. We expect one issue per
+        # mis-set flag on each library — the apply step decides whether
+        # to flip them, the audit just *reports*.
+        bad_critical = {
+            "EnableTrickplayImageExtraction": False,  # critical
+            "SaveTrickplayWithMedia": False,  # critical
+            "ExtractTrickplayImagesDuringLibraryScan": True,  # recommended
+            "EnableRealtimeMonitor": False,  # recommended
+        }
+        movies_good_except_realtime = {
+            "EnableTrickplayImageExtraction": True,
+            "SaveTrickplayWithMedia": True,
+            "ExtractTrickplayImagesDuringLibraryScan": False,
+            "EnableRealtimeMonitor": False,  # only this one wrong
+        }
+        with patch.object(JellyfinServer, "_request") as req:
+            req.return_value = MagicMock(
+                status_code=200,
+                json=MagicMock(
+                    return_value=[
+                        {"Name": "Movies", "ItemId": "m", "LibraryOptions": movies_good_except_realtime},
+                        {"Name": "TV", "ItemId": "t", "LibraryOptions": bad_critical},
+                    ]
+                ),
+                raise_for_status=MagicMock(),
+            )
+            issues = jelly.check_settings_health()
+
+        # Movies: 1 issue (Realtime). TV: 4 issues (all of them).
+        movies_issues = [i for i in issues if i.library_id == "m"]
+        tv_issues = [i for i in issues if i.library_id == "t"]
+        assert len(movies_issues) == 1
+        assert movies_issues[0].flag == "EnableRealtimeMonitor"
+        assert movies_issues[0].severity == "recommended"
+        assert len(tv_issues) == 4
+
+        critical_flags = {i.flag for i in tv_issues if i.severity == "critical"}
+        assert critical_flags == {"EnableTrickplayImageExtraction", "SaveTrickplayWithMedia"}
+
+    def test_empty_on_request_failure(self, jelly):
+        with patch.object(JellyfinServer, "_request", side_effect=RuntimeError("offline")):
+            assert jelly.check_settings_health() == []
+
+
+class TestApplyRecommendedSettings:
+    """Apply step writes only the flags actually needing change."""
+
+    def test_writes_only_misset_flags_back(self, jelly):
+        # The audit endpoint will surface a single issue (Realtime off)
+        # — the apply path must flip THAT flag (and only that flag) on
+        # the library. Other flags retain their current values in the
+        # POST'd LibraryOptions because Jellyfin's update endpoint is a
+        # wholesale replace, not a diff (D38 caveat).
+        bad_realtime = {
+            "EnableTrickplayImageExtraction": True,
+            "SaveTrickplayWithMedia": True,
+            "ExtractTrickplayImagesDuringLibraryScan": False,
+            "EnableRealtimeMonitor": False,
+            "SomeUnrelatedFlag": "preserve_me",
+        }
+        get_response = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value=[{"Name": "Movies", "ItemId": "1", "LibraryOptions": bad_realtime}]),
+            raise_for_status=MagicMock(),
+        )
+        post_response = MagicMock(status_code=204, raise_for_status=MagicMock())
+
+        def fake_request(method, url, **kwargs):
+            if method == "GET":
+                return get_response
+            if method == "POST":
+                return post_response
+            raise AssertionError(f"unexpected {method} {url}")
+
+        with patch.object(JellyfinServer, "_request", side_effect=fake_request) as req:
+            results = jelly.apply_recommended_settings()
+
+        # Only EnableRealtimeMonitor was wrong; no other rows in results.
+        assert results == {"1:EnableRealtimeMonitor": "ok"}
+
+        # And the POSTed body kept SomeUnrelatedFlag intact (D38: replace,
+        # not diff) and only flipped EnableRealtimeMonitor.
+        post_call = next(c for c in req.call_args_list if c.args[0] == "POST")
+        sent_options = post_call.kwargs["json_body"]["LibraryOptions"]
+        assert sent_options["EnableRealtimeMonitor"] is True
+        assert sent_options["SomeUnrelatedFlag"] == "preserve_me"
+
+    def test_skips_libraries_already_correct(self, jelly):
+        # Both libraries fine — apply makes zero POSTs and returns {}.
+        all_good = {
+            "EnableTrickplayImageExtraction": True,
+            "SaveTrickplayWithMedia": True,
+            "ExtractTrickplayImagesDuringLibraryScan": False,
+            "EnableRealtimeMonitor": True,
+        }
+        with patch.object(JellyfinServer, "_request") as req:
+            req.return_value = MagicMock(
+                status_code=200,
+                json=MagicMock(
+                    return_value=[
+                        {"Name": "Movies", "ItemId": "1", "LibraryOptions": all_good},
+                        {"Name": "TV", "ItemId": "2", "LibraryOptions": all_good},
+                    ]
+                ),
+                raise_for_status=MagicMock(),
+            )
+            results = jelly.apply_recommended_settings()
+
+        assert results == {}
+        # Only the GET fired, no POST attempts.
+        post_calls = [c for c in req.call_args_list if c.args[0] == "POST"]
+        assert post_calls == []
+
+    def test_flag_filter_restricts_target(self, jelly):
+        # Caller asks for only EnableRealtimeMonitor — even though
+        # other flags are also wrong, leave them alone.
+        all_wrong = {
+            "EnableTrickplayImageExtraction": False,  # would be touched if not filtered
+            "SaveTrickplayWithMedia": False,
+            "ExtractTrickplayImagesDuringLibraryScan": True,
+            "EnableRealtimeMonitor": False,
+        }
+        get_response = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value=[{"Name": "Movies", "ItemId": "1", "LibraryOptions": all_wrong}]),
+            raise_for_status=MagicMock(),
+        )
+        post_response = MagicMock(status_code=204, raise_for_status=MagicMock())
+
+        def fake_request(method, url, **kwargs):
+            return get_response if method == "GET" else post_response
+
+        with patch.object(JellyfinServer, "_request", side_effect=fake_request) as req:
+            results = jelly.apply_recommended_settings(flags=["EnableRealtimeMonitor"])
+
+        assert results == {"1:EnableRealtimeMonitor": "ok"}
+        post_call = next(c for c in req.call_args_list if c.args[0] == "POST")
+        sent_options = post_call.kwargs["json_body"]["LibraryOptions"]
+        # Only the filtered flag flipped; the others left at False/True.
+        assert sent_options["EnableRealtimeMonitor"] is True
+        assert sent_options["EnableTrickplayImageExtraction"] is False
+        assert sent_options["SaveTrickplayWithMedia"] is False
+        assert sent_options["ExtractTrickplayImagesDuringLibraryScan"] is True
+
+
 class TestRegistryWiring:
     def test_registry_can_construct_jellyfin_server(self):
         from media_preview_generator.servers import ServerRegistry

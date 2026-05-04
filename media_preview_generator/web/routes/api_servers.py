@@ -1080,6 +1080,136 @@ def fix_jellyfin_trickplay(server_id: str):
     return jsonify({"ok": all_ok, "results": results})
 
 
+@api.route("/servers/<server_id>/health-check", methods=["GET"])
+@setup_or_auth_required
+def get_server_health_check(server_id: str):
+    """Generic per-server settings audit.
+
+    Replaces the Jellyfin-specific ``trickplay-status`` endpoint
+    over time — same shape, all vendors. Returns:
+
+    .. code-block:: json
+
+        {
+          "issues": [
+            {
+              "library_id": "...", "library_name": "Movies",
+              "flag": "EnableRealtimeMonitor", "label": "Auto-detect new files",
+              "current": false, "recommended": true,
+              "severity": "recommended", "fixable": true,
+              "rationale": "Without this, ..."
+            },
+            ...
+          ],
+          "issue_count": <int>, "fixable_count": <int>,
+          "vendor": "jellyfin"
+        }
+
+    Empty ``issues`` means "all good — render the green checkmark".
+    Vendors that don't yet implement ``check_settings_health`` return
+    an empty list (the default in :class:`MediaServer`).
+    """
+    raw_servers = _get_media_servers()
+    target = next((s for s in raw_servers if isinstance(s, dict) and s.get("id") == server_id), None)
+    if target is None:
+        return jsonify({"error": f"server {server_id!r} not found"}), 404
+
+    try:
+        cfg = server_config_from_dict(target)
+    except Exception as exc:
+        return jsonify({"error": f"invalid server config: {exc}"}), 400
+
+    live = _instantiate_for_probe(cfg)
+    if live is None:
+        return jsonify({"error": "could not instantiate server client"}), 500
+
+    try:
+        issues = live.check_settings_health()
+    except Exception as exc:
+        logger.warning(
+            "Health check failed for server {!r}: {}: {}",
+            cfg.name or server_id,
+            type(exc).__name__,
+            exc,
+        )
+        return jsonify({"error": str(exc)}), 502
+
+    payload = [
+        {
+            "library_id": i.library_id,
+            "library_name": i.library_name,
+            "flag": i.flag,
+            "label": i.label,
+            "rationale": i.rationale,
+            "current": i.current,
+            "recommended": i.recommended,
+            "severity": i.severity,
+            "fixable": i.fixable,
+        }
+        for i in issues
+    ]
+    return jsonify(
+        {
+            "vendor": cfg.type.value,
+            "issues": payload,
+            "issue_count": len(payload),
+            "fixable_count": sum(1 for i in payload if i["fixable"]),
+        }
+    )
+
+
+@api.route("/servers/<server_id>/health-check/apply", methods=["POST"])
+@setup_or_auth_required
+def apply_server_health_fixes(server_id: str):
+    """Apply recommended settings to one or more flags.
+
+    Body (optional): ``{"flags": ["EnableRealtimeMonitor", ...]}`` to
+    restrict the fix to specific flags. Absent body = "fix every issue
+    currently surfaced". Returns:
+
+    .. code-block:: json
+
+        {
+          "ok": true|false,
+          "results": {"<lib_id>:<flag>": "ok"|"<error>", ...}
+        }
+    """
+    raw_servers = _get_media_servers()
+    target = next((s for s in raw_servers if isinstance(s, dict) and s.get("id") == server_id), None)
+    if target is None:
+        return jsonify({"error": f"server {server_id!r} not found"}), 404
+
+    try:
+        cfg = server_config_from_dict(target)
+    except Exception as exc:
+        return jsonify({"error": f"invalid server config: {exc}"}), 400
+
+    live = _instantiate_for_probe(cfg)
+    if live is None:
+        return jsonify({"error": "could not instantiate server client"}), 500
+
+    body = request.get_json(silent=True) or {}
+    flags = body.get("flags") if isinstance(body, dict) else None
+    if flags is not None and not isinstance(flags, list):
+        return jsonify({"error": "flags must be a list of strings"}), 400
+
+    try:
+        results = live.apply_recommended_settings(flags=flags)
+    except Exception as exc:
+        logger.warning(
+            "Health-check apply failed for server {!r}: {}: {}",
+            cfg.name or server_id,
+            type(exc).__name__,
+            exc,
+        )
+        return jsonify({"ok": False, "error": str(exc)}), 502
+
+    # Empty results = nothing needed fixing → success (not ok=False).
+    # Non-empty + every entry "ok" = success. Anything else = partial.
+    all_ok = all(v == "ok" for v in results.values()) if results else True
+    return jsonify({"ok": all_ok, "results": results})
+
+
 @api.route("/servers/<server_id>/output-status", methods=["GET"])
 @setup_or_auth_required
 def get_output_status(server_id: str):

@@ -33,6 +33,51 @@ class LibraryNotYetIndexedError(Exception):
 
 
 @dataclass(frozen=True)
+class HealthCheckIssue:
+    """A single mis-configured (or sub-optimally configured) setting on a server.
+
+    Returned by :meth:`MediaServer.check_settings_health` so the UI can render
+    a per-server "what needs fixing" panel and offer one-click remediation.
+
+    Attributes:
+        library_id: Owning library id, or ``None`` when the issue is
+            server-wide (e.g. a Plex instance flag with no per-library
+            equivalent). Used by the UI to group rows.
+        library_name: Human-readable library name. May be empty for
+            server-wide issues.
+        flag: API-side flag name (e.g. ``"EnableRealtimeMonitor"``).
+            Authoritative identifier the apply-fix path uses to know
+            which setting to flip.
+        label: Plain-English label for the setting. Goes on the row
+            heading in the UI.
+        rationale: One-sentence explanation of *why* the user should care.
+            Rendered as the ⓘ tooltip body next to the label.
+        current: The value the server currently reports. Stringified for
+            display; could be a bool, int, str, or None.
+        recommended: The value this app would set for an ideal preview
+            workflow. Same type as ``current``.
+        severity: ``"critical"`` (will break previews if left alone) or
+            ``"recommended"`` (works without it but UX suffers). Drives
+            the badge colour in the UI.
+        fixable: Whether :meth:`MediaServer.apply_recommended_settings`
+            can flip this flag programmatically. Some settings (e.g. Plex
+            "Generate video preview thumbnails", set per-library via the
+            Plex web UI) are read-only via API; we surface them with
+            ``fixable=False`` and explain what the user must do manually.
+    """
+
+    library_id: str | None
+    library_name: str
+    flag: str
+    label: str
+    rationale: str
+    current: Any
+    recommended: Any
+    severity: str
+    fixable: bool
+
+
+@dataclass(frozen=True)
 class Library:
     """A library/section exposed by a media server.
 
@@ -244,6 +289,42 @@ class MediaServer(ABC):
         (e.g. playback events). Concrete implementations are responsible for
         format detection details (multipart vs JSON, header conventions).
         """
+
+    def check_settings_health(self) -> list[HealthCheckIssue]:
+        """Return a list of mis-configured settings on this server.
+
+        Used by the Edit-Server modal's health-check panel to surface
+        per-library settings the user should flip for the preview
+        pipeline to work optimally — e.g. Jellyfin's
+        ``EnableTrickplayImageExtraction`` (must be true or our sidecar
+        trickplay is invisible) or ``EnableRealtimeMonitor`` (off →
+        new files require a manual scan-nudge to be discovered).
+
+        Empty list means "all good". A non-empty list is rendered with
+        a per-issue severity badge and a single "Fix all" button that
+        calls :meth:`apply_recommended_settings`.
+
+        Default returns an empty list — concrete server clients
+        override when they have settings worth checking.
+        """
+        return []
+
+    def apply_recommended_settings(self, flags: list[str] | None = None) -> dict[str, str]:
+        """Flip the ``flag``s named in ``check_settings_health`` to their recommended values.
+
+        Args:
+            flags: Restrict to the named flag list, or ``None`` for "every
+                fixable issue currently surfaced by ``check_settings_health``".
+
+        Returns:
+            Dict mapping ``"<library_id>:<flag>"`` (or ``":<flag>"`` for
+            server-wide settings) to ``"ok"`` on success or an error
+            message string on failure. Same envelope shape as the existing
+            ``set_vendor_extraction`` family of helpers so the UI can
+            render a per-row outcome.
+        """
+        del flags  # unused in base; override
+        return {}
 
 
 @dataclass

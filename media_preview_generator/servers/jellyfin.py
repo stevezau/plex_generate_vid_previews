@@ -28,7 +28,7 @@ from typing import Any
 from loguru import logger
 
 from ._embyish import EmbyApiClient
-from .base import ServerType, WebhookEvent
+from .base import HealthCheckIssue, ServerType, WebhookEvent
 
 # Floor on how often a single Jellyfin server may receive a full
 # /Library/Refresh nudge. Without it, a webhook burst (e.g. Sonarr
@@ -383,6 +383,181 @@ class JellyfinServer(EmbyApiClient):
                 }
             )
         return out
+
+    # ------------------------------------------------------------------
+    # Per-library settings health check
+    # ------------------------------------------------------------------
+    #
+    # Surface every Jellyfin library option that affects whether our
+    # published trickplay actually shows up + whether new files get
+    # auto-discovered. The Edit-Server modal renders these as a
+    # checklist with a single "Fix all" button — users shouldn't need
+    # to memorise four flag names spread across two Jellyfin admin
+    # pages, especially when getting any one wrong silently breaks
+    # the pipeline.
+
+    # The recommended settings + rationale strings, defined once so
+    # check + apply stay in sync. Order matters: the UI renders them
+    # in this order so critical issues land at the top.
+    _RECOMMENDED_SETTINGS: tuple[tuple[str, str, bool, str, str], ...] = (
+        (
+            "EnableTrickplayImageExtraction",
+            "Trickplay enabled in Jellyfin",
+            True,
+            "critical",
+            "Without this, Jellyfin ignores our published trickplay sheets entirely "
+            "AND deletes them on the next library refresh. Must stay on.",
+        ),
+        (
+            "SaveTrickplayWithMedia",
+            "Look for trickplay next to the media file",
+            True,
+            "critical",
+            "Tells Jellyfin to look in '<media>.trickplay/' (where this app writes) "
+            "instead of '<config>/data/trickplay/' (which we never write to).",
+        ),
+        (
+            "ExtractTrickplayImagesDuringLibraryScan",
+            "Skip Jellyfin's own trickplay generation",
+            False,
+            "recommended",
+            "When this app owns trickplay, Jellyfin's scan-time extraction is wasted CPU "
+            "and produces duplicate output. Off = let this app do it; on = Jellyfin also "
+            "burns CPU re-creating thumbnails we already published.",
+        ),
+        (
+            "EnableRealtimeMonitor",
+            "Auto-detect new files (real-time monitoring)",
+            True,
+            "recommended",
+            "Without this, new files added by Sonarr/Radarr only get noticed on Jellyfin's "
+            "next manual scan or a webhook nudge — the 'not in library yet' status hangs "
+            "around longer than it needs to.",
+        ),
+    )
+
+    def check_settings_health(self) -> list[HealthCheckIssue]:
+        """Return a per-library audit of preview-relevant Jellyfin settings.
+
+        Walks ``/Library/VirtualFolders`` once and emits one
+        :class:`HealthCheckIssue` per (library, mis-set flag) pair.
+        Empty list means all libraries are configured correctly.
+
+        The flags inspected are documented in :data:`_RECOMMENDED_SETTINGS`
+        — extending the audit means adding a tuple there; check + apply
+        + UI explanation stay in sync automatically.
+        """
+        try:
+            response = self._request("GET", "/Library/VirtualFolders")
+            response.raise_for_status()
+            folders = response.json()
+        except Exception as exc:
+            logger.warning(
+                "Could not load Jellyfin library settings for health check on {!r}: {}. "
+                "The health-check panel will report 'unknown' until the server is reachable again.",
+                self.name,
+                exc,
+            )
+            return []
+
+        if not isinstance(folders, list):
+            return []
+
+        issues: list[HealthCheckIssue] = []
+        for raw in folders:
+            if not isinstance(raw, dict):
+                continue
+            lib_id = str(raw.get("ItemId") or raw.get("Id") or raw.get("Name") or "")
+            lib_name = str(raw.get("Name") or "")
+            options = raw.get("LibraryOptions") or {}
+            for flag, label, recommended, severity, rationale in self._RECOMMENDED_SETTINGS:
+                current = bool(options.get(flag, False))
+                if current == recommended:
+                    continue
+                issues.append(
+                    HealthCheckIssue(
+                        library_id=lib_id,
+                        library_name=lib_name,
+                        flag=flag,
+                        label=label,
+                        rationale=rationale,
+                        current=current,
+                        recommended=recommended,
+                        severity=severity,
+                        fixable=True,
+                    )
+                )
+        return issues
+
+    def apply_recommended_settings(self, flags: list[str] | None = None) -> dict[str, str]:
+        """Flip every mis-set flag to its recommended value across all libraries.
+
+        Args:
+            flags: Restrict to the named flag list, or ``None`` for "every
+                fixable issue currently surfaced by ``check_settings_health``".
+                Names are the API-side flag keys (e.g. ``"EnableRealtimeMonitor"``).
+
+        Returns dict keyed ``"<library_id>:<flag>"`` so the UI can render
+        a per-row outcome ("✓ ok" or "✗ <error>"). Errors fetching the
+        library list collapse to a single ``{"_global": "..."}`` entry.
+
+        Implementation note: Jellyfin's ``/Library/VirtualFolders/LibraryOptions``
+        is a wholesale replace, not a diff — we POST the full existing
+        ``LibraryOptions`` dict back with just the targeted flags
+        rewritten. Any field we omit reverts to its default, which has
+        bitten previous one-off update attempts.
+        """
+        try:
+            response = self._request("GET", "/Library/VirtualFolders")
+            response.raise_for_status()
+            folders = response.json()
+        except Exception as exc:
+            return {"_global": f"failed to fetch libraries: {exc}"}
+
+        if not isinstance(folders, list):
+            return {"_global": "unexpected VirtualFolders response shape"}
+
+        target_flags = set(flags) if flags is not None else None
+        results: dict[str, str] = {}
+
+        for raw in folders:
+            if not isinstance(raw, dict):
+                continue
+            lib_id = str(raw.get("ItemId") or raw.get("Id") or raw.get("Name") or "")
+            options = dict(raw.get("LibraryOptions") or {})
+
+            changed_flags: list[str] = []
+            for flag, _label, recommended, _sev, _rationale in self._RECOMMENDED_SETTINGS:
+                if target_flags is not None and flag not in target_flags:
+                    continue
+                if bool(options.get(flag, False)) == recommended:
+                    continue
+                options[flag] = recommended
+                changed_flags.append(flag)
+
+            if not changed_flags:
+                continue
+
+            try:
+                update = self._request(
+                    "POST",
+                    "/Library/VirtualFolders/LibraryOptions",
+                    json_body={"Id": lib_id, "LibraryOptions": options},
+                )
+                update.raise_for_status()
+                for flag in changed_flags:
+                    results[f"{lib_id}:{flag}"] = "ok"
+            except Exception as exc:
+                logger.warning(
+                    "Could not update Jellyfin library {} settings on server {!r}: {}",
+                    lib_id,
+                    self.name,
+                    exc,
+                )
+                for flag in changed_flags:
+                    results[f"{lib_id}:{flag}"] = f"error: {exc}"
+
+        return results
 
     def enable_trickplay_extraction(self, library_ids: list[str] | None = None) -> dict[str, str]:
         """Flip ``EnableTrickplayImageExtraction`` on for the given libraries.
