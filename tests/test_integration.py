@@ -123,13 +123,21 @@ class TestWorkerPoolDispatchToUnifiedPipeline:
         # Process items (should handle errors gracefully)
         pool.process_items(_pi_list_or_passthrough(items), mock_config, MagicMock(), worker_progress, main_progress)
 
-        # Verify some succeeded and some failed
+        # Audit fix — assert exact counts. With 4 items + every-other-fail
+        # (2nd and 4th raise), the contract is precisely 2 success / 2 fail,
+        # not "some of each". The previous ``> 0`` assertions would have
+        # passed even if only 1 item succeeded out of 4.
         total_completed = sum(w.completed for w in pool.workers)
         total_failed = sum(w.failed for w in pool.workers)
 
-        assert total_completed > 0  # At least some succeeded
-        assert total_failed > 0  # At least some failed
-        assert total_completed + total_failed == 4  # All were attempted
+        assert total_completed == 2, f"expected exactly 2 successful, got {total_completed}"
+        assert total_failed == 2, f"expected exactly 2 failed, got {total_failed}"
+        assert total_completed + total_failed == 4
+        # AND assert the worker ALSO recorded the canonical_path in each
+        # call — guards against a regression that called process_canonical_path
+        # with the wrong arguments (D34 pattern).
+        seen_titles = {call.kwargs.get("canonical_path") or call.args[0] for call in mock_process.call_args_list}
+        assert len(seen_titles) == 4, f"expected 4 distinct canonical_path values, got {seen_titles!r}"
 
 
 class TestWorkerPoolDispatchAccounting:
@@ -211,13 +219,17 @@ class TestWorkerPoolDispatchAccounting:
         # Process
         pool.process_items(_pi_list_or_passthrough(items), mock_config, MagicMock(), worker_progress, main_progress)
 
-        # Verify work was distributed (each worker should have processed some items)
-        for worker in pool.workers:
-            assert worker.completed > 0, f"Worker {worker.worker_id} did no work"
-
-        # Total should equal input
+        # Total processed equals input AND each worker did meaningful work.
+        # ``> 0`` per worker passes even with a 7/1/1 split — strengthen to
+        # require at least 2 per worker (with 9 items / 3 workers, fair
+        # distribution gives 3/3/3; 2 is a generous minimum that catches a
+        # broken scheduler that drops 8 to one worker).
         total = sum(w.completed for w in pool.workers)
-        assert total == 9
+        assert total == 9, f"expected 9 completed, got {total}"
+        per_worker = sorted(w.completed for w in pool.workers)
+        assert per_worker[0] >= 2, (
+            f"load-balancer is broken — minimum per worker is {per_worker[0]} (distribution: {per_worker})"
+        )
 
 
 class TestRealProcessCanonicalPathIntegration:

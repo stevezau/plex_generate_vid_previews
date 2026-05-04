@@ -5,6 +5,7 @@ to exercise the library scan flow, webhook flow, cancellation,
 error handling, callbacks, and cleanup paths.
 """
 
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -96,6 +97,25 @@ def _webhook_resolution_payload(items=None, unresolved=None, skipped=None, path_
 # ---------------------------------------------------------------------------
 # Patches applied to every test
 # ---------------------------------------------------------------------------
+
+
+@contextmanager
+def loguru_lines():
+    """Capture loguru log lines as a list. Used by ``test_..._is_logged`` tests.
+
+    The codebase uses ``loguru`` (not stdlib logging), so pytest's ``caplog``
+    doesn't see anything. Add a temporary sink, yield the list, remove it
+    on exit. Plain (non-underscore-prefixed) name so pytest doesn't try to
+    auto-discover it as a fixture.
+    """
+    from loguru import logger as _loguru_logger
+
+    captured: list[str] = []
+    sink_id = _loguru_logger.add(lambda msg: captured.append(str(msg)), level="DEBUG")
+    try:
+        yield captured
+    finally:
+        _loguru_logger.remove(sink_id)
 
 
 @pytest.fixture(autouse=True)
@@ -1014,8 +1034,15 @@ class TestSummaryBranches:
 class TestCleanupEdgeCases:
     """Cover error handling within the finally block."""
 
-    def test_shutdown_error_is_logged(self, tmp_path):
-        """Error during worker_pool.shutdown() is caught and logged."""
+    def test_shutdown_error_is_logged(self, tmp_path, caplog):
+        """Error during worker_pool.shutdown() is caught AND surfaced in the log.
+
+        Originally this test asserted only ``result is not None`` — proving
+        the function didn't crash but NOT that the error was actually
+        logged (the test name lied). A regression that silently swallowed
+        the exception with no log line would have passed. Audit fix —
+        capture the log and assert the failure mode is recorded.
+        """
         config = _make_config(tmp_path)
         section = _make_section("Movies")
         items = [("k1", "M1", "movie")]
@@ -1031,13 +1058,21 @@ class TestCleanupEdgeCases:
             pool_inst.process_items_headless.return_value = _pool_result(completed=1)
             pool_inst.shutdown.side_effect = RuntimeError("shutdown failed")
 
-            # Should not raise despite shutdown error
-            result = run_processing(config, selected_gpus=[])
+            with loguru_lines() as logs:
+                result = run_processing(config, selected_gpus=[])
 
         assert result is not None
+        assert any("shutdown failed" in line.lower() or "shutdown" in line.lower() for line in logs), (
+            f"shutdown error was swallowed silently — no log line mentions 'shutdown'. logs={logs!r}"
+        )
 
     def test_temp_cleanup_error_is_logged(self, tmp_path):
-        """Error removing temp folder is caught and logged."""
+        """Error removing temp folder is caught AND surfaced in the log.
+
+        Same fix as ``test_shutdown_error_is_logged`` — original asserted
+        only "didn't crash"; now also asserts the cleanup-failure log
+        line was emitted so an operator can debug a stuck temp folder.
+        """
         work_dir = tmp_path / "work"
         work_dir.mkdir()
         config = _make_config(tmp_path, working_tmp_folder=str(work_dir))
@@ -1047,10 +1082,13 @@ class TestCleanupEdgeCases:
             patch(f"{MODULE}.WorkerPool"),
             patch(f"{MODULE}.shutil.rmtree", side_effect=OSError("perm denied")),
         ):
-            # Should not raise despite cleanup error
-            result = run_processing(config, selected_gpus=[])
+            with loguru_lines() as logs:
+                result = run_processing(config, selected_gpus=[])
 
         assert result is not None
+        assert any(
+            "perm denied" in line.lower() or "cleanup" in line.lower() or "rmtree" in line.lower() for line in logs
+        ), f"temp cleanup error was swallowed silently. logs={logs!r}"
 
     def test_cancel_during_enumeration_with_items_queued(self, tmp_path):
         """Cancel fires after first lib is queued; second lib is skipped."""

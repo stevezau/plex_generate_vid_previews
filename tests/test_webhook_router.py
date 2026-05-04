@@ -122,6 +122,9 @@ class TestSonarrWebhook:
         assert body["kind"] == "sonarr"
         proc.assert_called_once()
         assert proc.call_args.kwargs["canonical_path"] == "/data/tv/Foo/S01E01.mkv"
+        assert proc.call_args.kwargs["source"] == "sonarr", (
+            "source label flows into the Job UI source chip — silent re-tagging would mislead operators"
+        )
 
     def test_radarr_payload_classified_correctly(self, client, auth_headers):
         # No pre-flight check anymore — the router creates a Job for every
@@ -147,6 +150,12 @@ class TestSonarrWebhook:
         assert response.status_code == 202
         assert response.get_json()["kind"] == "radarr"
         proc.assert_called_once()
+        # Audit fix — also assert the canonical_path the route resolved
+        # from the Radarr payload (folderPath + relativePath join). Without
+        # this, a regression that called create_vendor_webhook_job with
+        # the wrong path would pass (D34 pattern).
+        assert proc.call_args.kwargs["canonical_path"] == "/data/movies/Bar/Bar.mkv"
+        assert proc.call_args.kwargs["source"] == "radarr"
 
 
 class TestJellyfinWebhook:

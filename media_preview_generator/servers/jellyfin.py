@@ -734,8 +734,16 @@ class JellyfinServer(EmbyApiClient):
             return None
 
         item_id = str(data.get("ItemId") or data.get("Id") or "")
+        # The Jellyfin webhook plugin's "Generic Destination" template
+        # commonly includes ``{{ItemPath}}`` (or ``ItemPath`` / ``Path``
+        # via custom templates). When present, capturing it here lets the
+        # dispatcher skip an extra reverse-lookup roundtrip per webhook.
+        # Audit fix — was being silently dropped.
+        item_path = str(data.get("ItemPath") or data.get("Path") or data.get("path") or "").strip() or None
+
         return WebhookEvent(
             event_type=event_type,
             item_id=item_id or None,
+            remote_path=item_path,
             raw=data,
         )

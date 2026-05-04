@@ -413,9 +413,15 @@ class EmbyServer(EmbyApiClient):
 
         item = data.get("Item") or data.get("Metadata") or {}
         item_id = str(item.get("Id") or item.get("guid") or "") if isinstance(item, dict) else ""
+        # Emby's library.new payload includes the local file path in
+        # ``Item.Path``. Capturing it lets the dispatcher skip an extra
+        # reverse-lookup roundtrip per webhook (audit fix — was being
+        # silently dropped).
+        item_path = str(item.get("Path") or item.get("path") or "").strip() or None if isinstance(item, dict) else None
 
         return WebhookEvent(
             event_type=event_type,
             item_id=item_id or None,
+            remote_path=item_path,
             raw=data,
         )

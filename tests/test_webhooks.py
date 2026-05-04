@@ -1079,9 +1079,14 @@ def test_create_vendor_webhook_job_regenerate_propagates_force_generate(mock_sta
     assert job_id, "job should have been created"
     assert mock_start.call_count == 1
     overrides = mock_start.call_args.args[1]
+    # regenerate is the field under test
     assert overrides.get("force_generate") is True, (
         "regenerate=True must produce force_generate=True override (Config.regenerate_thumbnails)"
     )
+    # ALSO assert path + hint shape made it through — a regression that
+    # propagated force_generate but dropped the path/hint would otherwise pass.
+    assert overrides.get("webhook_paths") == ["/data/movies/Foo.mkv"]
+    assert overrides.get("webhook_item_id_hints") == {"/data/movies/Foo.mkv": {"plex-1": "12345"}}
 
 
 @patch("media_preview_generator.web.routes._start_job_async")
@@ -1132,7 +1137,12 @@ def test_create_vendor_webhook_job_dedupes_within_ttl(mock_start, app):
 @patch("media_preview_generator.web.routes._start_job_async")
 def test_create_vendor_webhook_job_does_NOT_dedup_across_sources(mock_start, app):
     """Plex's ``library.new`` and Sonarr's import webhook for the same
-    file are different events — they MUST produce separate Jobs."""
+    file are different events — they MUST produce separate Jobs.
+
+    Also asserts SOURCE IDENTITY in each call so a regression that
+    silently re-tagged sources (e.g. both stamped as ``plex``) wouldn't
+    pass just because the call_count happens to be 2.
+    """
     import media_preview_generator.web.webhooks as wh
 
     with app.app_context():
@@ -1150,7 +1160,22 @@ def test_create_vendor_webhook_job_does_NOT_dedup_across_sources(mock_start, app
 
     assert plex_job is not None
     assert sonarr_job is not None
+    assert plex_job != sonarr_job, "two different sources must produce two different job IDs"
     assert mock_start.call_count == 2
+
+    # Inspect each call's overrides for source identity. The job's source
+    # tag flows via ``job_manager.create_job(config={"source": ...})`` —
+    # which is captured in the Job DB row, not the overrides — so we
+    # assert via job_manager state.
+    from media_preview_generator.web.jobs import get_job_manager
+
+    jm = get_job_manager()
+    plex_row = jm.get_job(plex_job)
+    sonarr_row = jm.get_job(sonarr_job)
+    assert plex_row.config.get("source") == "plex", f"Plex job mis-tagged: source={plex_row.config.get('source')!r}"
+    assert sonarr_row.config.get("source") == "sonarr", (
+        f"Sonarr job mis-tagged: source={sonarr_row.config.get('source')!r}"
+    )
 
 
 @patch("media_preview_generator.web.routes._start_job_async")

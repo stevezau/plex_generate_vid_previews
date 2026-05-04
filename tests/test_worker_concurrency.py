@@ -413,6 +413,15 @@ class TestWorkerCallback:
     """Test worker status callback in headless mode."""
 
     def test_worker_callback_called(self, mock_config, mock_registry):
+        """Worker callback MUST fire at least once during processing.
+
+        Originally this test had a comment "Callback may or may not fire
+        depending on timing, but shouldn't crash" — which is exactly the
+        bug-blind pattern that lets "callback never wired" regressions
+        slip through (the production symptom: UI never shows worker
+        activity for short jobs). Drive a slow-enough item so the 1Hz
+        emit cadence guarantees at least one fire.
+        """
         pool = WorkerPool(gpu_workers=0, cpu_workers=1, selected_gpus=[])
         items = [("/key/1", "CB Test", "movie")]
         worker_updates = []
@@ -420,7 +429,9 @@ class TestWorkerCallback:
         def worker_cb(statuses):
             worker_updates.append(statuses)
 
-        with patch("media_preview_generator.processing.multi_server.process_canonical_path", _fake_process_item):
+        # ``_very_slow_process_item`` sleeps just past the 1.0s emit
+        # threshold so the polling loop guarantees ≥1 callback fire.
+        with patch("media_preview_generator.processing.multi_server.process_canonical_path", _very_slow_process_item):
             pool.process_items_headless(
                 _pi_list_or_passthrough(items),
                 mock_config,
@@ -428,12 +439,21 @@ class TestWorkerCallback:
                 worker_callback=worker_cb,
             )
 
-        # Callback may or may not fire depending on timing, but shouldn't crash
+        # Hard contract: callback fired at least once with a non-empty
+        # worker list, AND the worker became "busy" with our test item
+        # at some point (proves the integration boundary is wired).
+        assert worker_updates, "worker_callback never fired — UI worker panel would be silent for this job"
+        saw_busy = False
         for update in worker_updates:
             assert isinstance(update, list)
             for ws in update:
                 assert "worker_id" in ws
                 assert "status" in ws
+                if ws.get("status") in ("processing", "busy") and ws.get("current_title") == "CB Test":
+                    saw_busy = True
+        assert saw_busy, (
+            f"worker_callback fired but no update showed worker busy with our test item — updates={worker_updates!r}"
+        )
 
     def test_worker_callback_includes_remaining_time(self, mock_config, mock_registry):
         """Worker callback payload should include remaining_time while processing."""

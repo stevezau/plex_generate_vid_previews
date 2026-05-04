@@ -337,7 +337,22 @@ def create_job():
         server_type=server_type,
     )
 
-    config_overrides = dict(data.get("config", {}))
+    # Allow-list of config keys the API accepts as job overrides. Anything
+    # NOT in this list (notably credentials like ``plex_token`` /
+    # ``plex_url`` / ``plex_config_folder``) is silently dropped — an
+    # attacker who crafts a request with credential fields would otherwise
+    # have those fields overwrite the live Config inside the worker
+    # because ``job_runner.py``'s override loop falls through to
+    # ``setattr(config, key, value)`` for any matching attribute.
+    _ALLOWED_OVERRIDES = {
+        "force_generate",
+        "regenerate_thumbnails",
+        "sort_by",
+        "selected_libraries",
+        "selected_library_ids",
+    }
+    raw_config = data.get("config") or {}
+    config_overrides = {k: v for k, v in raw_config.items() if k in _ALLOWED_OVERRIDES}
     if library_ids:
         config_overrides["selected_library_ids"] = library_ids
     elif library_names:

@@ -466,9 +466,19 @@ class TestTriggerRefresh:
             req.assert_called_once_with("POST", "/Items/42/Refresh")
 
     def test_swallows_exceptions_for_path_refresh(self, emby):
-        with patch.object(EmbyServer, "_request", side_effect=RuntimeError("boom")):
-            # Must not raise.
+        """Path-refresh must call _request AND swallow exceptions.
+
+        Originally only asserted "didn't raise" — a regression that
+        early-returned before calling _request would have passed silently
+        and the user would never know their refresh hadn't fired.
+        Audit fix: assert the call WAS attempted.
+        """
+        with patch.object(EmbyServer, "_request", side_effect=RuntimeError("boom")) as req:
             emby.trigger_refresh(item_id=None, remote_path="/m/foo.mkv")
+            assert req.call_count >= 1, (
+                "trigger_refresh must call _request even when it raises — "
+                "otherwise a regression that early-returns would silently no-op"
+            )
 
 
 class TestParseWebhook:
@@ -484,10 +494,28 @@ class TestParseWebhook:
         assert ev.item_id == "12345"
         assert ev.remote_path is None
 
+    def test_library_new_event_captures_path_when_present(self, emby):
+        """Audit fix — Emby's library.new payload includes ``Item.Path``.
+        Capturing it lets the dispatcher skip the reverse lookup.
+        """
+        payload = {
+            "Event": "library.new",
+            "Item": {"Id": "12345", "Type": "Movie", "Path": "/media/movies/Foo.mkv"},
+            "Server": {"Id": "abc"},
+        }
+        ev = emby.parse_webhook(payload, headers={})
+        assert ev is not None
+        assert ev.item_id == "12345"
+        assert ev.remote_path == "/media/movies/Foo.mkv", (
+            "Emby's Item.Path was silently dropped — dispatcher will pay "
+            "for an extra reverse-lookup roundtrip on every webhook"
+        )
+
     def test_itemadded_event(self, emby):
         payload = {"Event": "ItemAdded", "Item": {"Id": "999"}}
         ev = emby.parse_webhook(payload, headers={})
         assert ev is not None
+        assert ev.event_type == "ItemAdded", "event_type must be captured for downstream filtering"
         assert ev.item_id == "999"
 
     def test_irrelevant_events_return_none(self, emby):

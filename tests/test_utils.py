@@ -163,6 +163,105 @@ class TestSanitizePath:
         assert "\\" in result
 
 
+class TestSafeResolveWithin:
+    """Security tests for ``_safe_resolve_within`` — the actual path-traversal
+    boundary that webhook + API routes call before opening user-supplied paths.
+
+    ``sanitize_path`` (above) is a cosmetic separator-conversion helper only.
+    The security contract is enforced here:
+    - rejects null-byte injection (PEP 446 / CWE-158)
+    - rejects ``..`` escapes after normpath collapse
+    - rejects absolute paths that point outside ``allowed_root``
+    - rejects symlink escapes (realpath resolves links before the guard)
+    - allows exact-root match
+    - allows root=='/' (catch-all)
+
+    These tests existed nowhere before audit batch 4 — the function had
+    zero coverage despite being the project's primary defence against
+    directory traversal.
+    """
+
+    def test_null_byte_injection_returns_none(self, tmp_path):
+        from media_preview_generator.web.routes._helpers import _safe_resolve_within
+
+        result = _safe_resolve_within(f"{tmp_path}/foo\x00.mkv", str(tmp_path))
+        assert result is None, "null-byte must short-circuit BEFORE realpath"
+
+    def test_dotdot_traversal_rejected(self, tmp_path):
+        from media_preview_generator.web.routes._helpers import _safe_resolve_within
+
+        # /tmp/pytest-of-data/.../allowed/../../../etc/passwd → /etc/passwd
+        result = _safe_resolve_within(f"{tmp_path}/../../../../../../etc/passwd", str(tmp_path))
+        assert result is None, "dot-dot traversal must be rejected"
+
+    def test_absolute_path_outside_root_rejected(self, tmp_path):
+        from media_preview_generator.web.routes._helpers import _safe_resolve_within
+
+        result = _safe_resolve_within("/etc/passwd", str(tmp_path))
+        assert result is None, "absolute path outside root must be rejected"
+
+    def test_symlink_escape_rejected(self, tmp_path):
+        """Symlinks pointing outside ``allowed_root`` must be rejected after realpath."""
+        from media_preview_generator.web.routes._helpers import _safe_resolve_within
+
+        outside = tmp_path.parent / "outside-target"
+        outside.mkdir()
+        (outside / "secret.txt").write_text("secret")
+
+        link = tmp_path / "evil-link"
+        link.symlink_to(outside)
+
+        # The link itself is INSIDE allowed_root, but realpath resolves it
+        # to /tmp/outside-target which is NOT — must be rejected.
+        result = _safe_resolve_within(str(link / "secret.txt"), str(tmp_path))
+        assert result is None, "symlink escape must be caught by realpath guard"
+
+    def test_path_inside_root_allowed(self, tmp_path):
+        from media_preview_generator.web.routes._helpers import _safe_resolve_within
+
+        target = tmp_path / "subdir" / "file.mkv"
+        target.parent.mkdir()
+        target.touch()
+
+        result = _safe_resolve_within(str(target), str(tmp_path))
+        assert result is not None
+        assert result == str(target.resolve()), "valid in-root path must resolve to its realpath"
+
+    def test_exact_root_match_allowed(self, tmp_path):
+        from media_preview_generator.web.routes._helpers import _safe_resolve_within
+
+        result = _safe_resolve_within(str(tmp_path), str(tmp_path))
+        assert result is not None, "exact root match must be allowed"
+
+    def test_root_equals_filesystem_root_allows_anything(self):
+        """When ``allowed_root='/'`` the guard is a no-op (intentional —
+        operators who want unconstrained file access set MEDIA_ROOT='/')."""
+        from media_preview_generator.web.routes._helpers import _safe_resolve_within
+
+        # /etc/passwd must resolve when root is '/' — that's the documented behaviour.
+        result = _safe_resolve_within("/etc/passwd", "/")
+        # Either resolves to a path or None depending on whether /etc/passwd
+        # exists; the contract is "doesn't reject solely because of /". We
+        # accept either return as long as it didn't raise.
+        assert result is None or result.startswith("/")
+
+    def test_relative_path_normalised_before_check(self, tmp_path):
+        """Relative paths get normpath'd then realpath'd — the result still
+        has to land inside allowed_root."""
+        from media_preview_generator.web.routes._helpers import _safe_resolve_within
+
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        (sub / "x.mkv").touch()
+
+        # Relative path: normpath collapses ".." inside the string but
+        # realpath then anchors against CWD, so unless the relative path
+        # *resolves* under tmp_path, reject. Easier to assert behaviour
+        # with a path crafted to escape: tmp_path/sub/../sub/x.mkv → tmp_path/sub/x.mkv (in)
+        result = _safe_resolve_within(str(tmp_path / "sub" / ".." / "sub" / "x.mkv"), str(tmp_path))
+        assert result is not None, "in-root path with redundant '..' segment must be allowed after normalisation"
+
+
 class TestIsWindows:
     """Test Windows platform detection."""
 

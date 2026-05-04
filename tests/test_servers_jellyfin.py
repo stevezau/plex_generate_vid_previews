@@ -455,7 +455,29 @@ class TestParseWebhook:
         }
         ev = jelly.parse_webhook(payload, headers={})
         assert isinstance(ev, WebhookEvent)
+        assert ev.event_type == "ItemAdded", "event_type must be captured for downstream filtering"
         assert ev.item_id == "42"
+
+    def test_itemadded_event_captures_path_when_template_provides_it(self, jelly):
+        """Audit fix — Jellyfin's "Generic Destination" webhook template
+        includes ``{{ItemPath}}``. Capturing it lets the dispatcher skip
+        the per-item reverse lookup. A regression that drops this field
+        forces every Jellyfin webhook to pay an extra HTTP roundtrip.
+        """
+        payload = {
+            "NotificationType": "ItemAdded",
+            "ItemId": "42",
+            "ItemType": "Movie",
+            "ItemPath": "/media/movies/Foo.mkv",
+            "ServerId": "abc",
+        }
+        ev = jelly.parse_webhook(payload, headers={})
+        assert ev is not None
+        assert ev.item_id == "42"
+        assert ev.remote_path == "/media/movies/Foo.mkv", (
+            "Jellyfin's ItemPath template field was silently dropped — "
+            "dispatcher will pay for an extra reverse-lookup roundtrip"
+        )
 
     def test_library_new_emby_template(self, jelly):
         payload = {"Event": "library.new", "ItemId": "99"}
@@ -585,6 +607,16 @@ class TestApplyRecommendedSettings:
         sent_options = post_call.kwargs["json_body"]["LibraryOptions"]
         assert sent_options["EnableRealtimeMonitor"] is True
         assert sent_options["SomeUnrelatedFlag"] == "preserve_me"
+        # Audit fix — also assert the other CRITICAL flags weren't quietly
+        # rewritten. Without this, a regression where apply silently
+        # flipped EnableTrickplayImageExtraction (or any other unrelated
+        # critical flag) would have passed because results checks only
+        # the changed-flag dict.
+        assert sent_options["EnableTrickplayImageExtraction"] is True, (
+            "apply silently mutated EnableTrickplayImageExtraction — regression in the apply-only-misset logic"
+        )
+        assert sent_options["SaveTrickplayWithMedia"] is True
+        assert sent_options["ExtractTrickplayImagesDuringLibraryScan"] is False
 
     def test_skips_libraries_already_correct(self, jelly):
         # Both libraries fine — apply makes zero POSTs and returns {}.

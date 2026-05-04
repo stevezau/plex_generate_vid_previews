@@ -682,7 +682,17 @@ class TestJobsAPI:
             get_settings_manager().update({"media_servers": []})
 
     def test_create_job_ignores_credential_overrides(self, client):
-        """Job creation accepts request with credential-like keys but allow-list prevents applying them."""
+        """Job creation must STRIP credential-like keys, not just accept the request.
+
+        Originally this test only asserted the request returned 201 and that
+        ``_start_job_async`` was called once — neither of which proves the
+        allow-list actually filtered the credential keys. A regression where
+        ``plex_token`` / ``plex_url`` flowed straight into the worker's
+        Config (replacing the user's real credentials with attacker-supplied
+        ones) would have passed silently. Audit fix — assert the SUT
+        contract: credentials MUST NOT appear in the overrides dict that
+        ``_start_job_async`` receives.
+        """
         with patch("media_preview_generator.web.routes.api_jobs._start_job_async") as mock_start:
             resp = client.post(
                 "/api/jobs",
@@ -692,12 +702,22 @@ class TestJobsAPI:
                     "config": {
                         "plex_token": "evil-token",
                         "plex_url": "http://evil.com",
+                        "plex_config_folder": "/tmp/evil",
                     },
                 },
             )
         assert resp.status_code == 201
         mock_start.assert_called_once()
-        assert mock_start.call_args[0][0]  # job_id present
+        # _start_job_async(job_id, overrides) — both positional. Inspect the
+        # second arg for credential leakage.
+        call_args = mock_start.call_args
+        overrides = call_args[0][1] if len(call_args[0]) > 1 else call_args.kwargs.get("config_overrides", {})
+        assert call_args[0][0], "job_id should be present"
+        for forbidden_key in ("plex_token", "plex_url", "plex_config_folder"):
+            assert forbidden_key not in overrides, (
+                f"Credential key {forbidden_key!r} leaked into job overrides — "
+                f"the route's allow-list must strip it. overrides={overrides!r}"
+            )
 
     def test_get_specific_job(self, client):
         with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
@@ -1666,125 +1686,76 @@ class TestJobConfigPathMappings:
         expected = normalize_path_mappings({"path_mappings": settings_path_mappings})
         assert captured_configs[0].path_mappings == expected
 
-    def test_start_job_config_overrides_path_mappings(self, client, tmp_path):
-        """config_overrides.path_mappings overrides settings path_mappings."""
-        override_mappings = [
+    def test_start_job_does_NOT_accept_path_mappings_override(self, client, tmp_path):
+        """``path_mappings`` is a Settings-level concept, not a per-job override.
+
+        Originally this test asserted that ``path_mappings`` posted via
+        ``/api/jobs`` overrode Settings' path_mappings. That permissive
+        surface is closed by the credential-stripping allow-list — see
+        ``test_create_job_ignores_credential_overrides``. ``path_mappings``
+        is now stripped along with credentials. Production callers that
+        legitimately need per-server mappings configure them in Settings
+        (Settings page → Path Mappings) which Config picks up through
+        ``load_config()``.
+        """
+        settings_mappings = [
             {
-                "plex_prefix": "/override",
-                "local_prefix": "/local_override",
+                "plex_prefix": "/from_settings",
+                "local_prefix": "/local",
                 "webhook_prefixes": [],
             }
         ]
         client.post(
             "/api/settings",
             headers=_api_headers(),
-            json={
-                "path_mappings": [
-                    {
-                        "plex_prefix": "/from_settings",
-                        "local_prefix": "/local",
-                        "webhook_prefixes": [],
-                    }
-                ]
-            },
+            json={"path_mappings": settings_mappings},
         )
 
-        captured_configs = []
-        done = threading.Event()
-
-        def capture_run_processing(config, *args, **kwargs):
-            captured_configs.append(config)
-            done.set()
-
-        mock_config = MagicMock()
-        mock_config.path_mappings = []
-        mock_config.tmp_folder = str(tmp_path)
-        mock_config.plex_url = "http://test"
-        mock_config.plex_token = "token"
-
-        with (
-            patch(
-                "media_preview_generator.jobs.orchestrator.run_processing",
-                side_effect=capture_run_processing,
-            ),
-            patch("media_preview_generator.config.load_config", return_value=mock_config),
-            patch(
-                "media_preview_generator.processing.generator._verify_tmp_folder_health",
-                return_value=(True, []),
-            ),
-            patch(
-                "media_preview_generator.utils.setup_working_directory",
-                return_value=str(tmp_path / "work"),
-            ),
-            patch("media_preview_generator.gpu.detect.detect_all_gpus", return_value=[]),
-        ):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async") as mock_start:
             resp = client.post(
                 "/api/jobs",
                 headers=_api_headers(),
-                json={"config": {"path_mappings": override_mappings}},
+                json={
+                    "library_name": "Movies",
+                    "config": {
+                        "path_mappings": [{"plex_prefix": "/evil", "local_prefix": "/exfil"}],
+                    },
+                },
             )
-            assert resp.status_code == 201
-            assert done.wait(timeout=2.0), "run_processing was not called"
-        assert len(captured_configs) == 1
-        assert captured_configs[0].path_mappings == override_mappings
-
-    def test_webhook_job_retains_path_mappings_and_webhook_paths(self, client, tmp_path):
-        """Webhook job with config_overrides has webhook_paths and path_mappings from settings."""
-        settings_path_mappings = [
-            {
-                "plex_prefix": "/data",
-                "local_prefix": "/mnt/data",
-                "webhook_prefixes": ["/data"],
-            }
-        ]
-        client.post(
-            "/api/settings",
-            headers=_api_headers(),
-            json={"path_mappings": settings_path_mappings},
+        assert resp.status_code == 201
+        mock_start.assert_called_once()
+        overrides = mock_start.call_args[0][1]
+        assert "path_mappings" not in overrides, (
+            f"path_mappings leaked through /api/jobs override surface — settings is the only source. overrides={overrides!r}"
         )
 
-        captured_configs = []
-        done = threading.Event()
+    def test_create_job_does_NOT_accept_webhook_paths_override(self, client):
+        """``webhook_paths`` is a webhook-only field, not a /api/jobs override.
 
-        def capture_run_processing(config, *args, **kwargs):
-            captured_configs.append(config)
-            done.set()
-
-        mock_config = MagicMock()
-        mock_config.path_mappings = []
-        mock_config.tmp_folder = str(tmp_path)
-        mock_config.plex_url = "http://test"
-        mock_config.plex_token = "token"
-        mock_config.webhook_paths = None
-
-        with (
-            patch(
-                "media_preview_generator.jobs.orchestrator.run_processing",
-                side_effect=capture_run_processing,
-            ),
-            patch("media_preview_generator.config.load_config", return_value=mock_config),
-            patch(
-                "media_preview_generator.processing.generator._verify_tmp_folder_health",
-                return_value=(True, []),
-            ),
-            patch(
-                "media_preview_generator.utils.setup_working_directory",
-                return_value=str(tmp_path / "work"),
-            ),
-            patch("media_preview_generator.gpu.detect.detect_all_gpus", return_value=[]),
-        ):
+        Production webhook jobs are created by ``create_vendor_webhook_job``
+        / ``_execute_webhook_job`` which call ``_start_job_async`` directly
+        with a pre-validated path list. Manual file-list jobs use
+        ``/api/jobs/manual`` (which validates paths against MEDIA_ROOT).
+        Neither flow goes through ``/api/jobs`` with a config-block
+        ``webhook_paths`` field — accepting it there bypasses path
+        validation and lets a caller trigger processing of arbitrary
+        files. Audit fix — assert it's stripped.
+        """
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async") as mock_start:
             resp = client.post(
                 "/api/jobs",
                 headers=_api_headers(),
-                json={"config": {"webhook_paths": ["/data/Movies/foo.mkv"]}},
+                json={
+                    "library_name": "Movies",
+                    "config": {"webhook_paths": ["/etc/passwd", "/data/secrets/key.pem"]},
+                },
             )
-            assert resp.status_code == 201
-            assert done.wait(timeout=2.0), "run_processing was not called"
-        assert len(captured_configs) == 1
-        cfg = captured_configs[0]
-        assert cfg.webhook_paths == ["/data/Movies/foo.mkv"]
-        expected_mappings = normalize_path_mappings({"path_mappings": settings_path_mappings})
-        assert cfg.path_mappings == expected_mappings
+        assert resp.status_code == 201
+        mock_start.assert_called_once()
+        overrides = mock_start.call_args[0][1]
+        assert "webhook_paths" not in overrides, (
+            f"webhook_paths leaked through /api/jobs — use /api/jobs/manual or webhook routes. overrides={overrides!r}"
+        )
 
     def test_start_job_library_ids_override_sets_plex_library_ids(self, client, tmp_path):
         """library_ids request field should filter by Plex section IDs."""

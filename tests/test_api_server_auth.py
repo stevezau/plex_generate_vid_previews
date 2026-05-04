@@ -82,6 +82,12 @@ class TestEmbyPasswordAuth:
             headers=auth_headers,
             json={"url": "http://emby:8096", "username": "admin", "password": "wrong"},
         )
+        # Audit fix — assert the HTTP status too. The original test only
+        # checked the body shape; a regression that returned HTTP 500 with
+        # ``ok=False`` body would have passed silently.
+        assert response.status_code == 200, (
+            f"failed-creds path must return 200 with ok=False body (not 500); got {response.status_code}"
+        )
         body = response.get_json()
         assert body["ok"] is False
         assert "401" in body["message"]

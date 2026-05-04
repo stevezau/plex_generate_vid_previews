@@ -582,10 +582,20 @@ class TestTriggerRefresh:
             scan.assert_not_called()
 
     def test_swallows_exceptions(self, plex_wrapper):
+        """Trigger MUST attempt the scan call AND swallow exceptions.
+
+        Originally this test only asserted "didn't raise" — a regression
+        that early-returned before calling ``trigger_plex_partial_scan``
+        would silently no-op and the user's library would never get
+        rescanned. Audit fix: also assert the call WAS attempted.
+        """
         with patch("media_preview_generator.plex_client.trigger_plex_partial_scan") as scan:
             scan.side_effect = RuntimeError("network is down")
-            # Must not raise — the dispatcher relies on this being best-effort.
             plex_wrapper.trigger_refresh(item_id=None, remote_path="/m/foo.mkv")
+            assert scan.call_count >= 1, (
+                "trigger_refresh must attempt trigger_plex_partial_scan even when it "
+                "raises — early-return regression would silently no-op the rescan"
+            )
 
 
 class TestParseWebhook:
