@@ -8,6 +8,7 @@ file path(s) from the payload(s) — no full-library scan.
 import base64
 import json
 import os
+import re
 import secrets
 import threading
 from collections import deque
@@ -345,7 +346,12 @@ def create_vendor_webhook_job(
         _recent_dispatches[dedup_key] = now_ts
 
     basename = os.path.basename(canonical_path)
-    library_display = (title or "").strip() or basename
+    # Vendor-webhook callers (Plex/Emby/Jellyfin via /webhook/incoming)
+    # don't pass a payload-derived title, so fall back to a basename-
+    # parsed clean title — keeps the Job-Queue Library column readable
+    # and consistent with Sonarr/Radarr rows that already get
+    # "Show SxxEyy" / "Movie (Year)" from their structured payload.
+    library_display = (title or "").strip() or _clean_title_from_basename(basename)
 
     b_sid, b_sname, b_stype = _resolve_webhook_server_context(server_id)
 
@@ -450,6 +456,41 @@ def _extract_sonarr_file_path(payload: dict) -> str:
     # Sportarr uses a flat filePath key at the root level
     file_path = str(payload.get("filePath", "")).strip()
     return file_path
+
+
+_EP_CODE_RE = re.compile(r"\b[Ss](\d{1,3})[Ee](\d{1,3})\b")
+_YEAR_RE = re.compile(r"\((19|20)\d{2}\)")
+
+
+def _clean_title_from_basename(basename: str) -> str:
+    """Derive a Sonarr-style display title from a media filename.
+
+    Producers like ``ShowName (Year) - SxxEyy - EpisodeName [tags].mkv``
+    collapse to ``ShowName SxxEyy``. Movies of the form
+    ``MovieName (Year) [tags].mkv`` collapse to ``MovieName (Year)``.
+    Anything we don't recognise falls back to the basename minus its
+    extension. Keeps the Job-Queue Library column compact and
+    consistent across vendor webhooks (Plex / Emby / Jellyfin), which
+    otherwise dump the raw filename next to a clean Sonarr-derived
+    sibling row.
+    """
+    if not basename:
+        return basename
+    stem = basename.rsplit(".", 1)[0] if "." in basename else basename
+    ep_match = _EP_CODE_RE.search(stem)
+    if ep_match:
+        # Drop "(YEAR)" before the SxxEyy, then take everything before
+        # the SxxEyy as the show name. " - " separator is the common
+        # Sonarr/Radarr layout but we tolerate plain spaces too.
+        show = stem[: ep_match.start()].strip(" -._")
+        show = _YEAR_RE.sub("", show).strip(" -._")
+        season, episode = ep_match.group(1), ep_match.group(2)
+        return f"{show} S{int(season):02d}E{int(episode):02d}".strip()
+    # No SxxEyy → assume movie. Trim everything after the (YEAR).
+    year_match = _YEAR_RE.search(stem)
+    if year_match:
+        return stem[: year_match.end()].strip(" -._")
+    return stem
 
 
 def _format_sonarr_episode_title(series_title: str, episodes: object) -> str:

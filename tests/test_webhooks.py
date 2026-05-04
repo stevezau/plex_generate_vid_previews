@@ -109,6 +109,24 @@ def _auth_headers(token: str = "test-token-12345678") -> dict:
     return {"X-Auth-Token": token, "Content-Type": "application/json"}
 
 
+def test_clean_title_from_basename():
+    """_clean_title_from_basename collapses raw filenames to a Sonarr-style title."""
+    from media_preview_generator.web.webhooks import _clean_title_from_basename as f
+
+    # Episode with year + dash separators (most common Sonarr layout)
+    assert f("Margarita (2024) - S02E01 - TBA [AMZN WEBDL-1080p][EAC3 5.1][ES][h264].mkv") == "Margarita S02E01"
+    assert f("The Show - S01E10 - Pilot.mkv") == "The Show S01E10"
+    # Scene-style dot-separated names
+    assert f("Some.Show.S04E07.WEBRip.x264-GROUP.mkv") == "Some.Show S04E07"
+    # Movies (year present, no SxxEyy)
+    assert f("The Matrix (1999) [imdb-tt0133093].mkv") == "The Matrix (1999)"
+    assert f("Inception (2010).mkv") == "Inception (2010)"
+    # Plain / unparseable filenames degrade gracefully
+    assert f("plain_filename.mkv") == "plain_filename"
+    assert f("NoExtension") == "NoExtension"
+    assert f("") == ""
+
+
 def test_format_sonarr_episode_title():
     """_format_sonarr_episode_title adds SxxExx from episodes to series title."""
     from media_preview_generator.web.webhooks import _format_sonarr_episode_title
