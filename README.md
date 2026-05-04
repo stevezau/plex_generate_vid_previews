@@ -81,11 +81,15 @@ Generates video preview thumbnails for **Plex, Emby, and Jellyfin**. These are t
 
 ## Screenshots
 
-| Home | Settings | Webhooks |
-|:----:|:--------:|:--------:|
-| [![Home](docs/images/home.png)](docs/images/home.png) | [![Settings](docs/images/settings.png)](docs/images/settings.png) | [![Webhooks](docs/images/webhooks.png)](docs/images/webhooks.png) |
+| Dashboard | Servers |
+|:---------:|:-------:|
+| [![Dashboard showing connected Plex / Jellyfin / Emby servers, GPU workers, and job statistics](docs/images/home.png)](docs/images/home.png) | [![Servers page with one card per Plex / Jellyfin / Emby server, each showing connection status and library count](docs/images/servers.png)](docs/images/servers.png) |
 
-*Web UI: dashboard and job management, configuration and GPU detection, Radarr/Sonarr webhook setup.*
+| Edit Server (Jellyfin) | Settings | Automation |
+|:----------------------:|:--------:|:----------:|
+| [![Edit Server modal for a Jellyfin server, showing the plain-English Stop-vendor-extraction and Instant-trickplay-plugin cards](docs/images/servers-edit.png)](docs/images/servers-edit.png) | [![Settings page with per-GPU configuration for an NVIDIA TITAN RTX and Intel UHD 770](docs/images/settings.png)](docs/images/settings.png) | [![Automation page Triggers tab listing trigger sources for Sonarr / Radarr / Tdarr / per-vendor manual imports](docs/images/automation.png)](docs/images/automation.png) |
+
+*Web UI: dashboard, multi-server management, per-server edit, processing settings, and trigger configuration.*
 
 ---
 

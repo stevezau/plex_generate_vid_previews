@@ -7,6 +7,8 @@ from a single instance. A new file is processed exactly once (one FFmpeg pass
 on the GPU) and the resulting frames are published to **every** configured
 server that owns it, in the format that server expects.
 
+![Servers page showing one card per Plex / Jellyfin / Emby server, each with connection status and library count, plus the universal webhook URL at the bottom](images/servers.png)
+
 This page covers:
 
 - [Why this exists](#why-this-exists)
