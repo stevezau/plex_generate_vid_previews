@@ -139,7 +139,7 @@ The legacy `/webhooks` and `/schedules` URLs still work — they 302-redirect to
 
 ### Production Server
 
-The Docker image runs the web interface for you — there's nothing to configure. The dashboard updates in real time over WebSocket; long-running jobs survive the default proxy timeouts. If you're running the app outside Docker (or just curious how the container is wired internally — gunicorn settings, single-worker rationale, WebSocket transport), see [CONTRIBUTING.md → Architecture](../CONTRIBUTING.md).
+The Docker image runs the web interface for you — there's nothing to configure. The dashboard updates in real time over WebSocket; long-running jobs survive the default proxy timeouts. If you're running the app outside Docker (or just curious how the container is wired internally — gunicorn settings, single-worker rationale, WebSocket transport), see [CONTRIBUTING.md → Architecture](../CONTRIBUTING.md#architecture).
 
 ### Reverse Proxy
 
