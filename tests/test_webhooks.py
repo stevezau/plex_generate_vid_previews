@@ -891,8 +891,15 @@ def test_schedule_webhook_job_allows_dispatch_after_ttl(mock_timer_cls, mock_set
 
     assert result is True
     mock_timer_cls.assert_called_once()
-    # Stale entry should have been pruned from the cache
-    assert ("sonarr", "", normalized_path) not in wh._recent_dispatches
+    # Stale entry was pruned (and replaced with a fresh one). Audit
+    # batch 2 — _schedule_webhook_job now records the dedup entry
+    # immediately on schedule, mirroring create_vendor_webhook_job;
+    # before, the entry was only written by _execute_webhook_job after
+    # the debounce expired. The key now stays present, but with a
+    # fresh timestamp instead of the seeded stale one.
+    fresh_ts = wh._recent_dispatches.get(("sonarr", "", normalized_path))
+    assert fresh_ts is not None
+    assert fresh_ts > stale_ts
 
 
 @patch("media_preview_generator.web.webhooks.get_settings_manager")

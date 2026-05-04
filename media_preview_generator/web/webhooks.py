@@ -291,6 +291,37 @@ def _as_dict(value: object) -> dict:
     return value if isinstance(value, dict) else {}
 
 
+def _check_and_record_dedup(source: str, server_id: str | None, canonical_path: str) -> int | None:
+    """Return None if this dispatch is fresh (and record it); seconds-ago if dup.
+
+    Shared by ``_schedule_webhook_job`` (Sonarr/Radarr/Custom debounced
+    path) and ``create_vendor_webhook_job`` (Plex/Emby/Jellyfin immediate
+    path) so both flows use the same dedup semantics:
+
+    * Same ``(source, server_id, path)`` seen within ``_RECENT_DISPATCH_TTL_SECONDS``
+      → return age in seconds (caller drops the webhook).
+    * Else → record the entry under ``now`` and return None.
+    * Expired entries are evicted opportunistically so the table stays
+      bounded on long-running installs.
+
+    Cross-source dispatches (Plex's ``library.new`` + Sonarr's import
+    webhook for the same file) are *intentionally* allowed to create
+    separate Jobs — they represent different events.
+
+    Caller must hold ``_pending_lock``.
+    """
+    now_ts = datetime.now(timezone.utc).timestamp()
+    expired = [k for k, ts in _recent_dispatches.items() if now_ts - ts >= _RECENT_DISPATCH_TTL_SECONDS]
+    for k in expired:
+        _recent_dispatches.pop(k, None)
+    dedup_key = (source, server_id or "", canonical_path)
+    last = _recent_dispatches.get(dedup_key)
+    if last is not None and (now_ts - last) < _RECENT_DISPATCH_TTL_SECONDS:
+        return int(now_ts - last)
+    _recent_dispatches[dedup_key] = now_ts
+    return None
+
+
 def create_vendor_webhook_job(
     source: str,
     canonical_path: str,
@@ -337,33 +368,17 @@ def create_vendor_webhook_job(
     if not canonical_path:
         return None
 
-    # Per-path same-source dedup: same (source, server_id, path) seen
-    # recently → drop. Plex repeats ``library.new`` after metadata refresh
-    # / analyzer rerun; without dedup we'd spawn 2-4 Jobs per file.
-    # Cross-source dispatches (e.g. Plex's library.new + Sonarr's
-    # post-import webhook for the same file) are *intentionally* allowed
-    # to create separate Jobs — they represent different events and the
-    # downstream .meta journal correctly skips redundant FFmpeg work.
-    dedup_key = (safe_source, server_id or "", canonical_path)
-    now_ts = datetime.now(timezone.utc).timestamp()
     with _pending_lock:
-        # Evict expired entries before checking — bounds memory growth on
-        # high-volume Plex installs (one entry per ever-seen file × forever
-        # without this). Mirrors the cleanup in _schedule_webhook_job.
-        expired = [key for key, ts in _recent_dispatches.items() if now_ts - ts >= _RECENT_DISPATCH_TTL_SECONDS]
-        for key in expired:
-            _recent_dispatches.pop(key, None)
-        last = _recent_dispatches.get(dedup_key)
-        if last and (now_ts - last) < _RECENT_DISPATCH_TTL_SECONDS:
-            logger.info(
-                "Webhook from {}: dropping duplicate dispatch for '{}' (last seen {}s ago — Plex commonly "
-                "repeats library.new after metadata refresh; the original Job is the authoritative one).",
-                safe_source,
-                os.path.basename(canonical_path),
-                int(now_ts - last),
-            )
-            return None
-        _recent_dispatches[dedup_key] = now_ts
+        age_sec = _check_and_record_dedup(safe_source, server_id, canonical_path)
+    if age_sec is not None:
+        logger.info(
+            "Webhook from {}: dropping duplicate dispatch for '{}' (last seen {}s ago — Plex commonly "
+            "repeats library.new after metadata refresh; the original Job is the authoritative one).",
+            safe_source,
+            os.path.basename(canonical_path),
+            age_sec,
+        )
+        return None
 
     basename = os.path.basename(canonical_path)
     # Vendor-webhook callers (Plex/Emby/Jellyfin via /webhook/incoming)
@@ -630,25 +645,16 @@ def _schedule_webhook_job(source: str, title: str, file_path: str, server_id: st
     delay = int(settings.get("webhook_delay", 60))
     debounce_key = _debounce_key(safe_source, server_id)
     normalized_path = os.path.normpath(normalized_input_path).replace("\\", "/")
-    dedup_key = (safe_source, server_id or "", normalized_path)
 
+    # NOTE: _schedule_webhook_job uses _check_and_record_dedup ONLY as a
+    # "have I already created a Job for this path very recently?" guard —
+    # the entry is recorded immediately, but Sonarr's batching means
+    # multiple paths from the same season-pack import will all be debounced
+    # into one Job. The dedup catches *re-imports* (Sonarr re-firing after
+    # an upgrade) within TTL, not the in-flight batch.
     with _pending_lock:
-        now_ts = datetime.now(timezone.utc).timestamp()
-
-        # Opportunistically prune expired dedup entries — keeps the dict bounded.
-        expired = [key for key, ts in _recent_dispatches.items() if now_ts - ts >= _RECENT_DISPATCH_TTL_SECONDS]
-        for key in expired:
-            _recent_dispatches.pop(key, None)
-
-        recent_ts = _recent_dispatches.get(dedup_key)
-        if recent_ts is not None:
-            age = int(now_ts - recent_ts)
-            logger.info(
-                "Webhook: {} duplicate of '{}' ignored (already dispatched {}s ago)", safe_source, safe_title, age
-            )
-            dedup_skip = True
-        else:
-            dedup_skip = False
+        age_sec = _check_and_record_dedup(safe_source, server_id, normalized_path)
+        dedup_skip = age_sec is not None
 
         if not dedup_skip:
             existing = _pending_timers.get(debounce_key)
@@ -667,7 +673,7 @@ def _schedule_webhook_job(source: str, title: str, file_path: str, server_id: st
             batch["file_paths"].add(normalized_path)
             batch["titles"].append(safe_title)
 
-            fire_at = now_ts + delay
+            fire_at = datetime.now(timezone.utc).timestamp() + delay
             batch["fire_at"] = fire_at
 
             timer = threading.Timer(delay, _execute_webhook_job, args=[debounce_key])
@@ -677,6 +683,9 @@ def _schedule_webhook_job(source: str, title: str, file_path: str, server_id: st
             path_count = len(batch["file_paths"])
 
     if dedup_skip:
+        logger.info(
+            "Webhook: {} duplicate of '{}' ignored (already dispatched {}s ago)", safe_source, safe_title, age_sec
+        )
         _add_history_entry(safe_source, "Download", safe_title, "deduped")
         return False
 
@@ -767,6 +776,12 @@ def _execute_webhook_job(debounce_key: str) -> None:
         retry_count = max(0, min(10, int(settings.get("webhook_retry_count", 3))))
         retry_delay = max(10, min(300, int(settings.get("webhook_retry_delay", 30))))
 
+        # Dedup entries are recorded by ``_check_and_record_dedup`` inside
+        # ``_schedule_webhook_job`` at debounce-schedule time, not here at
+        # debounce-fire time — so a re-firing Sonarr import within TTL is
+        # caught even if the previous batch hasn't fully completed yet.
+        # Refresh the timestamps for paths actually in this batch so the
+        # TTL clock starts at the moment of dispatch.
         with _pending_lock:
             dispatch_ts = datetime.now(timezone.utc).timestamp()
             for p in webhook_paths:
