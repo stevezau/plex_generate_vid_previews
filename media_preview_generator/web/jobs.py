@@ -28,6 +28,16 @@ from loguru import logger
 # Message shown in UI when a job's log file was removed by retention policy.
 LOG_RETENTION_CLEARED_MESSAGE = "Log file was cleared due to log retention policy."
 
+
+# Sentinel for update_progress kwargs that need to distinguish
+# "not passed" from "explicitly set to None" — the existing fields use
+# None as "leave alone," but retry_eta needs an explicit clear path.
+class _UnsetType:
+    pass
+
+
+_UNSET = _UnsetType()
+
 PRIORITY_HIGH = 1
 PRIORITY_NORMAL = 2
 PRIORITY_LOW = 3
@@ -105,6 +115,11 @@ class JobProgress:
     current_file: str = ""
     workers: list[WorkerStatus] = field(default_factory=list)
     outcome: dict[str, int] | None = None
+    # ISO end-time + duration of an in-progress retry-backoff wait.
+    # Lets the UI render a smooth client-side countdown + a bar that
+    # fills as the wait elapses, instead of a stuck-looking 0% bar.
+    retry_eta: str | None = None
+    retry_wait_total: int | None = None
 
     def to_dict(self) -> dict:
         """Serialize to dictionary."""
@@ -975,6 +990,8 @@ class JobManager:
         processed_items: int | None = None,
         speed: str | None = None,
         current_file: str | None = None,
+        retry_eta: str | None | _UnsetType = _UNSET,
+        retry_wait_total: int | None | _UnsetType = _UNSET,
     ) -> Job | None:
         """Update job progress."""
         with self._lock:
@@ -992,6 +1009,13 @@ class JobManager:
                     job.progress.speed = speed
                 if current_file is not None:
                     job.progress.current_file = current_file
+                # Sentinel-default lets callers explicitly set retry_eta
+                # back to None to clear the countdown — `None` already
+                # means "leave it alone" for the other fields.
+                if retry_eta is not _UNSET:
+                    job.progress.retry_eta = retry_eta
+                if retry_wait_total is not _UNSET:
+                    job.progress.retry_wait_total = retry_wait_total
 
                 # Emit progress event (don't save to disk on every update)
                 self._emit_event(

@@ -371,8 +371,10 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
             run_job_config = job_manager.get_job(job_id)
             if run_job_config and run_job_config.config.get("is_retry"):
                 import time as _time
+                from datetime import datetime, timedelta, timezone
 
                 delay_sec = max(1, int(run_job_config.config.get("retry_delay", 30)))
+                retry_eta = (datetime.now(timezone.utc) + timedelta(seconds=delay_sec)).isoformat()
                 job_manager.add_log(
                     job_id,
                     f"INFO - Waiting {delay_sec}s before retry (Plex may still be indexing)",
@@ -383,6 +385,8 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                     processed_items=0,
                     total_items=0,
                     current_item=f"Retry starting in {delay_sec}s...",
+                    retry_eta=retry_eta,
+                    retry_wait_total=delay_sec,
                 )
                 elapsed = 0
                 while elapsed < delay_sec:
@@ -403,6 +407,14 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                         total_items=0,
                         current_item=f"Retry starting in {remaining}s...",
                     )
+                # Wait done — clear the countdown so the UI flips back
+                # to a normal progress card the moment work begins.
+                job_manager.update_progress(
+                    job_id,
+                    current_item="",
+                    retry_eta=None,
+                    retry_wait_total=None,
+                )
 
             # Per-job failure scope — isolates this job's failure records
             # from any concurrent job in the same process.  Workers running

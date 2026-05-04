@@ -1066,6 +1066,18 @@ html[data-bs-theme="light"] ::-webkit-scrollbar-thumb:hover {
     animation: pulse 2s infinite;
 }
 
+/* Retry-waiting active-job card — subtle amber border + tinted bg
+   so the card visibly differs from a normally-running job at a glance,
+   without being so loud it competes with actually-failing jobs. */
+.active-job-card.retry-waiting {
+    border-color: rgba(255, 193, 7, 0.55) !important;
+    background-color: rgba(255, 193, 7, 0.06);
+}
+
+[data-bs-theme="dark"] .active-job-card.retry-waiting {
+    background-color: rgba(255, 193, 7, 0.08);
+}
+
 /* Responsive adjustments */
 @media (max-width: 768px) {
     .stat-value { font-size: 1.25rem; }

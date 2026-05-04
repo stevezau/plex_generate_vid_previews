@@ -1619,7 +1619,7 @@ function updateJobQueue() {
         const retryAttempt = job.config && typeof job.config.retry_attempt === 'number' ? job.config.retry_attempt : 0;
         const maxRetries = job.config && typeof job.config.max_retries === 'number' ? job.config.max_retries : 0;
         const retryLabel = isRetry && maxRetries > 0
-            ? ` <span class="badge bg-secondary ms-1" title="Retry job">Retry ${retryAttempt}/${maxRetries}</span>`
+            ? ` <span class="badge bg-warning text-dark ms-1" title="Retry attempt"><i class="bi bi-arrow-repeat me-1"></i>Retry ${retryAttempt}/${maxRetries}</span>`
             : '';
         const priorityCell = renderPriorityCell(job);
         const scheduledAt = job.config && job.config.scheduled_at;
@@ -1809,9 +1809,25 @@ function updateActiveJobs(runningJobs) {
     for (const job of runningJobs) {
         const jid = escapeHtml(job.id);
         const isPaused = !!job.paused;
-        const statusBadge = isPaused
-            ? '<span class="badge bg-warning text-dark">Paused</span>'
-            : '<span class="badge bg-primary pulse">Running</span>';
+        const retryEta = job.progress && job.progress.retry_eta;
+        const retryWaitTotal = job.progress && job.progress.retry_wait_total;
+        // Worker has picked the job up but is sleeping out the retry
+        // backoff — render this as its own state, not as "Running 0%."
+        const isRetryWaiting = !isPaused && !!retryEta && new Date(retryEta).getTime() > Date.now() - 1500;
+        const isRetry = !!(job.config && job.config.is_retry);
+        const retryAttempt = job.config && typeof job.config.retry_attempt === 'number' ? job.config.retry_attempt : 0;
+        const maxRetries = job.config && typeof job.config.max_retries === 'number' ? job.config.max_retries : 0;
+        const retryChip = isRetry && maxRetries > 0
+            ? ` <span class="badge bg-warning text-dark ms-1" title="Retry attempt"><i class="bi bi-arrow-repeat me-1"></i>Retry ${retryAttempt}/${maxRetries}</span>`
+            : (isRetry ? ' <span class="badge bg-warning text-dark ms-1"><i class="bi bi-arrow-repeat me-1"></i>Retry</span>' : '');
+        let statusBadge;
+        if (isPaused) {
+            statusBadge = '<span class="badge bg-warning text-dark">Paused</span>';
+        } else if (isRetryWaiting) {
+            statusBadge = '<span class="badge bg-warning text-dark"><i class="bi bi-hourglass-split me-1"></i>Waiting to retry</span>';
+        } else {
+            statusBadge = '<span class="badge bg-primary pulse">Running</span>';
+        }
         const progress = job.progress.percent.toFixed(1);
 
         // Build collapsible file list (matching Job Queue pattern)
@@ -1853,12 +1869,54 @@ function updateActiveJobs(runningJobs) {
         const activePri = job.priority || 2;
         const activePriBadge = `<span class="badge ${PRIORITY_BADGE_CLASS[activePri] || 'bg-primary'} priority-badge ms-1">${PRIORITY_LABELS[activePri] || 'Normal'}</span>`;
 
+        // Strip the worker's "Retry: " library_name prefix while in the
+        // waiting state — the chip already says "Retry N/M" and the
+        // status pill says "Waiting to retry," so the prefix is noise.
+        let libraryDisplay = escapeHtml(job.library_name) || 'All Libraries';
+        if (isRetryWaiting && job.library_name && job.library_name.startsWith('Retry: ')) {
+            libraryDisplay = escapeHtml(job.library_name.slice('Retry: '.length));
+        }
+
+        let progressBlock;
+        if (isRetryWaiting) {
+            const totalSec = retryWaitTotal && retryWaitTotal > 0 ? retryWaitTotal : 30;
+            const remaining = Math.max(0, Math.ceil((new Date(retryEta).getTime() - Date.now()) / 1000));
+            const fillPct = Math.max(0, Math.min(100, ((totalSec - remaining) / totalSec) * 100)).toFixed(1);
+            progressBlock = `
+            <div class="progress retry-countdown-bar" style="height: 24px;"
+                 data-retry-eta="${escapeHtml(retryEta)}" data-retry-wait-total="${totalSec}">
+                <div class="progress-bar bg-warning text-dark progress-bar-striped progress-bar-animated"
+                     role="progressbar" style="width: ${fillPct}%"
+                     id="activeJobProgress-${jid}">
+                    <span class="retry-countdown-label">Next attempt in ${remaining}s</span>
+                </div>
+            </div>
+            <div class="d-flex justify-content-between mt-1 small">
+                <span class="text-warning" id="activeJobItem-${jid}">
+                    <i class="bi bi-hourglass-split me-1"></i>Backing off after a failure — will try again automatically.
+                </span>
+                <span class="text-muted" id="activeJobItems-${jid}">${retryAttempt > 0 ? `Attempt ${retryAttempt}${maxRetries ? ` of ${maxRetries}` : ''}` : ''}</span>
+            </div>`;
+        } else {
+            progressBlock = `
+            <div class="progress" style="height: 24px;">
+                <div class="progress-bar progress-bar-striped progress-bar-animated"
+                     role="progressbar" style="width: ${progress}%" id="activeJobProgress-${jid}">
+                    ${progress}%
+                </div>
+            </div>
+            <div class="d-flex justify-content-between mt-1 small text-muted">
+                <span id="activeJobItem-${jid}">${escapeHtml(job.progress.current_item) || 'Starting...'}</span>
+                <span id="activeJobItems-${jid}">Items: ${job.progress.processed_items || 0} / ${job.progress.total_items || '?'}</span>
+            </div>`;
+        }
+
         html += `
-        <div class="active-job-card mb-3 p-3 border rounded" id="active-job-${jid}">
+        <div class="active-job-card mb-3 p-3 border rounded${isRetryWaiting ? ' retry-waiting' : ''}" id="active-job-${jid}">
             <div class="d-flex justify-content-between align-items-start mb-2 gap-2 flex-wrap">
                 <div class="d-flex align-items-center flex-wrap gap-2 min-w-0">
                     <span><strong>Job:</strong> <code>${jid.substring(0, 8)}</code></span>
-                    ${statusBadge}${activePriBadge}
+                    ${statusBadge}${retryChip}${activePriBadge}
                 </div>
                 <div class="btn-group btn-group-sm icon-btn-group flex-shrink-0" role="group">
                     <button class="btn btn-outline-info" onclick="showLogsModal('${jid}')" title="View Logs" aria-label="View logs">
@@ -1870,20 +1928,11 @@ function updateActiveJobs(runningJobs) {
                 </div>
             </div>
             <div class="mb-2 small">
-                <strong>Library:</strong> ${escapeHtml(job.library_name) || 'All Libraries'}${_serverBadge(job)}${webhookFilesHtml}
+                <strong>Library:</strong> ${libraryDisplay}${_serverBadge(job)}${webhookFilesHtml}
             </div>
             ${_renderPublishersBlock(job)}
             ${startedLine ? `<div class="mb-2">${startedLine}</div>` : ''}
-            <div class="progress" style="height: 24px;">
-                <div class="progress-bar progress-bar-striped progress-bar-animated"
-                     role="progressbar" style="width: ${progress}%" id="activeJobProgress-${jid}">
-                    ${progress}%
-                </div>
-            </div>
-            <div class="d-flex justify-content-between mt-1 small text-muted">
-                <span id="activeJobItem-${jid}">${escapeHtml(job.progress.current_item) || 'Starting...'}</span>
-                <span id="activeJobItems-${jid}">Items: ${job.progress.processed_items || 0} / ${job.progress.total_items || '?'}</span>
-            </div>
+            ${progressBlock}
         </div>`;
     }
 
@@ -2877,6 +2926,24 @@ function _updateElapsedTimers() {
             el.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Starting...';
         }
     });
+    // Active-jobs retry countdown bars (data-retry-eta on the .progress
+    // wrapper). Tick the inner bar's width + label in lockstep so the
+    // bar visibly fills as the wait elapses, rather than sitting at 0%
+    // until the retry actually fires.
+    document.querySelectorAll('.retry-countdown-bar[data-retry-eta]').forEach(function (wrap) {
+        var eta = new Date(wrap.getAttribute('data-retry-eta')).getTime();
+        var total = parseInt(wrap.getAttribute('data-retry-wait-total') || '30', 10);
+        var remaining = Math.max(0, Math.ceil((eta - Date.now()) / 1000));
+        var fill = Math.max(0, Math.min(100, ((total - remaining) / total) * 100));
+        var bar = wrap.querySelector('.progress-bar');
+        if (bar) {
+            bar.style.width = fill.toFixed(1) + '%';
+            var label = bar.querySelector('.retry-countdown-label');
+            if (label) {
+                label.textContent = remaining > 0 ? 'Next attempt in ' + remaining + 's' : 'Starting…';
+            }
+        }
+    });
 }
 
 function _ensureElapsedTimer() {
@@ -2887,6 +2954,7 @@ function _ensureElapsedTimer() {
 function _stopElapsedTimer() {
     if (!_elapsedTimerInterval) return;
     if (document.querySelector('[data-scheduled-at]')) return;
+    if (document.querySelector('.retry-countdown-bar[data-retry-eta]')) return;
     clearInterval(_elapsedTimerInterval);
     _elapsedTimerInterval = null;
 }
