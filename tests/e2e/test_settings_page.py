@@ -102,10 +102,12 @@ class TestSettingsAuth:
 
         # Settings page uses customAuthToken + customAuthTokenConfirm.
         # The "log out all sessions" prompt is an appConfirm modal — click
-        # its OK button after triggering setCustomToken().
+        # its OK button after triggering setCustomToken(). ``void`` so
+        # Playwright's auto-await on returned Promises doesn't deadlock
+        # waiting for the modal to resolve before we've clicked OK.
         authed_page.locator("#customAuthToken").fill("brand-new-tok-1")
         authed_page.locator("#customAuthTokenConfirm").fill("brand-new-tok-1")
-        authed_page.evaluate("setCustomToken()")
+        authed_page.evaluate("void setCustomToken()")
         accept_app_confirm(authed_page)
         authed_page.wait_for_timeout(500)
         assert captured, "POST /api/token/set never fired"
@@ -121,8 +123,10 @@ class TestSettingsAuth:
         authed_page.wait_for_load_state("domcontentloaded")
 
         # Direct invoke to bypass any visibility/scroll issues. The confirm
-        # is an appConfirm modal, not native window.confirm.
-        authed_page.evaluate("regenerateToken()")
+        # is an appConfirm modal, not native window.confirm. ``void`` so
+        # Playwright's auto-await on returned Promises doesn't deadlock
+        # waiting for the modal to resolve before we've clicked OK.
+        authed_page.evaluate("void regenerateToken()")
         accept_app_confirm(authed_page)
         authed_page.wait_for_timeout(500)
         assert called, "POST /api/token/regenerate never fired"
