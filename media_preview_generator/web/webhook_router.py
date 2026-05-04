@@ -80,79 +80,23 @@ def _build_registry_from_settings() -> ServerRegistry:
     return ServerRegistry.from_settings(raw_servers, legacy_config=legacy_config)
 
 
-class _MinimalConfig:
-    """Minimal stand-in for :class:`Config` when Plex isn't configured.
-
-    The webhook dispatcher's :func:`process_canonical_path` only reads
-    a handful of attrs from its config arg (``working_tmp_folder``,
-    ``plex_bif_frame_interval``, plus FFmpeg settings used by
-    :func:`generate_images`). When Plex isn't configured (a valid
-    multi-server-only deployment, or a CI runner with no PLEX_URL),
-    we synthesise this minimal shape from settings instead of failing
-    the dispatch.
-    """
-
-    def __init__(self, settings) -> None:
-        # working_tmp_folder; the dispatcher uses it for the frame
-        # cache base_dir + per-file tmp dirs. Defaults to the system
-        # tempdir when settings haven't been configured.
-        import tempfile
-
-        self.working_tmp_folder = str(
-            settings.get("working_tmp_folder") or settings.get("tmp_folder") or tempfile.gettempdir()
-        )
-        self.tmp_folder = self.working_tmp_folder
-        self.plex_bif_frame_interval = int(
-            settings.get("plex_bif_frame_interval") or settings.get("thumbnail_interval") or 10
-        )
-        self.thumbnail_quality = int(settings.get("thumbnail_quality") or 4)
-        self.tonemap_algorithm = str(settings.get("tonemap_algorithm") or "hable")
-        self.ffmpeg_threads = int(settings.get("ffmpeg_threads") or 2)
-        self.cpu_threads = int(settings.get("cpu_threads") or 2)
-        self.gpu_threads = int(settings.get("gpu_threads") or 0)
-        self.gpu_config = settings.get("gpu_config") or []
-        self.regenerate_thumbnails = bool(settings.get("regenerate_thumbnails", False))
-        self.path_mappings = settings.get("path_mappings") or []
-        self.plex_local_videos_path_mapping = ""
-        self.plex_videos_path_mapping = ""
-        # Plex-only fields kept as empty strings so any incidental
-        # access during the Emby/Jellyfin path doesn't AttributeError.
-        self.plex_url = ""
-        self.plex_token = ""
-        self.plex_config_folder = ""
-        self.plex_timeout = 60
-        self.plex_verify_ssl = True
-        self.plex_libraries = []
-        self.plex_library_ids = None
-        self.tmp_folder_created_by_us = False
-        self.ffmpeg_path = "/usr/bin/ffmpeg"
-        self.log_level = "INFO"
-        self.worker_pool_timeout = 60
-        self.sort_by = "newest"
-        self.selected_libraries = []
-
-
 def _load_config_or_minimal():
-    """Return a real :class:`Config` if Plex is configured, else a minimal shim.
+    """Deprecated stub kept for backwards compatibility with integration tests.
 
-    ``Config.working_tmp_folder`` is normally set by the job runner when
-    it spins up a worker pool (``job_runner.create_working_directory``).
-    Webhooks short-circuit that — they call ``process_canonical_path``
-    directly — so the field is empty and ``os.path.join("", "frame_cache")``
-    yields a *relative* path. The frame-cache singleton then collides
-    with later calls. Fall back to ``tmp_folder`` so the cache's base_dir
-    is always absolute.
+    The webhook router no longer calls ``process_canonical_path`` directly —
+    every webhook becomes a Job that goes through the orchestrator's worker
+    pool, which builds its own Config. This function is unreachable from
+    the production code path. It's preserved so existing integration test
+    patches (``patch("...webhook_router._load_config_or_minimal", ...)``)
+    don't AttributeError. Safe to delete once those tests are updated to
+    patch the new entry point (``create_vendor_webhook_job``).
     """
     try:
         from ..config import load_config
 
-        config = load_config(log_validation_errors=False)
-        if not config.working_tmp_folder:
-            config.working_tmp_folder = config.tmp_folder
-        return config
-    except Exception as exc:
-        logger.debug("Webhook router: load_config failed; using minimal shim: {}", exc)
-        return _MinimalConfig(get_settings_manager())
+        return load_config(log_validation_errors=False)
+    except Exception:
+        return None
 
 
 def _classify_payload(req) -> tuple[str, dict[str, Any] | None, str]:

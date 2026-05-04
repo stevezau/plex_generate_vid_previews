@@ -1042,3 +1042,125 @@ def test_webhooks_page_redirects_to_automation(authed_client):
     resp = authed_client.get("/webhooks", follow_redirects=False)
     assert resp.status_code == 302
     assert resp.headers["Location"].endswith("/automation#webhooks")
+
+
+# ---------------------------------------------------------------------------
+# create_vendor_webhook_job — direct unit tests for the vendor → Job bridge.
+# Covers regenerate flag propagation, hint shape, dedup, and the override
+# kwargs that flow into _start_job_async.
+# ---------------------------------------------------------------------------
+
+
+@patch("media_preview_generator.web.routes._start_job_async")
+def test_create_vendor_webhook_job_regenerate_propagates_force_generate(mock_start, app):
+    """``regenerate=True`` must surface as ``force_generate=True`` in the
+    overrides handed to the job runner — that's what flips
+    ``Config.regenerate_thumbnails`` which the worker reads when calling
+    ``process_canonical_path(regenerate=...)``. Audit fix #13: the chain
+    is ``regenerate → force_generate → regenerate_thumbnails → process_canonical_path``.
+    """
+    import media_preview_generator.web.webhooks as wh
+
+    with app.app_context():
+        job_id = wh.create_vendor_webhook_job(
+            source="plex",
+            canonical_path="/data/movies/Foo.mkv",
+            item_id_by_server={"plex-1": "12345"},
+            regenerate=True,
+        )
+
+    assert job_id, "job should have been created"
+    assert mock_start.call_count == 1
+    overrides = mock_start.call_args.args[1]
+    assert overrides.get("force_generate") is True, (
+        "regenerate=True must produce force_generate=True override (Config.regenerate_thumbnails)"
+    )
+
+
+@patch("media_preview_generator.web.routes._start_job_async")
+def test_create_vendor_webhook_job_carries_hints_keyed_by_path(mock_start, app):
+    """Hints must travel as ``{path: {server_id: item_id}}`` so the
+    orchestrator's hint short-circuit can match per-path entries when a
+    job carries multiple webhook_paths."""
+    import media_preview_generator.web.webhooks as wh
+
+    with app.app_context():
+        wh.create_vendor_webhook_job(
+            source="plex",
+            canonical_path="/data/x.mkv",
+            item_id_by_server={"plex-1": "k1"},
+        )
+
+    overrides = mock_start.call_args.args[1]
+    hints = overrides.get("webhook_item_id_hints")
+    assert hints == {"/data/x.mkv": {"plex-1": "k1"}}
+
+
+@patch("media_preview_generator.web.routes._start_job_async")
+def test_create_vendor_webhook_job_dedupes_within_ttl(mock_start, app):
+    """Same ``(source, server_id, path)`` within TTL → second call returns
+    ``None`` and creates no job. Plex repeats ``library.new`` after
+    metadata refresh — without dedup we'd spawn 2-4 Jobs per file."""
+    import media_preview_generator.web.webhooks as wh
+
+    with app.app_context():
+        first = wh.create_vendor_webhook_job(
+            source="plex",
+            canonical_path="/data/x.mkv",
+            item_id_by_server={"plex-1": "k1"},
+            server_id="plex-1",
+        )
+        second = wh.create_vendor_webhook_job(
+            source="plex",
+            canonical_path="/data/x.mkv",
+            item_id_by_server={"plex-1": "k1"},
+            server_id="plex-1",
+        )
+
+    assert first is not None
+    assert second is None, "second call must dedup against the first"
+    assert mock_start.call_count == 1, "only the first call creates a job"
+
+
+@patch("media_preview_generator.web.routes._start_job_async")
+def test_create_vendor_webhook_job_does_NOT_dedup_across_sources(mock_start, app):
+    """Plex's ``library.new`` and Sonarr's import webhook for the same
+    file are different events — they MUST produce separate Jobs."""
+    import media_preview_generator.web.webhooks as wh
+
+    with app.app_context():
+        plex_job = wh.create_vendor_webhook_job(
+            source="plex",
+            canonical_path="/data/x.mkv",
+            item_id_by_server={"plex-1": "k1"},
+            server_id="plex-1",
+        )
+        sonarr_job = wh.create_vendor_webhook_job(
+            source="sonarr",
+            canonical_path="/data/x.mkv",
+            server_id=None,
+        )
+
+    assert plex_job is not None
+    assert sonarr_job is not None
+    assert mock_start.call_count == 2
+
+
+@patch("media_preview_generator.web.routes._start_job_async")
+def test_create_vendor_webhook_job_server_id_filter_pins_publishers(mock_start, app):
+    """``/api/webhooks/server/<id>`` callers pass ``server_id_filter`` —
+    that becomes ``overrides["server_id"]`` which job_runner translates
+    into ``Config.server_id_filter`` so the dispatcher pins publishers."""
+    import media_preview_generator.web.webhooks as wh
+
+    with app.app_context():
+        wh.create_vendor_webhook_job(
+            source="jellyfin",
+            canonical_path="/data/y.mkv",
+            item_id_by_server={"jelly-1": "j1"},
+            server_id="jelly-1",
+            server_id_filter="jelly-1",
+        )
+
+    overrides = mock_start.call_args.args[1]
+    assert overrides.get("server_id") == "jelly-1"
