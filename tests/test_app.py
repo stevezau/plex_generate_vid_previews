@@ -161,19 +161,49 @@ class TestRunScheduledJob:
             with app.app_context():
                 run_scheduled_job(library_id="1", library_name="Movies")
                 config_overrides = mock_start.call_args[0][1]
-                assert "1" in str(config_overrides)
+                # Audit fix — original asserted ``"1" in str(config_overrides)``
+                # which is a substring match: passes if ANY field in the dict
+                # contains "1" (e.g. cpu_threads=1). Now assert the specific
+                # field the SUT controls.
+                # ``run_scheduled_job`` propagates the library_id ("1") as
+                # the legacy ``selected_libraries`` entry (history: scheduler
+                # interface predates the selected_library_ids/name split).
+                # Whichever field carries it, the dispatcher sees ["1"].
+                assert config_overrides.get("selected_library_ids") == ["1"] or config_overrides.get(
+                    "selected_libraries"
+                ) == ["1"], (
+                    f"library_id '1' must propagate as selected_library_ids OR selected_libraries; "
+                    f"got {config_overrides!r}"
+                )
 
 
 class TestWsgiModule:
     """Smoke test for wsgi.py module."""
 
     def test_wsgi_importable(self):
-        """wsgi module can be imported without error."""
+        """wsgi module IMPORTS cleanly + exports the WSGI app object.
+
+        Audit fix — original asserted ``find_spec is not None`` which only
+        checks the file exists. A regression that broke the import path
+        (e.g. circular import, missing dependency) would only show up at
+        gunicorn startup, not in this test. Actually IMPORT the module
+        and verify it exposes ``app`` (the WSGI callable gunicorn loads).
+        """
         import importlib
 
-        # Just verify the module file exists and is syntactically valid
+        # Find spec is the cheap pre-check.
         spec = importlib.util.find_spec("media_preview_generator.web.wsgi")
         assert spec is not None
+
+        # Actually import the module — catches circular-import / missing-dep
+        # regressions that find_spec alone won't detect.
+        wsgi = importlib.import_module("media_preview_generator.web.wsgi")
+        assert hasattr(wsgi, "app"), (
+            "wsgi module must export `app` — gunicorn loads "
+            "`media_preview_generator.web.wsgi:app` per pyproject Dockerfile config"
+        )
+        # The exported app must be a Flask app (or compatible WSGI callable).
+        assert callable(wsgi.app), "wsgi.app must be callable (WSGI contract)"
 
 
 class TestRequeueInterruptedOnStartup:

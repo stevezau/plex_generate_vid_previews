@@ -113,6 +113,13 @@ class _ProcessorContractTests:
         assert called_with == ["lib-1"]
 
     def test_list_canonical_paths_honours_cancel_check(self, processor, mock_client):
+        """cancel_check is consulted between items AND short-circuits the walk.
+
+        Audit fix — original asserted ``len(items) <= 2`` which is
+        meaningless (with 2 items + short-circuit, valid behaviours are
+        0 or 1). Now assert the cancel callback was actually consulted
+        AND that exactly fewer-than-all items were yielded.
+        """
         mock_client.list_libraries.return_value = [_LIB]
         mock_client.list_items.return_value = iter(_ITEMS)
         cfg = _config("srv-x", self.server_type)
@@ -123,7 +130,16 @@ class _ProcessorContractTests:
             return called["count"] > 1
 
         items = list(processor.list_canonical_paths(cfg, cancel_check=cancel_after_first))
-        assert len(items) <= 2  # short-circuited
+        # cancel_check MUST have been consulted — proves the SUT actually
+        # checked rather than ignoring the callback.
+        assert called["count"] >= 1, "cancel_check was never consulted — short-circuit path is unreachable"
+        # And the walk yielded STRICTLY FEWER than the full _ITEMS set
+        # (proves the cancel actually short-circuited; a regression that
+        # ignored the cancel and yielded everything would pass len <= 2).
+        assert len(items) < len(_ITEMS), (
+            f"cancel_check fired ({called['count']} times) but the walk still produced "
+            f"{len(items)} of {len(_ITEMS)} items — cancel was ignored"
+        )
 
     def test_resolve_canonical_path_applies_mappings(self, processor, mock_client):
         mock_client.resolve_item_to_remote_path.return_value = "/remote/movie.mkv"

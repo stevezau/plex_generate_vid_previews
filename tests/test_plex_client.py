@@ -1128,7 +1128,14 @@ class TestGetMediaItemsByPaths:
         assert "/" not in result.items[0][0]
         assert "The Mind, Explained" in result.items[0][1]
         assert result.items[0][2] == "episode"
+        # Audit fix — was bare ``mock_plex.fetchItems.called``. Tighten to
+        # assert the file= filter is in the ekey so a regression that called
+        # fetchItems with the WRONG filter (e.g. addedAt= or no filter) fails.
         assert mock_plex.fetchItems.called
+        all_ekeys = " | ".join(str(c.args[0]) if c.args else "" for c in mock_plex.fetchItems.call_args_list)
+        assert "file=" in all_ekeys, (
+            f"fetchItems was called but with no file= filter — would silently full-scan. ekeys: {all_ekeys!r}"
+        )
 
     def test_get_media_items_by_paths_file_path_search_resolves_match(self, mock_config):
         """Targeted file-path search resolves path to Plex item."""
@@ -1152,7 +1159,12 @@ class TestGetMediaItemsByPaths:
         assert len(result.items) == 1
         assert result.items[0][0] == "999"  # D31 — bare ratingKey, not URL
         assert "/" not in result.items[0][0]
+        # Audit fix — assert the file= filter is in the ekey, not bare called().
         assert mock_plex.fetchItems.called
+        all_ekeys = " | ".join(str(c.args[0]) if c.args else "" for c in mock_plex.fetchItems.call_args_list)
+        assert "file=" in all_ekeys, (
+            f"fetchItems was called but with no file= filter — would silently full-scan. ekeys: {all_ekeys!r}"
+        )
 
     def test_get_media_items_by_paths_prefers_explicit_ratingKey_over_url_key(self, mock_config):
         """D31 — when plexapi populates BOTH .ratingKey (the canonical bare

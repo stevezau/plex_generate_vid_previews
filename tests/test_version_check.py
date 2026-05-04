@@ -312,7 +312,14 @@ class TestCheckForUpdates:
     @patch("media_preview_generator.version_check.get_latest_github_release")
     @patch("media_preview_generator.version_check.get_current_version")
     def test_check_for_updates_invalid_version_handled(self, mock_current, mock_latest, loguru_caplog):
-        """Garbage current version is handled silently — no upgrade message."""
+        """Garbage current version: no nag fires.
+
+        Pinned to the actual contract. Note: ``check_for_updates`` does
+        currently swallow the parse failure silently (no log line) — that's
+        a product-quality TODO (operator-debuggability gap) tracked
+        separately, not a test contract to enforce here. For now this
+        test pins what the production code actually does.
+        """
         mock_current.return_value = "invalid"
         mock_latest.return_value = "v2.1.0"
         check_for_updates()

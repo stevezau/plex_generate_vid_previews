@@ -47,13 +47,22 @@ def _server_config(server_id, server_type=ServerType.JELLYFIN):
 
 class TestMultiServerFullScan:
     def test_no_servers_configured_returns_zero_counts(self, tmp_path):
+        """No servers → zero counts AND no dispatch attempts.
+
+        Audit fix — original asserted only the counts. A regression that
+        called process_canonical_path with an empty registry would still
+        produce zero counts (because no items to dispatch) but represents
+        broken behaviour. Patch and assert no dispatch.
+        """
         with (
             patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
             patch(f"{MODULE}.ProcessingResult", ProcessingResult),
+            patch("media_preview_generator.processing.multi_server.process_canonical_path") as mock_pcp,
         ):
             mock_sm.return_value.get.return_value = []
             counts = _run_full_scan_multi_server(_config(), selected_gpus=[])
         assert all(v == 0 for v in counts.values())
+        mock_pcp.assert_not_called(), ("with zero servers configured, process_canonical_path must NOT be called")
 
     def test_pinned_to_server_only_walks_that_server(self, tmp_path):
         cfg_a = _server_config("srv-a", ServerType.JELLYFIN)

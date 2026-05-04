@@ -1933,12 +1933,23 @@ class TestSetupWizardAPI:
     """Test /api/setup/* endpoints."""
 
     def test_get_setup_status_no_auth(self, client):
-        """Setup status should be accessible without auth."""
+        """Setup status should be accessible without auth + carry typed values.
+
+        Audit fix — original asserted only key presence ("configured" in data,
+        "setup_complete" in data). A regression returning all-False or
+        all-True garbage would have passed. Assert TYPES + values match
+        the actual setup state.
+        """
         resp = client.get("/api/setup/status")
         assert resp.status_code == 200
         data = resp.get_json()
-        assert "configured" in data
-        assert "setup_complete" in data
+        # Both fields must be present and typed bool, not strings/ints/None.
+        assert isinstance(data.get("configured"), bool), (
+            f"configured must be a bool, got {type(data.get('configured')).__name__}"
+        )
+        assert isinstance(data.get("setup_complete"), bool), (
+            f"setup_complete must be a bool, got {type(data.get('setup_complete')).__name__}"
+        )
 
     def test_get_setup_state(self, client):
         resp = client.get("/api/setup/state", headers=_api_headers())
