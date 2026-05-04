@@ -8,37 +8,41 @@ GPU-accelerated video preview thumbnail generation for **Plex, Emby, and Jellyfi
 
 > Previously named **Plex Generate Previews** at `stevezzau/plex_generate_vid_previews`. That image keeps mirroring updates until **2026-10-29**; after that, only this repo (`stevezzau/media_preview_generator`) is published. Update your `compose` to the new name when convenient — settings and volumes carry over unchanged.
 
-**The Problem:** Built-in preview generation in Plex / Emby / Jellyfin is painfully slow.
+**The Problem:** Built-in preview generation has gaps depending on which server you run:
 
-**The Solution:** This tool uses GPU acceleration and parallel processing to generate previews **5-10x faster**.
+- **Plex** generates thumbnails single-threaded on the CPU (no GPU support).
+- **Emby** has no GPU support for thumbnail generation at all.
+- **Jellyfin** does support hardware-accelerated trickplay, but it shares CPU/GPU with playback — and on a busy server those are resources you'd rather give to the player.
+
+**The Solution:** This tool runs preview generation **off the media server** on a machine of your choosing, uses every GPU it finds, and processes files in parallel. When two or more servers contain the same file, FFmpeg runs only once — the result is then written out in each server's expected format.
 
 ## Features
 
 | Feature | Description |
 |---------|-------------|
-| **Multi-Vendor** | Plex, Emby, and Jellyfin in any combination — Plex bundle BIF, Emby `-WIDTH-INTERVAL.bif` sidecar, or Jellyfin trickplay tile sheets, all from one app |
-| **One-Pass-Many-Servers** | The dispatcher runs FFmpeg once per file and publishes the right format to every server that owns it (a Plex+Jellyfin install gets both BIF and trickplay from a single decode) |
-| **Universal Webhook URL** | `POST /api/webhooks/incoming` auto-detects Plex / Emby / Jellyfin / Sonarr / Radarr / generic-`{path}` payloads — one URL, every vendor |
-| **Multi-Plex** | Multiple Plex servers configured side by side, routed by `clientIdentifier` |
-| **Plex OAuth** | Sign-in flow in the setup wizard discovers all your Plex servers; pick which to add |
-| **Quick Connect** | Jellyfin Quick Connect ceremony in the wizard — no token copying |
-| **Trickplay One-Click Fix** | Surfaces Jellyfin's "EnableTrickplayImageExtraction" setting per library and flips it on with one click |
-| **Frame Reuse Cache** | A webhook arriving for a file recently extracted by a sibling server reuses the frames without re-running FFmpeg (configurable TTL + disk cap) |
-| **Slow-Backoff Retry Queue** | Files where the source server says "not yet indexed" retry on geometric backoff (30s → 60min) instead of dropping the webhook |
-| **Cross-Server BIF Viewer** | Inspect any vendor's published preview for any file from one viewer |
+| **Multi-Vendor** | Plex, Emby, and Jellyfin in any combination, any number of each |
+| **One Pass, Many Servers** | When two or more servers contain the same file, FFmpeg runs only once — result is written in each server's expected format |
+| **Universal Webhook URL** | One inbound URL handles Plex / Emby / Jellyfin / Sonarr / Radarr — vendor auto-detected |
+| **Multi-Plex** | Multiple Plex servers configured side by side, routed automatically |
+| **Plex OAuth** | One sign-in lists every Plex server your account can reach; tick which ones to add |
+| **Jellyfin Quick Connect** | Friendliest auth — no password ever leaves your browser |
+| **Jellyfin trickplay one-click fix** | Detects + auto-flips Jellyfin's library settings so the previews you publish actually appear in Jellyfin's web UI (the most common Jellyfin gotcha) |
+| **Smart Caching** | A second webhook for a file recently processed by a sibling server reuses the previously-extracted frames instead of running FFmpeg again. Cache size and timeout are configurable. |
+| **Automatic Retry on Slow Indexing** | If your media server hasn't finished scanning a new file yet, the app retries automatically (30 s → 2 m → 5 m → 15 m → 60 m) instead of dropping the request |
+| **Multi-Server Preview Viewer** | Inspect published previews for any file across any server from one viewer |
 | **Multi-GPU** | NVIDIA, AMD, Intel — per-GPU enable/disable and worker count |
 | **Parallel Processing** | Configurable GPU and CPU worker threads |
 | **GPU to CPU Fallback** | Automatic in-place CPU retry when a GPU worker hits an unsupported codec |
-| **Hardware Acceleration** | CUDA, VAAPI, QuickSync (and OpenCL / Vulkan for Dolby Vision tone-mapping) |
+| **Hardware Acceleration** | CUDA, VAAPI, QuickSync, plus Vulkan support for Dolby Vision colour handling |
 | **Per-Server Filtering** | Library toggles, path mappings, and exclude rules scoped per server |
-| **Quality Control** | Adjustable thumbnail quality (1-10) and frame interval (1-60s) |
+| **Quality Control** | Adjustable thumbnail quality (1-10) and frame interval (1-60 s) |
 | **Docker Ready** | Pre-built images with GPU support |
-| **Web Dashboard** | Manage jobs, schedules, status, and the recent-webhook history |
+| **Web Dashboard** | Manage jobs, schedules, status, and recent-webhook history |
 | **Scheduling** | Cron and interval-based automation |
-| **Smart Skipping** | Skips files that already have a fresh preview output (mtime+size journal) |
-| **Radarr/Sonarr/Sportarr** | Webhook integration for auto-processing on import |
-| **Plex Direct Webhook** | Auto-trigger on `library.new` (Plex Pass) for media added without Sonarr/Radarr |
-| **Recently Added Scanner** | Polling fallback that catches manually-added items without Plex Pass |
+| **Smart Skipping** | Skips files that already have a fresh preview, but a Sonarr/Radarr quality upgrade (file replaced in place) still triggers regeneration |
+| **Radarr/Sonarr Webhooks** | Auto-process new content on import |
+| **Plex Direct Webhook** | Auto-trigger on `library.new` (requires Plex Pass) for media added outside Sonarr/Radarr |
+| **Recently Added Scanner** | Polling fallback that catches manually-added items without needing Plex Pass |
 
 ## Quick Start
 
