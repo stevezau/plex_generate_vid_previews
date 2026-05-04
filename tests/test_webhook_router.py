@@ -101,8 +101,8 @@ class TestSonarrWebhook:
         )
 
         with patch(
-            "media_preview_generator.web.webhook_router.process_canonical_path",
-            return_value=_published_result(),
+            "media_preview_generator.web.webhook_router.create_vendor_webhook_job",
+            return_value="job-fake-12345678",
         ) as proc:
             response = client.post(
                 "/api/webhooks/incoming",
@@ -116,17 +116,33 @@ class TestSonarrWebhook:
                 ),
             )
 
-        assert response.status_code == 200
+        assert response.status_code == 202
         body = response.get_json()
-        assert body["status"] == "published"
+        assert body["status"] == "queued"
         assert body["kind"] == "sonarr"
         proc.assert_called_once()
         assert proc.call_args.kwargs["canonical_path"] == "/data/tv/Foo/S01E01.mkv"
 
     def test_radarr_payload_classified_correctly(self, client, auth_headers):
+        # Seed an Emby server that owns the movie path so the router's
+        # pre-flight no_owners check passes — this test only asserts that
+        # the Radarr payload shape is recognised, not the dispatch result.
+        _seed_servers(
+            [
+                {
+                    "id": "emby-1",
+                    "type": "emby",
+                    "name": "Emby",
+                    "enabled": True,
+                    "url": "http://emby:8096",
+                    "auth": {},
+                    "libraries": [{"id": "1", "name": "Movies", "remote_paths": ["/data/movies"], "enabled": True}],
+                }
+            ]
+        )
         with patch(
-            "media_preview_generator.web.webhook_router.process_canonical_path",
-            return_value=_published_result(),
+            "media_preview_generator.web.webhook_router.create_vendor_webhook_job",
+            return_value="job-fake-12345678",
         ) as proc:
             response = client.post(
                 "/api/webhooks/incoming",
@@ -140,7 +156,7 @@ class TestSonarrWebhook:
                 ),
             )
 
-        assert response.status_code == 200
+        assert response.status_code == 202
         assert response.get_json()["kind"] == "radarr"
         proc.assert_called_once()
 
@@ -171,8 +187,8 @@ class TestJellyfinWebhook:
         )
 
         with patch(
-            "media_preview_generator.web.webhook_router.process_canonical_path",
-            return_value=_published_result(),
+            "media_preview_generator.web.webhook_router.create_vendor_webhook_job",
+            return_value="job-fake-12345678",
         ) as proc:
             response = client.post(
                 "/api/webhooks/incoming",
@@ -187,7 +203,7 @@ class TestJellyfinWebhook:
                 ),
             )
 
-        assert response.status_code == 200
+        assert response.status_code == 202
         body = response.get_json()
         assert body["kind"] == "jellyfin"
         proc.assert_called_once()
@@ -240,7 +256,7 @@ class TestJellyfinWebhook:
             lambda self, item_id: None,
         )
 
-        with patch("media_preview_generator.web.webhook_router.process_canonical_path") as proc:
+        with patch("media_preview_generator.web.webhook_router.create_vendor_webhook_job") as proc:
             response = client.post(
                 "/api/webhooks/incoming",
                 headers={**auth_headers, "Content-Type": "application/json"},
@@ -257,8 +273,21 @@ class TestJellyfinWebhook:
         assert response.status_code == 202
         proc.assert_not_called()
 
-    def test_path_outside_configured_libraries_skips(self, client, auth_headers, monkeypatch):
-        """Item resolves to a path not covered by any library — webhook is ignored."""
+    def test_path_outside_configured_libraries_still_dispatches_via_hint(self, client, auth_headers, monkeypatch):
+        """Vendor hint is authoritative even when the path's outside library roots.
+
+        Background: a Jellyfin webhook always arrives with an item-id hint
+        ({server_id: item_id}). We trust that hint over the registry's
+        library-prefix matcher — Jellyfin clearly believes the item lives on
+        that server, and the legacy ``_resolve_publishers`` already accepts
+        hints as authoritative (see processing/multi_server.py lines 201-207).
+
+        So a webhook with a hint always creates a Job; if the dispatcher
+        decides there are no real owners after hitting the server, that's
+        the Job's outcome — not something the pre-flight check rejects.
+        Skipping at the pre-flight stage would silently drop legitimate
+        webhooks for paths outside the registry's known roots.
+        """
         _seed_servers(
             [
                 {
@@ -281,18 +310,9 @@ class TestJellyfinWebhook:
             lambda self, item_id: "/somewhere/else/foo.mkv",
         )
 
-        # process_canonical_path returns NO_OWNERS for an unowned path —
-        # router still 200s with the result body so the caller can act on it.
-        no_owners = MultiServerResult(
-            canonical_path="/somewhere/else/foo.mkv",
-            status=MultiServerStatus.NO_OWNERS,
-            publishers=[],
-            frame_count=0,
-            message="No configured server owns this path",
-        )
         with patch(
-            "media_preview_generator.web.webhook_router.process_canonical_path",
-            return_value=no_owners,
+            "media_preview_generator.web.webhook_router.create_vendor_webhook_job",
+            return_value="job-fake-no-owners",
         ) as proc:
             response = client.post(
                 "/api/webhooks/incoming",
@@ -307,9 +327,12 @@ class TestJellyfinWebhook:
                 ),
             )
 
-        assert response.status_code == 200
+        assert response.status_code == 202
         body = response.get_json()
-        assert body["status"] == "no_owners"
+        assert body["status"] == "queued"
+        # Hint is authoritative — webhook does create a job; the dispatcher
+        # inside the job is responsible for the NO_OWNERS verdict if the
+        # path turns out to be unpublishable on every owning server.
         proc.assert_called_once()
 
     def test_resolution_exception_returns_202(self, client, auth_headers, monkeypatch):
@@ -335,7 +358,7 @@ class TestJellyfinWebhook:
 
         monkeypatch.setattr(JellyfinServer, "resolve_item_to_remote_path", boom)
 
-        with patch("media_preview_generator.web.webhook_router.process_canonical_path") as proc:
+        with patch("media_preview_generator.web.webhook_router.create_vendor_webhook_job") as proc:
             response = client.post(
                 "/api/webhooks/incoming",
                 headers={**auth_headers, "Content-Type": "application/json"},
@@ -388,8 +411,8 @@ class TestJellyfinWebhook:
         )
 
         with patch(
-            "media_preview_generator.web.webhook_router.process_canonical_path",
-            return_value=_published_result(),
+            "media_preview_generator.web.webhook_router.create_vendor_webhook_job",
+            return_value="job-fake-12345678",
         ) as proc:
             response = client.post(
                 "/api/webhooks/incoming",
@@ -404,7 +427,7 @@ class TestJellyfinWebhook:
                 ),
             )
 
-        assert response.status_code == 200
+        assert response.status_code == 202
         proc.assert_called_once()
         assert proc.call_args.kwargs["canonical_path"] == "/local/data/tv/Foo/S01E01.mkv"
 
@@ -435,8 +458,8 @@ class TestEmbyWebhook:
         )
 
         with patch(
-            "media_preview_generator.web.webhook_router.process_canonical_path",
-            return_value=_published_result(),
+            "media_preview_generator.web.webhook_router.create_vendor_webhook_job",
+            return_value="job-fake-12345678",
         ) as proc:
             response = client.post(
                 "/api/webhooks/incoming",
@@ -450,7 +473,7 @@ class TestEmbyWebhook:
                 ),
             )
 
-        assert response.status_code == 200
+        assert response.status_code == 202
         body = response.get_json()
         assert body["kind"] == "emby"
         proc.assert_called_once()
@@ -511,7 +534,7 @@ class TestEmbyWebhook:
             lambda self, item_id: None,
         )
 
-        with patch("media_preview_generator.web.webhook_router.process_canonical_path") as proc:
+        with patch("media_preview_generator.web.webhook_router.create_vendor_webhook_job") as proc:
             response = client.post(
                 "/api/webhooks/incoming",
                 headers={**auth_headers, "Content-Type": "application/json"},
@@ -550,7 +573,7 @@ class TestEmbyWebhook:
 
         monkeypatch.setattr(EmbyServer, "resolve_item_to_remote_path", boom)
 
-        with patch("media_preview_generator.web.webhook_router.process_canonical_path") as proc:
+        with patch("media_preview_generator.web.webhook_router.create_vendor_webhook_job") as proc:
             response = client.post(
                 "/api/webhooks/incoming",
                 headers={**auth_headers, "Content-Type": "application/json"},
@@ -602,8 +625,8 @@ class TestEmbyWebhook:
         )
 
         with patch(
-            "media_preview_generator.web.webhook_router.process_canonical_path",
-            return_value=_published_result(),
+            "media_preview_generator.web.webhook_router.create_vendor_webhook_job",
+            return_value="job-fake-12345678",
         ) as proc:
             response = client.post(
                 "/api/webhooks/incoming",
@@ -617,7 +640,7 @@ class TestEmbyWebhook:
                 ),
             )
 
-        assert response.status_code == 200
+        assert response.status_code == 202
         proc.assert_called_once()
         # Hint dict only carries the matched server's local id.
         assert proc.call_args.kwargs["item_id_by_server"] == {"uuid-emby-B": "em-42"}
@@ -672,8 +695,8 @@ class TestPlexWebhook:
             },
         }
         with patch(
-            "media_preview_generator.web.webhook_router.process_canonical_path",
-            return_value=_published_result(),
+            "media_preview_generator.web.webhook_router.create_vendor_webhook_job",
+            return_value="job-fake-12345678",
         ) as proc:
             response = client.post(
                 "/api/webhooks/incoming",
@@ -682,7 +705,7 @@ class TestPlexWebhook:
                 content_type="multipart/form-data",
             )
 
-        assert response.status_code == 200, response.get_data(as_text=True)
+        assert response.status_code == 202, response.get_data(as_text=True)
         assert response.get_json()["kind"] == "plex"
         proc.assert_called_once()
         item_id_by_server = proc.call_args.kwargs["item_id_by_server"]
@@ -701,8 +724,8 @@ class TestPlexWebhook:
         self._seed_plex_server()
         plex_payload = {"event": "media.play", "Metadata": {"ratingKey": "1"}}
         with patch(
-            "media_preview_generator.web.webhook_router.process_canonical_path",
-            return_value=_published_result(),
+            "media_preview_generator.web.webhook_router.create_vendor_webhook_job",
+            return_value="job-fake-12345678",
         ) as proc:
             response = client.post(
                 "/api/webhooks/incoming",
@@ -718,9 +741,25 @@ class TestPlexWebhook:
 
 class TestPathFirstWebhook:
     def test_simple_path_dispatch(self, client, auth_headers):
+        # Seed a server that owns the TV path so the pre-flight no_owners
+        # check passes; the test asserts the path-shape classifier, not
+        # ownership logic.
+        _seed_servers(
+            [
+                {
+                    "id": "emby-1",
+                    "type": "emby",
+                    "name": "Emby",
+                    "enabled": True,
+                    "url": "http://emby:8096",
+                    "auth": {},
+                    "libraries": [{"id": "1", "name": "TV", "remote_paths": ["/data/tv"], "enabled": True}],
+                }
+            ]
+        )
         with patch(
-            "media_preview_generator.web.webhook_router.process_canonical_path",
-            return_value=_published_result(),
+            "media_preview_generator.web.webhook_router.create_vendor_webhook_job",
+            return_value="job-fake-12345678",
         ) as proc:
             response = client.post(
                 "/api/webhooks/incoming",
@@ -728,7 +767,7 @@ class TestPathFirstWebhook:
                 data=json.dumps({"path": "/data/tv/Show/S01E01.mkv"}),
             )
 
-        assert response.status_code == 200
+        assert response.status_code == 202
         body = response.get_json()
         assert body["kind"] == "path"
         proc.assert_called_once()
@@ -785,8 +824,8 @@ class TestPerServerFallback:
         )
 
         with patch(
-            "media_preview_generator.web.webhook_router.process_canonical_path",
-            return_value=_published_result(),
+            "media_preview_generator.web.webhook_router.create_vendor_webhook_job",
+            return_value="job-fake-12345678",
         ) as proc:
             response = client.post(
                 "/api/webhooks/server/plex-A",
@@ -794,7 +833,7 @@ class TestPerServerFallback:
                 data=json.dumps({"path": "/data/movies/Foo.mkv"}),
             )
 
-        assert response.status_code == 200
+        assert response.status_code == 202
         proc.assert_called_once()
         assert proc.call_args.kwargs["server_id_filter"] == "plex-A"
 
@@ -817,8 +856,8 @@ class TestPerServerFallback:
         )
 
         with patch(
-            "media_preview_generator.web.webhook_router.process_canonical_path",
-            return_value=_published_result(),
+            "media_preview_generator.web.webhook_router.create_vendor_webhook_job",
+            return_value="job-fake-12345678",
         ) as proc:
             response = client.post(
                 "/api/webhooks/incoming",
@@ -826,7 +865,7 @@ class TestPerServerFallback:
                 data=json.dumps({"path": "/data/movies/Foo.mkv"}),
             )
 
-        assert response.status_code == 200
+        assert response.status_code == 202
         proc.assert_called_once()
         assert proc.call_args.kwargs.get("server_id_filter") is None
 
@@ -875,8 +914,8 @@ class TestServerIdentityRouting:
         )
 
         with patch(
-            "media_preview_generator.web.webhook_router.process_canonical_path",
-            return_value=_published_result(),
+            "media_preview_generator.web.webhook_router.create_vendor_webhook_job",
+            return_value="job-fake-12345678",
         ) as proc:
             response = client.post(
                 "/api/webhooks/incoming",
@@ -891,7 +930,7 @@ class TestServerIdentityRouting:
                 ),
             )
 
-        assert response.status_code == 200
+        assert response.status_code == 202
         proc.assert_called_once()
         # Only the matching server's id should appear in the hint dict.
         hints = proc.call_args.kwargs["item_id_by_server"]
@@ -1033,8 +1072,8 @@ class TestPayloadSizeLimit:
             headers={**auth_headers, "Content-Type": "application/json"},
             data=normal,
         )
-        assert response.status_code == 200, response.status_code
+        assert response.status_code == 202, response.status_code
         body = response.get_json() or {}
         # No servers configured ⇒ no owners cover the path.
         assert body.get("status") == "no_owners", body
-        assert body.get("publishers") == []
+        assert body["status"] == "no_owners"

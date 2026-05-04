@@ -280,6 +280,134 @@ def _as_dict(value: object) -> dict:
     return value if isinstance(value, dict) else {}
 
 
+def create_vendor_webhook_job(
+    source: str,
+    canonical_path: str,
+    item_id_by_server: dict[str, str] | None = None,
+    *,
+    server_id: str | None = None,
+    server_id_filter: str | None = None,
+    regenerate: bool = False,
+    title: str | None = None,
+) -> str | None:
+    """Create a single-file Job for a Plex/Emby/Jellyfin vendor webhook.
+
+    Replaces the old inline-dispatch path in ``webhook_router``: every
+    webhook now lands as a Job in the UI so users can see what fired,
+    when, and what publisher outcomes resulted. The Job runner picks up
+    the work and routes through the same orchestrator path Sonarr/Radarr
+    webhooks use, but with a hint-aware short-circuit that skips Plex
+    resolution (the vendor payload already named the item).
+
+    De-duplicates against ``_recent_dispatches`` keyed by
+    ``(source, server_id, canonical_path)``. Plex repeats ``library.new``
+    after metadata refreshes — without dedup we'd spawn two-to-four
+    identical jobs per imported file. Returns the new job's id, or
+    ``None`` when the dispatch was skipped as a recent duplicate.
+
+    Args:
+        source: Vendor identifier (``"plex"``, ``"emby"``, ``"jellyfin"``).
+            Surfaces in the Jobs UI as the "source" chip.
+        canonical_path: Local-disk path the workers will operate on.
+        item_id_by_server: Optional ``{server_id: item_id}`` hint that
+            avoids reverse-lookups in the dispatcher when the vendor
+            payload already named the item.
+        server_id: Configured server id that owns this webhook (used to
+            colour the source chip and label the Job's server column).
+        server_id_filter: Pin publishers to this server only. Set when
+            the request came in via ``/api/webhooks/server/<id>``.
+        regenerate: Force a fresh extraction even if the .meta journal
+            says the source is unchanged.
+        title: Optional human-readable title (e.g. show + episode) for
+            the Jobs UI. Falls back to the file basename.
+    """
+    safe_source = str(source or "vendor").strip().lower() or "vendor"
+    canonical_path = (canonical_path or "").strip()
+    if not canonical_path:
+        return None
+
+    # Per-path dedup: same (source, server_id, path) seen recently → drop.
+    # Reuses the table populated by Sonarr/Radarr's debounce path so a
+    # mixed Plex+Sonarr install doesn't double-fire the same file.
+    dedup_key = (safe_source, server_id or "", canonical_path)
+    now_ts = datetime.now(timezone.utc).timestamp()
+    with _pending_lock:
+        last = _recent_dispatches.get(dedup_key)
+        if last and (now_ts - last) < _RECENT_DISPATCH_TTL_SECONDS:
+            logger.info(
+                "Webhook from {}: dropping duplicate dispatch for '{}' (last seen {}s ago — Plex commonly "
+                "repeats library.new after metadata refresh; the original Job is the authoritative one).",
+                safe_source,
+                os.path.basename(canonical_path),
+                int(now_ts - last),
+            )
+            return None
+        _recent_dispatches[dedup_key] = now_ts
+
+    basename = os.path.basename(canonical_path)
+    library_display = (title or "").strip() or basename
+
+    b_sid, b_sname, b_stype = _resolve_webhook_server_context(server_id)
+
+    job_manager = get_job_manager()
+    job = job_manager.create_job(
+        library_name=library_display,
+        config={
+            "source": safe_source,
+            "path_count": 1,
+            "webhook_basenames": [basename],
+        },
+        server_id=b_sid,
+        server_name=b_sname,
+        server_type=b_stype,
+    )
+
+    settings = get_settings_manager()
+    retry_count = max(0, min(10, int(settings.get("webhook_retry_count", 3))))
+    retry_delay = max(10, min(300, int(settings.get("webhook_retry_delay", 30))))
+
+    overrides: dict[str, object] = {
+        "sort_by": "newest",
+        "webhook_paths": [canonical_path],
+        "webhook_retry_count": retry_count,
+        "webhook_retry_delay": retry_delay,
+    }
+    if item_id_by_server:
+        # Wrap as {path: {server_id: item_id}} so the orchestrator can
+        # short-circuit Plex resolution and pass hints straight through.
+        clean_hints = {str(sid): str(item_id) for sid, item_id in item_id_by_server.items() if sid and item_id}
+        if clean_hints:
+            overrides["webhook_item_id_hints"] = {canonical_path: clean_hints}
+    if server_id_filter:
+        overrides["server_id"] = server_id_filter
+    if regenerate:
+        overrides["force_generate"] = True
+
+    from .routes import _start_job_async
+
+    _start_job_async(job.id, overrides)
+    _add_history_entry(
+        safe_source,
+        "Webhook",
+        title or basename,
+        "triggered",
+        job_id=job.id,
+        path_count=1,
+        files_preview=[basename],
+        server_id=b_sid,
+        server_name=b_sname,
+        server_type=b_stype,
+    )
+    logger.info(
+        "Webhook from {}: created job {} for '{}'{}",
+        safe_source,
+        job.id[:8],
+        basename,
+        f" (pinned to {b_sname or server_id_filter})" if server_id_filter else "",
+    )
+    return job.id
+
+
 def _combine_path(base_path: str, relative_path: str) -> str:
     """Combine base and relative paths into a normalized absolute-ish path."""
     if not base_path or not relative_path:

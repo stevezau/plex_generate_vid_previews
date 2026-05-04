@@ -584,7 +584,10 @@ async function updateMediaServersStatus() {
             || { label: s.status || 'Unknown', cls: 'bg-secondary' };
         const typeLabel = (s.type || '').toUpperCase();
         const tooltip = s.error ? ` title="${escapeHtmlAttr(s.error)}"` : '';
-        const url = s.url ? `<div class="small text-muted text-truncate" style="max-width: 100%;">${escapeHtmlText(s.url)}</div>` : '';
+        // URL is reference info, not the primary anchor — render smaller
+        // and dimmer than the server name above it so the eye lands on
+        // the name + status badge first.
+        const url = s.url ? `<div class="text-muted text-truncate" style="max-width: 100%; font-size: 0.72rem; opacity: 0.7;" title="${escapeHtmlAttr(s.url)}">${escapeHtmlText(s.url)}</div>` : '';
         // Prefer the vendor SVG logo; fall back to the Bootstrap icon when
         // the server type is unknown (defensive — should never happen for
         // configured servers).

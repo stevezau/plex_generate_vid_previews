@@ -296,6 +296,23 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                         config.regenerate_thumbnails = bool(value)
                     elif key == "webhook_paths":
                         config.webhook_paths = [str(path).strip() for path in value if str(path).strip()]
+                    elif key == "webhook_item_id_hints":
+                        # Per-path ``{server_id: item_id}`` hints from vendor
+                        # webhooks — passed through to process_canonical_path
+                        # so it skips reverse lookups.
+                        if isinstance(value, dict) and value:
+                            cleaned: dict[str, dict[str, str]] = {}
+                            for path, by_server in value.items():
+                                if not isinstance(path, str) or not path:
+                                    continue
+                                if not isinstance(by_server, dict):
+                                    continue
+                                inner = {
+                                    str(sid): str(item_id) for sid, item_id in by_server.items() if sid and item_id
+                                }
+                                if inner:
+                                    cleaned[path] = inner
+                            config.webhook_item_id_hints = cleaned or None
                     elif key == "server_id":
                         # Pin downstream dispatchers to publish for this server only.
                         config.server_id_filter = str(value) if value else None

@@ -38,7 +38,6 @@ from typing import Any
 from flask import jsonify, request
 from loguru import logger
 
-from ..processing.multi_server import process_canonical_path
 from ..servers import (
     MediaServer,
     ServerConfig,
@@ -48,7 +47,7 @@ from ..servers import (
 )
 from ..servers.ownership import apply_path_mappings
 from .settings_manager import get_settings_manager
-from .webhooks import _authenticate_webhook, webhooks_bp
+from .webhooks import _authenticate_webhook, create_vendor_webhook_job, webhooks_bp
 
 
 def _build_registry_from_settings() -> ServerRegistry:
@@ -542,37 +541,76 @@ def _dispatch_canonical_path(
     server_id_filter: str | None = None,
     regenerate: bool = False,
 ):
-    """Hand the canonical path to :func:`process_canonical_path` and shape the response."""
-    config = _load_config_or_minimal()
+    """Create a Job for this vendor webhook and return ``{job_id, status}``.
 
-    result = process_canonical_path(
+    Vendor webhooks (Plex / Emby / Jellyfin) used to dispatch inline through
+    ``process_canonical_path`` — fast, but invisible in the Jobs UI. They now
+    create a real Job so users can see what fired and what publishers did.
+    De-duplication of repeated Plex ``library.new`` fires happens inside
+    :func:`create_vendor_webhook_job`.
+
+    Pre-flight check: if no configured server owns this path AND there's no
+    item-id hint to override the registry's library-prefix matcher, return
+    a ``no_owners`` 202 immediately — creating a Job that would just mark
+    itself "no work to do" wastes a row and clutters the UI.
+    """
+    matched = {m.server_id for m in registry.find_owning_servers(canonical_path)}
+    candidates = matched | set(item_id_by_server or {})
+    if not candidates:
+        return (
+            jsonify(
+                {
+                    "status": "no_owners",
+                    "kind": kind,
+                    "canonical_path": canonical_path,
+                    "message": (
+                        "No configured server owns this path. Open Servers, verify each enabled "
+                        "server's library roots cover this file, then re-fire the webhook."
+                    ),
+                }
+            ),
+            202,
+        )
+
+    # ``server_id_filter`` (set by /api/webhooks/server/<id>) takes precedence
+    # over any single hint when picking the server that owns this webhook.
+    # Otherwise pick the lone hint server (vendor webhooks always carry
+    # exactly one hint pair).
+    owner_sid = server_id_filter or (next(iter(item_id_by_server), None) if item_id_by_server else None)
+
+    job_id = create_vendor_webhook_job(
+        source=kind,
         canonical_path=canonical_path,
-        registry=registry,
-        config=config,
         item_id_by_server=item_id_by_server,
+        server_id=owner_sid,
         server_id_filter=server_id_filter,
         regenerate=regenerate,
     )
 
-    body = {
-        "status": result.status.value,
-        "kind": kind,
-        "canonical_path": result.canonical_path,
-        "frame_count": result.frame_count,
-        "publishers": [
+    if job_id is None:
+        # Recent-duplicate suppression — the original Job is the
+        # authoritative one. 202 keeps Plex/Emby/Jelly happy (any 2xx).
+        return (
+            jsonify(
+                {
+                    "status": "ignored_duplicate",
+                    "kind": kind,
+                    "canonical_path": canonical_path,
+                    "message": "Recent duplicate webhook for this file — the original Job is the authoritative one.",
+                }
+            ),
+            202,
+        )
+
+    return (
+        jsonify(
             {
-                "server_id": p.server_id,
-                "server_name": p.server_name,
-                "adapter": p.adapter_name,
-                "status": p.status.value,
-                "message": p.message,
-                "frame_source": p.frame_source,
+                "status": "queued",
+                "kind": kind,
+                "canonical_path": canonical_path,
+                "job_id": job_id,
+                "message": f"Job {job_id[:8]} queued for {canonical_path}",
             }
-            for p in result.publishers
-        ],
-        "message": result.message,
-    }
-    # All dispatch outcomes complete synchronously here (the dispatcher
-    # blocks until publishers finish), so 200 is the right status. The
-    # earlier "202 for async" comment was aspirational — never shipped.
-    return jsonify(body), 200
+        ),
+        202,
+    )

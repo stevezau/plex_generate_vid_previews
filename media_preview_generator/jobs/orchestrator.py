@@ -215,6 +215,7 @@ def _dispatch_webhook_paths_multi_server(
     pause_check=None,
     job_id: str | None = None,
     paths: list[str] | None = None,
+    item_id_hints: dict[str, dict[str, str]] | None = None,
 ) -> dict:
     """Dispatch webhook_paths through the multi-server registry without Plex.
 
@@ -307,6 +308,7 @@ def _dispatch_webhook_paths_multi_server(
                 cancel_check=cancel_check,
                 server_id_filter=sid_filter,
                 regenerate=bool(getattr(config, "regenerate_thumbnails", False)),
+                item_id_by_server=(item_id_hints or {}).get(p),
             )
             for pub in result.publishers or []:
                 key = (pub.status.value if hasattr(pub.status, "value") else str(pub.status)).lower()
@@ -1391,6 +1393,54 @@ def _run_webhook_paths_phase(
     one non-Plex server is configured AND the server_id pin (if any)
     isn't a Plex server itself.
     """
+    # Vendor-webhook short-circuit: when the inbound payload supplied
+    # ``{server_id: item_id}`` hints (Plex/Emby/Jellyfin native webhooks),
+    # the canonical path is already known to belong to those servers —
+    # there's nothing to learn from a Plex resolution pass. Bypass it,
+    # call the multi-server dispatcher directly, and forward the hints so
+    # ``process_canonical_path`` can skip its reverse-lookup step too.
+    hints = getattr(config, "webhook_item_id_hints", None) or None
+    if hints:
+        if progress_callback:
+            path_count = len(config.webhook_paths)
+            progress_callback(0, 0, f"Dispatching {path_count} pre-resolved path(s)…")
+        _log_webhook_owning_servers(config, config.webhook_paths)
+        try:
+            counts = _dispatch_webhook_paths_multi_server(
+                config,
+                progress_callback=progress_callback,
+                cancel_check=cancel_check,
+                pause_check=pause_check,
+                job_id=job_id,
+                paths=list(config.webhook_paths or []),
+                item_id_hints=hints,
+            )
+            for k, v in (counts or {}).items():
+                aggregate_outcome[k] = aggregate_outcome.get(k, 0) + v
+                if k == ProcessingResult.SUCCESS.value:
+                    totals["successful"] += v
+                    totals["processed"] += v
+                elif k == ProcessingResult.FAILED.value:
+                    totals["failed"] += v
+                    totals["processed"] += v
+                elif k == ProcessingResult.SKIPPED.value:
+                    # Skipped (output exists / not in library) doesn't count
+                    # as failure — mirror the per-vendor counters in the
+                    # dispatch path.
+                    totals["processed"] += v
+        except Exception:
+            logger.warning(
+                "Vendor webhook dispatch failed. The path will go through the retry queue as usual.",
+                exc_info=True,
+            )
+        return {
+            "unresolved_paths": [],
+            "skipped_paths": [],
+            "resolved_count": len(config.webhook_paths or []),
+            "total_paths": len(config.webhook_paths or []),
+            "path_hints": [],
+        }
+
     if progress_callback:
         path_count = len(config.webhook_paths)
         progress_callback(0, 0, f"Looking up {path_count} file path(s) in Plex — this can take a while...")

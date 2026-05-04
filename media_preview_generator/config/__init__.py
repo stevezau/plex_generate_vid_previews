@@ -157,6 +157,14 @@ class Config:
 
     # Runtime-only file targets for webhook-triggered single-file processing.
     webhook_paths: list[str] | None = None
+    # Per-path ``{server_id: item_id}`` hints supplied by vendor webhooks
+    # (Plex / Emby / Jellyfin) — the payload already names the item, so the
+    # orchestrator can skip Plex's path-to-item resolution and call
+    # ``process_canonical_path`` directly with the hint. Keyed by canonical
+    # path so a single job carrying multiple webhook_paths can carry a
+    # different per-server hint per path. None = no hint, fall back to the
+    # legacy Plex-resolves-then-fans-out flow.
+    webhook_item_id_hints: dict[str, dict[str, str]] | None = None
     # Exclude paths: list of {"value": str, "type": "path"|"regex"}; path = prefix match, regex = full match
     exclude_paths: list[dict[str, str]] | None = None
     # When a job is pinned to one configured media-server (via the Schedules
