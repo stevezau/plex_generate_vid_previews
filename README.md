@@ -14,7 +14,7 @@
 
 <!-- PROJECT LOGO -->
 <div align="center">
-  <img src="docs/images/icon.svg" alt="Logo" width="120" height="120">
+  <img src="docs/images/icon.svg" alt="Media Preview Generator logo" width="120" height="120">
 
   <h1 align="center">Media Preview Generator</h1>
 
@@ -44,7 +44,7 @@ Generates video preview thumbnails for **Plex, Emby, and Jellyfin**. These are t
 - **Emby** has no GPU support for thumbnail generation at all.
 - **Jellyfin** does support hardware-accelerated trickplay, but it shares CPU/GPU with playback — and on a busy server that's resources you'd rather give to the player.
 
-**The Solution:** This tool runs preview generation **off the media server** on a machine of your choosing, uses every GPU it finds, and processes files in parallel. One library scan or webhook fan-out handles every server you've configured: a single FFmpeg pass produces output, and the result is published in the format each server expects (BIF for Plex/Emby, JPG tile-grid for Jellyfin).
+**The Solution:** This tool runs preview generation **off the media server** on a machine of your choosing, uses every GPU it finds, and processes files in parallel. When two or more servers contain the same file, FFmpeg runs only once — the result is then written out in each server's expected format (BIF for Plex/Emby, JPG tile-grid for Jellyfin).
 
 > [!NOTE]
 > This project was originally hand-written. Recent development is AI-assisted (Cursor + Claude). All changes are reviewed and tested.
@@ -67,15 +67,15 @@ Generates video preview thumbnails for **Plex, Emby, and Jellyfin**. These are t
 | **Web Dashboard** | Manage jobs, schedules, and status |
 | **Scheduling** | Cron and interval-based automation |
 | **Smart Skipping** | Automatically skips files that already have thumbnails |
-| **Smart Dedup Journal** | A `.meta` sidecar records source `(mtime, size)` so late-arriving webhooks short-circuit FFmpeg entirely; Sonarr quality upgrades correctly trigger regen |
-| **Slow-Backoff Retries** | Plex not yet scanned? The dispatcher schedules 30 s → 2 m → 5 m → 15 m → 60 m retries automatically — no manual re-run needed |
+| **Source-Aware Dedup** | Tracks source file changes so duplicate webhook calls don't re-process the same file — but a Sonarr quality upgrade (file replaced in place) does trigger regeneration |
+| **Automatic Retry on Slow Indexing** | If your media server hasn't finished scanning a new file yet, the app retries automatically (30 s → 2 m → 5 m → 15 m → 60 m). No manual re-runs. |
 | **Universal Webhooks** | One URL handles Plex / Emby / Jellyfin / Sonarr / Radarr — vendor auto-detected |
 | **Plex direct webhook** | Auto-trigger on `library.new` (Plex Pass) for media added without Sonarr/Radarr |
 | **Plex multi-server discovery** | One Plex.tv OAuth sign-in lists every server your account can access — tick multiple to add them all at once |
 | **Jellyfin Quick Connect** | Friendliest auth — no password ever leaves the user's browser |
-| **Jellyfin trickplay one-click fix** | Detects + auto-flips Jellyfin's `EnableTrickplayImageExtraction` flag (the most common gotcha) so the previews you publish actually appear in Jellyfin's web UI |
-| **Multi-Server BIF Viewer** | Inspect published previews per-server in the browser — works for Plex bundle BIFs, Emby sidecar BIFs, and Jellyfin trickplay tile-grid sheets |
-| **Recently Added scanner** | Polling fallback that catches manually-added items without Plex Pass |
+| **Jellyfin trickplay one-click fix** | Detects + auto-flips Jellyfin's library settings so the previews you publish actually appear in Jellyfin's web UI (the most common Jellyfin gotcha) |
+| **Multi-Server Preview Viewer** | Inspect published previews per-server in the browser — works for Plex, Emby, and Jellyfin |
+| **Recently Added scanner** | Polling fallback that catches manually-added items without needing Plex Pass |
 
 ---
 
@@ -133,8 +133,8 @@ For Docker Compose, Unraid, and GPU-specific setup:
 - **PyPI:** The package is no longer published on PyPI; use Docker or install from source.
 
 > [!IMPORTANT]
-> The Docker Hub image is published as `stevezzau/media_preview_generator` (double-`z`):
-> [stevezzau/media_preview_generator](https://hub.docker.com/r/stevezzau/media_preview_generator).
+> The Docker Hub image is published as `stevezzau/media_preview_generator` — the **double `z`** is the author's Docker Hub username (not a typo).
+> [stevezzau/media_preview_generator on Docker Hub](https://hub.docker.com/r/stevezzau/media_preview_generator).
 
 ---
 
