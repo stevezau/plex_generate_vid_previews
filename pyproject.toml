@@ -134,6 +134,11 @@ skip_covered = false
 write_to = "media_preview_generator/_version.py"
 local_scheme = "no-local-version"
 fallback_version = "0.0.0+unknown"
+# Only consider semver release tags (e.g. 3.7.5) when computing the Python
+# package version. Without this, setuptools-scm picks up unrelated tags like
+# `plugin-v10.11.0.1` (the Jellyfin plugin's own version stream) and ends up
+# producing 4-segment versions that fail the PEP 440 regex.
+git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--match", "[0-9]*.[0-9]*.[0-9]*"]
 
 [tool.ruff]
 line-length = 120
