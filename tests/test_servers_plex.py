@@ -622,3 +622,107 @@ class TestParseWebhook:
         ev = plex_wrapper.parse_webhook({"event": "library.new", "Metadata": {}}, headers={})
         assert ev is not None
         assert ev.item_id is None
+
+
+class TestPlexSettingsHealth:
+    """Plex's settings health check audits server-wide preferences via /:/prefs."""
+
+    def _prefs_response(self, **values):
+        """Return a MagicMock shaped like the Plex /:/prefs JSON response."""
+        settings = [{"id": k, "value": v} for k, v in values.items()]
+        return MagicMock(
+            json=MagicMock(return_value={"MediaContainer": {"Setting": settings}}),
+            raise_for_status=MagicMock(),
+        )
+
+    def test_no_issues_when_all_recommended(self, plex_wrapper):
+        with patch("media_preview_generator.servers.plex.requests.get") as get:
+            get.return_value = self._prefs_response(
+                FSEventLibraryUpdatesEnabled=True,
+                FSEventLibraryPartialScanEnabled=True,
+                ScheduledLibraryUpdatesEnabled=True,
+            )
+            assert plex_wrapper.check_settings_health() == []
+
+    def test_reports_each_misset_pref_as_server_wide(self, plex_wrapper):
+        with patch("media_preview_generator.servers.plex.requests.get") as get:
+            get.return_value = self._prefs_response(
+                FSEventLibraryUpdatesEnabled=False,  # critical
+                FSEventLibraryPartialScanEnabled=False,  # recommended
+                ScheduledLibraryUpdatesEnabled=False,  # recommended
+            )
+            issues = plex_wrapper.check_settings_health()
+        assert len(issues) == 3
+        # Server-wide prefs use library_id=None so the UI groups them apart.
+        assert all(i.library_id is None and i.library_name == "" for i in issues)
+        # Critical severity bubbles through unmodified.
+        critical = [i for i in issues if i.severity == "critical"]
+        assert len(critical) == 1
+        assert critical[0].flag == "FSEventLibraryUpdatesEnabled"
+
+    def test_empty_on_request_failure(self, plex_wrapper):
+        # Plex unreachable → empty list (UI renders "unavailable", not "all good").
+        with patch("media_preview_generator.servers.plex.requests.get", side_effect=RuntimeError("offline")):
+            assert plex_wrapper.check_settings_health() == []
+
+
+class TestPlexApplyRecommended:
+    """One PUT per misset Plex pref; results keyed `:<flag>` (server-wide)."""
+
+    def _prefs_response(self, **values):
+        settings = [{"id": k, "value": v} for k, v in values.items()]
+        return MagicMock(
+            json=MagicMock(return_value={"MediaContainer": {"Setting": settings}}),
+            raise_for_status=MagicMock(),
+        )
+
+    def test_writes_only_misset_prefs(self, plex_wrapper):
+        # Two prefs are wrong; one is already correct. Apply must skip
+        # the correct one (no PUT for it, no entry in results).
+        with (
+            patch("media_preview_generator.servers.plex.requests.get") as get,
+            patch("media_preview_generator.servers.plex.requests.put") as put,
+        ):
+            get.return_value = self._prefs_response(
+                FSEventLibraryUpdatesEnabled=False,  # wrong
+                FSEventLibraryPartialScanEnabled=True,  # correct
+                ScheduledLibraryUpdatesEnabled=False,  # wrong
+            )
+            put.return_value = MagicMock(raise_for_status=MagicMock())
+
+            results = plex_wrapper.apply_recommended_settings()
+
+        # Exactly the two wrong prefs got results; the correct one didn't.
+        assert set(results.keys()) == {
+            ":FSEventLibraryUpdatesEnabled",
+            ":ScheduledLibraryUpdatesEnabled",
+        }
+        assert all(v == "ok" for v in results.values())
+        # Two PUT calls — one per flipped pref. Each carries the flag
+        # name as a query param with value "true".
+        assert put.call_count == 2
+        flipped = {list(c.kwargs["params"].keys())[0]: list(c.kwargs["params"].values())[0] for c in put.call_args_list}
+        assert flipped == {
+            "FSEventLibraryUpdatesEnabled": "true",
+            "ScheduledLibraryUpdatesEnabled": "true",
+        }
+
+    def test_flag_filter_restricts_target(self, plex_wrapper):
+        # Caller asks for FSEvent only — even though Scheduled is also
+        # wrong, leave it alone (no PUT for it).
+        with (
+            patch("media_preview_generator.servers.plex.requests.get") as get,
+            patch("media_preview_generator.servers.plex.requests.put") as put,
+        ):
+            get.return_value = self._prefs_response(
+                FSEventLibraryUpdatesEnabled=False,
+                FSEventLibraryPartialScanEnabled=False,
+                ScheduledLibraryUpdatesEnabled=False,
+            )
+            put.return_value = MagicMock(raise_for_status=MagicMock())
+
+            results = plex_wrapper.apply_recommended_settings(flags=["FSEventLibraryUpdatesEnabled"])
+
+        assert set(results.keys()) == {":FSEventLibraryUpdatesEnabled"}
+        assert put.call_count == 1
+        assert list(put.call_args.kwargs["params"].keys()) == ["FSEventLibraryUpdatesEnabled"]

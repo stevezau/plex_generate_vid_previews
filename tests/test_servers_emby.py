@@ -464,6 +464,96 @@ class TestParseWebhook:
         assert ev.item_id is None
 
 
+class TestEmbySettingsHealth:
+    """Mirror of TestSettingsHealth in test_servers_jellyfin — Emby uses the
+    same VirtualFolders endpoint with a slightly different flag set."""
+
+    def test_no_issues_when_recommended(self, emby):
+        # ExtractTrickplayImagesDuringLibraryScan is Emby 4.8+; if the
+        # field isn't present the audit must NOT flag it (older Emby
+        # uses ExtractChapterImagesDuringLibraryScan instead).
+        good = {
+            "ExtractChapterImagesDuringLibraryScan": False,
+            "EnableRealtimeMonitor": True,
+        }
+        with patch.object(EmbyServer, "_request") as req:
+            req.return_value = MagicMock(
+                json=MagicMock(return_value=[{"Name": "Movies", "ItemId": "1", "LibraryOptions": good}]),
+                raise_for_status=MagicMock(),
+            )
+            assert emby.check_settings_health() == []
+
+    def test_reports_misset_flags_per_library(self, emby):
+        # Emby 4.8+ shape: trickplay flag present and wrongly on; both
+        # other flags also wrong → 3 issues for the single library.
+        bad = {
+            "ExtractTrickplayImagesDuringLibraryScan": True,
+            "ExtractChapterImagesDuringLibraryScan": True,
+            "EnableRealtimeMonitor": False,
+        }
+        with patch.object(EmbyServer, "_request") as req:
+            req.return_value = MagicMock(
+                json=MagicMock(return_value=[{"Name": "Movies", "ItemId": "1", "LibraryOptions": bad}]),
+                raise_for_status=MagicMock(),
+            )
+            issues = emby.check_settings_health()
+        flags = {i.flag for i in issues}
+        assert flags == {
+            "ExtractTrickplayImagesDuringLibraryScan",
+            "ExtractChapterImagesDuringLibraryScan",
+            "EnableRealtimeMonitor",
+        }
+        assert all(i.library_id == "1" and i.fixable for i in issues)
+
+    def test_skips_trickplay_flag_on_older_emby(self, emby):
+        # Older Emby's LibraryOptions doesn't include
+        # ExtractTrickplayImagesDuringLibraryScan at all. The audit
+        # must NOT surface a "false != False" issue from a missing key.
+        legacy_bad = {
+            "ExtractChapterImagesDuringLibraryScan": True,  # only this is wrong
+            "EnableRealtimeMonitor": True,
+        }
+        with patch.object(EmbyServer, "_request") as req:
+            req.return_value = MagicMock(
+                json=MagicMock(return_value=[{"Name": "Movies", "ItemId": "1", "LibraryOptions": legacy_bad}]),
+                raise_for_status=MagicMock(),
+            )
+            issues = emby.check_settings_health()
+        flags = {i.flag for i in issues}
+        assert flags == {"ExtractChapterImagesDuringLibraryScan"}
+
+
+class TestEmbyApplyRecommended:
+    def test_writes_only_misset_flags(self, emby):
+        bad = {
+            "ExtractTrickplayImagesDuringLibraryScan": True,
+            "ExtractChapterImagesDuringLibraryScan": False,  # already correct
+            "EnableRealtimeMonitor": False,
+        }
+        get_resp = MagicMock(
+            json=MagicMock(return_value=[{"Name": "Movies", "ItemId": "1", "LibraryOptions": bad}]),
+            raise_for_status=MagicMock(),
+        )
+        post_resp = MagicMock(raise_for_status=MagicMock())
+
+        def fake(method, url, **kwargs):
+            return get_resp if method == "GET" else post_resp
+
+        with patch.object(EmbyServer, "_request", side_effect=fake) as req:
+            results = emby.apply_recommended_settings()
+
+        assert set(results.keys()) == {
+            "1:ExtractTrickplayImagesDuringLibraryScan",
+            "1:EnableRealtimeMonitor",
+        }
+        assert all(v == "ok" for v in results.values())
+        sent_options = next(c for c in req.call_args_list if c.args[0] == "POST").kwargs["json_body"]["LibraryOptions"]
+        assert sent_options["ExtractTrickplayImagesDuringLibraryScan"] is False
+        assert sent_options["EnableRealtimeMonitor"] is True
+        # Already-correct field stays at its original value.
+        assert sent_options["ExtractChapterImagesDuringLibraryScan"] is False
+
+
 class TestRegistryWiring:
     def test_registry_can_construct_emby_server(self):
         from media_preview_generator.servers import ServerRegistry

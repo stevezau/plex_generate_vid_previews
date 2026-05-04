@@ -20,6 +20,7 @@ from loguru import logger
 
 from .base import (
     ConnectionResult,
+    HealthCheckIssue,
     Library,
     MediaItem,
     MediaServer,
@@ -363,6 +364,178 @@ class PlexServer(MediaServer):
                         exc,
                     )
                     results[section_key] = f"error: {exc}"
+        return results
+
+    # ------------------------------------------------------------------
+    # Server-wide settings health check
+    # ------------------------------------------------------------------
+    #
+    # Plex's relevant settings live in `Settings → Library` in the web UI
+    # and are SERVER-WIDE (not per-section). They control whether new files
+    # added by Sonarr/Radarr/etc. get auto-detected at all — without
+    # FSEventLibraryUpdatesEnabled, our SKIPPED_NOT_IN_LIBRARY scan-nudge
+    # is the *only* mechanism by which Plex notices a new file. Most users
+    # don't know these flags exist or which way they should point;
+    # surfacing them here removes the "why didn't it pick up the file?"
+    # head-scratch.
+
+    _PLEX_RECOMMENDED_PREFS: tuple[tuple[str, str, Any, str, str], ...] = (
+        (
+            "FSEventLibraryUpdatesEnabled",
+            "Scan my library automatically",
+            True,
+            "critical",
+            "Without this, Plex doesn't react to filesystem events at all — your only signals "
+            "for new files are this app's scan-nudges and the periodic timer. Most missed-file "
+            "complaints come from this being off.",
+        ),
+        (
+            "FSEventLibraryPartialScanEnabled",
+            "Run a partial scan when changes are detected",
+            True,
+            "recommended",
+            "When on, Plex only re-scans the directory that changed. Off = a full library scan "
+            "every time a file is added — many minutes of work for a single new episode.",
+        ),
+        (
+            "ScheduledLibraryUpdatesEnabled",
+            "Scan my library periodically (safety net)",
+            True,
+            "recommended",
+            "Belt-and-braces in case a filesystem event is missed (network mounts and "
+            "container-restart edge cases). Keep on; the default 12 h interval is fine.",
+        ),
+    )
+
+    def check_settings_health(self) -> list[HealthCheckIssue]:
+        """Audit Plex's server-wide library-scan preferences.
+
+        Reads ``GET /:/prefs`` once and emits one :class:`HealthCheckIssue`
+        per mis-set preference. Server-wide flags get
+        ``library_id=None`` / ``library_name=""`` — the UI groups
+        these as "Server settings" rather than under any one library.
+        """
+        url = (self._config.plex_url or "").rstrip("/")
+        token = self._config.plex_token or ""
+        verify_ssl = bool(getattr(self._config, "plex_verify_ssl", True))
+        timeout = int(getattr(self._config, "plex_timeout", 10) or 10)
+        if not url or not token:
+            return []
+
+        if not verify_ssl:
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+        try:
+            response = requests.get(
+                f"{url}/:/prefs",
+                headers={"X-Plex-Token": token, "Accept": "application/json"},
+                timeout=timeout,
+                verify=verify_ssl,
+            )
+            response.raise_for_status()
+            settings = response.json().get("MediaContainer", {}).get("Setting", [])
+        except Exception as exc:
+            logger.warning(
+                "Could not load Plex preferences for health check on {!r}: {}. "
+                "The health-check panel will report 'unavailable' until Plex is reachable.",
+                self.name,
+                exc,
+            )
+            return []
+
+        # Index settings by id for cheap lookups.
+        current_by_id = {str(s.get("id") or ""): s.get("value") for s in settings if isinstance(s, dict)}
+
+        issues: list[HealthCheckIssue] = []
+        for pref_id, label, recommended, severity, rationale in self._PLEX_RECOMMENDED_PREFS:
+            current = current_by_id.get(pref_id)
+            if current == recommended:
+                continue
+            issues.append(
+                HealthCheckIssue(
+                    library_id=None,
+                    library_name="",
+                    flag=pref_id,
+                    label=label,
+                    rationale=rationale,
+                    current=current,
+                    recommended=recommended,
+                    severity=severity,
+                    fixable=True,
+                )
+            )
+        return issues
+
+    def apply_recommended_settings(self, flags: list[str] | None = None) -> dict[str, str]:
+        """Flip mis-set Plex preferences to their recommended values.
+
+        Plex's preference update endpoint accepts a single PUT
+        ``/:/prefs?<id>=<value>`` per change — there's no batch form.
+        We issue one PUT per flag and aggregate per-flag outcomes
+        keyed ``":<flag>"`` (empty library_id segment for server-wide
+        prefs) so the UI's per-row display matches the
+        :class:`HealthCheckIssue` row keys.
+        """
+        url = (self._config.plex_url or "").rstrip("/")
+        token = self._config.plex_token or ""
+        verify_ssl = bool(getattr(self._config, "plex_verify_ssl", True))
+        timeout = int(getattr(self._config, "plex_timeout", 10) or 10)
+        if not url or not token:
+            return {"_global": "Plex URL and token required"}
+
+        if not verify_ssl:
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+        # Re-read current values so the apply path doesn't blindly POST
+        # to flags that were already correct (Plex returns 200 either
+        # way; this saves the user a confusing "applied 3" message when
+        # in reality only 1 actually changed).
+        try:
+            response = requests.get(
+                f"{url}/:/prefs",
+                headers={"X-Plex-Token": token, "Accept": "application/json"},
+                timeout=timeout,
+                verify=verify_ssl,
+            )
+            response.raise_for_status()
+            settings = response.json().get("MediaContainer", {}).get("Setting", [])
+        except Exception as exc:
+            return {"_global": f"failed to fetch preferences: {exc}"}
+
+        current_by_id = {str(s.get("id") or ""): s.get("value") for s in settings if isinstance(s, dict)}
+
+        target_flags = set(flags) if flags is not None else None
+        results: dict[str, str] = {}
+
+        for pref_id, _label, recommended, _sev, _rationale in self._PLEX_RECOMMENDED_PREFS:
+            if target_flags is not None and pref_id not in target_flags:
+                continue
+            if current_by_id.get(pref_id) == recommended:
+                continue
+            # Plex's bool prefs accept "true"/"false" strings on the
+            # query string. Ints go as their string form. The API
+            # returns 200 with no body on success and 4xx on a
+            # bad/unknown id.
+            value_str = "true" if recommended is True else ("false" if recommended is False else str(recommended))
+            try:
+                put = requests.put(
+                    f"{url}/:/prefs",
+                    params={pref_id: value_str},
+                    headers={"X-Plex-Token": token},
+                    timeout=timeout,
+                    verify=verify_ssl,
+                )
+                put.raise_for_status()
+                results[f":{pref_id}"] = "ok"
+            except Exception as exc:
+                logger.warning(
+                    "Could not update Plex preference {} on server {!r}: {}",
+                    pref_id,
+                    self.name,
+                    exc,
+                )
+                results[f":{pref_id}"] = f"error: {exc}"
+
         return results
 
     def list_items(self, library_id: str) -> Iterator[MediaItem]:

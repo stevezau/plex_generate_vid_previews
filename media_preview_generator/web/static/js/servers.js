@@ -115,39 +115,15 @@
                 }
             });
         });
-        $$('.fix-trickplay-btn').forEach((btn) => {
-            // Calls /api/servers/<id>/jellyfin/fix-trickplay which flips
-            // EnableTrickplayImageExtraction on every library so Jellyfin
-            // actually serves the trickplay sidecars we publish. Idempotent
-            // — safe to click twice.
-            btn.addEventListener('click', async (ev) => {
-                const target = ev.currentTarget;
-                const id = target.dataset.id;
-                const original = target.innerHTML;
-                target.disabled = true;
-                target.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Fixing…';
-                const r = await api('POST', `/api/servers/${encodeURIComponent(id)}/jellyfin/fix-trickplay`);
-                if (r.ok && r.data && r.data.ok) {
-                    target.innerHTML = '<i class="bi bi-check2 me-1"></i>Fixed';
-                    // Re-probe so the button hides automatically once
-                    // every library reports trickplay enabled — without
-                    // this, the button reverted to "Fix trickplay" on
-                    // the next render even though the fix had taken.
-                    setTimeout(() => probeJellyfinTrickplay(id, target), 1500);
-                } else {
-                    const msg = (r.data && (r.data.error || JSON.stringify(r.data.results))) || r.status;
-                    showToast('Trickplay fix failed', String(msg), 'danger');
-                    target.innerHTML = original;
-                    target.disabled = false;
-                }
-            });
-        });
-        // Per-card trickplay probe: hide the Fix trickplay button when
-        // every library already has extraction enabled, otherwise reveal
-        // it. Runs after the list has rendered so the button stays
-        // d-none by default.
-        $$('.fix-trickplay-btn').forEach((btn) => {
-            probeJellyfinTrickplay(btn.dataset.id, btn);
+        // Generic per-card health-check probe: replaces the
+        // Jellyfin-specific "Fix trickplay" probe with the unified
+        // /health-check endpoint that works for Plex/Emby/Jellyfin.
+        // Renders a clickable "N issue(s)" badge on cards with problems;
+        // clicking opens the Edit modal where the full health-check
+        // panel handles per-issue display + apply.
+        $$('.server-health-pill').forEach((pill) => {
+            probeServerHealthCheck(pill.dataset.id, pill);
+            pill.addEventListener('click', () => openEditModal(pill.dataset.id));
         });
         // Quick enable/disable toggle on each card.
         $$('.server-enabled-toggle').forEach((cb) => {
@@ -221,18 +197,36 @@
         }
     }
 
-    async function probeJellyfinTrickplay(serverId, btn) {
-        if (!btn) return;
-        const r = await api('GET', `/api/servers/${encodeURIComponent(serverId)}/jellyfin/trickplay-status`);
-        const libs = (r.ok && r.data && Array.isArray(r.data.libraries)) ? r.data.libraries : [];
-        const needsFix = libs.some(l => !l.extraction_enabled);
-        if (needsFix) {
-            btn.classList.remove('d-none');
-            btn.disabled = false;
-            btn.innerHTML = '<i class="bi bi-magic me-1"></i>Fix trickplay';
-        } else {
-            btn.classList.add('d-none');
+    async function probeServerHealthCheck(serverId, pill) {
+        // Generic per-vendor settings audit. Runs once per card render;
+        // surfaces a small clickable "N issue(s)" badge when the server
+        // has misconfigured settings. The full per-issue UI lives inside
+        // the Edit modal — this pill is just the entry point.
+        if (!pill) return;
+        const r = await api('GET', `/api/servers/${encodeURIComponent(serverId)}/health-check`);
+        if (!r.ok || !r.data) {
+            pill.classList.add('d-none');
+            return;
         }
+        const issueCount = r.data.issue_count || 0;
+        if (issueCount === 0) {
+            pill.classList.add('d-none');
+            return;
+        }
+        const issues = r.data.issues || [];
+        const criticalCount = issues.filter((i) => i.severity === 'critical').length;
+        if (criticalCount > 0) {
+            pill.className = 'badge bg-danger server-health-pill';
+            const verb = criticalCount === 1 ? 'needs' : 'need';
+            pill.title = `${criticalCount} critical setting${criticalCount === 1 ? '' : 's'} ${verb} attention. Click to fix.`;
+        } else {
+            pill.className = 'badge bg-warning text-dark server-health-pill';
+            pill.title = `${issueCount} recommended setting${issueCount === 1 ? '' : 's'} could be improved. Click to fix.`;
+        }
+        pill.dataset.id = serverId;  // re-stamp after className wipe so the click handler still works
+        pill.style.cursor = 'pointer';
+        pill.innerHTML = `<i class="bi bi-clipboard-check me-1"></i>${issueCount} issue${issueCount === 1 ? '' : 's'}`;
+        pill.classList.remove('d-none');
     }
 
     function serverCard(server) {
@@ -288,13 +282,8 @@
                                     data-id="${escapeHtml(server.id)}">
                                 <i class="bi bi-arrow-clockwise me-1"></i>Refresh libraries
                             </button>
-                            ${server.type === 'jellyfin' ? `
-                            <button class="btn btn-sm btn-outline-warning fix-trickplay-btn d-none"
-                                    data-id="${escapeHtml(server.id)}"
-                                    title="Enable trickplay extraction so Jellyfin actually serves the preview thumbnails we publish">
-                                <i class="bi bi-magic me-1"></i>Fix trickplay
-                            </button>
-                            ` : ''}
+<span class="badge bg-secondary server-health-pill d-none align-self-center"
+                                  data-id="${escapeHtml(server.id)}"></span>
                         </div>
                         <button class="btn btn-sm btn-outline-danger delete-server-btn"
                                 data-id="${escapeHtml(server.id)}"
