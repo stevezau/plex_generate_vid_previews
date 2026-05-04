@@ -95,7 +95,8 @@ def _load_config_or_minimal():
         from ..config import load_config
 
         return load_config(log_validation_errors=False)
-    except Exception:
+    except Exception as exc:
+        logger.debug("_load_config_or_minimal: load_config failed ({}: {}) — returning None.", type(exc).__name__, exc)
         return None
 
 
@@ -401,7 +402,6 @@ def webhook_incoming():
     )
     return _dispatch_canonical_path(
         canonical,
-        registry,
         item_id_by_server,
         kind=kind,
         regenerate=_extract_regenerate_flag(payload),
@@ -446,7 +446,6 @@ def webhook_per_server(server_id: str):
 
     return _dispatch_canonical_path(
         canonical,
-        registry,
         item_id_by_server,
         kind=kind,
         server_id_filter=server_id,
@@ -478,7 +477,6 @@ def _extract_regenerate_flag(payload: dict | None) -> bool:
 
 def _dispatch_canonical_path(
     canonical_path: str,
-    registry: ServerRegistry,
     item_id_by_server: dict[str, str],
     *,
     kind: str,

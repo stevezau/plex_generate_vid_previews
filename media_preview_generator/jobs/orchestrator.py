@@ -207,133 +207,6 @@ def _enumerate_plex_full_scan_items(
     )
 
 
-def _dispatch_webhook_paths_multi_server(
-    config,
-    *,
-    progress_callback=None,
-    cancel_check=None,
-    pause_check=None,
-    job_id: str | None = None,
-    paths: list[str] | None = None,
-    item_id_hints: dict[str, dict[str, str]] | None = None,
-) -> dict:
-    """Dispatch webhook_paths through the multi-server registry without Plex.
-
-    Used when a webhook fires on an Emby/Jellyfin-only install: the legacy
-    Plex resolution shortcut is unavailable, but ``process_canonical_path``
-    in the multi-server dispatcher walks every owning server in the registry
-    directly — Plex is not required.
-
-    When ``job_id`` is supplied, per-publisher outcomes are appended to that
-    job's ``publishers`` field so the Jobs UI can show per-server status.
-
-    K4: ``paths`` may be provided to dispatch a *subset* of the job's
-    webhook_paths (e.g. the unresolved-by-Plex paths) so the fallback
-    multi-server flow only runs for those Plex couldn't claim. When None,
-    falls back to ``config.webhook_paths`` for backward compat with the
-    no-Plex code path that originally introduced this helper.
-
-    Returns the aggregated ProcessingResult counts keyed by enum value.
-    """
-    from ..processing.multi_server import process_canonical_path
-    from ..servers import ServerRegistry
-    from ..web.settings_manager import get_settings_manager
-
-    counts = {r.value: 0 for r in ProcessingResult}
-    if paths is None:
-        paths = list(config.webhook_paths or [])
-    else:
-        paths = list(paths)
-    if not paths:
-        return counts
-
-    raw_servers = []
-    try:
-        raw_servers = list(get_settings_manager().get("media_servers") or [])
-    except Exception as exc:
-        logger.warning(
-            "Could not read media_servers when dispatching webhook paths ({}: {}). "
-            "These paths will not be processed — verify the Servers page lists at least one enabled server.",
-            type(exc).__name__,
-            exc,
-        )
-        return counts
-
-    try:
-        registry = ServerRegistry.from_settings(raw_servers, legacy_config=config)
-    except Exception as exc:
-        logger.warning(
-            "Could not build the media-server registry for webhook dispatch ({}: {}). "
-            "These paths will not be processed — open the Servers page and verify each server "
-            "has valid auth and a reachable URL.",
-            type(exc).__name__,
-            exc,
-        )
-        return counts
-
-    sid_filter_raw = getattr(config, "server_id_filter", None)
-    sid_filter = sid_filter_raw if isinstance(sid_filter_raw, str) and sid_filter_raw else None
-
-    job_manager = None
-    if job_id:
-        try:
-            from ..web.jobs import get_job_manager
-
-            job_manager = get_job_manager()
-        except Exception:
-            job_manager = None
-
-    for idx, p in enumerate(paths, 1):
-        if cancel_check and cancel_check():
-            logger.info("Webhook dispatch cancelled after {} of {} path(s)", idx - 1, len(paths))
-            break
-        # Pause gate — block (don't bail) so the loop resumes from the
-        # current path when the user un-pauses, instead of dropping the
-        # remaining webhook paths on the floor.
-        while pause_check and pause_check():
-            if cancel_check and cancel_check():
-                logger.info("Webhook dispatch cancelled while paused after {} of {} path(s)", idx - 1, len(paths))
-                return counts
-            time.sleep(0.25)
-        if progress_callback:
-            try:
-                progress_callback(idx - 1, len(paths), f"Dispatching {os.path.basename(p)}")
-            except Exception:
-                pass
-        try:
-            result = process_canonical_path(
-                canonical_path=p,
-                registry=registry,
-                config=config,
-                cancel_check=cancel_check,
-                server_id_filter=sid_filter,
-                regenerate=bool(getattr(config, "regenerate_thumbnails", False)),
-                item_id_by_server=(item_id_hints or {}).get(p),
-            )
-            for pub in result.publishers or []:
-                key = (pub.status.value if hasattr(pub.status, "value") else str(pub.status)).lower()
-                counts[key] = counts.get(key, 0) + 1
-            if job_manager is not None:
-                try:
-                    job_manager.append_publishers(job_id, _publisher_rows_from_result(result, p))
-                except Exception as exc:
-                    logger.debug("Could not append publisher rows for job {}: {}", job_id, exc)
-        except Exception as exc:
-            logger.warning(
-                "Multi-server dispatch failed for {} ({}: {}). Other paths in this batch are still being processed.",
-                p,
-                type(exc).__name__,
-                exc,
-            )
-
-    if progress_callback:
-        try:
-            progress_callback(len(paths), len(paths), "Done")
-        except Exception:
-            pass
-    return counts
-
-
 def _dispatch_processable_items(
     items,
     *,
@@ -1436,7 +1309,7 @@ def _run_webhook_paths_phase(
                     canonical_path=path,
                     server_id=server_id,
                     item_id_by_server=dict(per_path),
-                    title=os.path.basename(path),
+                    title=os.path.basename(path.rstrip("/")) or path,
                     library_id=None,
                 )
             )
@@ -1454,24 +1327,35 @@ def _run_webhook_paths_phase(
                 aggregate_outcome[k] = aggregate_outcome.get(k, 0) + v
             # Surface failed paths so the retry queue's
             # ``unresolved_paths + not_found_on_disk`` decision logic can
-            # schedule a retry — without this the retry only fires on
-            # disk-not-found and silent server-unreachable failures
-            # never get a second chance.
-            unresolved = []
+            # schedule a retry. ``dispatch_items`` doesn't tell us WHICH
+            # paths failed — only the aggregate count — so:
+            #
+            # * single-path batch (vendor webhooks today) → unambiguous
+            # * multi-path batch with N failures → mark exactly N (the
+            #   identity is unknowable but the COUNT is correct, so the
+            #   retry job picks up N retries which is right; .meta on the
+            #   already-succeeded ones short-circuits cheaply)
+            #
+            # Audit H2: previously marked ALL paths on any failure, which
+            # over-triggered retries + falsely flagged successful paths
+            # as "unresolved" in the file-results UI.
             failed_count = result.get("failed", 0)
             if failed_count and webhook_items:
-                # process_canonical_path doesn't tag per-item failure paths
-                # back here, so on a single-file webhook we can definitively
-                # mark the one path; on multi-file batches we conservatively
-                # mark them all as candidates for retry.
-                unresolved = [item.canonical_path for item in webhook_items]
+                unresolved = [item.canonical_path for item in webhook_items[:failed_count]]
+            else:
+                unresolved = []
 
+        # Audit H3: vendor webhooks took the hint short-circuit, so no Plex
+        # resolution ever happened — flag the resolution shape with a label
+        # the job_runner can use to write a correct file_result reason
+        # ("Not found by Plex" vs "Not found by Emby/Jellyfin").
         return {
             "unresolved_paths": unresolved,
             "skipped_paths": [],
             "resolved_count": len(config.webhook_paths or []) - len(unresolved),
             "total_paths": len(config.webhook_paths or []),
             "path_hints": [],
+            "resolution_source": "vendor" if hints else "no_plex",
         }
 
     if progress_callback:
@@ -1555,17 +1439,19 @@ def _run_webhook_paths_phase(
             raw = []
             has_non_plex = False
         pinned = getattr(config, "server_id_filter", None)
-        pinned_is_non_plex = False
         pinned_entry = None
         if pinned and isinstance(pinned, str):
             try:
                 pinned_entry = next((e for e in raw if isinstance(e, dict) and e.get("id") == pinned), None)
-                pinned_is_non_plex = bool(
-                    pinned_entry and (pinned_entry.get("type") or "").lower() in ("emby", "jellyfin")
-                )
             except Exception:
-                pinned_is_non_plex = False
-        if has_non_plex and (not pinned or pinned_is_non_plex or pinned_entry):
+                pinned_entry = None
+        # K4 cascades to Emby/Jellyfin only when the user hasn't pinned to
+        # Plex — pinning to Plex means "publish to Plex only" and we must
+        # not silently fall through to a sibling server (audit M4). Three
+        # safe cases: not pinned at all, pinned to Emby/Jellyfin, or
+        # pinned to a server id that doesn't resolve (treat as unpinned).
+        pinned_is_plex = bool(pinned_entry and (pinned_entry.get("type") or "").lower() == "plex")
+        if has_non_plex and not pinned_is_plex:
             logger.info(
                 "K4 fallback: {} path(s) unresolved by Plex — dispatching through multi-server registry "
                 "for Emby/Jellyfin owners.",
@@ -1585,7 +1471,7 @@ def _run_webhook_paths_phase(
                         canonical_path=p,
                         server_id="",
                         item_id_by_server={},
-                        title=os.path.basename(p),
+                        title=os.path.basename(p.rstrip("/")) or p,
                         library_id=None,
                     )
                     for p in unresolved

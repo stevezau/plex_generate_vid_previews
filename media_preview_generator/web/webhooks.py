@@ -776,16 +776,12 @@ def _execute_webhook_job(debounce_key: str) -> None:
         retry_count = max(0, min(10, int(settings.get("webhook_retry_count", 3))))
         retry_delay = max(10, min(300, int(settings.get("webhook_retry_delay", 30))))
 
-        # Dedup entries are recorded by ``_check_and_record_dedup`` inside
-        # ``_schedule_webhook_job`` at debounce-schedule time, not here at
-        # debounce-fire time — so a re-firing Sonarr import within TTL is
-        # caught even if the previous batch hasn't fully completed yet.
-        # Refresh the timestamps for paths actually in this batch so the
-        # TTL clock starts at the moment of dispatch.
-        with _pending_lock:
-            dispatch_ts = datetime.now(timezone.utc).timestamp()
-            for p in webhook_paths:
-                _recent_dispatches[(source, batch_server_id or "", p)] = dispatch_ts
+        # NOTE: dedup entries were already written by
+        # ``_check_and_record_dedup`` inside ``_schedule_webhook_job`` at
+        # debounce-schedule time. We deliberately do NOT refresh the
+        # timestamps here — refreshing would extend the dedup window past
+        # the configured TTL, blocking legitimate re-imports for up to
+        # 2x TTL after the original fire (audit M5).
 
         overrides = {
             "sort_by": "newest",

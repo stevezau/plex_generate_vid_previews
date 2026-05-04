@@ -1154,6 +1154,67 @@ def test_create_vendor_webhook_job_does_NOT_dedup_across_sources(mock_start, app
 
 
 @patch("media_preview_generator.web.routes._start_job_async")
+def test_create_vendor_webhook_job_handles_unicode_path(mock_start, app):
+    """Audit L4 — unicode in canonical_path must round-trip cleanly through
+    the dedup key + Job creation + override serialisation."""
+    import media_preview_generator.web.webhooks as wh
+
+    unicode_path = "/data/Margarita (2024) [imdb-tt33145195]/Season 02/Margarita - S02E01 — Año Nuevo.mkv"
+    with app.app_context():
+        job_id = wh.create_vendor_webhook_job(
+            source="plex",
+            canonical_path=unicode_path,
+            item_id_by_server={"plex-1": "12345"},
+        )
+
+    assert job_id, "unicode path must produce a job"
+    overrides = mock_start.call_args.args[1]
+    assert overrides["webhook_paths"] == [unicode_path]
+    assert overrides["webhook_item_id_hints"] == {unicode_path: {"plex-1": "12345"}}
+
+
+@patch("media_preview_generator.web.routes._start_job_async")
+def test_create_vendor_webhook_job_empty_hint_dict_treated_as_no_hint(mock_start, app):
+    """Audit L4 — empty ``item_id_by_server={}`` must NOT add a hints
+    override (the orchestrator's hint short-circuit treats absence as
+    "no hint" and falls through to library-prefix matching). An empty
+    dict in the override would falsy-test as no-op anyway, but the
+    explicit absence keeps the Job config clean."""
+    import media_preview_generator.web.webhooks as wh
+
+    with app.app_context():
+        wh.create_vendor_webhook_job(
+            source="plex",
+            canonical_path="/data/x.mkv",
+            item_id_by_server={},
+        )
+
+    overrides = mock_start.call_args.args[1]
+    assert "webhook_item_id_hints" not in overrides, "empty hint dict must not produce a hints override"
+
+
+@patch("media_preview_generator.web.routes._start_job_async")
+def test_create_vendor_webhook_job_filters_falsy_hint_keys(mock_start, app):
+    """Audit L4 — hint dict with empty server_id or item_id values must
+    be filtered out so the orchestrator's hint short-circuit doesn't
+    receive garbage entries."""
+    import media_preview_generator.web.webhooks as wh
+
+    with app.app_context():
+        wh.create_vendor_webhook_job(
+            source="plex",
+            canonical_path="/data/x.mkv",
+            item_id_by_server={"": "k1", "plex-1": "", "valid-sid": "valid-id"},
+        )
+
+    overrides = mock_start.call_args.args[1]
+    hints = overrides.get("webhook_item_id_hints")
+    assert hints == {"/data/x.mkv": {"valid-sid": "valid-id"}}, (
+        "falsy keys/values must be filtered, valid pair retained"
+    )
+
+
+@patch("media_preview_generator.web.routes._start_job_async")
 def test_create_vendor_webhook_job_server_id_filter_pins_publishers(mock_start, app):
     """``/api/webhooks/server/<id>`` callers pass ``server_id_filter`` —
     that becomes ``overrides["server_id"]`` which job_runner translates

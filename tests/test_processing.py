@@ -294,9 +294,81 @@ class TestMultiServerGuards:
 
         assert any("owning server" in line.lower() and "plex" in line.lower() for line in captured), captured
 
+    def test_hint_short_circuit_skips_plex_resolution_when_hints_present(self, tmp_path):
+        """Audit L5 — hint short-circuit doesn't touch Plex.
+
+        When ``Config.webhook_item_id_hints`` is set (vendor webhook), the
+        orchestrator must build ProcessableItems directly from the hints
+        and dispatch without calling ``get_media_items_by_paths`` (the
+        slow Plex resolution roundtrip the hint exists to skip).
+        """
+        config = _make_config(
+            tmp_path,
+            webhook_paths=["/data/movies/Foo.mkv"],
+        )
+        config.webhook_item_id_hints = {"/data/movies/Foo.mkv": {"plex-1": "k1"}}
+
+        with (
+            patch(f"{MODULE}.get_media_items_by_paths") as mock_resolve,
+            patch(f"{MODULE}.plex_server"),
+            patch(f"{MODULE}.WorkerPool") as MockPool,
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+        ):
+            MockPool.return_value.process_items_headless.return_value = _pool_result(completed=1)
+            mock_sm.return_value.get.return_value = [
+                {"id": "plex-1", "type": "plex", "enabled": True, "libraries": []},
+            ]
+            run_processing(config, selected_gpus=[])
+
+        # Plex resolution must NOT be called — that's the whole point.
+        mock_resolve.assert_not_called()
+        # Worker pool DOES dispatch the path.
+        MockPool.return_value.process_items_headless.assert_called_once()
+        items = MockPool.return_value.process_items_headless.call_args.args[0]
+        assert len(items) == 1
+        assert items[0].canonical_path == "/data/movies/Foo.mkv"
+        assert items[0].item_id_by_server == {"plex-1": "k1"}
+
+    def test_k4_does_not_cascade_when_pinned_to_plex(self, tmp_path):
+        """Audit M4 — a Plex-pinned webhook must NOT fall through to Emby/Jellyfin
+        K4 fallback when Plex resolution comes up empty. Pinning means
+        "publish to Plex only".
+        """
+        from media_preview_generator.plex_client import WebhookResolutionResult
+
+        config = _make_config(tmp_path, webhook_paths=["/data/x.mkv"])
+        config.server_id_filter = "plex-a"
+        resolution = WebhookResolutionResult(
+            items=[],
+            unresolved_paths=["/data/x.mkv"],
+            skipped_paths=[],
+            path_hints={},
+        )
+
+        with (
+            patch(f"{MODULE}.get_media_items_by_paths", return_value=resolution),
+            patch(f"{MODULE}.plex_server"),
+            patch(f"{MODULE}.WorkerPool") as MockPool,
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+        ):
+            MockPool.return_value.process_items_headless.return_value = _pool_result(completed=0)
+            mock_sm.return_value.get.return_value = [
+                {"id": "plex-a", "type": "plex", "enabled": True},
+                {"id": "emby-1", "type": "emby", "enabled": True},
+            ]
+            run_processing(config, selected_gpus=[])
+
+        # No K4 dispatch for the unresolved path — pin contract held.
+        for call in MockPool.return_value.process_items_headless.call_args_list:
+            for item in call.args[0]:
+                assert item.canonical_path != "/data/x.mkv", (
+                    "K4 fallback fired despite Plex pin — would silently publish to Emby"
+                )
+
     def test_k4_no_fallback_when_only_plex_configured(self, tmp_path):
         """K4: don't churn — when only Plex is configured, the unresolved
-        paths go to the existing retry queue, not into the dispatcher."""
+        paths go to the existing retry queue, not through the worker pool
+        as a fallback."""
         from media_preview_generator.plex_client import WebhookResolutionResult
 
         config = _make_config(tmp_path, webhook_paths=["/data/x.mkv"])
@@ -311,7 +383,6 @@ class TestMultiServerGuards:
             patch(f"{MODULE}.get_media_items_by_paths", return_value=resolution),
             patch(f"{MODULE}.plex_server"),
             patch(f"{MODULE}.WorkerPool") as MockPool,
-            patch(f"{MODULE}._dispatch_webhook_paths_multi_server") as mock_dispatch,
             patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
         ):
             MockPool.return_value.process_items_headless.return_value = _pool_result(completed=0)
@@ -321,7 +392,17 @@ class TestMultiServerGuards:
             ]
             run_processing(config, selected_gpus=[])
 
-        mock_dispatch.assert_not_called()
+        # No K4 worker-pool dispatch — the resolved (empty) items branch
+        # may still call process_items_headless once for the empty Plex
+        # resolution result, but the K4 fallback for unresolved_paths
+        # must not fire when only Plex is configured.
+        all_calls = MockPool.return_value.process_items_headless.call_args_list
+        for call in all_calls:
+            items_arg = call.args[0]
+            for item in items_arg:
+                assert item.canonical_path != "/data/x.mkv", (
+                    "K4 fallback fired for the unresolved path despite no Emby/Jellyfin sibling"
+                )
 
 
 class TestLibraryScanFlow:
