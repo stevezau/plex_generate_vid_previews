@@ -75,9 +75,12 @@ A single inbound URL, `POST /api/webhooks/incoming`, handles every source.
             +scan trigger           +Library/Media/Updated  +Items/{id}/Refresh
 ```
 
-Per-publisher exceptions are isolated: if Jellyfin's manifest write fails
-the Emby sidecar still lands. The dispatcher returns a per-publisher status
-list so you can see exactly what happened.
+Failures on one server don't take down the others — if Jellyfin's write fails the Emby sidecar still lands. The job log shows a per-server status row so you can see exactly what happened.
+
+> [!NOTE]
+> Two terms used throughout the rest of this doc:
+> - **Dispatcher** — the routing engine inside the app that decides which servers a file goes to and in what order.
+> - **Publisher** — the per-vendor writer that produces the on-disk output (Plex BIF, Emby BIF sidecar, Jellyfin trickplay tiles).
 
 ---
 
@@ -153,24 +156,19 @@ Same shape as Emby — `POST /api/servers/auth/jellyfin/password`.
 
 ## Per-vendor output formats
 
-Each server type writes a different on-disk layout. The dispatcher picks
-the right adapter from `output.adapter` in the server config, defaulting
-sensibly per type.
+Each server type expects a different on-disk layout. The app picks the right format automatically based on the server's type — you don't need to configure this.
 
 | Vendor | Adapter | Output path |
 |---|---|---|
-| Plex | `plex_bundle` | `{plex_config}/Media/localhost/{h0}/{h[1:]}.bundle/Contents/Indexes/index-sd.bif` |
-| Emby | `emby_sidecar` | `{video_dir}/{basename}-{width}-{interval}.bif` (next to the media file) |
-| Jellyfin | `jellyfin_trickplay` | `{video_dir}/trickplay/{basename}-{width}.json` + `trickplay/{basename}-{width}/{0,1,...}.jpg` (10×10 tile sheets) |
+| Plex | `plex_bundle` | Inside Plex's config folder: `Media/localhost/{hash}/.../index-sd.bif` |
+| Emby | `emby_sidecar` | Next to the media file: `{basename}-{width}-{interval}.bif` |
+| Jellyfin | `jellyfin_trickplay` | Next to the media file: `{basename}.trickplay/{width} - 10x10/{0,1,…}.jpg` (folders of 10×10 tile sheets) |
 
-**Why Jellyfin's format is different.** Jellyfin 10.9+ uses a native JPG
-tile-grid format, *not* BIF. BIF in Jellyfin only works if the user
-installs the third-party Jellyscrub plugin. We produce the native format
-so no plugin is required. ([Jellyfin 10.9 release notes](https://liuhouliang.com/en/post/jellyfin_10_9/))
+**Why Jellyfin's format is different.** Jellyfin (10.9 onwards) reads its own native JPG tile-grid format — *not* BIF. BIF would require users to install a third-party plugin (Jellyscrub) on their Jellyfin server. This app writes the native format, so no extra plugin is needed.
 
-**Required Jellyfin server setting.** *Server → Libraries → "Save trickplay
-images to media folders"* must be enabled, otherwise Jellyfin won't pick
-up the files we write.
+**Required Jellyfin library settings.** Three per-library settings need to be set so Jellyfin reads the trickplay folders this app writes — most importantly **Save trickplay images to media folders** = on. The Servers page in this app has a one-click **"Disable on this server"** button that flips all three correctly. See the in-app help for what each setting does.
+
+**Optional Jellyfin plugin (recommended).** Installing the **Media Preview Bridge** plugin (one-click install from the Servers page) makes trickplay register *instantly* the moment this app finishes writing the tiles. Without the plugin, trickplay still appears — but only after Jellyfin's nightly trickplay sweep (default 3 AM) imports the files. See [Jellyfin Plugin](../jellyfin-plugin/README.md) for details.
 
 ---
 
@@ -234,34 +232,15 @@ that library cleanly with no retry storm.
 
 ## Smart dedup: skipping work that's already done
 
-Two layers of dedup prevent the same file being re-processed:
+Two layers prevent the same file being processed twice:
 
-1. **Frame cache** (process-wide, 10-minute TTL, 32-entry LRU): a
-   second webhook arriving for the same file within the TTL window
-   skips FFmpeg and reuses the extracted JPGs. Concurrent webhooks
-   for the same file (5 simultaneous fires from a webhook storm) all
-   collapse into **one** FFmpeg pass via a per-canonical-path
-   generation lock.
+1. **Short-term frame cache** — when a second webhook arrives for the same file shortly after the first (e.g. Sonarr and Plex both notify within minutes), the second one reuses the already-extracted JPGs instead of running FFmpeg again. The cache holds the most recent files for a configurable window (default 10 minutes). Concurrent webhooks for the same file (a "webhook storm") collapse into a single FFmpeg pass.
 
-2. **Per-output `.meta` journal**: every published output gets a
-   sidecar `<file>.bif.meta` JSON recording the source's `(mtime,
-   size)`. On a subsequent webhook the dispatcher checks the journal
-   *before* running FFmpeg — if every publisher's outputs exist and
-   the source hasn't changed, it skips the entire pipeline. This
-   handles the common case of "Sonarr fires immediately, then Plex's
-   own webhook fires 30 minutes later for the same file."
+2. **Long-term sidecar tracking** — every published output gets a small companion file (`<file>.bif.meta`) that records the source file's last-modified time and size. On any later webhook, the app checks this companion file first — if every output already exists and the source hasn't changed, the whole pipeline is skipped. This handles "Sonarr fires immediately, then Plex's own webhook fires 30 minutes later for the same file."
 
-   The journal also detects **source replacement** (Sonarr quality
-   upgrade swapping the file in place). When mtime/size change the
-   journal short-circuit fails and FFmpeg re-runs. Force regeneration
-   manually via the `regenerate` flag — that bypasses both layers
-   *and* clears stale `.meta` sidecars to avoid mismatched fingerprints
-   on the next pass.
+   When the source file *does* change (a Sonarr quality upgrade swaps the file in place), the size/mtime comparison fails and FFmpeg re-runs automatically. To force regeneration manually (e.g. you changed the thumbnail quality), tick **Regenerate** when starting a job — that bypasses both layers.
 
-Migration safety: outputs from before the journal feature shipped
-have no `.meta` sidecar; those are treated as fresh on the first
-post-upgrade webhook (no regeneration storm), then stamped on the
-next publish.
+Outputs created before this dedup system shipped don't have the sidecar — those get treated as fresh on the first post-upgrade webhook (no regeneration storm), then stamped on the next publish.
 
 ---
 

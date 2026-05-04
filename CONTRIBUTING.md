@@ -8,7 +8,7 @@ The supported way to run the app in production is **Docker** and the **web UI**.
 
 ## Code of Conduct
 
-Be respectful and inclusive. We're all here to make Plex better.
+Be respectful and inclusive. We're all here to make media server software better — for Plex, Emby, and Jellyfin users alike.
 
 ---
 
@@ -79,7 +79,7 @@ python -m media_preview_generator.web.app
 - **Formatter/Linter**: Use `ruff format` and `ruff check`
 - **Type hints**: Required on function signatures
 - **Docstrings**: Google style with Args, Returns, Raises
-- **Logging**: Use `loguru`, not stdlib `logging`
+- **Logging**: Use [`loguru`](https://loguru.readthedocs.io/) (a simpler, structured-friendly logging library), not stdlib `logging`
 
 ```bash
 # Check and fix
@@ -157,13 +157,13 @@ media_preview_generator/
 ├── gpu/                  # GPU discovery + FFmpeg capability probing
 ├── jobs/                 # Orchestrator, dispatcher, worker pool
 ├── processing/           # Multi-server dispatcher, FFmpeg runner, HDR
-│   ├── multi_server.py     # Path → publishers fan-out (one FFmpeg pass)
+│   ├── multi_server.py     # Routes one canonical path to every owning server (single FFmpeg pass per file)
 │   ├── frame_cache.py      # Cross-server frame reuse cache
 │   ├── retry_queue.py      # Slow-backoff retry for not-yet-indexed items
-│   ├── plex.py / emby.py / jellyfin.py  # Per-vendor enumeration
+│   ├── plex.py / emby.py / jellyfin.py  # Per-vendor library enumeration (read-only)
 │   └── generator.py / ffmpeg_runner.py  # FFmpeg invocation
-├── servers/              # Per-vendor server clients
-│   ├── plex.py / emby.py / jellyfin.py  # Live MediaServer adapters
+├── servers/              # Per-vendor server clients (live API access — auth, refresh, libraries)
+│   ├── plex.py / emby.py / jellyfin.py  # MediaServer interface implementations
 │   ├── ownership.py        # Path → owning servers/libraries
 │   └── registry.py         # ServerRegistry (loads media_servers[] from settings)
 ├── output/               # Per-vendor preview format publishers
@@ -205,6 +205,18 @@ media_preview_generator/
         ├── pages.py            # HTML page routes
         └── socketio_handlers.py  # Socket.IO connect/disconnect
 ```
+
+---
+
+## Architecture
+
+A few internal invariants worth knowing when modifying the web tier:
+
+- **Single Gunicorn worker.** Job state, schedules, and the in-memory frame cache all live in-process. Running two or more Gunicorn workers would split that state and break things (one worker's job would be invisible to the other). The `gthread` worker class with a high thread count handles concurrency within that single process.
+- **WebSocket transport** is Flask-SocketIO with the `threading` async mode, which is what lets a single Gunicorn worker serve both REST and WebSocket from the same process without an event-loop framework like eventlet.
+- **Long-running jobs** (a full library scan can take hours) survive the default reverse-proxy timeouts because the dashboard polls progress over WebSocket — there's no long-lived HTTP request to time out.
+
+If you need shared state across multiple processes (e.g. for horizontal scaling), you'd swap the in-memory job store for SQLite + Redis Pub/Sub for SocketIO. We don't currently need that.
 
 ---
 

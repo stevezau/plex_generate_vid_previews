@@ -1,10 +1,10 @@
 # Media Preview Bridge — Jellyfin plugin
 
-Bridges externally-published trickplay tiles into Jellyfin's `TrickplayInfos` store so the player can serve scrubbing previews **without spawning ffmpeg**. Built for the [Media Preview Generator](https://github.com/stevezau/plex_generate_vid_previews) tool, but the endpoint is generic — anything that writes Jellyfin-format trickplay sheets to disk can use it.
+Tells Jellyfin about trickplay tiles that something else generated, so the scrubbing previews appear in the player **without Jellyfin running its own ffmpeg pass**. Built for the [Media Preview Generator](https://github.com/stevezau/media_preview_generator) tool, but the API is generic — anything that writes Jellyfin's trickplay tile format to disk can use it.
 
 ## What problem does this solve?
 
-Jellyfin's only public path for trickplay registration is `RefreshTrickplayDataAsync`, gated by the per-library `ExtractTrickplayImagesDuringLibraryScan` flag. With that flag off (recommended when an external tool owns generation), externally-published trickplay sits on disk forever invisible to the player. This plugin closes the gap with a single internal call to `ITrickplayManager.SaveTrickplayInfo`.
+Jellyfin's built-in way to register new trickplay is gated by the per-library "Extract trickplay images during library scan" setting. If you turn that off (which you'd want to when an external tool is generating the tiles for you), Jellyfin never notices the tiles you wrote — they sit on disk and the player can't see them. This plugin gives external tools an HTTP endpoint they can call to register the tiles directly with Jellyfin, in one round trip.
 
 ## Install
 
@@ -21,15 +21,18 @@ Then go to Catalogue → install **Media Preview Bridge**. Restart Jellyfin.
 | Endpoint | Auth | What it does |
 |---|---|---|
 | `GET /MediaPreviewBridge/Ping` | anonymous | Returns `{plugin, version, ok:true}`. Use this to detect whether the plugin is installed. |
-| `POST /MediaPreviewBridge/Trickplay/{itemId}?width=320&intervalMs=10000` | admin | Reads `<basename>.trickplay/<width> - <tileW>x<tileH>/*.jpg` from disk for the item, computes `ThumbnailCount` + dimensions + bandwidth, persists via `SaveTrickplayInfo`. Returns 204 on success, 404 if item or sheet directory missing. |
+| `POST /MediaPreviewBridge/Trickplay/{itemId}?width=320&intervalMs=10000` | admin | Looks at the trickplay folder Jellyfin expects for this item (see path layout below), counts the tiles, and registers the resulting trickplay row with Jellyfin. Returns 204 on success, 404 if the item or tile folder isn't found. |
 
-The publisher writes tiles to:
+The caller writes tile sheets to the layout Jellyfin already uses internally — same folder structure Jellyfin's own trickplay generator produces:
 
 ```
 <media_dir>/<basename>.trickplay/<width> - <tileW>x<tileH>/<n>.jpg
-```
 
-(Same layout Jellyfin's `PathManager.GetTrickplayDirectory(item, saveWithMedia=true)` returns.)
+# example for a 320-wide variant with 10×10 sheets:
+/data/movies/Inception (2010)/Inception (2010).trickplay/320 - 10x10/0.jpg
+/data/movies/Inception (2010)/Inception (2010).trickplay/320 - 10x10/1.jpg
+...
+```
 
 ## Required Jellyfin library options
 

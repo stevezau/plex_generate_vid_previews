@@ -11,31 +11,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Multi-server support (Plex + Emby + Jellyfin)** — any combination of servers can be configured under Settings → Media Servers. The dispatcher runs FFmpeg once per file and publishes the right preview format to every server that owns it: Plex bundle BIF, Emby `-WIDTH-INTERVAL.bif` sidecar, or Jellyfin trickplay tile sheets + manifest. Per-server library filtering, path mappings, exclude rules, and credentials are all stored on the server entry — no global single-Plex assumption left.
-- **Universal webhook router** (`POST /api/webhooks/incoming`) auto-detects Plex / Emby / Jellyfin / Radarr / Sonarr / generic `{path: ...}` payloads and dispatches to the right owners. Per-server URLs (`POST /api/webhooks/server/<id>`) pin a webhook to one configured server.
-- **Plex Direct Webhook (Plex Pass) registration** — register/unregister this app's webhook URL with plex.tv directly from the Servers page. Per-server registration: each Plex card carries its own webhook URL.
-- **Frame reuse cache** — when a webhook for a file fires for a sibling server within the configured TTL, frames extracted by FFmpeg are reused without re-running. Tunable under Settings → Performance (`enabled`, `ttl_minutes`, `max_cache_disk_mb`; defaults: enabled / 60 min / 2 GB).
-- **Slow-backoff retry queue** — files where the source server says "not yet indexed" are retried on a geometric backoff (30s → 2m → 5m → 15m → 60m) instead of dropping the webhook.
-- **Multi-Plex same-vendor support** — multiple Plex servers can be configured side by side; webhooks are routed by `server_identity` (Plex `clientIdentifier` / Emby/Jellyfin `ServerId`) so the right server's bundle path is updated.
-- **Jellyfin trickplay one-click fix** — Jellyfin libraries default `EnableTrickplayImageExtraction` to false, which silently hides this app's published manifests. The Servers page surfaces a "Fix it for me" button when any library is mis-configured.
-- **Cross-server BIF / trickplay viewer** — the BIF viewer reads any of the three vendors' formats so you can verify "did Plex get the bundle, did Emby get the sidecar, did Jellyfin get the tile sheets" from one UI.
-- **Setup wizard vendor picker (step 1)** — choose Plex (OAuth), Emby (password / API key), or Jellyfin (Quick Connect / password / API key). Plex stays the recommended default; the wizard skips through to the Servers page for non-Plex installs.
-- **Schema migrations v7 → v11** (`upgrade.py`) — synthesise `media_servers` from legacy flat `plex_*` keys (v7), move global `path_mappings` / `exclude_paths` into the per-server entry (v8), dedupe rows from the v7+v8 double-copy bug (v9), rewrite legacy Plex Direct webhook URL `/plex` → `/incoming` and drop the per-server `webhook_secret` key (v10), and seed the `frame_reuse` block with sane defaults (v11).
-- **Job storage moved to SQLite** (Phase J8) — jobs persist as one row per job in `jobs.db` instead of rewriting the whole `jobs.json` on every change. Per-row upserts keep schema drift on free-form fields (progress, config, publishers) from wiping job history.
-- **Schema downgrade refusal** — refuses to start when `settings.json` was written by a newer schema version than the running binary, instead of silently dropping unknown fields on the next save (the failure mode that wiped a tester's job history during a tag-drift incident).
+- **Multi-server support (Plex + Emby + Jellyfin).** Any combination of servers can be configured under Settings → Media Servers. When two or more servers contain the same file, FFmpeg runs only once and the result is written in each server's expected format — Plex BIF bundle, Emby sidecar BIF, or Jellyfin trickplay tiles. Per-server library filtering, path mappings, exclude rules, and credentials are all stored on the server entry.
+- **Universal webhook URL.** `POST /api/webhooks/incoming` auto-detects Plex / Emby / Jellyfin / Radarr / Sonarr / generic `{path: ...}` payloads and routes to the right server. Per-server URLs (`POST /api/webhooks/server/<id>`) pin a webhook to one configured server when auto-detection can't disambiguate.
+- **Plex Direct Webhook registration** (Plex Pass required) — register / unregister this app's webhook URL with plex.tv directly from the Servers page. Each Plex server carries its own webhook URL.
+- **Frame reuse cache.** When two servers contain the same file and a webhook for one fires shortly after the other, the second one reuses the already-extracted frames instead of re-running FFmpeg. Tunable under Settings → Performance.
+- **Automatic retry on slow indexing.** Files the source server hasn't scanned yet are retried automatically (30 s → 2 m → 5 m → 15 m → 60 m) instead of being dropped.
+- **Multiple Plex servers side by side** — useful for users running separate libraries (e.g. one for the household, one for friends). Webhooks are routed to the right server automatically.
+- **Jellyfin trickplay one-click fix.** Jellyfin libraries default a setting that silently hides this app's published trickplay. The Servers page detects the mismatch and surfaces a one-click button to fix it.
+- **Multi-server preview viewer.** The viewer reads any of the three vendors' formats so you can verify "did Plex get its file, did Emby get its file, did Jellyfin get its file" from one UI.
+- **Setup wizard vendor picker** — choose Plex, Emby, or Jellyfin in step 1. Each vendor uses its own friendliest sign-in (Plex OAuth, Emby password/API key, Jellyfin Quick Connect).
+- **Settings file format upgraded** to support multi-server. Existing single-Plex installs are migrated automatically on first run — no manual steps.
+- **Job history persists across restarts.** Job records are stored in a small SQLite database alongside settings. Previously, large job histories were rewritten in full on every progress update, which occasionally lost data on crashes; per-row updates are safer and faster.
+- **Refuses to downgrade settings** — if you accidentally roll back to an older release, the app refuses to start rather than silently dropping fields the older version doesn't understand. (Fixes a real incident where a tester lost their job history after a tag-drift release.)
 
 ### Changed
 
-- The dedicated CPU-fallback worker pool was removed. When a GPU worker hits `CodecNotSupportedError`, it now retries the same item on CPU in-place inside the GPU worker. Existing `cpu_fallback_threads` settings are folded into `cpu_threads` automatically on upgrade (schema v5).
-- The `recently_added_*` settings keys are migrated into real Schedule entries on first start (schema v4); the obsolete `system_recently_added_scan` APScheduler job is removed.
+- The separate CPU-fallback worker pool is gone. When a GPU worker hits an unsupported codec, the same worker now retries on CPU in-place — simpler, no extra config. Any old `cpu_fallback_threads` setting is folded into `cpu_threads` automatically on upgrade.
+- The Recently Added scanner is now a regular Schedule entry instead of a hidden background task, so you can edit / disable / duplicate it like any other schedule. Existing settings are migrated automatically.
 
 ### Fixed
 
-- **Multi-GPU NVIDIA detection in Docker (#221)** — containers running the NVIDIA Container Toolkit deliberately omit `/dev/dri/renderD*` nodes, so DRM enumeration saw zero GPUs and the nvidia-smi fallback only ever registered one card. Even on bare-metal hosts, every NVIDIA GPU collapsed onto a single `"cuda"` device path in `gpu_config`. NVIDIA GPUs are now enumerated primarily via `nvidia-smi` (one entry per card, keyed as `cuda:0`, `cuda:1`, …) and each card is independently CUDA-tested and dispatched with FFmpeg's `-hwaccel_device` flag. Legacy generic `"cuda"` gpu_config entries are stripped automatically on upgrade (schema v6).
+- **Multi-GPU NVIDIA detection in Docker** ([#221](https://github.com/stevezau/media_preview_generator/issues/221)). On hosts with two or more NVIDIA cards, only one card was being detected and used — the others sat idle. Every NVIDIA GPU now appears as its own row in Settings → GPUs and gets its own worker pool. Old single-entry GPU configs are migrated automatically on upgrade.
 
 ---
 
 ## [3.5.0] - 2026-03-22
+
+> [!IMPORTANT]
+> **Upgrading from 3.4.x?** See [Migrating from 3.4.x](#migrating-from-34x) at the bottom of this section. Two breaking changes: the `--cli` flag is gone (3.5 is web-only), and the dedicated CPU-fallback worker pool was removed (now automatic). Settings carry over.
 
 ### Added
 
