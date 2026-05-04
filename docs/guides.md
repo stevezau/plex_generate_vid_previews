@@ -72,7 +72,7 @@ After setup completes, you'll land on the dashboard. You can add additional serv
 
 **Pause / Resume (global):**
 
-- **Pause Processing** — Stops all processing system-wide: no new jobs will start (manual, scheduled, or webhook), and the current job stops dispatching new tasks. Already-running FFmpeg tasks finish their current file (soft pause), then workers idle. Use this to cap bandwidth or pause overnight.
+- **Pause Processing** — Stops all processing system-wide: no new jobs will start (manual, scheduled, or webhook), and the current job stops dispatching new tasks. Files already mid-process finish first, then workers go idle (a "soft" pause — nothing is killed mid-frame). Use this to cap bandwidth or pause overnight.
 - **Resume Processing** — Clears the global pause; new jobs can start and the current job resumes dispatching.
 - Controls appear in the **Current Job** header and to the left of **Clear Jobs** in the Job Queue. State is persisted and survives restarts.
 
@@ -123,13 +123,13 @@ Settings are saved to `/config/settings.json` and persist across restarts.
 
 The **Automation** page (`/automation`) hosts two tabs:
 
-- **Triggers** — incoming webhooks from Radarr, Sonarr, Sportarr, Tdarr / custom scripts, and Plex Direct. Also houses the Recently Added Scanner shortcut. This is where you wire the app up to whatever puts media into Plex.
+- **Triggers** — incoming webhooks from Radarr, Sonarr, Tdarr / custom scripts, and Plex Direct. Also houses the Recently Added Scanner shortcut. This is where you wire the app up to whatever puts media into Plex.
 - **Schedules** — full CRUD for recurring scans (cron / interval / specific time). Both Full library and Recently-Added scanners live here.
 
 The Triggers tab includes:
 
 - **Enable/Disable** — master toggle for webhook processing
-- **Webhook URLs** — copy-ready URLs for Radarr, Sonarr, Sportarr, and the generic Custom webhook
+- **Webhook URLs** — copy-ready URLs for Radarr, Sonarr, and the generic Custom webhook
 - **Delay** — seconds to wait after import (gives Plex time to index)
 - **Webhook Secret** — optional dedicated authentication token
 - **Setup instructions** — step-by-step guides for each source
@@ -139,20 +139,7 @@ The legacy `/webhooks` and `/schedules` URLs still work — they 302-redirect to
 
 ### Production Server
 
-In Docker, the web interface runs on **gunicorn** with the **gthread** worker class:
-
-- **WebSocket support** via Flask-SocketIO with threading async mode
-- **Real-time updates** — job progress and worker status over WebSocket
-
-| Setting | Value | Purpose |
-|---------|-------|---------|
-| Worker class | `gthread` | Threaded worker; SocketIO uses threading async mode |
-| Workers | `1` | Single worker (required for in-process job state) |
-| Timeout | `300s` | Accommodates long-running FFmpeg processing |
-| Keep-alive | `65s` | Outlives typical reverse proxy timeouts (60s) |
-
-> [!NOTE]
-> The server uses a single gunicorn worker because job state, schedules, and settings are managed in-process. Multiple workers would require Redis for shared state.
+The Docker image runs the web interface for you — there's nothing to configure. The dashboard updates in real time over WebSocket; long-running jobs survive the default proxy timeouts. If you're running the app outside Docker (or just curious how the container is wired internally — gunicorn settings, single-worker rationale, WebSocket transport), see [CONTRIBUTING.md → Architecture](../CONTRIBUTING.md).
 
 ### Reverse Proxy
 
@@ -463,47 +450,62 @@ You can enable **both** if you want belt-and-suspenders behavior — the recentl
 
 ## HDR & Dolby Vision
 
-The tool auto-detects HDR metadata and tone-maps to SDR before generating thumbnails. Behavior depends on the HDR format:
+**The short version:** HDR thumbnails get **tone-mapped** to SDR (standard dynamic range) automatically, so you don't see washed-out or pitch-black previews. Most HDR formats just work; the trickiest case is **Dolby Vision Profile 5** (4K Dolby Vision rips with no HDR10 fallback layer), and the only setup step you may need is on NVIDIA — see the warning at the bottom of this section.
 
-| Format | Method |
-|--------|--------|
-| HDR10 | zscale/tonemap (configurable algorithm, default: Hable) |
-| HLG | zscale/tonemap (configurable algorithm, default: Hable) |
-| HDR10+ (without Dolby Vision) | zscale/tonemap (configurable algorithm, default: Hable) |
-| Dolby Vision Profile 7/8 (with HDR10 fallback) | zscale/tonemap via HDR10 base layer + HW decode ([#178](https://github.com/stevezau/media_preview_generator/issues/178)) |
-| Dolby Vision Profile 5 (no backward-compat layer) | Per-vendor hardware path (see below); software decode + libplacebo fallback ([#172](https://github.com/stevezau/media_preview_generator/issues/172), [#178](https://github.com/stevezau/media_preview_generator/issues/178), [#212](https://github.com/stevezau/media_preview_generator/issues/212)) |
+> [!TIP]
+> **Quick glossary** (so the rest of this section is readable):
+>
+> - **Tone mapping** — converting HDR's wide brightness range down to the narrower SDR range a thumbnail can show. Without it, HDR content looks too dark or has a colour tint.
+> - **HDR10 / HDR10+ / HLG** — the common HDR formats; all use a single video track and tone-map cleanly.
+> - **Dolby Vision (DV)** — Dolby's HDR. **Profile 7/8** carries an HDR10 fallback layer (works the same as HDR10). **Profile 5** doesn't, and needs special handling.
+> - **libplacebo / Vulkan** — the GPU library that handles DV Profile 5 tone mapping. Needs a working Vulkan driver.
+
+| Format | What we do |
+|--------|------------|
+| HDR10 | Tone-map to SDR (algorithm configurable, default: Hable) |
+| HLG | Tone-map to SDR (algorithm configurable, default: Hable) |
+| HDR10+ (without Dolby Vision) | Tone-map to SDR (algorithm configurable, default: Hable) |
+| Dolby Vision Profile 7/8 (with HDR10 fallback) | Tone-map the HDR10 fallback layer with hardware decode ([#178](https://github.com/stevezau/media_preview_generator/issues/178)) |
+| Dolby Vision Profile 5 (no fallback layer) | Per-GPU specialist path (see below); software fallback uses libplacebo ([#172](https://github.com/stevezau/media_preview_generator/issues/172), [#178](https://github.com/stevezau/media_preview_generator/issues/178), [#212](https://github.com/stevezau/media_preview_generator/issues/212)) |
 
 ### Tone-map algorithm
 
-Non-DV HDR content (HDR10, HLG, HDR10+) uses the zscale/tonemap chain with a configurable algorithm. Change it in **Settings → Thumbnail Settings → HDR Tone Mapping** or via the `TONEMAP_ALGORITHM` env var. Available options: `hable` (default), `reinhard`, `mobius`, `clip`, `gamma`, `linear`. If HDR thumbnails look too dark, try `reinhard`. Without tone mapping, HDR content (especially DV Profile 5) can produce thumbnails with a green or purple tint.
+**What:** the formula used to compress HDR's brightness range into SDR. **Default works for almost everyone.** Change only if your HDR thumbnails look too dark or oddly tinted.
+
+Non-DV HDR content (HDR10, HLG, HDR10+) uses a configurable algorithm, set in **Settings → Thumbnail Settings → HDR Tone Mapping** or via the `TONEMAP_ALGORITHM` env var. Options: `hable` (default), `reinhard`, `mobius`, `clip`, `gamma`, `linear`. If HDR thumbnails look too dark, try `reinhard`.
 
 ### Dolby Vision Profile 5
 
-Profile 5 has no backward-compatible HDR10 layer, so the zscale/tonemap chain can't read its RPU reshaping metadata and produces dark or blank thumbnails. The tool picks the fastest working path per GPU vendor:
+**What:** the trickiest HDR format — has no HDR10 fallback layer, so the standard tone-mapping path can't read it. **What to do:** nothing — the tool picks the right path for whatever GPU you have. (NVIDIA users: see the warning below.)
 
-| Vendor | DV5 path | Typical speed on 4K |
+The tool picks the fastest working path per GPU vendor:
+
+| Vendor | Typical speed on 4K | Notes |
 |---|---|---|
-| Intel (iGPU / Arc via VAAPI) | VAAPI decode → OpenCL `tonemap_opencl` (Jellyfin-patched, DV-RPU-aware) | **~17×** (UHD 770) |
-| NVIDIA | NVDEC decode → Vulkan `libplacebo` via hwupload | ~10–16× (Turing), faster on Ada/Hopper |
-| AMD Radeon | VAAPI decode → Vulkan `libplacebo` via DMA-BUF hwmap | untested locally; same flags as NVIDIA |
-| CPU-only / software fallback | libx265 decode → Vulkan `libplacebo` | ~5–10× (CPU-bound) |
+| Intel iGPU / Arc | **~17×** (UHD 770) | Uses Jellyfin's DV-aware patch — currently the fastest path |
+| NVIDIA | ~10–16× (Turing); faster on Ada/Hopper | Needs Vulkan driver — see the NVIDIA warning below |
+| AMD Radeon | (untested locally; same flags as NVIDIA) | |
+| CPU-only fallback | ~5–10× (CPU-bound) | When no GPU is available |
 
-The image ships **jellyfin-ffmpeg 7.1.3** as the preferred FFmpeg binary because Jellyfin's fork carries the `tonemap_opencl` DV-aware patch upstream FFmpeg still lacks. Falls back to the base image's FFmpeg 8.0.1 automatically on non-amd64 builds.
+The image ships **jellyfin-ffmpeg 7.1.3** as its preferred FFmpeg because Jellyfin's fork carries a Dolby-Vision-aware tone-mapping patch upstream FFmpeg still lacks. Non-amd64 builds fall back to the base image's FFmpeg 8.0.1 automatically.
 
-Profile 7/8 (with HDR10 fallback) uses the standard zscale/tonemap chain — FFmpeg reads the HDR10 base layer, so no libplacebo or special handling is needed.
+Profile 7/8 (with HDR10 fallback) uses the standard tone-mapping chain — no Vulkan or special handling needed.
 
 ### Container edge cases handled automatically
 
-- **`/dev/dri/by-path` fixup.** Intel's OpenCL runtime (NEO) discovers GPUs by scanning `/dev/dri/by-path/*-render`. Under `--runtime=nvidia`, NVIDIA Container Toolkit populates that directory only for NVIDIA cards — leaving the Intel iGPU invisible to OpenCL. The container runs a oneshot s6 init (`init-dri-by-path`) that adds the missing symlinks for every DRM render node in `/dev/dri/`. No-op on bare metal / single-vendor hosts.
-- **NVIDIA Vulkan on dual-GPU hosts.** The Vulkan probe runs up to four retry strategies to get NVIDIA's ICD working (standard ICD, `__EGL_VENDOR_LIBRARY_FILENAMES`, synthesised GLVND vendor JSON, `VK_DRIVER_FILES`+EGL combined). On dual-GPU hosts (Intel iGPU + NVIDIA dGPU) the default probe picks Intel ANV first; the combined `VK_DRIVER_FILES` + `__EGL_VENDOR_LIBRARY_FILENAMES` retry forces NVIDIA so libplacebo runs on the NVIDIA card instead of ping-ponging frames across PCIe.
+You don't have to do anything for these — the container handles them on startup. Listed here so you know what the logs are telling you when they mention DRI symlinks or Vulkan probe retries.
+
+- **Intel GPU under `--runtime=nvidia`.** When you're running both an Intel iGPU and an NVIDIA card under the NVIDIA container runtime, NVIDIA's tooling hides the Intel device from one specific OpenCL discovery path. The container quietly re-adds the missing symlinks on startup so the Intel iGPU stays usable for tone mapping.
+- **NVIDIA Vulkan on dual-GPU hosts.** When both an Intel iGPU and an NVIDIA dGPU are present, Vulkan defaults to Intel — but Dolby Vision tone mapping is faster on the NVIDIA card. The container's Vulkan startup probe tries up to four configurations to force NVIDIA selection so frames don't bounce between the two cards.
 
 > [!IMPORTANT]
-> **NVIDIA users: `NVIDIA_DRIVER_CAPABILITIES` must include `graphics`.**
-> libplacebo needs a working Vulkan driver to tone-map DV Profile 5. The NVIDIA Container Toolkit only injects the NVIDIA Vulkan ICD into the container when the `graphics` driver capability is declared — `compute,video,utility` is not enough (that only covers CUDA/NVDEC/nvidia-smi). If the app detects that your container is running Vulkan on the software rasterizer (`llvmpipe`), your DV Profile 5 thumbnails will contain a green rectangle due to a libplacebo+llvmpipe rendering bug.
+> **NVIDIA users: set `NVIDIA_DRIVER_CAPABILITIES=all` (or include `graphics`).**
 >
-> **Fix:** set `NVIDIA_DRIVER_CAPABILITIES=all` in your `docker run` (`-e NVIDIA_DRIVER_CAPABILITIES=all`) or `docker-compose.yml` (`environment:` block) and restart the container. `all` is the simplest value and is what the upstream `nvidia/vulkan` image uses. If you prefer minimum-privilege, use `compute,video,utility,graphics`.
+> Dolby Vision Profile 5 needs the NVIDIA Vulkan driver inside the container. NVIDIA's container toolkit only loads it when the `graphics` capability is declared. The common `compute,video,utility` setting is fine for everything else but **not** for Dolby Vision — without `graphics`, DV Profile 5 thumbnails come out with a green rectangle.
 >
-> If the warning banner persists after the restart, your setup may be hitting one of the less-common causes (driver 570–579 regression, CDI manifest missing `libnvidia-glvkspirv.so`, or ICD JSON at the wrong path). The in-app warning will name the specific cause it detected. You can also open `GET /api/system/vulkan/debug` to fetch a plain-text diagnostic bundle to attach to a GitHub issue.
+> **Fix:** add `-e NVIDIA_DRIVER_CAPABILITIES=all` to your `docker run` command (or set it in the `environment:` block of your compose file) and restart the container. `all` is what the official NVIDIA Vulkan images use. If you prefer minimum privilege, `compute,video,utility,graphics` works too.
+>
+> If the in-app warning banner persists after the restart, you may be hitting a less-common cause (a driver-version regression, a missing library in the container runtime config, or an ICD file in the wrong place). The banner will name the specific cause; `GET /api/system/vulkan/debug` returns a plain-text diagnostic bundle you can attach to a GitHub issue.
 
 ---
 

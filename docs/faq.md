@@ -24,7 +24,7 @@ Common questions about setup, usage, and behavior. For troubleshooting specific 
 
 **What does this tool do?**
 
-Generates video preview thumbnails for **Plex, Emby, and Jellyfin** — alone or in any combination. These are the small images you see when scrubbing through videos. It runs preview generation off the media server, on a machine of your choosing, using every GPU it finds. One FFmpeg pass per file produces output for every server that owns the file, in the format that server expects (Plex BIF bundle, Emby `-WIDTH-INTERVAL.bif` sidecar, Jellyfin trickplay tile sheets).
+Generates video preview thumbnails for **Plex, Emby, and Jellyfin** — alone or in any combination. These are the small images you see when scrubbing through videos. It runs preview generation off the media server, on a machine of your choosing, using every GPU it finds. When two or more of your servers contain the same file, FFmpeg runs only once and the output is written in each server's expected format (Plex stores it as a **BIF** bundle, Emby reads a **BIF** sidecar file next to the video, Jellyfin reads a folder of JPG tiles called **trickplay**).
 
 **What Plex/Emby/Jellyfin settings should I use?**
 
@@ -60,7 +60,7 @@ Yes, as long as the tool can reach the Plex API over the network and both machin
 
 **Does this work with Jellyfin or Emby?**
 
-Yes. The app supports Plex, Emby, and Jellyfin — alone or in any combination. Each server is added under **Settings → Media Servers**; the dispatcher runs FFmpeg once per file and publishes the right preview format to every server that owns it (Plex BIF bundle, Emby `-WIDTH-INTERVAL.bif` sidecar, Jellyfin trickplay tile sheets + manifest). See the [Multi-Server guide](multi-server.md) for setup, webhook routing, and per-server library/exclude rules.
+Yes. The app supports Plex, Emby, and Jellyfin — alone or in any combination. Each server is added under **Settings → Media Servers**. When two or more servers contain the same file, FFmpeg runs only once and the result is written in each server's expected format (Plex stores it as a BIF bundle, Emby reads a BIF sidecar file next to the video, Jellyfin reads a folder of JPG tiles called trickplay). See the [Multi-Server guide](multi-server.md) for setup, webhook routing, and per-server library/exclude rules.
 
 ---
 
@@ -97,17 +97,15 @@ Start with the defaults and increase gradually while monitoring system load. See
 
 **Why is CPU usage high when I have a GPU configured?**
 
-GPU workers use both GPU and CPU — this is normal. The GPU handles video decoding (via NVDEC, VAAPI, etc.), downscaling to thumbnail size (via `scale_cuda` / `scale_vaapi`), and tone mapping for Dolby Vision Profile 5 (via Vulkan/libplacebo). The CPU handles frame selection, the final HDR10 tone-map pass (if applicable), and JPEG encoding.
+GPU workers use both GPU and CPU — this is normal. The GPU handles video decoding and downscaling to thumbnail size; the CPU handles frame selection, JPEG encoding, and (for HDR content) part of the colour conversion. Standard SDR content barely uses the CPU at all; HDR content — especially Dolby Vision — uses noticeably more because frames have to move between CPU and GPU memory for the colour conversion step.
 
-For **standard (SDR) content**, the GPU does nearly all the work and CPU usage is minimal — you'll see speeds of 500× or higher.
+Expected speeds on 4K content:
 
-For **Dolby Vision content**, CPU usage is noticeably higher because frames must be moved between CPU and GPU memory for the libplacebo tone map. Expected speeds on 4K DV content:
-
-- **DV Profile 7/8** (HDR10-compatible, e.g. `.DV.HDR10Plus.h265`) — 15–60× across all GPU vendors. Uses HW decode + GPU downscale + zscale tonemap on the 320×240 frame.
-- **DV Profile 5** (no HDR10 fallback, e.g. `.DV.h265` with no HDR10 marker):
-  - **Intel** (iGPU, Arc): ~17× via VAAPI decode + OpenCL tonemap. Requires `intel-opencl-icd` (already in the image) and a render node (`--device /dev/dri:/dev/dri`).
-  - **NVIDIA**: ~10–16× via NVDEC + Vulkan libplacebo. Needs `NVIDIA_DRIVER_CAPABILITIES=all` (or at minimum `compute,video,utility,graphics`) so the NVIDIA Vulkan ICD reaches the container.
-  - **AMD / Apple / CPU-only**: ~5–10× via software decode + libplacebo.
+- **SDR / HDR10 / HDR10+ / HLG / Dolby Vision Profile 7/8** — 15–60× across all GPU vendors.
+- **Dolby Vision Profile 5** (the trickier format, no HDR10 fallback layer):
+  - **Intel** (iGPU, Arc): ~17× — fastest path. Just needs the GPU passed to the container (`--device /dev/dri:/dev/dri`).
+  - **NVIDIA**: ~10–16× — needs `NVIDIA_DRIVER_CAPABILITIES=all` (or at minimum `compute,video,utility,graphics`) so the NVIDIA Vulkan driver is available inside the container. See [HDR & Dolby Vision](guides.md#hdr--dolby-vision) for the full explanation.
+  - **AMD / Apple / CPU-only**: ~5–10× via software decode.
 
 The **FFmpeg Threads** setting per GPU controls how many CPU cores each worker can use. If you're running multiple GPU workers and seeing CPU contention, lower this value.
 
@@ -141,7 +139,7 @@ On setups where one share is backed by multiple physical disks (unraid's `shfs`,
 
 **Why does my container fail to start?**
 
-Most common cause: using `init: true` in docker-compose. Remove it — this container uses s6-overlay (a built-in process manager) and `init: true` conflicts with it.
+Most common cause: `init: true` in your docker-compose. Remove it — this container manages its own processes internally, and `init: true` conflicts with that.
 
 **Why can't the container find my files?**
 
