@@ -694,7 +694,7 @@ async function saveAllSettings() {
 }
 
 async function regenerateToken() {
-    if (!confirm('Are you sure? This will log out all sessions.')) {
+    if (!await window.appConfirm('Regenerate the API token? Every open session (including this one) will be logged out.', { title: 'Regenerate token', confirmText: 'Regenerate' })) {
         return;
     }
 
@@ -755,7 +755,7 @@ async function setCustomToken() {
         result.textContent = 'Tokens do not match.';
         return;
     }
-    if (!confirm('Set the new token? This will log out every open session, including this one.')) {
+    if (!await window.appConfirm('Set the new token? Every open session (including this one) will be logged out.', { title: 'Set new token', confirmText: 'Set token' })) {
         return;
     }
     try {

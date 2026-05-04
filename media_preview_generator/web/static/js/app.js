@@ -2566,7 +2566,7 @@ async function startManualJob() {
 }
 
 async function cancelJob(jobId) {
-    if (!confirm('Are you sure you want to cancel this job?')) return;
+    if (!await appConfirm('Cancel this job? Any in-flight FFmpeg work will be killed.', { title: 'Cancel job', confirmText: 'Cancel job', cancelText: 'Keep running' })) return;
 
     try {
         await apiPost(`/api/jobs/${jobId}/cancel`);
@@ -2704,7 +2704,7 @@ async function scaleWorkersGlobal(workerType, direction) {
 }
 
 async function deleteJob(jobId) {
-    if (!confirm('Are you sure you want to delete this job?')) return;
+    if (!await appConfirm('Delete this job from the history? Logs and per-file results will also be removed.', { title: 'Delete job', confirmText: 'Delete' })) return;
 
     try {
         await apiDelete(`/api/jobs/${jobId}`);
@@ -2732,7 +2732,7 @@ async function reprocessJob(jobId) {
 }
 
 async function clearCompletedJobs() {
-    if (!confirm('Clear all completed, failed, and cancelled jobs?')) return;
+    if (!await appConfirm('Clear all completed, failed, and cancelled jobs from the history?', { title: 'Clear job history', confirmText: 'Clear' })) return;
 
     try {
         const result = await apiPost('/api/jobs/clear');
@@ -2754,7 +2754,7 @@ async function clearJobsByStatus() {
     }
 
     const labels = statuses.join(', ');
-    if (!confirm(`Clear all ${labels} jobs?`)) return;
+    if (!await appConfirm(`Clear all ${labels} jobs from the history?`, { title: 'Clear jobs', confirmText: 'Clear' })) return;
 
     try {
         const result = await apiPost('/api/jobs/clear', { statuses });
@@ -2889,6 +2889,75 @@ function _stopElapsedTimer() {
     if (document.querySelector('[data-scheduled-at]')) return;
     clearInterval(_elapsedTimerInterval);
     _elapsedTimerInterval = null;
+}
+
+/**
+ * Bootstrap-modal replacement for the native browser ``confirm()``.
+ *
+ * Returns a Promise that resolves to ``true`` when the user clicks the
+ * confirm button and ``false`` when they cancel/dismiss the dialog
+ * (clicking outside, pressing Escape, or hitting the X). Same await-able
+ * shape as the OS confirm so call sites stay simple:
+ *
+ *     if (!await appConfirm('Cancel this job?')) return;
+ *
+ * Options:
+ *   - title (string, default "Confirm")
+ *   - confirmText (string, default "Confirm") — primary button label
+ *   - cancelText (string, default "Cancel") — secondary button label
+ *   - variant ("danger" | "warning" | "primary", default "danger") —
+ *     drives the primary button colour + icon. Most callers are
+ *     destructive (cancel/delete/clear/restore) so danger is the
+ *     default.
+ *
+ * The shared modal lives in base.html so every page gets it without
+ * having to reimport partials.
+ */
+function appConfirm(message, opts = {}) {
+    const modalEl = document.getElementById('appConfirmModal');
+    if (!modalEl || !window.bootstrap) {
+        // Defensive fallback — if Bootstrap isn't loaded yet (unlikely
+        // outside the very first paint) we'd otherwise hang forever
+        // waiting for a never-fired modal event. Reverting to native
+        // confirm in that edge case is annoying but at least functional.
+        return Promise.resolve(window.confirm(message));
+    }
+    const titleEl = document.getElementById('appConfirmModalTitleText');
+    const iconEl = document.getElementById('appConfirmModalIcon');
+    const bodyEl = document.getElementById('appConfirmModalBody');
+    const okBtn = document.getElementById('appConfirmModalOkBtn');
+    const cancelBtn = document.getElementById('appConfirmModalCancelBtn');
+
+    titleEl.textContent = opts.title || 'Confirm';
+    bodyEl.textContent = message;
+    cancelBtn.textContent = opts.cancelText || 'Cancel';
+    okBtn.textContent = opts.confirmText || 'Confirm';
+
+    const variant = opts.variant || 'danger';
+    okBtn.className = `btn btn-${variant}`;
+    const iconMap = { danger: 'bi-exclamation-triangle text-danger', warning: 'bi-exclamation-triangle text-warning', primary: 'bi-question-circle text-primary' };
+    iconEl.className = `bi ${iconMap[variant] || iconMap.danger}`;
+
+    const modal = window.bootstrap.Modal.getOrCreateInstance(modalEl);
+
+    return new Promise((resolve) => {
+        let resolved = false;
+        const onOk = () => {
+            resolved = true;
+            modal.hide();
+            // Resolve AFTER hide so callers running follow-up DOM work
+            // (e.g. removing a row) don't fight the modal's own teardown.
+            resolve(true);
+        };
+        const onHidden = () => {
+            okBtn.removeEventListener('click', onOk);
+            modalEl.removeEventListener('hidden.bs.modal', onHidden);
+            if (!resolved) resolve(false);
+        };
+        okBtn.addEventListener('click', onOk);
+        modalEl.addEventListener('hidden.bs.modal', onHidden);
+        modal.show();
+    });
 }
 
 function showToast(title, message, type = 'info') {
@@ -3073,7 +3142,7 @@ async function refreshBackupsPanel() {
                 const select = document.getElementById(target.dataset.restoreSelect);
                 const backup = select ? select.value : '';
                 if (!file || !backup) return;
-                if (!confirm(`Restore ${file} from ${backup}? The current contents will be saved as a fresh backup first, so you can undo this restore.`)) return;
+                if (!await appConfirm(`Restore ${file} from ${backup}? The current contents will be saved as a fresh backup first, so you can undo this restore.`, { title: 'Restore backup', confirmText: 'Restore', variant: 'warning' })) return;
                 target.disabled = true;
                 const origHtml = target.innerHTML;
                 target.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Restoring…';
@@ -3164,3 +3233,7 @@ function _initBootstrapTooltips(scope) {
     });
 }
 window._initBootstrapTooltips = _initBootstrapTooltips;
+// Explicit export so non-app.js scripts (servers.js, schedule_modal.js,
+// inline templates) can call ``window.appConfirm(...)`` without relying
+// on top-level-script-functions-become-globals semantics.
+window.appConfirm = appConfirm;

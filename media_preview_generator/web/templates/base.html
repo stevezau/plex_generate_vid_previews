@@ -147,6 +147,31 @@
         {% block content %}{% endblock %}
     </main>
 
+    <!-- Generic confirmation modal (shared via window.appConfirm helper).
+         Replaces native browser confirm() so destructive actions (cancel
+         job, delete server, clear completed jobs, restore backup, etc.)
+         all share one consistent in-app dialog instead of an OS popup
+         that varies per browser, ignores app theming, and can't surface
+         icon/colour cues for severity. -->
+    <div class="modal fade" id="appConfirmModal" tabindex="-1" aria-labelledby="appConfirmModalTitle" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title d-flex align-items-center gap-2" id="appConfirmModalTitle">
+                        <i class="bi bi-question-circle" id="appConfirmModalIcon"></i>
+                        <span id="appConfirmModalTitleText">Confirm</span>
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body" id="appConfirmModalBody"></div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal" id="appConfirmModalCancelBtn">Cancel</button>
+                    <button type="button" class="btn btn-danger" id="appConfirmModalOkBtn">Confirm</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Toast Container -->
     <div class="toast-container position-fixed bottom-0 end-0 p-3">
         <div id="toastNotification" class="toast" role="alert" aria-live="assertive" aria-atomic="true">

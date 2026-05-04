@@ -354,7 +354,7 @@ async function saveSchedule() {
             trigger_value: payload.cron_expression || String(payload.interval_minutes || ''),
         };
         const overlap = window._scheduleQuietHoursOverlap(synthetic);
-        if (overlap && !window.confirm(overlap + '\n\nSave anyway?')) {
+        if (overlap && !await window.appConfirm(overlap + '\n\nSave anyway?', { title: 'Schedule overlaps quiet hours', confirmText: 'Save anyway', variant: 'warning' })) {
             return;
         }
     }
@@ -397,7 +397,7 @@ async function runScheduleNow(scheduleId) {
 }
 
 async function deleteSchedule(scheduleId) {
-    if (!confirm('Are you sure you want to delete this schedule?')) return;
+    if (!await window.appConfirm('Delete this schedule? Future runs will stop firing.', { title: 'Delete schedule', confirmText: 'Delete' })) return;
 
     try {
         await apiDelete(`/api/schedules/${scheduleId}`);

@@ -783,7 +783,7 @@ function toggleHistoryFiles(index) {
 }
 
 async function clearHistory() {
-    if (!confirm('Clear the entire webhook activity log? This cannot be undone.')) return;
+    if (!await window.appConfirm('Clear the entire webhook activity log? This cannot be undone.', { title: 'Clear webhook history', confirmText: 'Clear' })) return;
     try {
         await apiDelete('/api/webhooks/history');
         loadHistory();

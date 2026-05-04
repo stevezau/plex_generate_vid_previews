@@ -85,7 +85,7 @@
             btn.addEventListener('click', async (ev) => {
                 const id = ev.currentTarget.dataset.id;
                 const name = ev.currentTarget.dataset.name;
-                if (!confirm(`Delete media server "${name}"? This does not remove any files on disk.`)) return;
+                if (!await appConfirm(`Delete media server "${name}"? Previews already published to this server stay on disk; this only removes the configuration entry.`, { title: 'Delete media server', confirmText: 'Delete' })) return;
                 const r = await api('DELETE', `/api/servers/${encodeURIComponent(id)}`);
                 if (r.ok) loadServers();
                 else showToast('Delete failed', `${(r.data && r.data.error) || r.status}`, 'danger');

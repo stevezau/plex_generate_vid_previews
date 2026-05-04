@@ -1267,7 +1267,10 @@ document.addEventListener('DOMContentLoaded', function() {
     const skipBtn = document.getElementById('skipSetupBtn');
     if (skipBtn) {
         skipBtn.addEventListener('click', async function() {
-            if (!confirm("Skip the wizard? You'll need to add a media server from the Servers page before previews can be generated.")) {
+            const skipConfirm = (typeof window.appConfirm === 'function')
+                ? await window.appConfirm("Skip the wizard? You'll need to add a media server from the Servers page before previews can be generated.", { title: 'Skip setup wizard', confirmText: 'Skip', variant: 'warning' })
+                : window.confirm("Skip the wizard? You'll need to add a media server from the Servers page before previews can be generated.");
+            if (!skipConfirm) {
                 return;
             }
             this.disabled = true;
