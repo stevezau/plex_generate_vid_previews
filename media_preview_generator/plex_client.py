@@ -527,7 +527,10 @@ def _mismatch_covered_by_mappings(
     wp = webhook_pfx.rstrip("/").lower()
     pp = plex_pfx.rstrip("/").lower()
     for row in path_mappings:
-        row_plex = (row.get("plex_prefix") or "").strip().rstrip("/").lower()
+        # Accept either ``remote_prefix`` (the canonical multi-vendor key)
+        # or the legacy ``plex_prefix`` alias so dedup correctly skips rows
+        # written via the modern API.
+        row_plex = (row.get("remote_prefix") or row.get("plex_prefix") or "").strip().rstrip("/").lower()
         row_local = (row.get("local_prefix") or "").strip().rstrip("/").lower()
         row_webhooks = [
             w.strip().rstrip("/").lower() for w in (row.get("webhook_prefixes") or []) if w and str(w).strip()

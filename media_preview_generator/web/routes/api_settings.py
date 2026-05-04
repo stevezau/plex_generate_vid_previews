@@ -1095,12 +1095,16 @@ def validate_paths():
     # Validate Path Mapping (path_mappings rows or legacy pair)
     if path_mappings:
         for i, row in enumerate(path_mappings):
-            plex_prefix = (row.get("plex_prefix") or "").strip()
+            # Accept either ``remote_prefix`` (the canonical multi-vendor key)
+            # or the legacy ``plex_prefix`` alias — matches the read pattern
+            # used in config/paths.py and web/routes/api_servers.py so a row
+            # written via the modern API still gets a useful validation label.
+            remote_prefix = (row.get("remote_prefix") or row.get("plex_prefix") or "").strip()
             local_prefix = (row.get("local_prefix") or "").strip()
             if not local_prefix:
                 continue
             row_label = f"Row {i + 1}"
-            path_desc = f"{plex_prefix} → {local_prefix}" if plex_prefix else local_prefix
+            path_desc = f"{remote_prefix} → {local_prefix}" if remote_prefix else local_prefix
             label = f"{row_label} ({path_desc})"
             _validate_local_media_folder(
                 local_prefix,

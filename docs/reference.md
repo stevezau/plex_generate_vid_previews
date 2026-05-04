@@ -119,6 +119,11 @@ These are not migrated to settings.json and remain in effect:
 | `DEV_RELOAD` | `false` | Enable Flask auto-reload (development) |
 | `WEB_AUTH_TOKEN` | Auto-generated | Fixed authentication token (overrides wizard-set token) |
 | `AUTH_METHOD` | `internal` | Set to `external` to disable built-in auth when using a reverse proxy or VPN (see below) |
+| `FLASK_SECRET_KEY` | Auto-generated | Override the Flask session signing key. Auto-generated and persisted to `/config/flask_secret.key` if not set. Set this only when you need a fixed key across rebuilds. |
+| `LOG_FORMAT` | `pretty` | Log output format. Set to `json` to emit one JSON object per log line — useful when shipping logs to Loki / Datadog / similar aggregators. |
+| `PLEX_DATA_ROOT` | `/` | Restricts where Plex data paths can be validated to. Defaults to the whole filesystem; tighten to e.g. `/plex` if you want the path validator to refuse anything outside that root. |
+| `MEDIA_ROOT` | `/` | Same as `PLEX_DATA_ROOT` but for media paths. |
+| `RATELIMIT_STORAGE_URL` | `memory://` | Backend for rate-limit counters. The default in-memory store is fine for a single-container deploy; set to `redis://host:port/0` if you run behind a load balancer with multiple replicas. |
 
 ### External Authentication (AUTH_METHOD)
 
@@ -166,7 +171,7 @@ On first run, these env vars are migrated into settings.json. After that, settin
 
 ## Web Interface Settings
 
-The web server uses **gunicorn** with **gthread** workers in production (Docker). `WEB_PORT`, `CORS_ORIGINS`, `HTTPS`, and `DEV_RELOAD` are infrastructure variables (see above).
+The web UI is served by [gunicorn](https://gunicorn.org/) (a Python web server) using thread workers — Docker handles launching it, you don't need to know about this unless you're running outside Docker. Listening port and related knobs live in [Infrastructure Variables](#infrastructure-variables) — `WEB_PORT`, `CORS_ORIGINS`, `HTTPS`, and `DEV_RELOAD`.
 
 ---
 
@@ -184,7 +189,7 @@ Settings for automatic preview generation when media is imported via Radarr or S
 
 Webhook processing respects `selected_libraries`; paths outside unchecked libraries are ignored.
 
-The **Recently Added Scanner** is not configured via settings keys any more — it's a first-class schedule type (see [Schedules](#post-apischedules) below). Create one through the Automation page (Triggers tab) "Create default scanner" shortcut, or through the Schedules tab modal with **Scan mode → Recently added only**.
+The **Recently Added Scanner** is not configured via settings keys any more — it's a first-class schedule type (see [Schedules Endpoints](#schedules-endpoints) below). Create one through the Automation page (Triggers tab) "Create default scanner" shortcut, or through the Schedules tab modal with **Scan mode → Recently added only**.
 
 > [!IMPORTANT]
 > The Plex direct webhook and Recently Added schedules trigger only on **new** library items (new `ratingKey`s). They do **not** detect in-place file upgrades — Plex keeps the same item when Sonarr/Radarr replaces a file. Use the existing Sonarr/Radarr webhooks (which fire on `On Upgrade`) for that case.
