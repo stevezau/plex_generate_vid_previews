@@ -24,7 +24,7 @@ Common questions about setup, usage, and behavior. For troubleshooting specific 
 
 **What does this tool do?**
 
-Generates video preview thumbnails for **Plex, Emby, and Jellyfin** — alone or in any combination. These are the small images you see when scrubbing through videos. Each vendor's built-in generation is slow; this tool makes it 5-10x faster using GPU acceleration. The dispatcher runs FFmpeg once per file and publishes the right format to every server that owns it (Plex BIF bundle, Emby `-WIDTH-INTERVAL.bif` sidecar, Jellyfin trickplay tile sheets).
+Generates video preview thumbnails for **Plex, Emby, and Jellyfin** — alone or in any combination. These are the small images you see when scrubbing through videos. It runs preview generation off the media server, on a machine of your choosing, using every GPU it finds. One FFmpeg pass per file produces output for every server that owns the file, in the format that server expects (Plex BIF bundle, Emby `-WIDTH-INTERVAL.bif` sidecar, Jellyfin trickplay tile sheets).
 
 **What Plex/Emby/Jellyfin settings should I use?**
 

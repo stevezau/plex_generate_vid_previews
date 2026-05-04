@@ -26,22 +26,21 @@ This page covers:
 
 ## Why this exists
 
-Two real gaps:
+Two reasons:
 
-1. **Emby has no GPU-accelerated thumbnail generation.** Their VPT (Video
-   Preview Thumbnail) task is software-only ([forum](https://emby.media/community/index.php?/topic/145196-)).
-   This tool's multi-GPU pipeline gives Emby users a capability their
-   server can't match.
-2. **Jellyfin's native trickplay is slow with HW accel.** Reports of
-   20-30 minutes for 90 minutes of footage are common
-   ([issue #13468](https://github.com/jellyfin/jellyfin/issues/13468)).
-   Native trickplay generation runs on the same machine as Jellyfin
-   itself, and HW decode silently falls back to software on tricky
-   files.
+1. **Built-in generation has gaps.**
+   - **Plex's** preview generation is single-threaded software (no GPU support).
+   - **Emby's** Video Preview Thumbnail task is software-only ([forum](https://emby.media/community/index.php?/topic/145196-)) — no GPU support.
+   - **Jellyfin** does support HW-accelerated trickplay generation, but it runs on the same machine as the server, so it competes with playback for CPU and GPU. (A historical issue with the legacy Intel i965 VAAPI driver on older Intel CPUs caused slowness for some users — that's been [resolved upstream](https://github.com/jellyfin/jellyfin/commit/db55d983f83f2b17e749a21ae35968fa0e83a915).)
+2. **Multi-server users do redundant work.** If you run more than one
+   server (a surprisingly common setup), each one generates its own
+   previews from the same source files. This tool processes each file
+   once and publishes the result everywhere — Plex BIF bundle, Emby
+   sidecar BIF, Jellyfin trickplay tiles — from a single FFmpeg pass.
 
-Beyond covering those gaps, processing a file once and fanning the result
-out to every server that needs it removes redundant work for users who
-run more than one media server (a surprisingly common setup).
+Where this tool helps most: offloading preview generation onto a
+separate machine (a NAS, a dedicated GPU box, anything) so your
+media server's CPU and GPU stay free for playback.
 
 ---
 

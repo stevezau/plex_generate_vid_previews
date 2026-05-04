@@ -38,9 +38,13 @@
 
 Generates video preview thumbnails for **Plex, Emby, and Jellyfin**. These are the small images you see when scrubbing through videos in any of those servers.
 
-**The Problem:** Server-side preview generation is painfully slow — Plex's is single-threaded software-decoded, Emby has no GPU acceleration at all, and Jellyfin's HW-accelerated trickplay is buggy/slow on many systems.
+**The Problem:** Built-in preview generation has gaps depending on the server you run:
 
-**The Solution:** This tool uses GPU acceleration and parallel processing to generate previews **5-10x faster**, and can drive any number of Plex / Emby / Jellyfin servers from a single instance — each new file is processed once and the result is published to every server that owns it, in the format that server expects (BIF for Plex/Emby, native JPG tile-grid for Jellyfin).
+- **Plex** generates thumbnails single-threaded on the CPU (no GPU support).
+- **Emby** has no GPU support for thumbnail generation at all.
+- **Jellyfin** does support hardware-accelerated trickplay, but it shares CPU/GPU with playback — and on a busy server that's resources you'd rather give to the player.
+
+**The Solution:** This tool runs preview generation **off the media server** on a machine of your choosing, uses every GPU it finds, and processes files in parallel. One library scan or webhook fan-out handles every server you've configured: a single FFmpeg pass produces output, and the result is published in the format each server expects (BIF for Plex/Emby, JPG tile-grid for Jellyfin).
 
 > [!NOTE]
 > This project was originally hand-written. Recent development is AI-assisted (Cursor + Claude). All changes are reviewed and tested.
