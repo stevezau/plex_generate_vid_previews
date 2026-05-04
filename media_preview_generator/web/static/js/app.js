@@ -1516,6 +1516,19 @@ function updateJobQueue() {
         _jobQueueUpdatePending = true;
         return;
     }
+    // Defer while the user is hovering inside the table — a wholesale
+    // tbody.innerHTML rebuild mid-hover destroys the button under the
+    // cursor and the click never lands. Symptom from the field: the
+    // red Cancel-job X "flashes red" on hover but never actually fires
+    // the cancel because the row gets re-rendered between mousedown
+    // and mouseup. The :hover check is a Bootstrap pattern (CSS
+    // pseudo-class is queryable via :is(...:hover) on tbody.matches);
+    // we use a `querySelector(':hover')` that walks any descendant
+    // currently hovered. Safe because we'll rebuild on the next tick.
+    if (tbody.matches(':hover') || tbody.querySelector(':hover')) {
+        _jobQueueUpdatePending = true;
+        return;
+    }
     _jobQueueUpdatePending = false;
 
     if (jobs.length === 0) {

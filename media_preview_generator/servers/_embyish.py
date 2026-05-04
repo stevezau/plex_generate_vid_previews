@@ -15,6 +15,8 @@ subclass needs to specify only:
 from __future__ import annotations
 
 import os
+import threading
+import time
 from collections.abc import Iterator
 from typing import Any
 
@@ -29,6 +31,18 @@ from .base import (
     MediaServer,
     ServerConfig,
 )
+
+# How long the per-instance reverse-lookup cache holds a result before
+# re-querying the server. 5 min is a generous floor — the only way the
+# answer becomes wrong inside the window is the server gaining/losing
+# the file, which is exactly what the SKIPPED_NOT_IN_LIBRARY scan-nudge
+# + retry queue (D32) is built to handle on a follow-up dispatch. Cache
+# eats the 30s Pass-2 enumeration cost on repeat lookups within the
+# window — matters most for full-library scans where the same server
+# is asked about 200+ files in quick succession (job 818c42b8 ran 418
+# such calls in 20 minutes, ~5.3s/item average; with this cache the
+# repeat calls collapse to ~0ms).
+_REVERSE_LOOKUP_TTL_S = 300.0
 
 
 class EmbyApiClient(MediaServer):
@@ -51,6 +65,13 @@ class EmbyApiClient(MediaServer):
         # handshake + TLS negotiation tax — a 500-item scan amortised that out
         # to seconds of wasted wall time on top of the actual API latency.
         self._session: requests.Session | None = None
+        # Reverse-lookup cache: ``{remote_path: (expires_at, item_id_or_none)}``.
+        # Caches BOTH positive ("found item X") and negative ("not in library")
+        # results — the negative case is the dominant cost (Pass-2 enum is
+        # ~30s cold), and getting a stale negative is harmless because the
+        # SKIPPED_NOT_IN_LIBRARY retry queue picks the file up later anyway.
+        self._reverse_lookup_cache: dict[str, tuple[float, str | None]] = {}
+        self._reverse_lookup_lock = threading.Lock()
 
     @property
     def config(self) -> ServerConfig:
@@ -384,7 +405,31 @@ class EmbyApiClient(MediaServer):
            full-text index quietly skips title tokens like ``4K``,
            ``HDR``, ``DV``, etc. — so a search for ``"Test 4K HDR
            (2024)"`` returns nothing even though the item exists.
+
+        Results — both positive AND negative — are cached on the
+        instance for ``_REVERSE_LOOKUP_TTL_S`` seconds. The negative
+        case is the dominant cost (Pass-2 enumeration is ~30s cold on
+        Jellyfin) and is also the most repeated query during full-
+        library scans where the same server gets asked about 200+
+        files in a row.
         """
+        basename = os.path.basename(remote_path or "")
+        if not basename:
+            return None
+
+        # Cache check first.
+        now = time.monotonic()
+        with self._reverse_lookup_lock:
+            cached = self._reverse_lookup_cache.get(remote_path)
+            if cached is not None and cached[0] > now:
+                return cached[1]
+        result = self._uncached_resolve_remote_path_to_item_id(remote_path)
+        with self._reverse_lookup_lock:
+            self._reverse_lookup_cache[remote_path] = (now + _REVERSE_LOOKUP_TTL_S, result)
+        return result
+
+    def _uncached_resolve_remote_path_to_item_id(self, remote_path: str) -> str | None:
+        """Bypass-cache path-to-item-id lookup. See ``resolve_remote_path_to_item_id``."""
         basename = os.path.basename(remote_path or "")
         if not basename:
             return None
