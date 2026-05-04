@@ -755,6 +755,156 @@ class TestPathFirstWebhook:
         proc.assert_called_once()
 
 
+class TestWebhookPrefixTranslationReachesOwnerCheck:
+    """TEST_AUDIT P0.4 — closes incident 70275e9 silent 202 drop class.
+
+    Background: the original ``no_owners`` pre-flight check ran against
+    the RAW webhook payload path WITHOUT applying ``webhook_prefixes``.
+    Sonarr installs that translate ``/data/tv → /mnt/data/tv`` got 202s
+    silently because the pre-flight thought no server owned ``/data/tv``
+    (true; the local owner is ``/mnt/data/tv``). The fix removed the
+    pre-flight entirely; the orchestrator (which DOES apply prefixes via
+    ``_log_webhook_owning_servers``) now decides ownership inside the
+    Job.
+
+    These tests pin the post-fix behaviour: every webhook payload
+    becomes a Job, regardless of whether the path appears to be owned
+    or not. A regression that re-introduces a path-based pre-flight
+    would fail the first test loudly.
+    """
+
+    def test_webhook_with_remote_form_path_and_prefix_mapping_creates_job(self, client, auth_headers):
+        """Server has ``webhook_prefixes=[("/data/tv", "/mnt/data/tv")]``;
+        webhook arrives with raw ``/data/tv/...`` path. Must create a Job
+        — pre-fix would have 202'd with ``ignored_no_owners`` because the
+        path didn't match the local prefix.
+
+        Asserts on the response shape (kind=path, status=queued, job_id
+        present) AND that ``create_vendor_webhook_job`` was called with the
+        exact remote-form canonical path. The orchestrator handles the
+        translation downstream — the router's job is to NOT drop.
+        """
+        # Pre-seed a server with a prefix mapping that would have triggered
+        # the old pre-flight bug. We don't even need to verify the mapping
+        # is applied here (orchestrator's job); we just need to confirm the
+        # router doesn't 202-drop based on path inspection.
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        sm.update(
+            {
+                "media_servers": [
+                    {
+                        "id": "plex-1",
+                        "type": "plex",
+                        "name": "Plex",
+                        "enabled": True,
+                        "url": "http://plex:32400",
+                        "auth": {"token": "tok"},
+                        "libraries": [{"id": "1", "name": "TV", "enabled": True}],
+                        "path_mappings": [
+                            {
+                                "remote_prefix": "/data/tv",
+                                "local_prefix": "/mnt/data/tv",
+                                "webhook_prefixes": ["/data/tv"],
+                            }
+                        ],
+                        "exclude_paths": [],
+                    }
+                ],
+            }
+        )
+
+        with patch(
+            "media_preview_generator.web.webhook_router.create_vendor_webhook_job",
+            return_value="job-fake-87654321",
+        ) as proc:
+            response = client.post(
+                "/api/webhooks/incoming",
+                headers={**auth_headers, "Content-Type": "application/json"},
+                data=json.dumps({"path": "/data/tv/Show/S01E01.mkv"}),
+            )
+
+        assert response.status_code == 202, (
+            f"Webhook with remote-form path + prefix mapping must create a Job (status 202 queued), "
+            f"NOT a silent ignored_no_owners drop. Got {response.status_code}; "
+            f"body: {response.get_json()!r}. The 70275e9 silent-drop bug class would surface as "
+            f"'ignored_no_owners' status with the fix reverted."
+        )
+        body = response.get_json()
+        assert body["status"] == "queued", (
+            f"Expected status='queued' (Job created); got {body.get('status')!r}. "
+            f"'ignored_no_owners' here = the pre-flight regression has returned."
+        )
+        assert "job_id" in body and body["job_id"]
+        assert body["kind"] == "path"
+
+        # The router must have called create_vendor_webhook_job with the
+        # raw remote-form path — translation happens downstream.
+        proc.assert_called_once()
+        kwargs = proc.call_args.kwargs
+        assert kwargs.get("canonical_path") == "/data/tv/Show/S01E01.mkv", (
+            f"Router should pass the raw payload path to the orchestrator; "
+            f"got canonical_path={kwargs.get('canonical_path')!r}"
+        )
+
+    def test_webhook_with_unrecognised_path_still_creates_job_no_silent_drop(self, client, auth_headers):
+        """Even when no server's path_mappings match, the router must still
+        create a Job. The orchestrator will log a clear "no owners" message
+        in the Job log (visible to user), NOT a silent 202 that the user
+        only finds when nothing happens.
+
+        Pre-fix: this scenario was ``ignored_no_owners`` — the user got
+        no Job in the UI and no clear feedback that the webhook was
+        dropped. Post-fix: a Job appears + the user can read its log to
+        see exactly why no publishers fired.
+        """
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        sm.update(
+            {
+                "media_servers": [
+                    {
+                        "id": "plex-1",
+                        "type": "plex",
+                        "name": "Plex",
+                        "enabled": True,
+                        "url": "http://plex:32400",
+                        "auth": {"token": "tok"},
+                        "libraries": [{"id": "1", "name": "TV", "enabled": True}],
+                        "path_mappings": [
+                            {
+                                "remote_prefix": "/somewhere/else",
+                                "local_prefix": "/mnt/elsewhere",
+                            }
+                        ],
+                        "exclude_paths": [],
+                    }
+                ],
+            }
+        )
+
+        with patch(
+            "media_preview_generator.web.webhook_router.create_vendor_webhook_job",
+            return_value="job-fake-99999999",
+        ) as proc:
+            response = client.post(
+                "/api/webhooks/incoming",
+                headers={**auth_headers, "Content-Type": "application/json"},
+                data=json.dumps({"path": "/random/path/x.mkv"}),
+            )
+
+        # Job IS created — the 202 is "queued", NOT "ignored_no_owners".
+        assert response.status_code == 202
+        body = response.get_json()
+        assert body["status"] == "queued", (
+            f"Even with no matching server, the router must queue a Job for visibility "
+            f"(orchestrator decides ownership inside the Job log). Got {body.get('status')!r}."
+        )
+        proc.assert_called_once()
+
+
 class TestUnknownPayload:
     def test_returns_400(self, client, auth_headers):
         response = client.post(

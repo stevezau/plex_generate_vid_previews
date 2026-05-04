@@ -812,6 +812,84 @@ class TestNotInLibraryRoutesToSkip:
         assert scan_nudges[0][0] is None  # item_id=None → fallback /Library/Refresh path
         assert scan_nudges[0][1] == str(media_file)
 
+    def test_plex_returns_skipped_not_in_library_when_item_id_unresolvable(self, mock_config_for_processing, tmp_path):
+        """TEST_AUDIT P0.3 matrix completion — Plex bundle adapter.
+
+        Existing test (above) covers the Jellyfin path. Plex bundle adapter
+        ALSO returns ``needs_server_metadata=True`` (per output/plex_bundle.py
+        line 45 — bundle hash comes from /tree endpoint, no hash → no path).
+        Same code path (multi_server.py:536-552) handles both.
+
+        Without this matrix variant, a regression that ONLY fixed the Plex
+        branch (or only broke it) would slip through with the Jellyfin
+        test still passing. Per CLAUDE.md "Cover the matrix, not one cell."
+        """
+        from media_preview_generator.servers.plex import PlexServer
+
+        media_dir = tmp_path / "data" / "movies"
+        media_file = _seed_canonical_file(media_dir)
+
+        registry = ServerRegistry.from_settings(
+            [
+                _server_config(
+                    server_id="plex-1",
+                    server_type=ServerType.PLEX,
+                    libraries=[
+                        Library(
+                            id="1",
+                            name="Movies",
+                            remote_paths=(str(media_dir),),
+                            enabled=True,
+                        )
+                    ],
+                    output={"adapter": "plex_bundle", "plex_config_folder": "/cfg"},
+                )
+            ],
+        )
+
+        scan_nudges: list[tuple[str | None, str | None]] = []
+
+        def fake_trigger_refresh(self, *, item_id, remote_path):
+            scan_nudges.append((item_id, remote_path))
+
+        def fake_generate_images(video_file, output_folder, *args, **kwargs):
+            _populate_frames(output_folder, count=3)
+            return (True, 3, "h264", 1.0, 30.0, None)
+
+        with (
+            patch.object(PlexServer, "resolve_remote_path_to_item_id", return_value=None),
+            patch.object(PlexServer, "trigger_refresh", autospec=True, side_effect=fake_trigger_refresh),
+            patch(
+                "media_preview_generator.processing.multi_server.generate_images",
+                side_effect=fake_generate_images,
+            ),
+        ):
+            result = process_canonical_path(
+                canonical_path=str(media_file),
+                registry=registry,
+                config=mock_config_for_processing,
+                schedule_retry_on_not_indexed=False,
+            )
+
+        assert len(result.publishers) == 1
+        assert result.publishers[0].status is PublisherStatus.SKIPPED_NOT_IN_LIBRARY, (
+            f"Plex bundle adapter with no item_id should SKIP_NOT_IN_LIBRARY, "
+            f"NOT {result.publishers[0].status}. Bug class: cryptic 'publish-time bookkeeping' "
+            f"ValueError leaking from compute_output_paths instead of graceful skip."
+        )
+        # Same user-facing message contract as the Jellyfin variant.
+        assert "library" in result.publishers[0].message.lower()
+        assert "bookkeeping" not in result.publishers[0].message.lower()
+        assert "valueerror" not in result.publishers[0].message.lower()
+        # Aggregate must collapse to SKIPPED_NOT_INDEXED so the file outcome
+        # chip matches the per-server pill (D13 contract).
+        assert result.status is MultiServerStatus.SKIPPED_NOT_INDEXED
+        # Scan was nudged with item_id=None (Plex falls back to a path-based
+        # /library/sections/{id}/refresh on the not-in-library branch).
+        assert scan_nudges, "trigger_refresh was never called for Plex not-in-library publisher"
+        assert scan_nudges[0][0] is None
+        assert scan_nudges[0][1] == str(media_file)
+
 
 class TestSkipIfExists:
     def test_skips_publisher_when_output_already_present(self, mock_config_for_processing, tmp_path):

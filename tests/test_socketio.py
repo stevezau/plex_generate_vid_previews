@@ -311,3 +311,61 @@ class TestJobEvents:
 
         updated = [r for r in received if r["name"] == "job_completed"]
         assert updated[0]["args"][0]["status"] == "completed"
+
+
+# ---------------------------------------------------------------------------
+# TEST_AUDIT P0.6 — SocketIO server config pin (incident: 1873a23)
+# ---------------------------------------------------------------------------
+
+
+class TestSocketIOTransportConfig:
+    """Pin SocketIO transport config so the WebSocket-upgrade regression
+    cannot ship silently again.
+
+    Background (commit 1873a23): the project originally had
+    ``allow_upgrades=False`` to keep SocketIO on HTTP long-polling. Once
+    a client upgrades to WebSocket under ``async_mode="threading"`` it
+    pins one gunicorn thread for its lifetime; refreshed pages leave
+    CLOSE_WAIT sockets that exhaust the thread pool and freeze the UI
+    with "Failed to fetch" on /api/pause and 500s on GET /api/jobs.
+
+    The setting was LOST during the plex_generate_previews →
+    media_preview_generator package rename. This test introspects the
+    actual underlying engineio Server config so a future rename, refactor,
+    or deps bump that drops the kwarg fails loudly here instead of in
+    production after a 20-minute job.
+    """
+
+    def test_allow_upgrades_is_false_on_underlying_engineio_server(self, app):
+        """The engineio.Server instance must report allow_upgrades=False.
+
+        flask-socketio wraps a python-socketio Server, which wraps an
+        engineio.Server (``socketio.server.eio``). Asserting against the
+        engineio Server is the production source of truth — checking the
+        kwarg in the Python source would only catch deletion, not a deps
+        bump that silently changed the default.
+        """
+        # ``socketio`` is the module-level Flask-SocketIO instance imported
+        # at the top of this file. After ``create_app(app)`` it has been
+        # initialised against this app.
+        eio_server = socketio.server.eio
+        assert eio_server.allow_upgrades is False, (
+            f"engineio.Server.allow_upgrades must be False to keep transport on HTTP "
+            f"long-polling; got {eio_server.allow_upgrades!r}. A client that successfully "
+            f"upgrades to WebSocket under async_mode='threading' will pin a gunicorn "
+            f"thread indefinitely — the 1873a23 'Failed to fetch / frozen UI' bug class."
+        )
+
+    def test_async_mode_is_threading(self, app):
+        """async_mode must stay 'threading' — eventlet/gevent monkey-patch
+        breaks worker.py subprocess.* calls (GitHub #154).
+
+        Pin together with allow_upgrades because the two are inseparable
+        design constraints documented at app.py:437-448. A regression
+        flipping async_mode to eventlet would re-trigger the FFmpeg
+        subprocess hangs without breaking allow_upgrades=False.
+        """
+        assert socketio.async_mode == "threading", (
+            f"async_mode must remain 'threading' (eventlet/gevent breaks "
+            f"worker subprocess calls per #154); got {socketio.async_mode!r}"
+        )

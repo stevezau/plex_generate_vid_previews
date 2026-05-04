@@ -176,6 +176,150 @@ class TestRunScheduledJob:
                     f"got {config_overrides!r}"
                 )
 
+    @patch("media_preview_generator.web.routes._start_job_async")
+    def test_scheduled_job_infers_server_id_from_library_id(self, mock_start, tmp_path):
+        """TEST_AUDIT P0.2 — closes incident 933a26d (server-pin gap).
+
+        When a schedule passes ``library_id`` but no ``server_id``, the
+        scheduler callback must infer the server from the library.
+        Without this inference, scheduled "TV Shows" runs fan out to
+        every configured publisher (Emby/Jellyfin) and burn ~5s/item in
+        not-in-library lookups for files those servers don't have.
+
+        Pre-fix: the manual /api/jobs POST path inferred but the
+        scheduler path did not. Symptom in production: scheduled "TV
+        Daily" took 20 min for 202 items, only 1 ran FFmpeg, the rest
+        were redundant cross-server lookups.
+
+        Production wiring at app.py:72-76:
+            if not server_id and library_id:
+                server_id, server_name, server_type = _infer_server_from_library_id(library_id)
+        """
+        config_dir = str(tmp_path / "scheduled_job_infer")
+        os.makedirs(config_dir, exist_ok=True)
+        with open(os.path.join(config_dir, "auth.json"), "w") as f:
+            json.dump({"token": "test-token-12345678"}, f)
+        # Pre-seed media_servers so the inference can find the owning server.
+        with open(os.path.join(config_dir, "settings.json"), "w") as f:
+            json.dump(
+                {
+                    "setup_complete": True,
+                    "media_servers": [
+                        {
+                            "id": "plex-tv",
+                            "type": "plex",
+                            "name": "Plex TV",
+                            "enabled": True,
+                            "url": "http://plex:32400",
+                            "auth": {"token": "tok"},
+                            "libraries": [{"id": "42", "name": "TV Shows", "enabled": True}],
+                        },
+                        # An OTHER server with a DIFFERENT library — must NOT
+                        # be picked. Without this in the test data, the
+                        # inference has only one option and would pass even
+                        # if the library-matching logic were broken.
+                        {
+                            "id": "emby-other",
+                            "type": "emby",
+                            "name": "Emby",
+                            "enabled": True,
+                            "url": "http://emby:8096",
+                            "auth": {"api_key": "key"},
+                            "libraries": [{"id": "99", "name": "Movies", "enabled": True}],
+                        },
+                    ],
+                },
+                f,
+            )
+
+        with patch.dict(
+            os.environ,
+            {"CONFIG_DIR": config_dir, "WEB_AUTH_TOKEN": "test-token-12345678"},
+        ):
+            from media_preview_generator.web.app import create_app
+            from media_preview_generator.web.jobs import get_job_manager
+
+            app = create_app(config_dir=config_dir)
+            with app.app_context():
+                # Ensure Job manager re-reads settings from this config dir.
+                run_scheduled_job(library_id="42", library_name="TV Shows")
+                mock_start.assert_called_once()
+
+                # The Job that was created must carry server_id="plex-tv"
+                # (inferred from library_id=42 → owned by plex-tv).
+                job_id = mock_start.call_args.args[0]
+                job = get_job_manager().get_job(job_id)
+                assert job is not None, f"Job {job_id} missing from manager"
+                assert job.server_id == "plex-tv", (
+                    f"Schedule with library_id=42 (owned by plex-tv) must produce a Job "
+                    f"with server_id='plex-tv'; got server_id={job.server_id!r}. "
+                    f"Pre-fix: server_id stayed empty → orchestrator fanned out to all "
+                    f"configured servers including the unrelated Emby (incident 933a26d)."
+                )
+
+    @patch("media_preview_generator.web.routes._start_job_async")
+    def test_scheduled_job_explicit_server_id_overrides_inference(self, mock_start, tmp_path):
+        """When the schedule explicitly passes ``server_id``, no inference
+        runs. Pin so a refactor that always-infers (overriding the explicit
+        pin) is caught loudly.
+        """
+        config_dir = str(tmp_path / "scheduled_job_explicit")
+        os.makedirs(config_dir, exist_ok=True)
+        with open(os.path.join(config_dir, "auth.json"), "w") as f:
+            json.dump({"token": "test-token-12345678"}, f)
+        with open(os.path.join(config_dir, "settings.json"), "w") as f:
+            json.dump(
+                {
+                    "setup_complete": True,
+                    "media_servers": [
+                        {
+                            "id": "plex-tv",
+                            "type": "plex",
+                            "name": "Plex TV",
+                            "enabled": True,
+                            "url": "http://plex:32400",
+                            "auth": {"token": "tok"},
+                            "libraries": [{"id": "42", "name": "TV Shows", "enabled": True}],
+                        },
+                        {
+                            "id": "emby-explicit",
+                            "type": "emby",
+                            "name": "Emby Pinned",
+                            "enabled": True,
+                            "url": "http://emby:8096",
+                            "auth": {"api_key": "key"},
+                            "libraries": [{"id": "42", "name": "TV Shows", "enabled": True}],
+                        },
+                    ],
+                },
+                f,
+            )
+
+        with patch.dict(
+            os.environ,
+            {"CONFIG_DIR": config_dir, "WEB_AUTH_TOKEN": "test-token-12345678"},
+        ):
+            from media_preview_generator.web.app import create_app
+            from media_preview_generator.web.jobs import get_job_manager
+
+            app = create_app(config_dir=config_dir)
+            with app.app_context():
+                # library_id=42 is owned by BOTH plex-tv and emby-explicit;
+                # passing explicit server_id="emby-explicit" must win.
+                run_scheduled_job(
+                    library_id="42",
+                    library_name="TV Shows",
+                    server_id="emby-explicit",
+                )
+                mock_start.assert_called_once()
+
+                job_id = mock_start.call_args.args[0]
+                job = get_job_manager().get_job(job_id)
+                assert job.server_id == "emby-explicit", (
+                    f"Explicit server_id must override inference; got server_id={job.server_id!r} "
+                    f"(inference would have picked one of plex-tv / emby-explicit, but explicit wins)"
+                )
+
 
 class TestWsgiModule:
     """Smoke test for wsgi.py module."""
