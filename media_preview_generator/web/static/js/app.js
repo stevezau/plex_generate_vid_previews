@@ -3097,4 +3097,30 @@ document.addEventListener('DOMContentLoaded', () => {
         if (btn) btn.addEventListener('click', refreshBackupsPanel);
         _initBackupRetentionControls();
     }
+    // Centralised Bootstrap tooltip init: every page that lands on the
+    // base template gets `[data-bs-toggle="tooltip"]` initialised once
+    // on load, so individual pages no longer need their own init blocks.
+    // For elements added dynamically after page load, call
+    // window._initBootstrapTooltips(scope) — see below.
+    _initBootstrapTooltips(document);
 });
+
+/**
+ * Initialise Bootstrap tooltips on every `[data-bs-toggle="tooltip"]`
+ * element under ``scope`` (defaults to the whole document). Safe to
+ * call multiple times — Bootstrap's `Tooltip.getInstance(el)` short-
+ * circuits if a tooltip already exists for the element.
+ *
+ * Pages with dynamic content (modals, library refreshes, etc.) should
+ * call this after the new DOM lands so the tooltips render.
+ */
+function _initBootstrapTooltips(scope) {
+    const root = scope || document;
+    if (typeof bootstrap === 'undefined' || !bootstrap.Tooltip) return;
+    root.querySelectorAll('[data-bs-toggle="tooltip"]').forEach((el) => {
+        if (!bootstrap.Tooltip.getInstance(el)) {
+            new bootstrap.Tooltip(el);
+        }
+    });
+}
+window._initBootstrapTooltips = _initBootstrapTooltips;

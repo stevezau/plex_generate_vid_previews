@@ -87,20 +87,37 @@
                     <!-- General -->
                     <div class="tab-pane fade show active" id="edit-tab-general">
                         <div class="mb-3">
-                            <label class="form-label">Display name</label>
+                            <label class="form-label">Display name
+                                <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                                   data-bs-toggle="tooltip" data-bs-placement="top"
+                                   title="What this server is called in the UI. Cosmetic only — pick anything memorable (e.g. 'Living Room Plex', 'NAS Jellyfin')."></i>
+                            </label>
                             <input type="text" id="editServerDisplayName" class="form-control">
                         </div>
                         <div class="mb-3">
-                            <label class="form-label">Server URL</label>
+                            <label class="form-label">Server URL
+                                <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                                   data-bs-toggle="tooltip" data-bs-placement="top"
+                                   title="The address this app uses to talk to your media server. Use the host's IP (e.g. http://192.168.1.100:32400), not 'localhost' — 'localhost' inside this container does NOT mean your host."></i>
+                            </label>
                             <input type="text" id="editServerUrl" class="form-control" autocomplete="off">
                         </div>
                         <div class="form-check mb-3">
                             <input type="checkbox" id="editServerVerifySsl" class="form-check-input">
-                            <label class="form-check-label" for="editServerVerifySsl">Verify SSL certificate</label>
+                            <label class="form-check-label" for="editServerVerifySsl">Verify SSL certificate
+                                <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                                   data-bs-toggle="tooltip" data-bs-placement="top"
+                                   title="Check the server's HTTPS certificate against trusted CAs. Turn off only when using a self-signed certificate (e.g. local Jellyfin behind your own reverse proxy). Leave on for any plain HTTP URL — it's a no-op there."></i>
+                            </label>
                         </div>
                         <div class="form-check mb-3">
                             <input type="checkbox" id="editServerEnabled" class="form-check-input">
-                            <label class="form-check-label" for="editServerEnabled">Server enabled (uncheck to pause publishing)</label>
+                            <label class="form-check-label" for="editServerEnabled">Server enabled
+                                <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                                   data-bs-toggle="tooltip" data-bs-placement="top"
+                                   title="Off = this server is ignored entirely (no webhooks, no scans, no publishes). Use to pause one server without deleting it from your config."></i>
+                            </label>
+                            <div class="form-text">Uncheck to pause publishing to this server.</div>
                         </div>
 
                         <!-- Test Connection — verify URL + credentials right here in
@@ -301,21 +318,49 @@
                         <div id="editLibraryList" class="list-group small"></div>
                     </div>
 
-                    <!-- Path mappings -->
+                    <!-- Path mappings — restructured Apr 2026: leads with a 1-line
+                         summary + worked example; the union-mount edge case moved
+                         into a "More details" expander so it doesn't drown out
+                         the simple case. -->
                     <div class="tab-pane fade" id="edit-tab-paths">
                         <p class="small text-muted mb-2">
-                            Translate a path the media server reports (e.g. <code>/data_16tb/movies</code>) into the path this app
-                            sees on disk (e.g. <code>/mnt/plex/movies</code>). Add one row per mount difference. Leave empty when the server and this
-                            app share the same view.
+                            <strong>Use this when your media server and this app see the same files at different paths.</strong>
+                            Most installs don't need any rows here — leave the table empty if the server and this app mount media at the same paths.
                         </p>
-                        <p class="small text-muted mb-2">
-                            <strong>Path the webhook sends</strong> &mdash; if Sonarr / Radarr / Tdarr / Plex Direct posts a different prefix than what this server stores
-                            on disk (e.g. a MergerFS or union mount like <code>/data</code> on top of <code>/data_16tb*</code>), put that source prefix here.
-                            One per row &mdash; if the same disk shows up under multiple webhook sources, add another row with the same local path.
-                            Leave blank when the webhook source already sends the same paths the server uses.
-                        </p>
+                        <details class="mb-3">
+                            <summary class="small text-muted">Worked example + when you'd need this</summary>
+                            <div class="small text-muted mt-2">
+                                <p class="mb-2">
+                                    Suppose your server stores a file at <code>/data_16tb/movies/Inception.mkv</code> but this app's container mounts that disk as <code>/mnt/plex/movies/Inception.mkv</code> — the server tells this app "the file is at /data_16tb/...", but this app can't open that path because it doesn't exist inside the container. Add a row:
+                                </p>
+                                <ul class="mb-2">
+                                    <li><strong>Path on media server:</strong> <code>/data_16tb/movies</code></li>
+                                    <li><strong>Local path on this app:</strong> <code>/mnt/plex/movies</code></li>
+                                </ul>
+                                <p class="mb-1">
+                                    <strong>Path the webhook sends</strong> (third column) is for the rare case where Sonarr / Radarr / Plex Direct sends yet a third path because the media is behind a union mount (MergerFS or similar). Leave blank if your webhooks already send the same paths the server uses.
+                                </p>
+                            </div>
+                        </details>
                         <table class="table table-sm" id="editPathMappingsTable">
-                            <thead><tr><th>Path on Media Server</th><th>Local path on this app</th><th>Path the webhook sends</th><th></th></tr></thead>
+                            <thead><tr>
+                                <th>Path on Media Server
+                                    <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                                       data-bs-toggle="tooltip" data-bs-placement="top"
+                                       title="The path your media server reports (what's stored in its database / shown in its admin UI)."></i>
+                                </th>
+                                <th>Local path on this app
+                                    <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                                       data-bs-toggle="tooltip" data-bs-placement="top"
+                                       title="The path the same file appears at INSIDE this app's container — i.e. the volume mount target."></i>
+                                </th>
+                                <th>Path the webhook sends
+                                    <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                                       data-bs-toggle="tooltip" data-bs-placement="top"
+                                       title="Optional. Only needed if Sonarr / Radarr / Plex Direct posts a third different path (e.g. a MergerFS union mount). Leave blank otherwise."></i>
+                                </th>
+                                <th></th>
+                            </tr></thead>
                             <tbody></tbody>
                         </table>
                         <div class="d-flex justify-content-between mb-3">
@@ -331,11 +376,18 @@
                     <!-- Exclude paths -->
                     <div class="tab-pane fade" id="edit-tab-excludes">
                         <p class="small text-muted mb-2">
-                            Skip preview generation for paths matching these rules — applied per server. Type "path" matches any file
-                            under the given prefix; type "regex" matches the full path.
+                            <strong>Skip preview generation for files matching these rules.</strong> Useful for things like trailer folders or sample videos.
                         </p>
                         <table class="table table-sm" id="editExcludePathsTable">
-                            <thead><tr><th>Value</th><th>Type</th><th></th></tr></thead>
+                            <thead><tr>
+                                <th>Value</th>
+                                <th>Type
+                                    <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                                       data-bs-toggle="tooltip" data-bs-placement="top"
+                                       title="Path prefix: skips anything under that folder (e.g. '/Trailers' skips every file under any folder called Trailers). Regex: matches the full file path against a regular expression — for advanced patterns."></i>
+                                </th>
+                                <th></th>
+                            </tr></thead>
                             <tbody></tbody>
                         </table>
                         <div class="d-flex justify-content-between mb-3">

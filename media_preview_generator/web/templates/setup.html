@@ -256,22 +256,38 @@
                 </div>
 
                 <hr class="my-4">
-                <h5 class="mb-2">Media path mapping (optional)</h5>
+                <h5 class="mb-2">Media path mapping (optional)
+                    <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                       data-bs-toggle="tooltip" data-bs-placement="top"
+                       title="Only needed when your media server and this app see the same files at different paths. If both mount your media at the same place (the most common case), leave this empty."></i>
+                </h5>
                 <div class="alert alert-info py-2 mb-3 small" role="alert">
                     Only needed if Plex and this app see the same media at different paths.
-                    <strong>Example:</strong> Plex sees <code>/data</code>, app sees <code>/mnt/data</code> → one row: <code>/data</code> → <code>/mnt/data</code>. The <em>Webhook path</em> column is only for when Sonarr/Radarr/Tdarr send yet a third path.
+                    <strong>Example:</strong> Plex sees <code>/data</code>, app sees <code>/mnt/data</code> → one row: <code>/data</code> → <code>/mnt/data</code>. The third column is only for the rare case where Sonarr/Radarr/Tdarr post a third different path (e.g. behind a union mount).
                 </div>
 
                 <div id="setupPathMappingsContainer">
                     <div class="d-flex gap-2 mb-1 path-mapping-header">
                         <div class="flex-grow-1 flex-shrink-1" style="flex-basis: 0;">
-                            <span class="form-label small mb-0">Path in Plex</span>
+                            <span class="form-label small mb-0">Path in Plex
+                                <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                                   data-bs-toggle="tooltip" data-bs-placement="top"
+                                   title="The path Plex shows in its admin UI / database for the file."></i>
+                            </span>
                         </div>
                         <div class="flex-grow-1 flex-shrink-1" style="flex-basis: 0;">
-                            <span class="form-label small mb-0">Path in this app</span>
+                            <span class="form-label small mb-0">Path in this app
+                                <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                                   data-bs-toggle="tooltip" data-bs-placement="top"
+                                   title="The path the same file appears at INSIDE this app's container — the volume mount target."></i>
+                            </span>
                         </div>
                         <div class="flex-grow-1 flex-shrink-1" style="flex-basis: 0;">
-                            <span class="form-label small mb-0 text-muted">Webhook path (if different)</span>
+                            <span class="form-label small mb-0 text-muted">Path in webhooks (rare)
+                                <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                                   data-bs-toggle="tooltip" data-bs-placement="top"
+                                   title="Optional. Only fill in if Sonarr/Radarr/Tdarr send yet a third path (e.g. /data union mount sitting on top of /data_16tb1, /data_16tb2)."></i>
+                            </span>
                         </div>
                         <div class="flex-shrink-0" style="width: 38px;"></div>
                     </div>
@@ -282,8 +298,15 @@
                 </div>
 
                 <hr class="my-4">
-                <h6 class="mb-2">Exclude paths (optional)</h6>
-                <p class="text-muted small mb-2">Paths or folders to skip for preview generation. Path prefix or regex.</p>
+                <h6 class="mb-2">Exclude paths (optional)
+                    <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                       data-bs-toggle="tooltip" data-bs-placement="top"
+                       title="Folders or patterns to skip when generating previews. Useful for trailer folders, sample videos, etc."></i>
+                </h6>
+                <p class="text-muted small mb-2">
+                    Folders or patterns to skip — useful for things like <code>/Trailers</code> or sample files.
+                    Pick <strong>Path prefix</strong> (matches anything under that folder) or <strong>Regex</strong> (advanced pattern matching).
+                </p>
                 <div id="setupExcludePathsContainer">
                     <div class="exclude-path-rows mb-2"></div>
                     <button type="button" class="btn btn-outline-secondary btn-sm" id="setupAddExcludePathBtn">
@@ -486,9 +509,8 @@ document.addEventListener('DOMContentLoaded', function() {
     const progressSteps = document.querySelectorAll('.progress-step');
     const connectors = document.querySelectorAll('.step-connector');
 
-    // Initialize tooltips
-    const tooltipTriggerList = document.querySelectorAll('[data-bs-toggle="tooltip"]');
-    tooltipTriggerList.forEach(el => new bootstrap.Tooltip(el));
+    // Tooltip init is handled centrally by app.js (_initBootstrapTooltips
+    // on DOMContentLoaded). Nothing extra needed here for static tooltips.
 
     // Wrap every numeric input flagged .has-stepper with −/+ buttons.
     if (window.MPGShared && window.MPGShared.attachSteppersTo) {

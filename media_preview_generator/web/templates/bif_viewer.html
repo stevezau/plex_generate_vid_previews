@@ -10,7 +10,7 @@
 <header class="page-header">
     <div>
         <h1 class="page-title"><i class="bi bi-film me-2"></i>Preview Inspector</h1>
-        <p class="page-subtitle mb-0">Search a media server by title, or open a BIF / trickplay path directly.</p>
+        <p class="page-subtitle mb-0">Search a media server by title, or paste a preview file path directly.</p>
     </div>
 </header>
 
@@ -135,7 +135,7 @@
     <i class="bi bi-film d-block mb-3" style="font-size: 3rem; opacity: 0.25;"></i>
     <p class="text-muted mb-1">Search a title above to inspect its preview thumbnails.</p>
     <p class="text-muted small mb-0">
-        Or paste a BIF / trickplay path directly to skip the lookup.
+        Or paste a preview file path directly to skip the lookup.
     </p>
 </div>
 {% endblock %}
@@ -405,7 +405,8 @@
         badges += `<span class="badge bg-secondary badge-stat">Avg frame: ${formatBytes(m.avg_frame_size)}</span>`;
 
         if (m.suspect_frame_count > 0) {
-            badges += `<span class="badge bg-warning text-dark badge-stat suspect-badge"><i class="bi bi-exclamation-triangle me-1"></i>${m.suspect_frame_count} suspect frame(s)</span>`;
+            const suspectTip = 'Frames whose file size is unusually small or large compared to the average — could indicate a partial/corrupt extraction. Click through them to verify.';
+            badges += `<span class="badge bg-warning text-dark badge-stat suspect-badge" title="${escapeHtml(suspectTip)}"><i class="bi bi-exclamation-triangle me-1"></i>${m.suspect_frame_count} frame(s) may need review</span>`;
         }
 
         $('metaBadges').innerHTML = badges;

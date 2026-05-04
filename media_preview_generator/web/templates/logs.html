@@ -131,7 +131,7 @@
         document.querySelectorAll('.log-level-btn').forEach(btn => {
             const rank = LEVEL_RANK[btn.dataset.level] ?? 0;
             btn.disabled = rank < minRank;
-            if (rank < minRank) btn.title = 'Below server log level (' + level + ')';
+            if (rank < minRank) btn.title = 'Not available — server log level is currently set to ' + level + '. Lower the log level in Settings to see this.';
             else btn.title = '';
         });
     }

@@ -314,14 +314,22 @@
             <div class="modal-body">
                 <form id="newJobForm">
                     <div class="mb-3">
-                        <label for="jobServerScope" class="form-label">Media Server</label>
+                        <label for="jobServerScope" class="form-label">Media Server
+                            <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                               data-bs-toggle="tooltip" data-bs-placement="top"
+                               title="Limit this job to one server. Useful when the same library name (e.g. 'Movies') exists on more than one server and you only want to process one of them."></i>
+                        </label>
                         <select class="form-select" id="jobServerScope" onchange="onJobServerChange()">
                             <option value="">All servers (show every library)</option>
                         </select>
-                        <div class="form-text">Limit this job to one server (e.g. when "Movies" exists on multiple).</div>
+                        <div class="form-text">Pick a single server, or leave on "All servers".</div>
                     </div>
                     <div class="mb-3">
-                        <label class="form-label">Libraries</label>
+                        <label class="form-label">Libraries
+                            <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                               data-bs-toggle="tooltip" data-bs-placement="top"
+                               title="Tick which libraries this job should scan. Untick a library to skip it. Defaults to all libraries enabled in Settings."></i>
+                        </label>
                         <div class="mb-2 d-flex justify-content-between align-items-center">
                             <div class="form-check">
                                 <input class="form-check-input" type="checkbox" id="jobLibraryAll" checked onchange="toggleAllLibraries(this)">
@@ -340,7 +348,11 @@
                         </div>
                     </div>
                     <div class="mb-3">
-                        <label class="form-label">Processing Mode</label>
+                        <label class="form-label">Processing Mode
+                            <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                               data-bs-toggle="tooltip" data-bs-placement="top"
+                               title="Missing only: skip files that already have a preview. Regenerate all: re-process every file even if it already has one (use after changing thumbnail quality)."></i>
+                        </label>
                         <div class="form-check mb-1">
                             <input class="form-check-input" type="radio" name="jobProcessingMode" id="jobMissingOnly" value="missing" checked>
                             <label class="form-check-label" for="jobMissingOnly">
@@ -355,7 +367,11 @@
                         </div>
                     </div>
                     <div class="mb-3">
-                        <label for="jobPriority" class="form-label">Priority</label>
+                        <label for="jobPriority" class="form-label">Priority
+                            <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                               data-bs-toggle="tooltip" data-bs-placement="top"
+                               title="Order in the queue when more than one job is waiting. High runs before Normal, Normal before Low. The currently-running job isn't interrupted by a higher-priority new job."></i>
+                        </label>
                         <select class="form-select" id="jobPriority">
                             <option value="1">High</option>
                             <option value="2" selected>Normal</option>
@@ -363,14 +379,18 @@
                         </select>
                     </div>
                     <div class="mb-3">
-                        <label for="jobSortBy" class="form-label">Processing Order</label>
+                        <label for="jobSortBy" class="form-label">Processing Order
+                            <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                               data-bs-toggle="tooltip" data-bs-placement="top"
+                               title="What order workers pick files in. Default = server order. Random is useful when your media is spread across multiple disks, so workers don't all pile onto one disk."></i>
+                        </label>
                         <select class="form-select" id="jobSortBy">
                             <option value="" selected>Default (server order)</option>
                             <option value="newest">Newest first</option>
                             <option value="oldest">Oldest first</option>
                             <option value="random">Random</option>
                         </select>
-                        <div class="form-text">Pick <strong>Random</strong> if your library spans multiple physical disks (e.g. unraid shfs, mergerfs) — parallel workers will read from different disks at once instead of hammering one.</div>
+                        <div class="form-text">Pick <strong>Random</strong> if your media is split across multiple disks, so workers don't all hit one disk at the same time.</div>
                     </div>
                 </form>
             </div>
@@ -580,9 +600,9 @@
         loadDashboardVersionInfo();
         setTimeout(checkWhatsNew, 2000);
 
-        document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(function(el) {
-            new bootstrap.Tooltip(el);
-        });
+        // Tooltip init is handled centrally by app.js (_initBootstrapTooltips
+        // on DOMContentLoaded). Re-init only for tooltips added by initDashboard().
+        if (window._initBootstrapTooltips) window._initBootstrapTooltips(document);
     });
 
     async function checkSetupStatus() {

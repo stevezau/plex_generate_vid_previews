@@ -274,40 +274,58 @@
             <div class="card-body">
                 <div class="form-check form-switch mb-3">
                     <input class="form-check-input" type="checkbox" id="webhookEnabled" checked>
-                    <label class="form-check-label" for="webhookEnabled">Enable webhook processing</label>
-                    <div class="form-text">Master switch for all incoming webhooks (Sonarr, Radarr, Custom, and the per-server Plex Direct webhook). Disable to pause without touching any individual settings.</div>
+                    <label class="form-check-label" for="webhookEnabled">Enable webhook processing
+                        <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                           data-bs-toggle="tooltip" data-bs-placement="top"
+                           title="Master switch for every incoming webhook (Sonarr, Radarr, Custom, and the per-server Plex Direct webhook). Turn off to pause everything without losing your individual settings."></i>
+                    </label>
+                    <div class="form-text">Master switch for all incoming webhooks. Turn off to pause without touching any individual settings.</div>
                 </div>
 
                 <div class="mb-3">
                     <label for="webhookDelay" class="form-label">
                         Delay before processing: <strong><span id="delayValue">60</span>s</strong>
+                        <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                           data-bs-toggle="tooltip" data-bs-placement="top"
+                           title="How long to wait after the last import before running a batch. Gives your media server time to finish indexing the new file before we try to process it. If more imports arrive during the wait, they join the batch and the timer restarts."></i>
                     </label>
                     <input type="range" class="form-range" id="webhookDelay" min="10" max="300" step="10" value="60">
                     <div class="form-text">
-                        Imports are queued and processed in batches. A batch runs only after this many seconds pass with <em>no new</em> imports from that source — if a file arrives just before the batch would run, it joins the queue and the timer resets. The delay gives Plex time to finish indexing the new file before we try to process it.
+                        Imports are queued and processed in batches once this much time passes without new imports.
                     </div>
                 </div>
 
                 <div class="mb-3">
-                    <label for="webhookRetryCount" class="form-label">Retry count</label>
+                    <label for="webhookRetryCount" class="form-label">Retry count
+                        <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                           data-bs-toggle="tooltip" data-bs-placement="top"
+                           title="If a file can't be found in Plex when the webhook fires (e.g. Plex hasn't indexed it yet), how many times to retry. 0 = no retries."></i>
+                    </label>
                     <input type="number" class="form-control" id="webhookRetryCount" min="0" max="10" value="3" style="max-width: 6rem;">
                     <div class="form-text">
-                        When an item from a webhook can't be found in Plex (e.g. Plex hasn't indexed it yet), how many times to retry. Each retry runs as a separate job after the retry delay. Set to 0 to disable retries.
+                        How many times to retry if Plex hasn't indexed the file yet. 0 disables retries.
                     </div>
                 </div>
 
                 <div class="mb-3">
                     <label for="webhookRetryDelay" class="form-label">
                         Delay between retries: <strong><span id="retryDelayValue">30</span>s</strong>
+                        <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                           data-bs-toggle="tooltip" data-bs-placement="top"
+                           title="Wait before the first retry. Each later retry waits twice as long as the one before it, capped at the slider maximum."></i>
                     </label>
                     <input type="range" class="form-range" id="webhookRetryDelay" min="10" max="300" step="5" value="30">
                     <div class="form-text">
-                        Initial delay before the first retry. Subsequent retries use exponential backoff (2×, 4×, etc., capped at the slider maximum).
+                        Initial wait. Subsequent retries double the wait each time (capped at the maximum).
                     </div>
                 </div>
 
                 <div class="mb-3">
-                    <label for="webhookSecret" class="form-label">Webhook Secret</label>
+                    <label for="webhookSecret" class="form-label">Webhook Secret
+                        <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                           data-bs-toggle="tooltip" data-bs-placement="top"
+                           title="Optional shared secret used to authenticate webhook calls instead of your main API token. Useful when Sonarr/Radarr can't send custom headers. Click 'Generate' for a fresh random value."></i>
+                    </label>
                     <div class="input-group">
                         <input type="password" class="form-control" id="webhookSecret" placeholder="Optional — falls back to API token">
                         <button class="btn btn-outline-secondary" type="button" onclick="toggleSecretVisibility()">

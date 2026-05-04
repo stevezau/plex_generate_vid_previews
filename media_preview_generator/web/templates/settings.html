@@ -172,48 +172,60 @@
                     </div>
                 </div>
 
-                <!-- Frame Reuse (cross-server cache) -->
+                <!-- Smart caching across servers (was: "Frame reuse"). Renamed
+                     to lead with the user benefit; per-knob detail moved into
+                     ⓘ tooltips so the form scans cleanly. -->
                 <hr>
-                <h6 class="mb-2">Frame reuse across servers</h6>
+                <h6 class="mb-2">Smart caching across servers
+                    <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                       data-bs-toggle="tooltip" data-bs-placement="top"
+                       title="When two or more servers contain the same file and a webhook for one fires shortly after the other, the second one reuses the already-extracted frames instead of running FFmpeg again."></i>
+                </h6>
                 <div class="alert alert-info py-2 small d-none" id="frameReuseMultiServerHint">
                     <i class="bi bi-info-circle me-1"></i>
-                    You have <span id="frameReuseServerCount"></span> media servers configured.
-                    Keeping frame reuse on means a webhook from one server doesn't force FFmpeg
-                    to re-extract frames when a sibling server fires later for the same file.
+                    You have <span id="frameReuseServerCount"></span> servers configured —
+                    leaving this on means the same file isn't re-processed when each server
+                    fires its own webhook.
                 </div>
                 <div class="row align-items-end">
                     <div class="col-md-4 mb-3">
                         <div class="form-check form-switch">
                             <input class="form-check-input" type="checkbox" id="frameReuseEnabled" checked>
                             <label class="form-check-label" for="frameReuseEnabled">
-                                Reuse frames across servers
+                                Enable smart caching
+                                <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                                   data-bs-toggle="tooltip" data-bs-placement="top"
+                                   title="On: results from one server's webhook are reused if another server's webhook fires for the same file within the cache window. Off: each webhook runs FFmpeg from scratch."></i>
                             </label>
                         </div>
                         <div class="form-text">
-                            When on, extracted frames are cached so a second webhook for the same
-                            file (from any configured server) reuses them instead of re-running FFmpeg.
-                            When off, the cache window falls back to the legacy 10 minutes.
+                            Reuses results across servers so the same file isn't processed twice.
                         </div>
                     </div>
                     <div class="col-md-4 mb-3">
                         <label for="frameReuseTtlMinutes" class="form-label">
-                            Cache TTL (minutes)
+                            Cache window (minutes)
+                            <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                               data-bs-toggle="tooltip" data-bs-placement="top"
+                               title="How long results stay cached before being deleted. Longer = more reuse but more disk; shorter = saves disk but more re-processing."></i>
                         </label>
                         <input type="number" class="form-control has-stepper" id="frameReuseTtlMinutes"
                                min="1" max="1440" value="60">
                         <div class="form-text">
-                            How long to keep extracted frames around for reuse. Default 60 min.
+                            Default: 60 min.
                         </div>
                     </div>
                     <div class="col-md-4 mb-3">
                         <label for="frameReuseMaxDiskMb" class="form-label">
-                            Max cache disk (MB)
+                            Max cache size (MB)
+                            <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                               data-bs-toggle="tooltip" data-bs-placement="top"
+                               title="Maximum disk space the cache can use. When full, the oldest cached results are deleted to make room."></i>
                         </label>
                         <input type="number" class="form-control has-stepper" id="frameReuseMaxDiskMb"
                                min="64" max="65536" step="64" value="2048">
                         <div class="form-text">
-                            Hard cap on the on-disk frame cache. Oldest entries are evicted when over.
-                            Default 2048 MB (2 GB).
+                            Default: 2048 MB (2 GB).
                         </div>
                     </div>
                 </div>
@@ -447,11 +459,9 @@ document.addEventListener('DOMContentLoaded', function() {
         rootMargin: '0px 0px -60%'
     });
 
-    // Activate any static [data-bs-toggle="tooltip"] in the page (the
-    // per-GPU panel inits its own when it renders).
-    document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el => {
-        new bootstrap.Tooltip(el);
-    });
+    // Tooltip init is handled centrally by app.js (_initBootstrapTooltips on
+    // DOMContentLoaded). The per-GPU panel still inits its own tooltips
+    // when it renders dynamically — see gpu_config_panel.js.
 
     // Wrap every numeric input flagged .has-stepper with −/+ buttons.
     if (window.MPGShared && window.MPGShared.attachSteppersTo) {
