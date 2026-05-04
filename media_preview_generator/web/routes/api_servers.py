@@ -949,6 +949,46 @@ def set_vendor_extraction(server_id: str):
     )
 
 
+@api.route("/servers/<server_id>/vendor-extraction/status", methods=["GET"])
+@setup_or_auth_required
+def get_vendor_extraction_status(server_id: str):
+    """Per-library count of vendor-side preview generation state.
+
+    Returns ``{extracting_count, stopped_count, skipped_count, total}``
+    so the Edit Server modal can render a single state-appropriate CTA
+    (Disable when libraries are still generating; Re-enable when all are
+    already stopped) instead of always showing both buttons.
+    """
+    raw_servers = _get_media_servers()
+    target = next((s for s in raw_servers if isinstance(s, dict) and s.get("id") == server_id), None)
+    if target is None:
+        return jsonify({"error": f"server {server_id!r} not found"}), 404
+
+    try:
+        cfg = server_config_from_dict(target)
+    except Exception as exc:
+        return jsonify({"error": f"invalid server config: {exc}"}), 400
+
+    live = _instantiate_for_probe(cfg)
+    if live is None:
+        return jsonify({"error": "could not instantiate server client"}), 500
+
+    try:
+        status = live.get_vendor_extraction_status()
+    except Exception as exc:
+        logger.warning(
+            "Vendor-extraction status probe failed for {!r}: {}: {}",
+            cfg.name or server_id,
+            type(exc).__name__,
+            exc,
+        )
+        return jsonify({"error": str(exc)}), 502
+
+    payload = dict(status)
+    payload["vendor"] = cfg.type.value
+    return jsonify(payload)
+
+
 @api.route("/servers/<server_id>/health-check", methods=["GET"])
 @setup_or_auth_required
 def get_server_health_check(server_id: str):

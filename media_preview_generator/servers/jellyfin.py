@@ -503,6 +503,55 @@ class JellyfinServer(EmbyApiClient):
 
         return results
 
+    # The flag(s) that ``set_vendor_extraction`` flips for Jellyfin —
+    # used by ``get_vendor_extraction_status`` to count per-library
+    # state without forcing the apply path. EnableTrickplayImageExtraction
+    # is intentionally NOT in this list: it MUST stay True regardless
+    # (D38 — Jellyfin deletes our published trickplay when it's False).
+    _VENDOR_EXTRACTION_FLAGS: tuple[tuple[str, bool], ...] = (
+        ("ExtractTrickplayImagesDuringLibraryScan", False),
+        ("SaveTrickplayWithMedia", True),
+    )
+
+    def get_vendor_extraction_status(self) -> dict[str, int]:
+        """Audit per-library vendor-extraction state without writing.
+
+        A library counts as ``stopped`` only when EVERY flag in
+        :data:`_VENDOR_EXTRACTION_FLAGS` matches its recommended value;
+        if any one is wrong it counts as ``extracting`` (the bulk apply
+        would still touch this library).
+        """
+        try:
+            response = self._request("GET", "/Library/VirtualFolders")
+            response.raise_for_status()
+            folders = response.json()
+        except Exception as exc:
+            logger.debug("Vendor-extraction status probe failed for {!r}: {}", self.name, exc)
+            return {"extracting_count": 0, "stopped_count": 0, "skipped_count": 0, "total": 0}
+
+        if not isinstance(folders, list):
+            return {"extracting_count": 0, "stopped_count": 0, "skipped_count": 0, "total": 0}
+
+        extracting = stopped = 0
+        for raw in folders:
+            if not isinstance(raw, dict):
+                continue
+            options = raw.get("LibraryOptions") or {}
+            all_recommended = all(
+                bool(options.get(flag, False)) == want for flag, want in self._VENDOR_EXTRACTION_FLAGS
+            )
+            if all_recommended:
+                stopped += 1
+            else:
+                extracting += 1
+
+        return {
+            "extracting_count": extracting,
+            "stopped_count": stopped,
+            "skipped_count": 0,  # Jellyfin's per-library API never refuses, no skips
+            "total": extracting + stopped,
+        }
+
     def set_vendor_extraction(
         self,
         *,

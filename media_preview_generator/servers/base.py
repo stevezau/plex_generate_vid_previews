@@ -309,6 +309,27 @@ class MediaServer(ABC):
         """
         return []
 
+    def get_vendor_extraction_status(self) -> dict[str, int]:
+        """Report current per-library state of vendor-side preview generation.
+
+        Drives the "Stop this server from generating previews itself"
+        panel — without this probe the UI has to render both Disable and
+        Re-enable buttons regardless of state, which is noisy when one
+        of them would be a no-op. Returns:
+
+        .. code-block:: python
+
+            {
+                "extracting_count": int,   # libraries where the server IS generating
+                "stopped_count":  int,     # libraries where it ISN'T (recommended state)
+                "skipped_count":  int,     # libraries we couldn't audit (custom agents, etc.)
+                "total":          int,
+            }
+
+        Default returns zeros — concrete server clients override.
+        """
+        return {"extracting_count": 0, "stopped_count": 0, "skipped_count": 0, "total": 0}
+
     def apply_recommended_settings(self, flags: list[str] | None = None) -> dict[str, str]:
         """Flip the ``flag``s named in ``check_settings_health`` to their recommended values.
 

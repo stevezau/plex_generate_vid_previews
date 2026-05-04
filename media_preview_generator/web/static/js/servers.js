@@ -216,15 +216,14 @@
         const issues = r.data.issues || [];
         const criticalCount = issues.filter((i) => i.severity === 'critical').length;
         if (criticalCount > 0) {
-            pill.className = 'badge bg-danger server-health-pill';
+            pill.className = 'btn btn-sm btn-danger server-health-pill';
             const verb = criticalCount === 1 ? 'needs' : 'need';
             pill.title = `${criticalCount} critical setting${criticalCount === 1 ? '' : 's'} ${verb} attention. Click to fix.`;
         } else {
-            pill.className = 'badge bg-warning text-dark server-health-pill';
+            pill.className = 'btn btn-sm btn-warning server-health-pill';
             pill.title = `${issueCount} recommended setting${issueCount === 1 ? '' : 's'} could be improved. Click to fix.`;
         }
         pill.dataset.id = serverId;  // re-stamp after className wipe so the click handler still works
-        pill.style.cursor = 'pointer';
         pill.innerHTML = `<i class="bi bi-clipboard-check me-1"></i>${issueCount} issue${issueCount === 1 ? '' : 's'}`;
         pill.classList.remove('d-none');
     }
@@ -282,8 +281,9 @@
                                     data-id="${escapeHtml(server.id)}">
                                 <i class="bi bi-arrow-clockwise me-1"></i>Refresh libraries
                             </button>
-<span class="badge bg-secondary server-health-pill d-none align-self-center"
-                                  data-id="${escapeHtml(server.id)}"></span>
+<button class="btn btn-sm btn-outline-secondary server-health-pill d-none"
+                                    data-id="${escapeHtml(server.id)}"
+                                    type="button"></button>
                         </div>
                         <button class="btn btn-sm btn-outline-danger delete-server-btn"
                                 data-id="${escapeHtml(server.id)}"
@@ -1126,6 +1126,10 @@
         // empty issues list; we just render "all good" in that case.
         // Fire-and-forget so the modal opens instantly.
         runHealthCheckProbe(server.id);
+        // Per-library vendor-extraction state probe — picks Disable vs
+        // Re-enable as the single CTA so the panel doesn't render two
+        // buttons when one is a no-op.
+        renderVendorExtractionState(server.id);
 
         // D24 — vendor-aware re-auth UI: show ONE block matching the
         // server's type, hide the others, and reset all input state so
@@ -1524,6 +1528,64 @@
             result.textContent = String(e);
         } finally {
             both.forEach((b, i) => { b.disabled = false; b.innerHTML = labels[i]; });
+            // Re-probe so the panel snaps to the new state's CTA.
+            renderVendorExtractionState(id);
+        }
+    }
+
+    async function renderVendorExtractionState(serverId) {
+        // Probe per-library state and pick the right CTA. Avoids
+        // showing both Disable and Re-enable when one of them would
+        // be a no-op. Critical → red, mixed → yellow,
+        // already-recommended → success message + small Re-enable link.
+        const disableBtn = document.getElementById('editDisableVendorExtractionBtn');
+        const enableBtn = document.getElementById('editEnableVendorExtractionBtn');
+        const stateMsg = document.getElementById('editVendorExtractionState');
+        if (!disableBtn || !enableBtn) return;
+        // Default to hiding both until the probe answers.
+        disableBtn.classList.add('d-none');
+        enableBtn.classList.add('d-none');
+        if (stateMsg) { stateMsg.className = 'small text-muted'; stateMsg.textContent = 'Checking…'; }
+
+        const r = await api('GET', `/api/servers/${encodeURIComponent(serverId)}/vendor-extraction/status`);
+        if (!r.ok || !r.data) {
+            // Probe failed (server unreachable) — fall back to the
+            // legacy "show Disable as primary, Re-enable as link"
+            // pair so the user can still take action manually.
+            disableBtn.classList.remove('d-none');
+            enableBtn.classList.remove('d-none');
+            if (stateMsg) { stateMsg.className = 'small text-warning'; stateMsg.textContent = 'Could not check current state — try Test Connection above.'; }
+            return;
+        }
+
+        const { extracting_count = 0, stopped_count = 0, skipped_count = 0, total = 0 } = r.data;
+        if (stateMsg) {
+            const fragments = [];
+            if (stopped_count > 0) fragments.push(`${stopped_count}/${total} disabled`);
+            if (skipped_count > 0) fragments.push(`${skipped_count} skipped (custom agent — toggle in Plex UI)`);
+            stateMsg.textContent = fragments.length > 0 ? fragments.join(' · ') : '';
+            stateMsg.className = 'small text-muted';
+        }
+
+        if (extracting_count > 0) {
+            // At least one library is still doing its own extraction —
+            // primary action is "disable on this server" (idempotent for
+            // libraries already disabled).
+            disableBtn.classList.remove('d-none');
+            disableBtn.disabled = false;
+            disableBtn.innerHTML = '<i class="bi bi-stop-circle me-1"></i>Disable on this server';
+        } else {
+            // Every library is at the recommended state. Show success
+            // copy in place of the Disable CTA + a tucked-away
+            // Re-enable link for the rare revert.
+            disableBtn.classList.add('d-none');
+            enableBtn.classList.remove('d-none');
+            enableBtn.disabled = false;
+            enableBtn.innerHTML = 'Re-enable';
+            if (stateMsg) {
+                stateMsg.className = 'small text-success';
+                stateMsg.innerHTML = `<i class="bi bi-check-circle me-1"></i>Server isn't generating its own previews. ${skipped_count > 0 ? `(${skipped_count} library could not be checked — toggle in Plex UI.)` : ''}`;
+            }
         }
     }
 

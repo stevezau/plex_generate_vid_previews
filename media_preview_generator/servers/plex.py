@@ -366,6 +366,67 @@ class PlexServer(MediaServer):
                     results[section_key] = f"error: {exc}"
         return results
 
+    def get_vendor_extraction_status(self) -> dict[str, int]:
+        """Audit per-section ``enableBIFGeneration`` to drive the Edit modal CTA.
+
+        Reads the same field ``set_vendor_extraction`` writes — for each
+        section we treat ``enableBIFGeneration == False`` as the
+        recommended/stopped state (Plex isn't generating its own BIFs).
+        Custom-agent sections often fail the audit the same way they fail
+        ``set_vendor_extraction`` (HTTP 400 from plexapi's editAdvanced
+        because Plex's section-edit endpoint validates the agent against
+        a built-in registry); we count those as ``skipped`` so the UI can
+        render the same "1 skipped (custom agent — toggle in Plex UI)"
+        footnote that ``set_vendor_extraction`` does.
+        """
+        from ..plex_client import retry_plex_call
+
+        try:
+            sections = retry_plex_call(self._connect().library.sections)
+        except Exception as exc:
+            logger.debug("Vendor-extraction status probe failed for {!r}: {}", self.name, exc)
+            return {"extracting_count": 0, "stopped_count": 0, "skipped_count": 0, "total": 0}
+
+        extracting = stopped = skipped = 0
+        for section in sections:
+            try:
+                # plexapi exposes per-section settings (the "Advanced"
+                # tab in Plex web UI) via ``section.settings()`` —
+                # NOT ``section.advanced``/``section.preferences`` which
+                # don't exist. The relevant entry is enableBIFGeneration
+                # (a Bool-typed Setting). Custom-agent libraries can
+                # raise on the call; count those as ``skipped`` so the
+                # UI shows the same footnote ``set_vendor_extraction``
+                # surfaces for them.
+                settings = retry_plex_call(section.settings)
+                bif_setting = next(
+                    (s for s in settings if str(getattr(s, "id", "")) == "enableBIFGeneration"),
+                    None,
+                )
+                if bif_setting is None:
+                    skipped += 1
+                    continue
+                # Setting.value is True/False for bool settings.
+                if bool(getattr(bif_setting, "value", False)):
+                    extracting += 1
+                else:
+                    stopped += 1
+            except Exception as exc:
+                logger.debug(
+                    "Could not audit Plex section {} BIF-generation on {!r}: {}",
+                    getattr(section, "key", "?"),
+                    self.name,
+                    exc,
+                )
+                skipped += 1
+
+        return {
+            "extracting_count": extracting,
+            "stopped_count": stopped,
+            "skipped_count": skipped,
+            "total": extracting + stopped + skipped,
+        }
+
     # ------------------------------------------------------------------
     # Server-wide settings health check
     # ------------------------------------------------------------------

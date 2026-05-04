@@ -116,6 +116,61 @@ class EmbyServer(EmbyApiClient):
                 results[lib_id] = f"error: {exc}"
         return results
 
+    # The flag(s) that ``set_vendor_extraction`` flips for Emby. Both are
+    # set to false by the apply path — chapter is the older Emby
+    # mechanism, trickplay is Emby 4.8+. We treat both as
+    # "vendor-stopped" when set to false; a library missing the
+    # trickplay key (older Emby) is considered fine for that flag.
+    _VENDOR_EXTRACTION_FLAGS: tuple[tuple[str, bool], ...] = (
+        ("ExtractChapterImagesDuringLibraryScan", False),
+        ("ExtractTrickplayImagesDuringLibraryScan", False),
+    )
+
+    def get_vendor_extraction_status(self) -> dict[str, int]:
+        """Audit per-library vendor-extraction state without writing.
+
+        Same shape as the Jellyfin variant but checks Emby's flag set.
+        Older Emby installs that don't return ``ExtractTrickplayImagesDuringLibraryScan``
+        in their LibraryOptions skip the audit for that flag (the field
+        not being present means the library can't have it on, so it's
+        already at the recommended state by absence).
+        """
+        try:
+            response = self._request("GET", "/Library/VirtualFolders")
+            response.raise_for_status()
+            folders = response.json()
+        except Exception as exc:
+            logger.debug("Vendor-extraction status probe failed for {!r}: {}", self.name, exc)
+            return {"extracting_count": 0, "stopped_count": 0, "skipped_count": 0, "total": 0}
+
+        if not isinstance(folders, list):
+            return {"extracting_count": 0, "stopped_count": 0, "skipped_count": 0, "total": 0}
+
+        extracting = stopped = 0
+        for raw in folders:
+            if not isinstance(raw, dict):
+                continue
+            options = raw.get("LibraryOptions") or {}
+            all_recommended = True
+            for flag, want in self._VENDOR_EXTRACTION_FLAGS:
+                if flag not in options:
+                    # Older Emby: field not present → can't be wrong.
+                    continue
+                if bool(options.get(flag, False)) != want:
+                    all_recommended = False
+                    break
+            if all_recommended:
+                stopped += 1
+            else:
+                extracting += 1
+
+        return {
+            "extracting_count": extracting,
+            "stopped_count": stopped,
+            "skipped_count": 0,
+            "total": extracting + stopped,
+        }
+
     # ------------------------------------------------------------------
     # Per-library settings health check
     # ------------------------------------------------------------------
