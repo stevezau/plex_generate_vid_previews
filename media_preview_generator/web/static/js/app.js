@@ -1626,12 +1626,21 @@ function updateJobQueue() {
             : '';
         const priorityCell = renderPriorityCell(job);
         const scheduledAt = job.config && job.config.scheduled_at;
-        const isWaitingRetry = job.status === 'pending' && isRetry && scheduledAt;
+        // Two paths land in retry-wait: pending jobs awaiting their first
+        // dispatch (scheduled_at on config) and running jobs whose worker
+        // is sleeping out the backoff before the first item (retry_eta on
+        // progress). Without the second branch, the queue row falls back
+        // to the normal progress bar at 0% and the percent jumps as the
+        // worker pool emits stale completed/total updates over the top.
+        const retryEta = job.progress && job.progress.retry_eta;
+        const inWorkerRetryWait = !!retryEta && new Date(retryEta).getTime() > Date.now() - 1500;
+        const countdownTarget = inWorkerRetryWait ? retryEta : scheduledAt;
+        const isWaitingRetry = (job.status === 'pending' && isRetry && scheduledAt) || inWorkerRetryWait;
         let progressCell;
         if (isWaitingRetry) {
-            const remaining = Math.max(0, Math.ceil((new Date(scheduledAt).getTime() - Date.now()) / 1000));
+            const remaining = Math.max(0, Math.ceil((new Date(countdownTarget).getTime() - Date.now()) / 1000));
             const label = remaining > 0 ? `Retry starting in ${remaining}s` : 'Starting...';
-            progressCell = `<span class="text-warning small" data-scheduled-at="${escapeHtml(scheduledAt)}"><i class="bi bi-hourglass-split me-1"></i>${label}</span>`;
+            progressCell = `<span class="text-warning small" data-scheduled-at="${escapeHtml(countdownTarget)}"><i class="bi bi-hourglass-split me-1"></i>${label}</span>`;
         } else {
             // Color the bar by status — blue (primary) is reserved for
             // running. Completed/failed/cancelled get the matching outcome
