@@ -1773,6 +1773,17 @@ function updateActiveJobs(runningJobs) {
     const container = document.getElementById('activeJobsContainer');
     const countBadge = document.getElementById('activeJobsCount');
 
+    // Same defer-on-hover guard as updateJobQueue: the wholesale
+    // ``container.innerHTML = html`` rebuild every poll destroys the
+    // Cancel-job button mid-hover, making the icon flicker (loses
+    // hover state for ~1 frame) and — when the rebuild lands between
+    // mousedown and mouseup — ate the click entirely. The hover
+    // check defers the rebuild until the cursor moves out; pending
+    // updates land on the next tick.
+    if (container && (container.matches(':hover') || container.querySelector(':hover'))) {
+        return;
+    }
+
     if (!runningJobs || runningJobs.length === 0) {
         countBadge.textContent = 'Idle';
         countBadge.className = 'badge bg-secondary';
