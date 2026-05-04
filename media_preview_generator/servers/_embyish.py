@@ -428,6 +428,34 @@ class EmbyApiClient(MediaServer):
             self._reverse_lookup_cache[remote_path] = (now + _REVERSE_LOOKUP_TTL_S, result)
         return result
 
+    def _find_owning_library_id(self, remote_path: str) -> str | None:
+        """Return the ParentId of the library whose location prefix contains ``remote_path``.
+
+        Used to scope the reverse-lookup search to a single library
+        (1 sec on Jellyfin) instead of enumerating the whole server
+        (~30 s when Pass 1 misses on a 200K-item index). Also acts as
+        a short-circuit: when ``self._config.libraries`` is populated
+        AND no location matches, the file definitively isn't in any
+        library on this server, so we can skip the network call
+        entirely and return ``None`` in microseconds.
+
+        Returns ``None`` when the cache is empty (libraries not yet
+        loaded) so the caller falls through to the legacy unscoped
+        search instead of incorrectly short-circuiting on a cold start.
+        """
+        libs = self._config.libraries or []
+        if not libs:
+            return None
+        if not remote_path:
+            return None
+        rp = remote_path.replace("\\", "/").rstrip("/")
+        for lib in libs:
+            for loc in lib.remote_paths or ():
+                loc_norm = str(loc).replace("\\", "/").rstrip("/")
+                if loc_norm and (rp == loc_norm or rp.startswith(loc_norm + "/")):
+                    return lib.id
+        return None
+
     def _uncached_resolve_remote_path_to_item_id(self, remote_path: str) -> str | None:
         """Bypass-cache path-to-item-id lookup. See ``resolve_remote_path_to_item_id``."""
         basename = os.path.basename(remote_path or "")
@@ -436,6 +464,23 @@ class EmbyApiClient(MediaServer):
 
         stem = os.path.splitext(basename)[0]
         target_tail = "/".join(remote_path.rstrip("/").split("/")[-2:])
+
+        # Library scoping — short-circuits when this server has libraries
+        # cached but none of them contain a location prefix matching
+        # ``remote_path``. Pre-rebuild this took 28-30 s per file on a
+        # 200K-item Jellyfin/Emby; with scoping, the same lookup is
+        # ~150 ms when the file isn't in this server's index. When the
+        # cache is empty (cold start) parent_id is None and the queries
+        # fall back to legacy unscoped behavior.
+        parent_id = self._find_owning_library_id(remote_path)
+        if parent_id is None and (self._config.libraries or []):
+            # Cache populated, no match → definitively not in this server.
+            logger.debug(
+                "{} reverse-lookup short-circuit for {!r}: no library location prefix matches; skipping API call.",
+                self.vendor_name,
+                remote_path,
+            )
+            return None
 
         def _match(items: list) -> str | None:
             for raw in items:
@@ -450,19 +495,19 @@ class EmbyApiClient(MediaServer):
                         return item_id
             return None
 
-        # Pass 1 — cheap searchTerm query.
+        # Pass 1 — cheap searchTerm query, scoped to the owning library
+        # when we have its id.
+        pass1_params = {
+            "searchTerm": stem,
+            "Recursive": "true",
+            "IncludeItemTypes": "Movie,Episode",
+            "Fields": "Path",
+            "Limit": 50,
+        }
+        if parent_id:
+            pass1_params["ParentId"] = parent_id
         try:
-            response = self._request(
-                "GET",
-                "/Items",
-                params={
-                    "searchTerm": stem,
-                    "Recursive": "true",
-                    "IncludeItemTypes": "Movie,Episode",
-                    "Fields": "Path",
-                    "Limit": 50,
-                },
-            )
+            response = self._request("GET", "/Items", params=pass1_params)
             response.raise_for_status()
             hit = _match(response.json().get("Items") or [])
             if hit:
@@ -470,19 +515,20 @@ class EmbyApiClient(MediaServer):
         except Exception as exc:
             logger.debug("{} reverse-lookup search failed for {}: {}", self.vendor_name, remote_path, exc)
 
-        # Pass 2 — full enumeration fallback for titles the search index
-        # skips (Jellyfin omits tokens like 4K/HDR/DV from its index).
+        # Pass 2 — enumeration fallback for titles whose tokens (4K, HDR,
+        # DV, etc.) the search index quietly drops. Scoped to the owning
+        # library when we have its id, so a "not found" decision lands
+        # in ~1 sec instead of a full-server walk.
+        pass2_params = {
+            "Recursive": "true",
+            "IncludeItemTypes": "Movie,Episode",
+            "Fields": "Path",
+            "Limit": 1000,
+        }
+        if parent_id:
+            pass2_params["ParentId"] = parent_id
         try:
-            response = self._request(
-                "GET",
-                "/Items",
-                params={
-                    "Recursive": "true",
-                    "IncludeItemTypes": "Movie,Episode",
-                    "Fields": "Path",
-                    "Limit": 1000,
-                },
-            )
+            response = self._request("GET", "/Items", params=pass2_params)
             response.raise_for_status()
             return _match(response.json().get("Items") or [])
         except Exception as exc:
