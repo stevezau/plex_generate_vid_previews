@@ -124,22 +124,10 @@ class TestSonarrWebhook:
         assert proc.call_args.kwargs["canonical_path"] == "/data/tv/Foo/S01E01.mkv"
 
     def test_radarr_payload_classified_correctly(self, client, auth_headers):
-        # Seed an Emby server that owns the movie path so the router's
-        # pre-flight no_owners check passes — this test only asserts that
-        # the Radarr payload shape is recognised, not the dispatch result.
-        _seed_servers(
-            [
-                {
-                    "id": "emby-1",
-                    "type": "emby",
-                    "name": "Emby",
-                    "enabled": True,
-                    "url": "http://emby:8096",
-                    "auth": {},
-                    "libraries": [{"id": "1", "name": "Movies", "remote_paths": ["/data/movies"], "enabled": True}],
-                }
-            ]
-        )
+        # No pre-flight check anymore — the router creates a Job for every
+        # webhook (even ones the orchestrator may later determine have no
+        # owners). The seed is just defensive in case the test is later
+        # extended to assert against the real dispatch path.
         with patch(
             "media_preview_generator.web.webhook_router.create_vendor_webhook_job",
             return_value="job-fake-12345678",
@@ -741,22 +729,7 @@ class TestPlexWebhook:
 
 class TestPathFirstWebhook:
     def test_simple_path_dispatch(self, client, auth_headers):
-        # Seed a server that owns the TV path so the pre-flight no_owners
-        # check passes; the test asserts the path-shape classifier, not
-        # ownership logic.
-        _seed_servers(
-            [
-                {
-                    "id": "emby-1",
-                    "type": "emby",
-                    "name": "Emby",
-                    "enabled": True,
-                    "url": "http://emby:8096",
-                    "auth": {},
-                    "libraries": [{"id": "1", "name": "TV", "remote_paths": ["/data/tv"], "enabled": True}],
-                }
-            ]
-        )
+        # No pre-flight check anymore — every webhook becomes a Job.
         with patch(
             "media_preview_generator.web.webhook_router.create_vendor_webhook_job",
             return_value="job-fake-12345678",
@@ -1057,23 +1030,26 @@ class TestPayloadSizeLimit:
     def test_normal_size_payload_is_accepted(self, client, auth_headers):
         """Sanity: a small (real-world-sized) payload still gets through.
 
-        With no servers configured, the router runs the dispatcher which
-        returns NO_OWNERS, then the route serialises that result with HTTP
-        200 (per webhook_router.py:578 — "All dispatch outcomes complete
-        synchronously here, so 200 is the right status"). The body's
-        ``status`` field carries the real outcome.
+        Every webhook now lands as a Job — even ones for paths no server
+        currently owns. That's deliberate (the orchestrator handles the
+        no-owners outcome and writes a visible row to the Jobs UI rather
+        than the router silently 202'ing). Mock the job-creation entry
+        point so this test asserts the routing decision (status=queued)
+        without spinning up a real worker thread.
 
         Tightened from `in (200, 202)` so a regression that returns the
         wrong code is caught immediately.
         """
         normal = json.dumps({"path": "/data/movies/Test/Test.mkv"})
-        response = client.post(
-            "/api/webhooks/incoming",
-            headers={**auth_headers, "Content-Type": "application/json"},
-            data=normal,
-        )
+        with patch(
+            "media_preview_generator.web.webhook_router.create_vendor_webhook_job",
+            return_value="job-fake-12345678",
+        ):
+            response = client.post(
+                "/api/webhooks/incoming",
+                headers={**auth_headers, "Content-Type": "application/json"},
+                data=normal,
+            )
         assert response.status_code == 202, response.status_code
         body = response.get_json() or {}
-        # No servers configured ⇒ no owners cover the path.
-        assert body.get("status") == "no_owners", body
-        assert body["status"] == "no_owners"
+        assert body.get("status") == "queued", body

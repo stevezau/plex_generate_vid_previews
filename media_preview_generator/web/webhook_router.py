@@ -546,32 +546,19 @@ def _dispatch_canonical_path(
     Vendor webhooks (Plex / Emby / Jellyfin) used to dispatch inline through
     ``process_canonical_path`` — fast, but invisible in the Jobs UI. They now
     create a real Job so users can see what fired and what publishers did.
-    De-duplication of repeated Plex ``library.new`` fires happens inside
-    :func:`create_vendor_webhook_job`.
+    De-duplication of repeated Plex ``library.new`` fires (same source, same
+    path) happens inside :func:`create_vendor_webhook_job` — webhooks from
+    different sources (Plex + Sonarr for the same file) intentionally still
+    create separate Jobs because they represent different events
+    ("Plex indexed this" vs "Sonarr imported this").
 
-    Pre-flight check: if no configured server owns this path AND there's no
-    item-id hint to override the registry's library-prefix matcher, return
-    a ``no_owners`` 202 immediately — creating a Job that would just mark
-    itself "no work to do" wastes a row and clutters the UI.
+    The earlier no_owners pre-flight was removed: it used the raw payload
+    path without applying ``webhook_prefixes``, so Sonarr installs that
+    translate ``/data/tv → /mnt/data/tv`` got 202s and silent webhook
+    drops. Always create a Job; let the orchestrator (which DOES apply
+    webhook_prefixes via ``_log_webhook_owning_servers`` and the worker
+    pool) decide ownership.
     """
-    matched = {m.server_id for m in registry.find_owning_servers(canonical_path)}
-    candidates = matched | set(item_id_by_server or {})
-    if not candidates:
-        return (
-            jsonify(
-                {
-                    "status": "no_owners",
-                    "kind": kind,
-                    "canonical_path": canonical_path,
-                    "message": (
-                        "No configured server owns this path. Open Servers, verify each enabled "
-                        "server's library roots cover this file, then re-fire the webhook."
-                    ),
-                }
-            ),
-            202,
-        )
-
     # ``server_id_filter`` (set by /api/webhooks/server/<id>) takes precedence
     # over any single hint when picking the server that owns this webhook.
     # Otherwise pick the lone hint server (vendor webhooks always carry

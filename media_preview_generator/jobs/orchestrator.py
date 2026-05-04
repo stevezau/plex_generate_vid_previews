@@ -1393,30 +1393,43 @@ def _run_webhook_paths_phase(
     one non-Plex server is configured AND the server_id pin (if any)
     isn't a Plex server itself.
     """
-    # Vendor-webhook short-circuit: when the inbound payload supplied
-    # ``{server_id: item_id}`` hints (Plex/Emby/Jellyfin native webhooks),
-    # the canonical path is already known to belong to those servers —
-    # there's nothing to learn from a Plex resolution pass. Build
-    # ProcessableItems carrying the hint and run them through the same
+    # Pre-resolved short-circuit: skip Plex resolution when EITHER
+    # (a) the inbound vendor payload supplied ``{server_id: item_id}`` hints
+    #     (Plex/Emby/Jellyfin native webhooks already named the item), OR
+    # (b) Plex isn't configured at all (Emby/Jellyfin-only install — no Plex
+    #     to resolve through; the multi-server registry will find owners).
+    # Both routes build ProcessableItems and run them through the same
     # ``dispatch_items`` worker pool the Plex-resolved path uses, so the
-    # job gets real GPU/CPU worker rows in the Jobs UI instead of
-    # silently executing on the orchestrator thread.
-    hints = getattr(config, "webhook_item_id_hints", None) or None
-    if hints:
+    # job gets real GPU/CPU worker rows + parallelism instead of running
+    # synchronously on the orchestrator thread.
+    hints = getattr(config, "webhook_item_id_hints", None) or {}
+    no_plex = plex is None or not (config.plex_url and config.plex_token)
+    if hints or no_plex:
         from ..processing.types import ProcessableItem as _PI
 
+        path_count = len(config.webhook_paths or [])
         if progress_callback:
-            path_count = len(config.webhook_paths)
-            progress_callback(0, 0, f"Dispatching {path_count} pre-resolved path(s)…")
+            label = "pre-resolved" if hints else "vendor"
+            progress_callback(0, path_count, f"Dispatching {path_count} {label} path(s)…")
         _log_webhook_owning_servers(config, config.webhook_paths)
 
         webhook_items: list[_PI] = []
         for path in config.webhook_paths or []:
             per_path = hints.get(path) or {}
-            # Pick a server_id for the ProcessableItem. The first hint key
-            # is the originating vendor (Plex/Emby/Jellyfin) — empty when
-            # callers pass paths with no hint, in which case the orchestrator
-            # will still walk every owning server inside process_canonical_path.
+            # Server_id picks the originating vendor when known; empty
+            # otherwise so process_canonical_path walks every owning
+            # server. Hint dicts always have one entry today (vendor
+            # webhooks carry exactly one server hint), but if a future
+            # caller passes multiple, dict-insertion order picks one and
+            # we log a debug line so it's traceable.
+            if len(per_path) > 1:
+                logger.debug(
+                    "ProcessableItem for {} has {} hint server(s); using first ({}). "
+                    "Other hints still flow into item_id_by_server.",
+                    path,
+                    len(per_path),
+                    next(iter(per_path)),
+                )
             server_id = next(iter(per_path), "")
             webhook_items.append(
                 _PI(
@@ -1429,7 +1442,8 @@ def _run_webhook_paths_phase(
             )
 
         if not webhook_items:
-            logger.info("Vendor webhook short-circuit fired but produced no items — skipping dispatch.")
+            logger.info("Webhook phase short-circuit fired but produced no items — skipping dispatch.")
+            unresolved: list[str] = []
         else:
             result = dispatch_items(webhook_items, "Webhook Targets")
             totals["successful"] += result["completed"]
@@ -1438,11 +1452,24 @@ def _run_webhook_paths_phase(
             totals["cancelled"] = totals["cancelled"] or result["cancelled"]
             for k, v in (result.get("outcome") or {}).items():
                 aggregate_outcome[k] = aggregate_outcome.get(k, 0) + v
+            # Surface failed paths so the retry queue's
+            # ``unresolved_paths + not_found_on_disk`` decision logic can
+            # schedule a retry — without this the retry only fires on
+            # disk-not-found and silent server-unreachable failures
+            # never get a second chance.
+            unresolved = []
+            failed_count = result.get("failed", 0)
+            if failed_count and webhook_items:
+                # process_canonical_path doesn't tag per-item failure paths
+                # back here, so on a single-file webhook we can definitively
+                # mark the one path; on multi-file batches we conservatively
+                # mark them all as candidates for retry.
+                unresolved = [item.canonical_path for item in webhook_items]
 
         return {
-            "unresolved_paths": [],
+            "unresolved_paths": unresolved,
             "skipped_paths": [],
-            "resolved_count": len(config.webhook_paths or []),
+            "resolved_count": len(config.webhook_paths or []) - len(unresolved),
             "total_paths": len(config.webhook_paths or []),
             "path_hints": [],
         }
@@ -1545,14 +1572,30 @@ def _run_webhook_paths_phase(
                 len(unresolved),
             )
             try:
-                fallback_counts = _dispatch_webhook_paths_multi_server(
-                    config,
-                    progress_callback=progress_callback,
-                    cancel_check=cancel_check,
-                    pause_check=pause_check,
-                    job_id=job_id,
-                    paths=unresolved,
-                )
+                # Build ProcessableItems and run through dispatch_items
+                # so the K4 fallback uses the same worker pool as everything
+                # else — gets GPU, parallelism, and worker UI rows. The old
+                # ``_dispatch_webhook_paths_multi_server`` direct-call path
+                # ran synchronously on the orchestrator thread and produced
+                # zero workers in the UI (audit #5).
+                from ..processing.types import ProcessableItem as _PI
+
+                k4_items = [
+                    _PI(
+                        canonical_path=p,
+                        server_id="",
+                        item_id_by_server={},
+                        title=os.path.basename(p),
+                        library_id=None,
+                    )
+                    for p in unresolved
+                ]
+                k4_result = dispatch_items(k4_items, "Webhook Targets (K4)")
+                totals["successful"] += k4_result.get("completed", 0)
+                totals["failed"] += k4_result.get("failed", 0)
+                totals["processed"] += k4_result.get("completed", 0) + k4_result.get("failed", 0)
+                totals["cancelled"] = totals["cancelled"] or k4_result.get("cancelled", False)
+                fallback_counts = k4_result.get("outcome") or {}
                 for k, v in (fallback_counts or {}).items():
                     aggregate_outcome[k] = aggregate_outcome.get(k, 0) + v
             except Exception:
@@ -1703,25 +1746,18 @@ def run_processing(
             )
             return {"outcome": outcome_counts}
 
-        # Webhook-paths jobs on a no-Plex install go through the multi-server
-        # dispatcher (path → publishers, no Plex resolution step).
-        if not (config.plex_url and config.plex_token):
-            logger.info(
-                "No Plex configured — webhook job ({} path(s)) will be dispatched directly to "
-                "owning media servers via the multi-server registry.",
-                len(config.webhook_paths),
-            )
-            outcome_counts = _dispatch_webhook_paths_multi_server(
-                config,
-                progress_callback=progress_callback,
-                cancel_check=cancel_check,
-                pause_check=pause_check,
-                job_id=job_id,
-            )
-            return {"outcome": outcome_counts}
-        if progress_callback:
-            progress_callback(0, 0, "Connecting to Plex...")
-        plex = plex_server(config)
+        # Webhook-paths jobs on a no-Plex install used to bypass straight
+        # to ``_dispatch_webhook_paths_multi_server`` (which loops over
+        # paths on the orchestrator thread, no worker pool, no GPU). Now
+        # they fall through to the same hint-aware ``_run_webhook_paths_phase``
+        # the Plex install uses — which in turn routes through ``dispatch_items``
+        # so workers and GPU show up in the UI. We just skip ``plex_server()``
+        # connection.
+        plex = None
+        if config.plex_url and config.plex_token:
+            if progress_callback:
+                progress_callback(0, 0, "Connecting to Plex...")
+            plex = plex_server(config)
         clear_failures()
 
         # Build a registry covering EVERY configured media server so the

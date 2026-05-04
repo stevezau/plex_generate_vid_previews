@@ -160,36 +160,48 @@ class TestMultiServerGuards:
         assert result is not None
         assert "outcome" in result
 
-    def test_no_plex_with_webhook_paths_dispatches_via_registry(self, tmp_path):
+    def test_no_plex_with_webhook_paths_dispatches_via_worker_pool(self, tmp_path):
+        """No-Plex install routes webhook_paths through the worker pool
+        (audit fix #1). The legacy direct-call to
+        ``_dispatch_webhook_paths_multi_server`` ran synchronously on the
+        orchestrator thread — no GPU, no worker UI rows. The fix makes it
+        fall through to ``_run_webhook_paths_phase`` which builds
+        ProcessableItems and runs them through ``WorkerPool``.
+        """
         config = _make_config(
             tmp_path,
             plex_url="",
             plex_token="",
             webhook_paths=["/data/movies/Foo.mkv"],
         )
-        # Mock both the registry build and the per-path dispatcher.
         with (
-            patch(f"{MODULE}._dispatch_webhook_paths_multi_server") as mock_dispatch,
+            patch(f"{MODULE}.WorkerPool") as MockPool,
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
         ):
-            mock_dispatch.return_value = {r.value: 0 for r in ProcessingResult}
+            MockPool.return_value.process_items_headless.return_value = _pool_result(completed=1)
+            mock_sm.return_value.get.return_value = [
+                {"id": "emby-1", "type": "emby", "enabled": True, "libraries": []},
+            ]
             result = run_processing(config, selected_gpus=[])
-        # The webhook-paths multi-server dispatcher ran exactly once with
-        # the same Config the caller supplied (so the dispatcher pulls
-        # webhook_paths from there). `paths=` is left None on this branch
-        # — that's the contract the dispatcher reads to fall back to
-        # ``config.webhook_paths``.
-        mock_dispatch.assert_called_once()
-        call = mock_dispatch.call_args
-        assert call.args[0] is config
-        assert call.kwargs.get("paths") is None
-        assert config.webhook_paths == ["/data/movies/Foo.mkv"]
+
+        # WorkerPool.process_items_headless ran exactly once for the
+        # single webhook path — proving the worker pool is engaged.
+        MockPool.return_value.process_items_headless.assert_called_once()
+        items_arg = MockPool.return_value.process_items_headless.call_args.args[0]
+        assert len(items_arg) == 1
+        assert items_arg[0].canonical_path == "/data/movies/Foo.mkv"
         assert result is not None
         assert "outcome" in result
 
-    def test_k4_unresolved_paths_fall_back_to_multi_server_when_emby_present(self, tmp_path):
+    def test_k4_unresolved_paths_fall_back_to_worker_pool_when_emby_present(self, tmp_path):
         """K4: when Plex is configured AND has at least one Emby/Jellyfin
-        sibling, paths Plex couldn't resolve flow into the multi-server
-        dispatcher with just the unresolved subset (not the whole batch)."""
+        sibling, paths Plex couldn't resolve flow through the worker
+        pool (audit fix #5). The legacy direct-call to
+        ``_dispatch_webhook_paths_multi_server`` ran synchronously on the
+        orchestrator thread — no GPU, no worker UI rows. The fix builds
+        ProcessableItems for the unresolved subset and runs them through
+        ``WorkerPool``.
+        """
         from media_preview_generator.plex_client import WebhookResolutionResult
 
         config = _make_config(
@@ -198,7 +210,7 @@ class TestMultiServerGuards:
         )
 
         # Plex resolves only "a.mkv"; b + c are unresolved → K4 fallback
-        # should dispatch only those two through the multi-server path.
+        # should dispatch only those two through the worker pool.
         resolution = WebhookResolutionResult(
             items=[(MagicMock(name="MediaPart-A"), MagicMock())],
             unresolved_paths=["/data/b.mkv", "/data/c.mkv"],
@@ -210,7 +222,6 @@ class TestMultiServerGuards:
             patch(f"{MODULE}.get_media_items_by_paths", return_value=resolution),
             patch(f"{MODULE}.plex_server"),
             patch(f"{MODULE}.WorkerPool") as MockPool,
-            patch(f"{MODULE}._dispatch_webhook_paths_multi_server") as mock_dispatch,
             patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
         ):
             MockPool.return_value.process_items_headless.return_value = _pool_result(completed=1)
@@ -218,14 +229,17 @@ class TestMultiServerGuards:
                 {"id": "plex-a", "type": "plex", "enabled": True},
                 {"id": "emby-1", "type": "emby", "enabled": True},
             ]
-            mock_dispatch.return_value = {r.value: 0 for r in ProcessingResult}
             run_processing(config, selected_gpus=[])
 
-        # Fallback called exactly once for the unresolved subset only —
-        # not for every webhook path, not for the resolved one.
-        mock_dispatch.assert_called_once()
-        kwargs = mock_dispatch.call_args.kwargs
-        assert kwargs.get("paths") == ["/data/b.mkv", "/data/c.mkv"]
+        # The K4 fallback call (last one) carries only b + c — not a.
+        # The MagicMock'd Plex resolution may or may not produce a
+        # dispatchable item depending on what its locations look like;
+        # the assertion that matters is that K4 received the right subset.
+        all_calls = MockPool.return_value.process_items_headless.call_args_list
+        assert len(all_calls) >= 1, "expected at least one K4 worker-pool dispatch"
+        k4_items = all_calls[-1].args[0]
+        k4_paths = sorted(i.canonical_path for i in k4_items)
+        assert k4_paths == ["/data/b.mkv", "/data/c.mkv"]
 
     def test_owning_servers_breadcrumb_logged_before_resolver(self, tmp_path):
         """Before the resolver runs, an info-level breadcrumb names the

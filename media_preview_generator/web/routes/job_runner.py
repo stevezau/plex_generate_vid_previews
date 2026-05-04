@@ -671,6 +671,18 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                         # builds Config from the right per-server view.
                         if parent_server_id:
                             retry_async_config["server_id"] = parent_server_id
+                        # Preserve vendor-webhook hints on the retry so the
+                        # retry takes the orchestrator's hint short-circuit
+                        # (skipping a slow Plex resolution roundtrip) instead
+                        # of silently falling back to the legacy resolution
+                        # path. Audit #2 / round-1 fix: without this, retries
+                        # of a Jellyfin-only webhook would 500 in plex_server()
+                        # because Plex isn't configured.
+                        parent_hints_raw = (current_job.config or {}).get("webhook_item_id_hints")
+                        if parent_hints_raw:
+                            retained = {p: parent_hints_raw[p] for p in paths if p in parent_hints_raw}
+                            if retained:
+                                retry_async_config["webhook_item_id_hints"] = retained
                         _start_job_async(rj.id, retry_async_config)
                         return rj.id
 

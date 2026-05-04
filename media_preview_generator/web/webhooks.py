@@ -272,6 +272,16 @@ def _resolve_webhook_server_context(server_id: str | None) -> tuple[str | None, 
         return None, None, None
     entry = next((e for e in raw if isinstance(e, dict) and e.get("id") == server_id), None)
     if entry is None:
+        # Vendor sent a ServerId we don't recognise — could be a server the
+        # user just deleted, or two installs sharing a UUID (Plex VM clone
+        # is the usual culprit). Surface it so the operator can debug
+        # instead of silently treating the webhook as unpinned.
+        logger.warning(
+            "Webhook server lookup: id={!r} not found in media_servers — webhook will be treated as "
+            "unpinned (publishes to every owning server). Verify the server is still configured "
+            "or use /api/webhooks/server/<id> to override.",
+            server_id,
+        )
         return None, None, None
     return (entry.get("id"), entry.get("name") or entry.get("id"), (entry.get("type") or "").lower() or None)
 
@@ -327,12 +337,22 @@ def create_vendor_webhook_job(
     if not canonical_path:
         return None
 
-    # Per-path dedup: same (source, server_id, path) seen recently → drop.
-    # Reuses the table populated by Sonarr/Radarr's debounce path so a
-    # mixed Plex+Sonarr install doesn't double-fire the same file.
+    # Per-path same-source dedup: same (source, server_id, path) seen
+    # recently → drop. Plex repeats ``library.new`` after metadata refresh
+    # / analyzer rerun; without dedup we'd spawn 2-4 Jobs per file.
+    # Cross-source dispatches (e.g. Plex's library.new + Sonarr's
+    # post-import webhook for the same file) are *intentionally* allowed
+    # to create separate Jobs — they represent different events and the
+    # downstream .meta journal correctly skips redundant FFmpeg work.
     dedup_key = (safe_source, server_id or "", canonical_path)
     now_ts = datetime.now(timezone.utc).timestamp()
     with _pending_lock:
+        # Evict expired entries before checking — bounds memory growth on
+        # high-volume Plex installs (one entry per ever-seen file × forever
+        # without this). Mirrors the cleanup in _schedule_webhook_job.
+        expired = [key for key, ts in _recent_dispatches.items() if now_ts - ts >= _RECENT_DISPATCH_TTL_SECONDS]
+        for key in expired:
+            _recent_dispatches.pop(key, None)
         last = _recent_dispatches.get(dedup_key)
         if last and (now_ts - last) < _RECENT_DISPATCH_TTL_SECONDS:
             logger.info(
