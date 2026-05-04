@@ -1187,7 +1187,36 @@ class TestManualTriggerAPI:
         assert "Manual:" in data.get("library_name", "")
         mock_start.assert_called_once()
         config_overrides = mock_start.call_args[0][1]
-        assert str(test_file) in config_overrides["webhook_paths"]
+        # Audit fix — also assert the override SHAPE the dispatcher
+        # depends on, not just that webhook_paths contains the file.
+        # A regression that flipped force_generate to True silently or
+        # injected unexpected library filters would have passed.
+        assert config_overrides["webhook_paths"] == [str(test_file)]
+        # force_generate defaults to False unless caller passes regenerate=True
+        assert config_overrides.get("force_generate", False) is False, (
+            "manual trigger must NOT silently force regeneration"
+        )
+
+    def test_manual_trigger_with_force_regenerate_propagates(self, client, tmp_path):
+        """Audit fix — matrix cell missing: manual trigger with
+        force_regenerate=True must surface as force_generate=True
+        in the dispatcher overrides."""
+        test_file = tmp_path / "movie.mkv"
+        test_file.touch()
+
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async") as mock_start:
+            with patch("media_preview_generator.web.routes.api_jobs.MEDIA_ROOT", str(tmp_path)):
+                resp = client.post(
+                    "/api/jobs/manual",
+                    headers=_api_headers(),
+                    json={"file_paths": [str(test_file)], "force_regenerate": True},
+                )
+        assert resp.status_code == 201
+        mock_start.assert_called_once()
+        config_overrides = mock_start.call_args[0][1]
+        assert config_overrides.get("force_generate") is True, (
+            f"force_regenerate=True must propagate as force_generate=True; got {config_overrides!r}"
+        )
 
     def test_manual_trigger_no_paths(self, client):
         """Empty file_paths returns 400."""

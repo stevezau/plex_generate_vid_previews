@@ -69,7 +69,18 @@ class TestSetupNotComplete:
             data=json.dumps(data),
             content_type="application/json",
         )
+        # Audit fix — original asserted only the status code. A regression
+        # where the endpoint accepted the call but silently DIDN'T set the
+        # token (returned 200 with success=False) would have passed.
         assert response.status_code == 200
+        body = response.get_json() or {}
+        assert body.get("success") is True, f"set-token must report success=True on success, got {body!r}"
+        # Verify the token actually changed.
+        from media_preview_generator.web.auth import get_auth_token
+
+        assert get_auth_token() == "test-tok-12345678", (
+            "set-token returned 200 with success=True but the token wasn't actually changed"
+        )
 
     def test_unauthenticated_get_plex_servers(self, client):
         """Test unauthenticated GET /api/plex/servers when setup incomplete.

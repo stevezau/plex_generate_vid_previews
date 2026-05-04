@@ -141,6 +141,12 @@ class TestAuthenticateEmbyWithPassword:
         assert "AccessToken" in result.message
 
     def test_invalid_json_treated_as_failure(self):
+        """Non-JSON 200 response → ok=False AND a useful error message.
+
+        Audit fix — original asserted only ok=False. A regression returning
+        ok=False with empty/None message would leave the user staring at a
+        blank UI error. Assert the message is non-empty + mentions parsing.
+        """
         with patch("media_preview_generator.servers._mediabrowser_auth.requests.post") as post:
             response = MagicMock(status_code=200)
             response.json.side_effect = ValueError("not json")
@@ -153,6 +159,7 @@ class TestAuthenticateEmbyWithPassword:
             )
 
         assert result.ok is False
+        assert result.message, "ok=False must surface a non-empty user-visible message"
 
     def test_timeout_returns_specific_message(self):
         with patch("media_preview_generator.servers._mediabrowser_auth.requests.post") as post:

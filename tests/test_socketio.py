@@ -257,13 +257,19 @@ class TestJobEvents:
         assert "job_started" in event_names
 
     def test_progress_update_event(self, app, authed_socketio_client):
-        """Progress updates should emit events."""
+        """Progress updates should emit events with the right payload.
+
+        Audit fix — original asserted only that the event fired ("event
+        emitted, but does it carry the right data?"). A regression that
+        emitted the event with stale or wrong payload values would have
+        passed. Now also assert the payload reflects the values we
+        passed into update_progress.
+        """
         from media_preview_generator.web.jobs import get_job_manager
 
         job_manager = get_job_manager()
         job = job_manager.create_job(library_name="Anime")
         job_manager.start_job(job.id)
-        # Drain setup events
         _wait_for_event(authed_socketio_client, "job_started")
 
         job_manager.update_progress(
@@ -277,6 +283,17 @@ class TestJobEvents:
         received = _wait_for_event(authed_socketio_client, "job_progress")
         event_names = [r["name"] for r in received]
         assert "job_progress" in event_names
+
+        # Inspect the payload — must carry our values. The wire shape is
+        # ``{"job_id": "...", "progress": {percent, processed_items, total_items, current_item, ...}}``.
+        progress_events = [r for r in received if r["name"] == "job_progress"]
+        payload = progress_events[-1]["args"][0]
+        assert payload.get("job_id") == job.id, f"job_progress event for wrong job: {payload!r}"
+        progress = payload.get("progress") or {}
+        assert progress.get("percent") == 50.0, f"percent missing or wrong: {payload!r}"
+        assert progress.get("processed_items") == 5, f"processed_items missing or wrong: {payload!r}"
+        assert progress.get("total_items") == 10, f"total_items missing or wrong: {payload!r}"
+        assert progress.get("current_item") == "Episode 5", f"current_item missing or wrong: {payload!r}"
 
     def test_job_completed_event(self, app, authed_socketio_client):
         """Completing a job should emit a job_completed event with completed status."""

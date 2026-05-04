@@ -504,7 +504,22 @@ class TestCreateServer:
                 "url": "http://jelly",
             },
         )
+        # Audit fix — original asserted only the status code. A 409 with empty
+        # body would have passed even if the route accidentally swallowed the
+        # collision detail. Also assert (a) the body identifies the conflict
+        # AND (b) the existing server wasn't mutated by the failed write.
         assert response.status_code == 409
+        body = response.get_json() or {}
+        assert "error" in body or "message" in body, (
+            f"409 must surface a useful error message, not an empty body: {body!r}"
+        )
+        # Existing emby server must not have been overwritten by the failed write.
+        existing = next(s for s in get_settings_manager().get("media_servers") if s["id"] == "fixed-id")
+        assert existing["type"] == "emby", (
+            f"failed POST silently mutated the existing server's type to {existing['type']!r}"
+        )
+        assert existing["name"] == "Existing"
+        assert existing["url"] == "http://emby"
 
 
 class TestUpdateServer:

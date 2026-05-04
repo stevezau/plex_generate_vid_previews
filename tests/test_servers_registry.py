@@ -124,31 +124,49 @@ class TestServerRegistryFromSettings:
         assert servers[0].id == "plex-default"
         assert servers[0].name == "Home Plex"
 
-    def test_unknown_server_type_skipped_silently(self, mock_config, caplog):
-        # All vendor types now have implementations (Plex/Emby/Jellyfin).
-        # Unknown type strings are still rejected by server_config_from_dict,
-        # which keeps them out of both `configs()` and `servers()`.
-        registry = ServerRegistry.from_settings(
-            [
-                {
-                    "id": "plex-default",
-                    "type": "plex",
-                    "name": "Plex",
-                    "enabled": True,
-                    "url": "http://plex:32400",
-                    "auth": {},
-                },
-                {
-                    "id": "kodi-1",
-                    "type": "kodi",  # not a supported vendor
-                    "name": "Kodi",
-                    "url": "http://kodi",
-                },
-            ],
-            legacy_config=mock_config,
-        )
+    def test_unknown_server_type_skipped_with_warning(self, mock_config):
+        """Unknown vendor type is dropped AND a warning is logged.
+
+        Audit fix — original used the ``caplog`` fixture but never asserted
+        on its contents (loguru doesn't emit through stdlib logging anyway).
+        Either drop the fixture OR assert the warning. Asserting the
+        warning catches a regression to silent-drop without log line —
+        operator would have no idea their config row was skipped.
+        """
+        from loguru import logger as _loguru_logger
+
+        captured: list[str] = []
+        sink_id = _loguru_logger.add(lambda msg: captured.append(str(msg)), level="DEBUG")
+        try:
+            registry = ServerRegistry.from_settings(
+                [
+                    {
+                        "id": "plex-default",
+                        "type": "plex",
+                        "name": "Plex",
+                        "enabled": True,
+                        "url": "http://plex:32400",
+                        "auth": {},
+                    },
+                    {
+                        "id": "kodi-1",
+                        "type": "kodi",  # not a supported vendor
+                        "name": "Kodi",
+                        "url": "http://kodi",
+                    },
+                ],
+                legacy_config=mock_config,
+            )
+        finally:
+            _loguru_logger.remove(sink_id)
         assert [s.id for s in registry.servers()] == ["plex-default"]
         assert {c.id for c in registry.configs()} == {"plex-default"}
+        # The unknown vendor MUST surface a log line so operators can debug
+        # why their kodi entry was silently dropped from processing.
+        assert any("kodi" in line.lower() for line in captured), (
+            f"unknown server type 'kodi' was silently skipped — operator gets no diagnostic. "
+            f"captured log lines: {captured!r}"
+        )
 
     def test_unknown_type_string_skipped(self, mock_config):
         registry = ServerRegistry.from_settings(

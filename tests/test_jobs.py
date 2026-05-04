@@ -291,7 +291,12 @@ class TestCompleteJobWarning:
         assert result.error == "hard fail"
 
     def test_warning_emits_job_completed_event(self, config_dir):
-        """warning= emits job_completed (not job_failed) SocketIO event."""
+        """warning= emits exactly one job_completed event (not job_failed).
+
+        Audit fix — original asserted ``len(emitted) >= 1`` (too loose; passes
+        with extra spurious events). Now asserts exactly one job_completed
+        event AND no job_failed, AND payload carries the warning text.
+        """
         os.makedirs(config_dir, exist_ok=True)
         jm = JobManager(config_dir=config_dir)
         emitted = []
@@ -301,10 +306,9 @@ class TestCompleteJobWarning:
         jm.start_job(job.id)
         jm.complete_job(job.id, warning="1 sent for retry")
 
-        assert len(emitted) >= 1
         event_names = [e[0] for e in emitted]
-        assert "job_completed" in event_names
-        assert "job_failed" not in event_names
+        assert event_names.count("job_completed") == 1, f"expected exactly one job_completed event, got {event_names!r}"
+        assert "job_failed" not in event_names, f"warning= must NOT emit job_failed: {event_names!r}"
         completed_data = next(d for e, d in emitted if e == "job_completed")
         assert completed_data["status"] == "completed"
         assert completed_data["error"] == "1 sent for retry"

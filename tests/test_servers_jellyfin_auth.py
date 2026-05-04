@@ -65,12 +65,27 @@ class TestPasswordAuth:
         assert "401" in result.message
 
     def test_missing_url_short_circuits(self):
-        result = authenticate_jellyfin_with_password(base_url="", username="x", password="y")
+        """Missing URL → no HTTP call AND ok=False with useful message.
+
+        Audit fix — original asserted only ok=False. A regression that
+        wasted a network round-trip on empty URL (e.g. requests.post('',
+        ...)) would have passed. Patch ``requests.post`` and assert it
+        was NOT called.
+        """
+        with patch("media_preview_generator.servers._mediabrowser_auth.requests.post") as post:
+            result = authenticate_jellyfin_with_password(base_url="", username="x", password="y")
+
         assert not result.ok
+        assert result.message, "missing-URL short-circuit must surface a non-empty error message"
+        post.assert_not_called(), "short-circuit must NOT make an HTTP call when URL is empty"
 
     def test_missing_username_short_circuits(self):
-        result = authenticate_jellyfin_with_password(base_url="http://jellyfin:8096", username="", password="y")
+        with patch("media_preview_generator.servers._mediabrowser_auth.requests.post") as post:
+            result = authenticate_jellyfin_with_password(base_url="http://jellyfin:8096", username="", password="y")
+
         assert not result.ok
+        assert result.message, "missing-username short-circuit must surface a non-empty error message"
+        post.assert_not_called(), "short-circuit must NOT make an HTTP call when username is empty"
 
 
 class TestInitiateQuickConnect:
