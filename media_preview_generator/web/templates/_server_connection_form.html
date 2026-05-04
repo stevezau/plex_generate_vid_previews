@@ -10,20 +10,32 @@
 <div id="step-connect" class="server-step d-none">
     <h6 class="text-muted mb-3">Connect to <span id="step-connect-vendor"></span></h6>
     <div class="mb-3">
-        <label class="form-label">Server URL</label>
+        <label class="form-label">Server URL
+            <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+               data-bs-toggle="tooltip" data-bs-placement="top"
+               title="The address this app uses to talk to your media server. Use the host's IP (e.g. http://192.168.1.100:32400), not 'localhost' — 'localhost' inside this container does NOT mean your host."></i>
+        </label>
         <input type="text" id="serverUrl" class="form-control" placeholder="http://hostname:port" autocomplete="off">
         <div class="invalid-feedback">Enter the server URL.</div>
         <div class="form-text">Default ports: <code>:32400</code> Plex &middot; <code>:8096</code> Emby &middot; <code>:8096</code> Jellyfin</div>
     </div>
     <div class="mb-3">
-        <label class="form-label">Display name</label>
+        <label class="form-label">Display name
+            <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+               data-bs-toggle="tooltip" data-bs-placement="top"
+               title="What this server is called in the UI. Cosmetic only — pick anything memorable (e.g. 'Living Room Plex', 'NAS Jellyfin')."></i>
+        </label>
         <input type="text" id="serverName" class="form-control" placeholder="e.g. Home Server, Living Room">
         <div class="invalid-feedback">Give this server a name to recognise it later.</div>
     </div>
 
     <!-- Auth method picker (Emby / Jellyfin only) -->
     <div id="auth-method-section" class="mb-3 d-none">
-        <label class="form-label">Authentication</label>
+        <label class="form-label">Authentication
+            <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+               data-bs-toggle="tooltip" data-bs-placement="top"
+               title="How this app proves who it is to your server. Quick Connect (Jellyfin) is friendliest — no password needed. Username + password works on every Emby/Jellyfin install. API key is the most reliable for headless setups but requires creating a key in your server's admin UI first."></i>
+        </label>
         <div class="btn-group w-100" role="group">
             <input type="radio" class="btn-check" name="authMethod" id="auth-quick" value="quick_connect" autocomplete="off">
             <label class="btn btn-outline-primary" for="auth-quick">Quick Connect</label>
@@ -36,19 +48,31 @@
 
     <div id="auth-fields-password" class="d-none">
         <div class="mb-2">
-            <label class="form-label">Username</label>
+            <label class="form-label">Username
+                <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                   data-bs-toggle="tooltip" data-bs-placement="top"
+                   title="The Emby/Jellyfin user account this app should sign in as. Use an admin account so the app can read every library."></i>
+            </label>
             <input type="text" id="authUsername" class="form-control" autocomplete="username">
             <div class="invalid-feedback">Enter the username.</div>
         </div>
         <div class="mb-2">
-            <label class="form-label">Password</label>
+            <label class="form-label">Password
+                <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                   data-bs-toggle="tooltip" data-bs-placement="top"
+                   title="Your password is sent once to the server in exchange for an access token; only the token is stored. Your password itself is never saved."></i>
+            </label>
             <input type="password" id="authPassword" class="form-control" autocomplete="current-password">
             <div class="form-text">Sent once to the server; not stored here.</div>
         </div>
     </div>
     <div id="auth-fields-api-key" class="d-none">
         <div class="mb-2">
-            <label class="form-label">API key</label>
+            <label class="form-label">API key
+                <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                   data-bs-toggle="tooltip" data-bs-placement="top"
+                   title="A long-lived authentication token. Create one in Emby/Jellyfin admin → Dashboard → API Keys, then paste it here."></i>
+            </label>
             <input type="password" id="authApiKey" class="form-control" autocomplete="off">
             <div class="invalid-feedback">Enter the API key.</div>
         </div>
@@ -64,7 +88,7 @@
         <div id="quickConnectCode" class="alert alert-info d-none"></div>
         <div class="alert alert-warning small mb-0 mt-2">
             <i class="bi bi-exclamation-triangle me-1"></i>
-            Jellyfin needs <em>Trickplay image extraction</em> enabled per library to show previews. The Servers page has a one-click <strong>Fix trickplay</strong> button.
+            Jellyfin needs <em>Trickplay image extraction</em> enabled per library to show previews. After saving, open this server's Edit screen — the <strong>Stop this server from generating previews itself</strong> card has a one-click button that flips the right settings for you.
         </div>
     </div>
 
@@ -108,10 +132,14 @@
         </details>
 
         <div class="mb-2">
-            <label class="form-label">Plex config folder (where Plex Media Server stores its data)</label>
+            <label class="form-label">Plex config folder
+                <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                   data-bs-toggle="tooltip" data-bs-placement="top"
+                   title="Where Plex stores its config — the folder this app needs to write preview files into. This is the path INSIDE this container (i.e. where you mounted your Plex config volume), not the path on your host."></i>
+            </label>
             <input type="text" id="plexConfigFolder" class="form-control" placeholder="/config/plex">
             <div class="form-text">
-                BIF files land in <code>{this folder}/Media/localhost/.../*.bundle/Contents/Indexes/</code>.
+                Preview files land in <code>{this folder}/Media/localhost/...</code>.
                 Common Docker bind: <code>-v /path/to/plex/config:/config/plex</code>.
             </div>
         </div>
