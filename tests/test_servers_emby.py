@@ -696,26 +696,42 @@ class TestPass0NameStartsWithFastPath:
             assert ns_call.kwargs["params"]["NameStartsWith"] == "Quiet"
             assert ns_call.kwargs["params"]["IncludeItemTypes"] == "Movie"
 
-    def test_falls_through_to_pass1_when_namestartswith_returns_zero(self, emby_with_tv_lib):
-        """Show isn't in Emby (NameStartsWith → 0). Must run Pass 1+2,
-        not silently report the file as missing.
+    def test_short_circuits_pass1_when_namestartswith_returns_zero(self, emby_with_tv_lib):
+        """perf #44 — when Pass 0 ran with a cleanly-extracted prefix
+        scoped to ``ParentId`` AND ``NameStartsWith`` returned zero
+        candidates, the file is definitively NOT in this library.
+
+        Skip the slow Pass 1 ``searchTerm`` query (30s scoring loop on
+        a big library) — that's the dominant cost of multi-server
+        webhook setups where one server simply doesn't own the path.
+
+        Recall risk is bounded: the only false-negative shape is
+        "show IS in Emby but its stored Name's first word differs
+        completely from the folder name's first word" (~1% rate per
+        the live audit in commit f211dd7). Those still resolve via
+        the next webhook fire or scheduled scan — far cheaper than
+        burning 30s × every webhook × every non-owning server.
         """
         path = "/library/TV/Unknown Show (2099)/Season 01/episode.mkv"
         path_empty = self._resp({"Items": []})
         ns_empty = self._resp({"TotalRecordCount": 0, "Items": []})
-        pass1_empty = self._resp({"Items": []})
-        pass2_empty = self._resp({"Items": []})
+        # No Pass 1+2 mocks — they MUST NOT run.
         with patch.object(
             EmbyServer,
             "_request",
-            side_effect=[path_empty, ns_empty, pass1_empty, pass2_empty],
+            side_effect=[path_empty, ns_empty],
         ) as req:
             got = emby_with_tv_lib._uncached_resolve_remote_path_to_item_id(path)
             assert got is None
-            # Confirm Pass 1 ran (searchTerm present in some call's params).
-            assert any("searchTerm" in (c.kwargs.get("params") or {}) for c in req.call_args_list), (
-                "Pass 1 searchTerm MUST run after Pass 0 misses — otherwise we lose "
-                "recall for shows whose folder name doesn't match Emby's stored Name."
+            # Pass 1's searchTerm MUST NOT have run.
+            assert not any("searchTerm" in (c.kwargs.get("params") or {}) for c in req.call_args_list), (
+                "Pass 0 with cleanly-extracted prefix + ParentId-scoped 0-candidate result is a "
+                "definitive miss. Pass 1's slow scoring loop must be skipped (perf #44)."
+            )
+            # Exactly two requests: Path= filter, then Pass 0 NameStartsWith.
+            assert req.call_count == 2, (
+                f"Expected 2 requests (Path=, NameStartsWith); got {req.call_count}: "
+                f"{[(c.args, c.kwargs.get('params')) for c in req.call_args_list]}"
             )
 
     def test_falls_through_when_series_match_but_episode_missing(self, emby_with_tv_lib):
@@ -773,23 +789,32 @@ class TestPass0NameStartsWithFastPath:
             # Pass 1 did run.
             assert any("searchTerm" in (c.kwargs.get("params") or {}) for c in req.call_args_list)
 
-    def test_skips_pass0_when_no_extractable_title(self, emby_with_tv_lib):
-        """Single-component path → no parent dir → no extractable
-        prefix → Pass 0 skipped, Pass 1+2 still run.
+    def test_falls_through_to_pass1_when_no_extractable_title(self, emby_with_tv_lib):
+        """No usable first-word prefix (parent dir cleans down to a
+        single character) → Pass 0 returns ``(None, indeterminate)``
+        → Pass 1+2 still run.
+
+        This is the recall safety net for the perf #44 short-circuit:
+        we only skip Pass 1+2 when Pass 0 actually QUERIED Emby and
+        got 0 results back. If we couldn't even form a meaningful
+        NameStartsWith query, we fall through to legacy behaviour.
         """
-        path = "/library/TV/foo.mkv"  # only 3 components, parent is "TV" which is the library dir
+        # parent dir "A" → cleaned first-word len 1 → _extract_title_prefix
+        # returns None → Pass 0 short-circuits before any NameStartsWith call.
+        path = "/library/TV/A/Season 01/A.mkv"
         path_empty = self._resp({"Items": []})
         pass1_empty = self._resp({"Items": []})
         pass2_empty = self._resp({"Items": []})
-        # Pass 0 may extract "TV" — but we need to ensure no NameStartsWith call
-        # runs OR if it does, we still fall through. Simplest: provide enough
-        # mocks for either flow + assert searchTerm fired.
-        responses = [path_empty, pass1_empty, pass2_empty]
-        # Pad in case Pass 0 attempts a query with parent="TV" extracted.
-        responses = [path_empty, self._resp({"Items": []}), pass1_empty, pass2_empty]
-        with patch.object(EmbyServer, "_request", side_effect=responses) as req:
+        with patch.object(
+            EmbyServer,
+            "_request",
+            side_effect=[path_empty, pass1_empty, pass2_empty],
+        ) as req:
             got = emby_with_tv_lib._uncached_resolve_remote_path_to_item_id(path)
             assert got is None
+            # Pass 0 must NOT have issued a NameStartsWith request.
+            assert not any("NameStartsWith" in (c.kwargs.get("params") or {}) for c in req.call_args_list)
+            # Pass 1's searchTerm DID run — recall preserved.
             assert any("searchTerm" in (c.kwargs.get("params") or {}) for c in req.call_args_list)
 
 

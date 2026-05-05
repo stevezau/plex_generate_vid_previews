@@ -498,14 +498,34 @@ class EmbyApiClient(MediaServer):
         # with 100% Id agreement against Pass 1+2 across 22 real paths
         # (see tools/bench_emby_lookup.py if re-running).
         #
-        # Falls through to Pass 1 + Pass 2 on miss so we never lose
-        # recall: a show whose folder name doesn't match Emby's stored
-        # Name (e.g. user renamed the folder) still resolves via the
-        # legacy searchTerm path.
+        # Two miss flavours, distinguished by ``definitive_miss``:
+        # * ``definitive_miss=True`` — prefix extracted cleanly AND
+        #   ``NameStartsWith`` (scoped by the known ParentId) returned
+        #   zero candidates. No item in this library starts with that
+        #   prefix; the file isn't here. Short-circuit Pass 1+2 — the
+        #   30s scoring loop is the dominant cost of multi-server
+        #   webhook setups where one server simply doesn't own the
+        #   path. (perf #44)
+        # * ``definitive_miss=False`` — every other miss case: prefix
+        #   extraction failed, cap busted, network/parse error, or
+        #   candidates found but local basename match missed. Fall
+        #   through to Pass 1+2 to preserve recall on edge cases
+        #   (folder name fundamentally differs from Emby's stored
+        #   Name, basename slightly varied, etc.).
         if parent_id:
-            pass0_id = self._pass0_name_prefix_lookup(remote_path, basename, target_tail, parent_id)
+            pass0_id, definitive_miss = self._pass0_name_prefix_lookup(remote_path, basename, target_tail, parent_id)
             if pass0_id is not None:
                 return pass0_id
+            if definitive_miss:
+                logger.debug(
+                    "{} reverse-lookup short-circuit for {!r}: Pass 0 NameStartsWith "
+                    "returned 0 candidates with prefix scoped to ParentId={}; skipping "
+                    "Pass 1+2 (perf #44).",
+                    self.vendor_name,
+                    remote_path,
+                    parent_id,
+                )
+                return None
 
         # Pass 1 — cheap searchTerm query, scoped to the owning library
         # when we have its id.
@@ -670,20 +690,26 @@ class EmbyApiClient(MediaServer):
         basename: str,
         target_tail: str,
         parent_id: str,
-    ) -> str | None:
+    ) -> tuple[str | None, bool]:
         """Try NameStartsWith → per-Series enumerate before slow Pass 1+2.
 
         Returns:
-            Item id when the file is found via this fast path. ``None``
-            on every other outcome (no extractable prefix, NameStartsWith
-            returned zero / too many candidates, error, or the candidate
-            series simply don't contain this episode). Caller treats
-            ``None`` as "fall through to Pass 1+2" — this path never
-            short-circuits the legacy fallback for negative cases.
+            ``(item_id, definitive_miss)``:
+
+            * ``(str, _)`` — found; ``item_id`` is the resolved Emby Id.
+            * ``(None, True)`` — Pass 0 conclusively confirmed the file
+              isn't in this library. Specifically: prefix extracted
+              cleanly AND ``NameStartsWith`` (scoped by ``ParentId``)
+              returned zero candidates. Caller skips Pass 1+2 (perf #44).
+            * ``(None, False)`` — Pass 0 was indeterminate. Caller falls
+              through to Pass 1+2 for recall safety. Includes:
+              prefix-extraction failure, cap-busted candidate set,
+              network/parse error, candidates found but local basename
+              match missed.
         """
         extracted = self._extract_title_prefix(remote_path)
         if not extracted:
-            return None
+            return (None, False)
         title_prefix, is_episode = extracted
 
         # Step 1: NameStartsWith → small candidate set scoped to library.
@@ -711,10 +737,14 @@ class EmbyApiClient(MediaServer):
                 remote_path,
                 exc,
             )
-            return None
+            return (None, False)
 
         if not candidates:
-            return None
+            # ParentId-scoped query with a cleanly-extracted prefix
+            # returned zero. No show/movie in this library starts with
+            # that prefix → the file genuinely isn't indexed here.
+            # Definitive negative — caller can skip Pass 1+2.
+            return (None, True)
         # Cap busted: a too-broad prefix returned more than we'd want to
         # walk. Abort so Pass 1's scoring narrows the field instead.
         if isinstance(total, int) and total > self._PASS0_PARENT_CANDIDATE_CAP:
@@ -725,13 +755,17 @@ class EmbyApiClient(MediaServer):
                 total,
                 self._PASS0_PARENT_CANDIDATE_CAP,
             )
-            return None
+            return (None, False)
 
         # Step 2: movies match directly on the candidate set; episodes
         # need a per-Series enumerate (each Series has 10-300 episodes,
         # tiny vs the 1000-cap library walk Pass 2 does).
         if not is_episode:
-            return self._match_basename(candidates, basename, target_tail)
+            hit = self._match_basename(candidates, basename, target_tail)
+            # Indeterminate when no basename match: candidates exist
+            # but none matched — could be a basename variation Pass 1's
+            # full-stem scoring still recovers. Preserve recall.
+            return (hit, False)
 
         for series in candidates:
             if not isinstance(series, dict):
@@ -760,8 +794,8 @@ class EmbyApiClient(MediaServer):
                 continue
             hit = self._match_basename(episodes, basename, target_tail)
             if hit:
-                return hit
-        return None
+                return (hit, False)
+        return (None, False)
 
     @staticmethod
     def _match_basename(items: list, basename: str, target_tail: str) -> str | None:
