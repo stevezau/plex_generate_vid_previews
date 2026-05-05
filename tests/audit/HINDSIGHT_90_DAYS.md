@@ -111,3 +111,34 @@
 2. **CSS / theme drift across templates (Category E, 4 fixes — `3866a0a`, `8953d4b`, `0b399f2`, `f30f67b`)** — `test_theme_toggle.py` tests the toggle but not per-page rendering. **Strategy:** add a Playwright visual-regression checkpoint per major page (`/`, `/settings`, `/webhooks`, `/schedules`, `/logs`, `/bif`) in both themes. The "dark island on light page" class of bug only shows up visually. The repository already has `tests/VISUAL_REGRESSION_CHECKLIST.md` — operationalize it.
 
 3. **Frontend JS pure logic (Category C, schedule cron + progress replay + path normalization in modals)** — these are *pure functions* (`describeSchedule`, etc.) but live in a 5000+ line `app.js` with no JS test runner. **Strategy:** either factor pure helpers into a separate ESM module and add Vitest, or — lower-cost — add `tests/e2e/test_schedule_modal.py` that round-trips schedule creation through the UI and asserts the resulting cron string. Same Playwright harness would have caught `2d29fe9` and `31cd4a0`.
+
+---
+
+## 4. Backfill status (2026-05-05)
+
+The 2026-05-05 backfill batch closed five Category C/B zero-coverage
+gaps from the per-fix table above. Each test was verified by surgically
+reverting the production fix (one-line change) and confirming the new
+test fails loudly.
+
+| Fix SHA | Cat | Hindsight test added | Verify-by-revert |
+|---|---|---|---|
+| `7a721a6` (Sportarr flat `filePath`) | C | `tests/test_webhooks.py::TestExtractSonarrFilePathPayloadMatrix` (5 cells: standard nested, series+relative, Sportarr flat, empty, precedence) | Pure-function helper — covered by direct unit assertions on every payload shape. |
+| `357c442` (Content-Type force parse) | B | `tests/test_webhooks.py::TestWebhookContentTypeForceParse` (Radarr w/ `text/plain`, custom w/ `application/x-www-form-urlencoded`) | Removing `force=True` from `request.get_json(...)` would now fail both cells (raw JSON body wouldn't parse). |
+| `51075c9` (auth header precedence) | B | `tests/test_webhooks.py::TestWebhookAuthHeaderPrecedence` (3 matrix cells: X-Auth-Token-valid+Bearer-junk, Bearer-valid+X-Auth-Token-junk, both junk) | Reverting `_authenticate_webhook` to "first header wins" would fail one of the two valid-header cells depending on which header was made authoritative. |
+| `197df73`/`d481eb6` (webhook history persistence) | C | `tests/test_webhooks.py::TestWebhookHistoryDiskRoundTrip` (3 cells: write+rehydrate, cap enforcement on load, missing-file no-op) | Removing the `_save_history_to_disk()` call from `_add_history_entry` would fail the round-trip assertion (file wouldn't exist). |
+| `0a74c5b` (BIF show-hub `ratingKey`) | C | `tests/test_bif_viewer.py::TestBifSearchShowHubUsesRatingKey` (2 cells: ratingKey-derived URL pin, missing-ratingKey skip) | Verified by replacing `show_key = f"/library/metadata/{rating_key}"` with `show_key = show_item.get("key", "")` at api_bif.py:418 → primary test fails with the doubled-prefix URL diagnostic. |
+
+**D34 (`a64030c`) sub-second worker visibility** — the one outstanding
+hindsight test from `REGRESSION_VERIFIED.md` row 4 — also closed in
+this batch (`tests/test_job_dispatcher.py::TestEmitWorkerUpdatesStateChangeBypass`).
+Verified by hardcoding `state_changed = False` at dispatcher.py:574 →
+2 of 3 tests fail loudly.
+
+### Remaining zero-coverage rows (deferred — different testing strategy required)
+
+- `2d29fe9` (cron day-of-week offset) — pure JS, needs JSDOM/Vitest or Playwright e2e (recommendation #3 in section 3 above).
+- `f30f67b` / `146e649` / `19bdd58` / `be3f019` / `9a4790e` / `fbddcd5` — pure UI / CSS / template, Playwright visual regression strategy (recommendation #2 in section 3).
+- `0346b1f` (loguru `%s`→`{}`) — needs log-format-string capture infrastructure that doesn't exist anywhere in the repo yet.
+- `c5a050d` (Plex re-auth URL picker) — multi-step flow, candidate for a `tests/e2e/test_plex_reauth_flow.py` Playwright test.
+- `736d6c0` (container init script populates `/dev/dri/by-path`) — Docker entrypoint behavior, fundamentally not a Python unit-test surface.

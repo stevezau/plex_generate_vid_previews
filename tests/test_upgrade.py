@@ -1186,8 +1186,20 @@ class TestMigrateToV8:
         )
         _migrate_to_v8(settings_manager)
         servers = settings_manager.get("media_servers")
-        assert len(servers[0]["path_mappings"]) == 2
-        assert len(servers[0]["exclude_paths"]) == 2
+        # Audit fix — was just `len == 2`. A regression that overwrote the
+        # existing rules (so [global] alone, len still 2 if both happened to
+        # have 1) or swapped ordering would silently pass. Production v8
+        # appends globals AFTER existing per-server rules
+        # (existing_pm + list(global_path_mappings)); pin both content AND
+        # order.
+        assert servers[0]["path_mappings"] == [
+            {"plex_prefix": "/old", "local_prefix": "/local-old"},
+            {"plex_prefix": "/new", "local_prefix": "/local-new"},
+        ], f"existing-first ordering broken: {servers[0]['path_mappings']!r}"
+        assert servers[0]["exclude_paths"] == [
+            {"value": "/old-excl", "type": "path"},
+            {"value": "/new-excl", "type": "path"},
+        ], f"existing-first ordering broken: {servers[0]['exclude_paths']!r}"
 
     def test_pre_v6_legacy_keys_cleaned_up(self, settings_manager):
         """plex_videos_path_mapping / plex_local_videos_path_mapping vestigial keys are dropped."""

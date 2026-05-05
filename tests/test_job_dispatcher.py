@@ -982,3 +982,172 @@ class TestInflightJobGuard:
 
         with _inflight_lock:
             _inflight_jobs.discard(fake_id)
+
+
+# ---------------------------------------------------------------------------
+# D34 — sub-second worker visibility (state-change throttle bypass)
+# ---------------------------------------------------------------------------
+
+
+class TestEmitWorkerUpdatesStateChangeBypass:
+    """D34 hindsight test: ``_emit_worker_updates`` must bypass the 1Hz
+    throttle whenever any worker's busy state has flipped since the
+    previous emit pass.
+
+    Without the bypass, sub-second tasks (skip-cached BIF exists, frame-
+    cache hits) flickered processing→idle inside a single 1-second
+    throttle window and the user saw NO worker activity at all (the
+    user-flagged "I see progress sometimes but not for this job"
+    symptom from incident D34 / commit a64030c).
+
+    Pin point: ``dispatcher.py:574``
+    ``state_changed = current_busy != self._last_worker_busy_snapshot``
+    plus the ``or state_changed`` clause on the throttle check.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset(self):
+        reset_dispatcher()
+        yield
+        reset_dispatcher()
+
+    def _make_dispatcher_with_two_workers(self):
+        pool = WorkerPool(cpu_workers=2, gpu_workers=0, selected_gpus=[])
+        dispatcher = JobDispatcher(pool)
+        return dispatcher, pool
+
+    def _make_tracker(self, dispatcher, callback):
+        from media_preview_generator.jobs.dispatcher import JobTracker
+
+        tracker = JobTracker(
+            job_id="d34-job",
+            items=_pi_list_or_passthrough([("k1", "Item 1", "movie")]),
+            config=_make_config(),
+            registry=MagicMock(),
+            callbacks={"worker_callback": callback},
+        )
+        # Register on dispatcher so _emit_worker_updates picks it up.
+        with dispatcher._trackers_lock:
+            dispatcher._trackers["d34-job"] = tracker
+        return tracker
+
+    def test_state_change_bypasses_subsecond_throttle(self):
+        """Two back-to-back emits with worker.is_busy flipped between them
+        must both fire the worker_callback even though the second emit is
+        ~0ms after the first (well inside the 1Hz throttle window).
+
+        Then a third emit with NO state change must NOT fire the callback
+        because the throttle is still active.
+
+        Real wall-clock timing — no freezing. The two flipped emits run
+        back-to-back so the gap is naturally << 1 second.
+        """
+        dispatcher, pool = self._make_dispatcher_with_two_workers()
+        try:
+            callback_calls: list[list[dict]] = []
+            tracker = self._make_tracker(dispatcher, callback=callback_calls.append)
+
+            workers = pool._snapshot_workers()
+            assert len(workers) == 2, "Test needs exactly 2 workers to flip one"
+            w0, w1 = workers
+            # Establish baseline state on the dispatcher snapshot so the
+            # FIRST emit below already counts as a state change (idle
+            # snapshot {} → {w0:False, w1:False}). This call also primes
+            # tracker._last_worker_update so the SECOND emit's throttle
+            # check is genuinely contested.
+            w0.is_busy = False
+            w1.is_busy = False
+
+            # --- Emit #1: idle baseline. State CHANGED (snapshot was {}
+            # before init) so the callback should fire even though
+            # _last_worker_update == 0.0 happens to be > 1 second old.
+            dispatcher._emit_worker_updates()
+            assert len(callback_calls) == 1, "Emit #1 should fire (state change from empty snapshot)"
+            time_after_first = tracker._last_worker_update
+            assert time_after_first > 0.0, "Emit #1 should have stamped _last_worker_update"
+
+            # --- Emit #2: flip w0 busy → state changed → BYPASS throttle.
+            # This is the load-bearing case. Without the bypass the
+            # throttle (now - last < 1.0) would suppress this callback.
+            w0.is_busy = True
+            dispatcher._emit_worker_updates()
+            assert len(callback_calls) == 2, "Emit #2 must fire despite sub-second gap because w0.is_busy flipped"
+            elapsed_emit2 = tracker._last_worker_update - time_after_first
+            assert elapsed_emit2 < 1.0, (
+                f"This test only proves the bypass if emit #2 ran within 1s of "
+                f"emit #1; got elapsed={elapsed_emit2:.4f}s. Slow CI? Increase parallelism."
+            )
+
+            # --- Emit #3: NO state change (snapshot already {w0:True,
+            # w1:False}). Throttle still active (< 1s since emit #2). The
+            # callback must NOT fire — that's the other half of the
+            # contract: throttle is real when state is stable.
+            dispatcher._emit_worker_updates()
+            assert len(callback_calls) == 2, (
+                "Emit #3 must NOT fire — no state change AND throttle still active. "
+                "If this fired, the bypass condition is too loose (always-fire)."
+            )
+        finally:
+            dispatcher.shutdown()
+
+    def test_throttle_still_active_when_no_state_change(self):
+        """Inverse cell of the matrix: rapid-fire emits with stable busy
+        state must respect the 1Hz throttle.
+
+        Guards against an over-eager fix that drops the throttle entirely
+        ("just always emit on every loop iteration"). The user-observed
+        symptom was missing emits, not surplus emits — surplus emits
+        flood SocketIO and rebuild the workers panel ~100x/sec, the
+        problem the throttle existed to solve in the first place.
+        """
+        dispatcher, pool = self._make_dispatcher_with_two_workers()
+        try:
+            callback_calls: list[list[dict]] = []
+            self._make_tracker(dispatcher, callback=callback_calls.append)
+
+            workers = pool._snapshot_workers()
+            workers[0].is_busy = True
+            workers[1].is_busy = False
+
+            # First emit primes the snapshot AND fires (state changed
+            # from {} to current).
+            dispatcher._emit_worker_updates()
+            assert len(callback_calls) == 1
+
+            # Now emit 5 more times with the same state. The throttle
+            # must suppress every one of them.
+            for _ in range(5):
+                dispatcher._emit_worker_updates()
+
+            assert len(callback_calls) == 1, (
+                f"Expected throttle to suppress 5 stable-state emits; got {len(callback_calls)} total callbacks"
+            )
+        finally:
+            dispatcher.shutdown()
+
+    def test_state_change_snapshot_includes_all_workers(self):
+        """A flip on ANY worker (not just the first) must trip the
+        bypass. Guards against a fix that only watches one worker or
+        compares only worker[0].is_busy.
+        """
+        dispatcher, pool = self._make_dispatcher_with_two_workers()
+        try:
+            callback_calls: list[list[dict]] = []
+            self._make_tracker(dispatcher, callback=callback_calls.append)
+
+            workers = pool._snapshot_workers()
+            # Prime: both idle.
+            workers[0].is_busy = False
+            workers[1].is_busy = False
+            dispatcher._emit_worker_updates()
+            assert len(callback_calls) == 1, "baseline emit"
+
+            # Flip the SECOND worker only, leave w0 idle.
+            workers[1].is_busy = True
+            dispatcher._emit_worker_updates()
+            assert len(callback_calls) == 2, (
+                "Flipping w1 (not w0) must still trigger the bypass — "
+                "the snapshot dict compares all worker IDs, not just one."
+            )
+        finally:
+            dispatcher.shutdown()

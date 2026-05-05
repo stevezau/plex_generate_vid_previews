@@ -28,7 +28,7 @@ Per-test deep audit of every test in `tests/`. Each test classified:
 | test_dispatcher_kwargs_matrix.py | 18 | [link](AUDIT_test_dispatcher_kwargs_matrix.md) | ✅ STRONG |
 | test_eta_calculation.py | 8 | [link](AUDIT_test_eta_calculation.md) | ✅ STRONG |
 | test_file_results.py | 30 | [link](AUDIT_test_file_results.md) | ⚠ MIXED (3 weak) |
-| test_full_scan_multi_server.py | ~30 | [link](AUDIT_test_full_scan_multi_server.md) | ⚠ MIXED (1 weak) |
+| test_full_scan_multi_server.py | ~32 | [link](AUDIT_test_full_scan_multi_server.md) | ⚠ MIXED (1 weak label-substring) |
 | test_gpu_ci.py | 7 | [link](AUDIT_test_gpu_ci.md) | ✅ STRONG |
 | test_gpu_detection_extended.py | ~205 | [link](AUDIT_test_gpu_detection_extended.md) | ✅ STRONG |
 | test_headers.py | 2 | [link](AUDIT_test_headers.md) | ✅ STRONG |
@@ -43,12 +43,12 @@ Per-test deep audit of every test in `tests/`. Each test classified:
 | test_output_jellyfin_trickplay.py | 11 | [link](AUDIT_test_output_jellyfin_trickplay.md) | ✅ STRONG |
 | test_output_journal.py | 16 | [link](AUDIT_test_output_journal.md) | ✅ STRONG |
 | test_output_plex_bundle.py | 15 | [link](AUDIT_test_output_plex_bundle.md) | ✅ STRONG |
-| test_plex_client.py | ~70 | [link](AUDIT_test_plex_client.md) | ⚠ MIXED (1 bug-locking, 1 framework-trivia class, 1 weak) |
+| test_plex_client.py | ~74 | [link](AUDIT_test_plex_client.md) | ⚠ MIXED (5 weak log-substring, 1 weak tuple-presence) |
 | test_plex_webhook_registration.py | 19 | [link](AUDIT_test_plex_webhook_registration.md) | ✅ STRONG |
 | test_priority.py | 18 | [link](AUDIT_test_priority.md) | ✅ STRONG |
 | test_processing.py | 30 | [link](AUDIT_test_processing.md) | ⚠ MIXED (4 weak/bug-blind) |
 | test_processing_frame_cache.py | 32 | [link](AUDIT_test_processing_frame_cache.md) | ✅ STRONG (gold-standard) |
-| test_processing_multi_server.py | 31 | [link](AUDIT_test_processing_multi_server.md) | ✅ STRONG |
+| test_processing_multi_server.py | 31 | [link](AUDIT_test_processing_multi_server.md) | ✅ STRONG (re-audited; gold-standard) |
 | test_processing_outcome.py | 18 | [link](AUDIT_test_processing_outcome.md) | ✅ STRONG |
 | test_processing_registry.py | 12 | [link](AUDIT_test_processing_registry.md) | ✅ STRONG |
 | test_processing_retry_queue.py | 16 | [link](AUDIT_test_processing_retry_queue.md) | ✅ STRONG |
@@ -56,7 +56,7 @@ Per-test deep audit of every test in `tests/`. Each test classified:
 | test_recent_added_scanner.py | 13 | [link](AUDIT_test_recent_added_scanner.md) | ✅ STRONG |
 | test_retry_cascade.py | 11 | [link](AUDIT_test_retry_cascade.md) | ✅ STRONG |
 | test_routes.py | ~302 | [link](AUDIT_test_routes.md) | ✅ STRONG |
-| test_scheduler.py | 53 | [link](AUDIT_test_scheduler.md) | ✅ STRONG |
+| test_scheduler.py | ~55 | [link](AUDIT_test_scheduler.md) | ✅ STRONG (re-audited) |
 | test_security_fixes.py | 15 | [link](AUDIT_test_security_fixes.md) | ✅ STRONG |
 | test_servers_base.py | 22 | [link](AUDIT_test_servers_base.md) | ⚠ MIXED (4 weak) |
 | test_servers_emby.py | 38 | [link](AUDIT_test_servers_emby.md) | ⚠ MIXED (4 weak) |
@@ -72,15 +72,15 @@ Per-test deep audit of every test in `tests/`. Each test classified:
 | test_socketio.py | 10 | [link](AUDIT_test_socketio.md) | ⚠ MIXED (1 weak) |
 | test_static_app_js.py | 10 | [link](AUDIT_test_static_app_js.md) | ✅ STRONG (rejects P3.7 delete-rec) |
 | test_timezone.py | 4 | [link](AUDIT_test_timezone.md) | ✅ STRONG |
-| test_upgrade.py | ~70 | [link](AUDIT_test_upgrade.md) | ✅ STRONG (exemplary) |
+| test_upgrade.py | ~73 | [link](AUDIT_test_upgrade.md) | ⚠ MIXED (1 weak append-ordering) |
 | test_utils.py | 36 | [link](AUDIT_test_utils.md) | ⚠ MIXED (5 weak) |
 | test_version_check.py | 41 | [link](AUDIT_test_version_check.md) | ✅ STRONG (1 documented bug-locking) |
-| test_webhook_router.py | 27 | [link](AUDIT_test_webhook_router.md) | ⚠ MIXED (1 weak) |
+| test_webhook_router.py | ~28 | [link](AUDIT_test_webhook_router.md) | ⚠ MIXED (3 weak status-only) |
 | test_webhook_secret_rotation.py | 6 | [link](AUDIT_test_webhook_secret_rotation.md) | ⚠ MIXED (1 broken assert) |
-| test_webhooks.py | ~52 | [link](AUDIT_test_webhooks.md) | ⚠ MIXED (1 weak, 1 needs-human) |
+| test_webhooks.py | ~52 | [link](AUDIT_test_webhooks.md) | ⚠ MIXED (3 weak count/loose) |
 | test_webhooks_plex.py | 27 | [link](AUDIT_test_webhooks_plex.md) | ⚠ MIXED (1 weak) |
 | test_windows_compatibility.py | 9 | [link](AUDIT_test_windows_compatibility.md) | ✅ STRONG |
-| test_worker.py | 49 | [link](AUDIT_test_worker.md) | ⚠ MIXED (3 weak, 1 tautological) |
+| test_worker.py | ~51 | [link](AUDIT_test_worker.md) | ✅ STRONG (re-audited; prior issues all fixed) |
 | test_worker_concurrency.py | 22 | [link](AUDIT_test_worker_concurrency.md) | ⚠ MIXED (1 weak smoke) |
 | test_worker_naming.py | 9 | [link](AUDIT_test_worker_naming.md) | ✅ STRONG |
 | journeys/test_adapter_path_contract.py | 15 | [link](AUDIT_journeys_test_adapter_path_contract.md) | ✅ STRONG |
@@ -91,25 +91,29 @@ Per-test deep audit of every test in `tests/`. Each test classified:
 
 ## Roll-up
 
-- **71/71 files audited.** Approx 2,340 tests reviewed.
-- **44 STRONG** (no fixes needed).
+- **71/71 files audited.** Approx 2,355 tests reviewed (post-batch-6 re-audit added ~15 new tests in the 8 large files).
+- **44 STRONG** (no fixes needed; +1 from batch-6 re-audit which moved test_worker.py from MIXED to STRONG, -1 which moved test_upgrade.py from STRONG to MIXED).
 - **27 MIXED** (one or more weak/bug-blind/tautological/bug-locking tests — fixable).
 - **0 WEAK** (no whole-file failures).
-- **1 needs-human** (`test_webhooks.py:1384` — naming confusion `server_id` vs `server_id_filter`).
+- **0 needs-human** (the prior `test_webhooks.py:1384` gap has been definitively fixed in batch-6).
 
-## Fix queue (~32 individual tests across 27 files)
+### Batch 6 (re-audit of 8 large files)
 
-### Bug-locking (1 — must rewrite or delete)
-- `test_plex_client.py:638` `test_path_mapping_partial_match_avoided` — actively asserts wrong behavior
+| File | Prior verdict | New verdict | Change |
+|---|---|---|---|
+| test_plex_client.py | MIXED (1 bug-locking, 1 trivia class, 1 weak) | MIXED (5 weak log-substring, 1 weak tuple-presence) | TestPathMapping rewritten as TestPathMappingProduction (closes bug-locking + trivia); 5 new weak log-substring tests surfaced. |
+| test_full_scan_multi_server.py | MIXED (1 weak) | MIXED (1 weak label-substring) | Prior weak fixed; 1 different weak surfaced. |
+| test_upgrade.py | STRONG (exemplary) | MIXED (1 weak append-ordering) | Found 1 weak append-vs-overwrite test that the previous audit missed. |
+| test_webhooks.py | MIXED (1 weak, 1 needs-human) | MIXED (3 weak count/loose) | Needs-human resolved; surfaced 2 new path-list-only count tests. |
+| test_worker.py | MIXED (3 weak, 1 tautological) | STRONG | All 4 prior issues audit-fixed in earlier batches. |
+| test_processing_multi_server.py | STRONG | STRONG | Re-audit confirms — gold-standard. |
+| test_webhook_router.py | MIXED (1 weak) | MIXED (3 weak status-only) | Prior weak fixed; surfaced 3 status-code-only tests the prior audit missed (lines 926, 936, 1209). |
+| test_scheduler.py | STRONG | STRONG | Re-audit confirms. |
 
-### Framework-trivia (1 class, 8 tests — delete or rewrite)
-- `test_plex_client.py:547-680` `TestPathMapping` — tests `str.replace`, not project code
+## Fix queue (~46 individual tests across 28 files post-batch-6)
 
 ### Bug-blind (1)
 - `test_app.py:116` `test_creates_and_starts_job` — `assert_called_once()` with no kwarg checks
-
-### Tautological (1)
-- `test_worker.py:899` `test_worker_statistics` — tests Python's `sum()` builtin
 
 ### Weak — substring on message (~14)
 - `test_servers_emby_auth.py:86, 100, 114` — `"401" in message` matches `"4015 widgets"`
@@ -128,19 +132,20 @@ Per-test deep audit of every test in `tests/`. Each test classified:
 - `test_oauth_routes.py:59, 108, 124, 452, 467`
 - `test_logging_config.py:99`
 - `test_utils.py:29, 41, 53, 91, 230`
-- `test_webhooks_plex.py:306`, `test_webhooks.py:357`
-- `test_full_scan_multi_server.py:1126`
+- `test_webhooks_plex.py:306`
 - `test_file_results.py:79, 278, 313`
 - `test_processing.py:471, 748, 901, 948`
-- `test_webhook_router.py:740`
-- `test_worker.py:203, 836, 952`
 - `test_worker_concurrency.py:162` (cheap smoke — keep)
 
 ### Broken assertion (1)
 - `test_webhook_secret_rotation.py:254-260` — tuple expression instead of `assert`
 
-### Needs-human (1)
-- `test_webhooks.py:1384` `test_create_vendor_webhook_job_server_id_filter_pins_publishers`
+### Batch 6 re-audit additions (10 new fixes)
+- `test_plex_client.py:922, 977, 1188, 1396, 1447, 1698` — log-substring loose / tuple-presence-only
+- `test_full_scan_multi_server.py:984` — substring rather than full label format
+- `test_upgrade.py:1168` — list len-only (no order/content pin) for v8 append behaviour
+- `test_webhooks.py:262, 291, 518` — count-only / loose `>= 1` assertions
+- `test_webhook_router.py:926, 936, 1209` — status-code-only with no body checks
 
 ## Standouts (positive examples worth referencing)
 

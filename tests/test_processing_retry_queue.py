@@ -116,6 +116,62 @@ class TestRetrySchedulerSchedule:
                 else:
                     assert ok is False, n
 
+    def test_schedule_default_attempt_is_first_retry(self):
+        """Mutation-testing closer (retry_queue.py:73 default `attempt: int = 1`).
+
+        Every existing test passes ``attempt=`` explicitly; the default value
+        is unobserved. Mutating ``attempt: int = 1`` to ``attempt: int = 0``
+        survives because no test calls ``schedule()`` without the kwarg.
+        With ``attempt=0``, the guard at L82 returns False and a bare-call
+        site is silently broken.
+
+        Pin: ``schedule()`` without an explicit attempt accepts the call
+        (returns True, signalling the first retry was queued).
+        """
+        sched = RetryScheduler()
+        with patch(
+            "media_preview_generator.processing.retry_queue._BACKOFF",
+            tuple([0.001] * 5),
+        ):
+            result = sched.schedule("/x.mkv", lambda *a, **kw: None)  # no attempt= kwarg
+        assert result is True, (
+            "Default `attempt: int = 1` must accept the call (1 is the first retry index). "
+            "A regression that defaulted to 0 would silently fail every bare-call site."
+        )
+        # Cancel to avoid leaking the timer into other tests.
+        sched.cancel("/x.mkv")
+
+    def test_schedule_rejects_attempt_zero(self):
+        """Mutation-testing closer (retry_queue.py:82 — `attempt < 1` boundary).
+
+        ``attempt=0`` is invalid (the *upcoming* attempt index is 1-based).
+        Production guards with ``if attempt < 1 or attempt > len(_BACKOFF)``
+        — without this test, mutating ``attempt < 1`` to ``attempt < 0``
+        survives because ``0 < 0`` is False, the guard misses, then
+        ``_BACKOFF[0 - 1]`` wraps to ``_BACKOFF[-1] = 3600`` (1 hour) and
+        the caller silently gets a 1-hour delayed retry instead of a
+        clean give-up.
+
+        Pin: ``schedule(..., attempt=0)`` returns False AND no timer was
+        installed (pending_count stays 0).
+        """
+        sched = RetryScheduler()
+        # Use a no-op cb that would record if it ever fired (it must not).
+        fired: list = []
+        result = sched.schedule("/x.mkv", lambda *a, **kw: fired.append(a), attempt=0)
+
+        assert result is False, (
+            "schedule(attempt=0) must return False (caller's give-up signal). "
+            "A regression that flipped the guard to `attempt < 0` would silently "
+            "schedule a retry in _BACKOFF[-1] = 3600s."
+        )
+        assert sched.pending_count() == 0, (
+            "schedule(attempt=0) must NOT install a timer; _BACKOFF[-1] is a 1-hour silent retry under the mutation."
+        )
+        # And critically — no timer fired (defensive, since the real concern
+        # is a mutated guard installing a 3600s timer).
+        assert fired == [], "callback should never have been invoked for attempt=0"
+
 
 @pytest.mark.slow
 class TestRetrySchedulerCancel:

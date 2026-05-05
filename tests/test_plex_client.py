@@ -920,7 +920,14 @@ class TestGetMediaItemsByPaths:
 
     @patch("media_preview_generator.plex_client.logger.info")
     def test_get_media_items_by_paths_logs_received_and_file_path_query(self, mock_info, mock_config):
-        """Webhook resolution logs received file count and file-path query."""
+        """Webhook resolution logs received file count and file-path query.
+
+        Audit fix — pin BOTH the canonical phrase via word-boundary regex AND
+        the call_count for each phrase so a regression that emits only one of
+        the two phrases or doubles either log line fails loudly.
+        """
+        import re
+
         mock_plex = MagicMock()
         mock_section = MagicMock()
         mock_section.key = "1"
@@ -930,10 +937,26 @@ class TestGetMediaItemsByPaths:
         mock_plex.fetchItems.return_value = []
 
         get_media_items_by_paths(mock_plex, mock_config, ["/data/movies/Some Movie (2024)/movie.mkv"])
-        assert any(
-            "Received" in str(call) and "webhook input file" in str(call).lower() for call in mock_info.call_args_list
+
+        # Production emits exactly: 'Received {N} webhook input file(s) to resolve'
+        received_re = re.compile(r"\bReceived\b.*\bwebhook input file\(s\) to resolve\b")
+        received_calls = [c for c in mock_info.call_args_list if received_re.search(str(c))]
+        assert len(received_calls) == 1, (
+            f"Expected exactly 1 'Received N webhook input file(s)' log; got {len(received_calls)}: "
+            f"{[str(c) for c in received_calls]}"
         )
-        assert any("Querying Plex by file path" in str(call) for call in mock_info.call_args_list)
+        # And the placeholder count value must be the input length (1).
+        assert any(c.args[1:] == (1,) for c in received_calls), (
+            f"'Received' log did not carry the input count of 1: {[str(c) for c in received_calls]}"
+        )
+
+        # Production emits: 'Querying Plex by file path...' once per resolution batch.
+        query_re = re.compile(r"\bQuerying Plex by file path\b")
+        query_calls = [c for c in mock_info.call_args_list if query_re.search(str(c))]
+        assert len(query_calls) == 1, (
+            f"Expected exactly 1 'Querying Plex by file path' log; got {len(query_calls)}: "
+            f"{[str(c) for c in query_calls]}"
+        )
 
     @patch("media_preview_generator.plex_client.logger.warning")
     def test_get_media_items_by_paths_non_string_path_skipped(self, mock_warning, mock_config):
@@ -993,11 +1016,21 @@ class TestGetMediaItemsByPaths:
 
         result = get_media_items_by_paths(mock_plex, mock_config, ["/data/movies/Test Movie (2024)/Test Movie.mkv"])
         assert len(result.items) == 1
-        assert any("resolved" in str(call) for call in mock_info.call_args_list)
-        # Match either pre-formatted "[1/1]" or Loguru placeholder form "[{}/{}]" with args 1, 1.
-        assert any(
-            "[1/1]" in str(call) or ("[{}/{}]" in str(call) and "1, 1" in str(call))
-            for call in mock_info.call_args_list
+
+        # Audit fix — assert the resolved Loguru placeholder log was emitted with
+        # the right (file_index, total) tuple via call.args, not loose substring
+        # scan. Production format: "  [{}/{}] {}" with args (1, 1, input_path).
+        per_path_calls = [
+            c for c in mock_info.call_args_list if c.args and c.args[0] == "  [{}/{}] {}" and len(c.args) >= 3
+        ]
+        assert any(c.args[1:3] == (1, 1) for c in per_path_calls), (
+            f"Expected per-path log with args (1, 1, ...); got: {[c.args for c in per_path_calls]}"
+        )
+
+        # And the 'Result: resolved' line must follow.
+        resolved_calls = [c for c in mock_info.call_args_list if c.args and "Result: resolved" in str(c.args[0])]
+        assert len(resolved_calls) == 1, (
+            f"Expected exactly 1 'Result: resolved' log; got {len(resolved_calls)}: {[c.args for c in resolved_calls]}"
         )
 
     def test_get_media_items_by_paths_no_match(self, mock_config):
@@ -1187,7 +1220,15 @@ class TestGetMediaItemsByPaths:
 
     @patch("media_preview_generator.plex_client.logger.info")
     def test_get_media_items_by_paths_logs_file_path_query(self, mock_info, mock_config):
-        """File-path resolution logs the query step."""
+        """File-path resolution logs the query step.
+
+        Audit fix — was a bare `any(...)` presence check that would survive a
+        regression that logged only the FIRST file's query (silent drop for
+        batches). Now batches 2 paths and asserts the query log fires once per
+        resolution batch (not once per path — the production behavior).
+        """
+        import re
+
         mock_plex = MagicMock()
         mock_section = MagicMock()
         mock_section.key = "1"
@@ -1201,8 +1242,20 @@ class TestGetMediaItemsByPaths:
         mock_plex.library.sections.return_value = [mock_section]
         mock_plex.fetchItems.return_value = [mock_movie]
 
-        get_media_items_by_paths(mock_plex, mock_config, ["/data/movies/Late Match/Late Match.mkv"])
-        assert any("Querying Plex by file path" in str(call) for call in mock_info.call_args_list)
+        get_media_items_by_paths(
+            mock_plex,
+            mock_config,
+            ["/data/movies/Late Match/Late Match.mkv", "/data/movies/Other.mkv"],
+        )
+
+        query_re = re.compile(r"\bQuerying Plex by file path\b")
+        query_calls = [c for c in mock_info.call_args_list if query_re.search(str(c))]
+        # Production logs this once per batch (it's a single fetchItems call
+        # with the OR'd file= filter). Pinning == 1 catches a regression that
+        # double-logged or per-pathed the query.
+        assert len(query_calls) == 1, (
+            f"Expected exactly 1 'Querying Plex by file path' log per batch; got {len(query_calls)}"
+        )
 
     @patch("media_preview_generator.plex_client.logger.warning")
     def test_get_media_items_by_paths_item_without_key_is_skipped(self, mock_warning, mock_config):
@@ -1436,12 +1489,31 @@ class TestGetMediaItemsByPaths:
 
         result = get_media_items_by_paths(mock_plex, mock_config, ["/data/anime/Anime Movie.mkv"])
         assert result.items == []
-        assert any(
-            "haven't selected" in str(call).lower() or "unselected libraries" in str(call).lower()
-            for call in mock_warning.call_args_list
+
+        # Audit fix — pin the library name ("Anime") in the warning so a
+        # regression that conflated paths/libraries (e.g. logged "Movies"
+        # instead of the library that actually contained the skipped file)
+        # would fail. Production format includes "(found in: {names})".
+        warn_calls_with_anime = [
+            c for c in mock_warning.call_args_list if "haven't" in str(c).lower() and "Anime" in str(c)
+        ]
+        assert len(warn_calls_with_anime) == 1, (
+            f"Expected exactly 1 'haven't selected' warning naming the 'Anime' library; "
+            f"got {len(warn_calls_with_anime)}: {[str(c) for c in mock_warning.call_args_list]}"
         )
-        assert any(
-            "skipped" in str(call).lower() and "excluded" in str(call).lower() for call in mock_info.call_args_list
+        # And the skipped-file count placeholder argument must be 1.
+        assert warn_calls_with_anime[0].args[1] == 1, (
+            f"Skipped-count placeholder mismatch: {warn_calls_with_anime[0].args!r}"
+        )
+        # Pin the per-file info diagnostic on the same input path.
+        excluded_info_calls = [
+            c
+            for c in mock_info.call_args_list
+            if c.args and "Result: skipped (excluded library" in str(c.args[0]) and "Anime" in str(c)
+        ]
+        assert len(excluded_info_calls) == 1, (
+            f"Expected exactly 1 per-file 'Result: skipped (excluded library: Anime)' info log; "
+            f"got {len(excluded_info_calls)}"
         )
 
     @patch("media_preview_generator.plex_client.logger.warning")
@@ -1479,9 +1551,18 @@ class TestGetMediaItemsByPaths:
         result = get_media_items_by_paths(mock_plex, mock_config, ["/data/anime/Fallback Anime Movie.mkv"])
 
         assert result.items == []
-        assert any(
-            "haven't selected" in str(call).lower() or "unselected libraries" in str(call).lower()
-            for call in mock_warning.call_args_list
+        # Audit fix — pin the "Anime" library name in the warning so a
+        # regression that conflated which library was responsible for the
+        # skip would fail.
+        warn_calls_with_anime = [
+            c for c in mock_warning.call_args_list if "haven't" in str(c).lower() and "Anime" in str(c)
+        ]
+        assert len(warn_calls_with_anime) == 1, (
+            f"Expected exactly 1 'haven't selected' warning naming the 'Anime' library; "
+            f"got {len(warn_calls_with_anime)}: {[str(c) for c in mock_warning.call_args_list]}"
+        )
+        assert warn_calls_with_anime[0].args[1] == 1, (
+            f"Skipped-count placeholder mismatch: {warn_calls_with_anime[0].args!r}"
         )
 
 
@@ -1696,13 +1777,27 @@ class TestDetectPathPrefixMismatches:
         assert result[0] == ("/data/media", "/media")
 
     def test_case_insensitive_matching(self):
-        """Detection is case-insensitive for cross-platform compatibility."""
+        """Detection is case-insensitive for cross-platform compatibility.
+
+        Audit fix — was `len == 1` only; a regression that picked the wrong
+        webhook prefix (e.g. raw `/Data/Media` vs lower-cased `/data/media`)
+        or the wrong plex prefix would pass. Now pin the exact tuple.
+        """
         unresolved = ["/Data/Media/TV/Show/S01E01.mkv"]
         plex_locations = ["/media/tv"]
 
         result = _detect_path_prefix_mismatches(unresolved, plex_locations)
 
         assert len(result) == 1
+        # Production preserves the original webhook casing in the suggestion
+        # (matching is case-insensitive but the reported prefix uses the raw
+        # input casing of the bytes BEFORE the matched plex location, then
+        # appends the plex parent). For input '/Data/Media/TV/Show/S01E01.mkv'
+        # matching against '/media/tv', extra='/Data' (chars 0..5), plex
+        # parent='/media' → webhook='/Data/media', plex='/media'.
+        assert result[0] == ("/Data/media", "/media"), (
+            f"Expected exact tuple ('/Data/media', '/media'); got {result[0]!r}"
+        )
 
     def test_longest_location_wins(self):
         """More-specific Plex locations are preferred over shorter ones."""

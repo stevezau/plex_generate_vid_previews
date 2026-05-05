@@ -36,7 +36,7 @@ Status legend:
 | 1 | `d404f73` (D31 doubled-prefix) | `tests/test_output_plex_bundle.py::TestComputeOutputPaths::test_does_not_double_prefix_url_when_item_id_is_full_path` | **Verified ✅** | 2026-05-05 (batch 19): replaced `bare_id = item_id_str.rsplit("/", 1)[-1]` with `bare_id = item_id_str` at servers/plex.py:880 → URL doubled to `/library/metadata//library/metadata/557676/tree`, test failed loudly with the doubled-prefix diagnostic; restored → passes |
 | 2 | `10be97c` (D32 Jelly not-in-library) | `tests/test_processing_multi_server.py::TestNotInLibraryRoutesToSkip` (Phase 1 P0.3) | **Verified ✅** | Manually verified 2026-05-05: short-circuiting the `needs_server_metadata + item_id is None` branch at multi_server.py:536 → both Plex AND Jellyfin variants fail |
 | 3 | `d2c166c` (D33 source-missing retry) | `tests/test_processing_multi_server.py::TestSourceMissing` (+ TestSiblingMountProbe::test_single_mount_falls_through_to_skipped) | **Verified ✅** | 2026-05-05 (batch 19): swapping `MultiServerStatus.SKIPPED_FILE_NOT_FOUND` → `MultiServerStatus.FAILED` at multi_server.py:774 → 2 tests fail (`TestSourceMissing` + `TestSiblingMountProbe::test_single_mount_falls_through_to_skipped`); restored → all pass |
-| 4 | `a64030c` (D34 sub-second worker) | (NONE — confirmed missing) | Pending | Still no direct hindsight test for `_emit_worker_updates` state-change throttle bypass. Needed: a test that drives `JobDispatcher._emit_worker_updates()` twice with `worker.is_busy` flipped between calls, asserts the worker_callback fires both times even when `now - tracker._last_worker_update < 1.0` (i.e. throttle is bypassed when state changed). The dispatcher.py:574 `state_changed = current_busy != self._last_worker_busy_snapshot` line is the exact pin point. |
+| 4 | `a64030c` (D34 sub-second worker) | `tests/test_job_dispatcher.py::TestEmitWorkerUpdatesStateChangeBypass` | **Verified ✅** | 2026-05-05: hindsight test added. Replacing `state_changed = current_busy != self._last_worker_busy_snapshot` with `state_changed = False` at dispatcher.py:574 → 2 of 3 tests fail loudly (`test_state_change_bypasses_subsecond_throttle`, `test_state_change_snapshot_includes_all_workers`); restored → all 3 pass. The `test_throttle_still_active_when_no_state_change` cell is the inverse-matrix guard that passes either way (intentional — proves the fix doesn't degenerate to "always-fire"). |
 | 5 | `dfc199a` (D34 per-GPU workers) | `tests/test_dispatcher_kwargs_matrix.py::TestGpuKwargsPropagate` (Phase 1 P0.1) | **Verified ✅** | Manually verified 2026-05-05: dropping `server_id_filter=per_item_pin` at orchestrator.py:722 → 15 dispatcher kwargs tests fail across 2 files (full matrix) |
 | 6 | `b1022e2` (D35 sibling mount) | `tests/test_processing_multi_server.py::TestSiblingMountProbe::test_finds_file_at_sibling_mount_when_canonical_stale` | **Verified ✅** | 2026-05-05 (batch 19): replacing `rebound_path = _probe_sibling_mounts(canonical_path, registry)` with `rebound_path = None` at multi_server.py:748 → rebind test fails (`status=SKIPPED_FILE_NOT_FOUND`, expected rebind to live path); restored → passes |
 | 7 | `1e7403c → 0faf1cd` (D36 bundle-hash) | `tests/test_output_journal.py::TestOutputsFreshForSource` (8 tests) | **Verified ✅** | 2026-05-05 (batch 19): replacing the mtime+size equality check with `if True:` at journal.py:141 → 3 tests fail (`test_stale_when_source_replaced`, `test_stale_when_source_grew`, `test_mismatch_on_one_meta_invalidates_freshness`); restored → all 10 pass |
@@ -95,10 +95,12 @@ Each row marked **Verified ✅** above was confirmed by:
 
 Batch 19 closed the remaining `Verify` rows by surgically simulating the
 incident in production code (one line per row) and confirming the
-hindsight test fails. **20 of 21 incident rows now Verified ✅** — the
-single outstanding row is D34 sub-second worker visibility (`a64030c`),
-which still has no direct hindsight test (see row 4 notes for the
-recommended test shape).
+hindsight test fails. **All 21 of 21 incident rows now Verified ✅** —
+row 4 (D34 sub-second worker visibility, `a64030c`) was the last
+outstanding hindsight test and was added in the 2026-05-05 backfill
+batch (`TestEmitWorkerUpdatesStateChangeBypass` in
+`tests/test_job_dispatcher.py`). Manual revert at dispatcher.py:574
+breaks 2 of the 3 tests as expected; restoring the line passes all 3.
 
 Notable correction: rows 8 (D37 progress bounce) and 20 (Jellyfin
 path-based refresh) were previously listed as Pending — they actually DO
@@ -114,9 +116,10 @@ e2e marker, no jsdom required.
 
 After Phase 0-5 execution, the test suite stands at **2340 passing**
 (baseline 2262 → +78 new tests across 6 batches). All ten of the audit's
-P0 items have hindsight tests; **20 of 21 catalogued incidents now have
-a direct hindsight test verified by manual revert** (only D34
-sub-second-worker visibility remains unwritten).
+P0 items have hindsight tests; **21 of 21 catalogued incidents now have
+a direct hindsight test verified by manual revert** (D34
+sub-second-worker visibility was closed in the 2026-05-05 backfill —
+see row 4 + `TestEmitWorkerUpdatesStateChangeBypass`).
 
 ## Open items (workers-panel-jitter follow-up)
 

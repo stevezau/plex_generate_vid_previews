@@ -167,6 +167,125 @@ class TestOutputsFreshForSource:
         source.write_bytes(b"")
         assert outputs_fresh_for_source([], str(source)) is False
 
+    def test_match_beats_mismatch_for_same_source(self, tmp_path):
+        """Mutation-testing closer (journal.py:142 — `saw_match = True`).
+
+        When ONE output's .meta matches and ANOTHER output's .meta mismatches
+        for the same source, ``saw_match`` must short-circuit to ``True``
+        (production policy: match wins). The inverse-only existing test
+        ``test_mismatch_on_one_meta_invalidates_freshness`` uses an
+        all-mismatches scenario and so does not exercise the asymmetric
+        case. Without this test, mutating ``saw_match = True`` to
+        ``saw_match = False`` survives because the only saw_match-True path
+        is silently broken.
+        """
+        source = tmp_path / "movie.mkv"
+        source.write_bytes(b"x" * 100)
+        out_a = tmp_path / "a.bif"
+        out_b = tmp_path / "b.bif"
+        out_a.write_bytes(b"")
+        out_b.write_bytes(b"")
+        # out_a: stamp matches the live source.
+        write_meta([out_a], str(source))
+        # out_b: hand-write a mismatching .meta with a clearly-wrong
+        # fingerprint (same schema so the schema-guard at L139 is passed).
+        _meta_path_for(out_b).write_text(
+            json.dumps(
+                {
+                    "schema": JOURNAL_SCHEMA_VERSION,
+                    "source_mtime": 1,
+                    "source_size": 1,
+                }
+            )
+        )
+
+        # Match wins: True even though out_b records a stale fingerprint.
+        assert outputs_fresh_for_source([out_a, out_b], str(source)) is True, (
+            "Production policy: when one .meta matches and another mismatches for the SAME source, "
+            "saw_match must short-circuit to True. A regression that flipped `saw_match = True` to `False` "
+            "would let saw_mismatch dominate and return False here."
+        )
+
+    def test_outputs_with_old_schema_treated_as_legacy(self, tmp_path):
+        """Mutation-testing closer (journal.py:38 — JOURNAL_SCHEMA_VERSION constant).
+
+        The schema constant is read in two places — write_meta writes it,
+        outputs_fresh_for_source compares it. Every existing test sets up
+        data via write_meta, so writer and reader move in lockstep.
+        Mutating the constant globally (e.g. ``1 → 2``) just shifts both
+        ends symmetrically and the round-trip still works.
+
+        Pin the *literal* schema number ``1`` in the .meta data so a
+        regression that bumps the constant to 2 (without a real migration)
+        falls into the schema-mismatch branch and is treated as legacy
+        (returns True because the .meta is unreadable for freshness).
+        """
+        source = tmp_path / "movie.mkv"
+        source.write_bytes(b"x" * 100)
+        out = tmp_path / "out.bif"
+        out.write_bytes(b"")
+        # Hand-write a .meta with literal schema=0 (old / unknown version).
+        # Production: ``int(data.get("schema", 0)) != JOURNAL_SCHEMA_VERSION
+        # → continue`` → no readable .meta → legacy fallback returns True.
+        _meta_path_for(out).write_text(
+            json.dumps(
+                {
+                    "schema": 0,  # literal — NOT JOURNAL_SCHEMA_VERSION
+                    "source_mtime": int(source.stat().st_mtime),
+                    "source_size": 100,
+                }
+            )
+        )
+
+        # The schema mismatch makes this .meta invisible to the freshness
+        # check → falls through to the legacy branch → True.
+        assert outputs_fresh_for_source([out], str(source)) is True, (
+            "A .meta with schema != current must be ignored (treated as legacy). "
+            "If the constant were silently bumped, write_meta would also bump and "
+            "tests pass — pinning a literal schema=0 here catches the regression."
+        )
+
+    def test_meta_missing_size_field_treated_as_mismatch(self, tmp_path):
+        """Mutation-testing closer (journal.py:141 — `data.get('source_size', -1)` default).
+
+        A partially-valid JSON .meta missing the ``source_size`` key (e.g. a
+        future schema upgrade or write-corruption that left a dangling
+        record) must be treated as a fingerprint mismatch — i.e. the
+        ``-1`` default value branch is the freshness-fail path. Production
+        path:
+
+            int(data.get("source_size", -1)) == src_size   # -1 != 100 → mismatch
+
+        Without this test, mutations like ``-1 → 0`` survive because no
+        existing test triggers a partial-key meta — every ``.meta`` written
+        by ``write_meta`` always carries every key, so the default is dead
+        code in the happy path.
+        """
+        source = tmp_path / "movie.mkv"
+        source.write_bytes(b"x" * 100)
+        out = tmp_path / "out.bif"
+        out.write_bytes(b"")
+        # Hand-write a partial .meta — has schema + source_mtime, MISSING
+        # source_size. The dict.get() default fires → -1 → mismatch.
+        _meta_path_for(out).write_text(
+            json.dumps(
+                {
+                    "schema": JOURNAL_SCHEMA_VERSION,
+                    "source_mtime": int(source.stat().st_mtime),
+                    # source_size intentionally absent
+                }
+            )
+        )
+
+        # The single .meta records a mismatch → saw_mismatch=True →
+        # outputs_fresh_for_source returns False (NOT the legacy True
+        # fallback, because at least one .meta WAS readable but mismatched).
+        assert outputs_fresh_for_source([out], str(source)) is False, (
+            "A .meta missing source_size must be treated as a mismatch (defaults to -1, "
+            "compared against real source_size, so any non--1 size triggers the mismatch branch). "
+            "A regression that changed the default to 0 would falsely match a 0-byte source."
+        )
+
 
 class TestClearMeta:
     def test_removes_existing_metas(self, tmp_path):

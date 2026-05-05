@@ -261,7 +261,12 @@ def test_custom_webhook_single_file_path(mock_schedule, client):
 
 @patch("media_preview_generator.web.webhooks._schedule_webhook_job")
 def test_custom_webhook_multiple_file_paths(mock_schedule, client):
-    """POST with file_paths array → 202 and schedules each path."""
+    """POST with file_paths array → 202 and schedules each path.
+
+    Audit fix — was just `call_count == 2`. A regression that scheduled the
+    same path twice (instead of two distinct paths) would silently pass.
+    Pin the SET of path-args matches the input set.
+    """
     payload = {
         "file_paths": [
             "/tv/Show/S01E01.mkv",
@@ -274,6 +279,15 @@ def test_custom_webhook_multiple_file_paths(mock_schedule, client):
     assert data["success"] is True
     assert "2 files" in data["message"]
     assert mock_schedule.call_count == 2
+    # _schedule_webhook_job(source, title, path) — pin SET of distinct paths.
+    paths_sent = {call.args[2] for call in mock_schedule.call_args_list}
+    expected_paths = {os.path.normpath(p) for p in payload["file_paths"]}
+    assert paths_sent == expected_paths, (
+        f"Expected dispatched paths {expected_paths!r}; got {paths_sent!r} "
+        f"(would catch a regression that scheduled the same path twice)"
+    )
+    sources_sent = {call.args[0] for call in mock_schedule.call_args_list}
+    assert sources_sent == {"custom"}, f"All calls must be source='custom'; got {sources_sent!r}"
 
 
 @patch("media_preview_generator.web.webhooks._schedule_webhook_job")
@@ -290,7 +304,13 @@ def test_custom_webhook_with_title(mock_schedule, client):
 
 @patch("media_preview_generator.web.webhooks._schedule_webhook_job")
 def test_custom_webhook_deduplicates_paths(mock_schedule, client):
-    """POST with duplicate paths in file_path + file_paths → schedules only unique paths."""
+    """POST with duplicate paths in file_path + file_paths → schedules only unique paths.
+
+    Audit fix — was just `call_count == 2`. A regression that broke dedup in
+    the opposite direction (e.g. dropped one distinct path and double-scheduled
+    the other → [A, A] or [B, B]) would still pass count-only. Pin the exact
+    surviving 2 distinct args.
+    """
     payload = {
         "file_path": "/movies/A.mkv",
         "file_paths": ["/movies/A.mkv", "/movies/B.mkv"],
@@ -298,6 +318,10 @@ def test_custom_webhook_deduplicates_paths(mock_schedule, client):
     resp = client.post("/api/webhooks/custom", json=payload, headers=_auth_headers())
     assert resp.status_code == 202
     assert mock_schedule.call_count == 2
+    paths_sent = {call.args[2] for call in mock_schedule.call_args_list}
+    assert paths_sent == {os.path.normpath("/movies/A.mkv"), os.path.normpath("/movies/B.mkv")}, (
+        f"Dedup must keep exactly /movies/A.mkv AND /movies/B.mkv (one of each); got {paths_sent!r}"
+    )
 
 
 def test_custom_webhook_missing_paths_returns_400(client):
@@ -516,7 +540,12 @@ def test_webhook_malformed_payload_logs_warning(mock_warning, client):
 
 
 def test_webhook_history_endpoint(authed_client):
-    """GET /api/webhooks/history returns events list."""
+    """GET /api/webhooks/history returns events list.
+
+    Audit fix — was loose `>= 1`. A regression that double-recorded a single
+    test event would still pass. Tighten to `== 1` (matches the
+    test_custom_webhook_appears_in_history audit fix at L357).
+    """
     # Trigger a test event first to populate history
     authed_client.post(
         "/api/webhooks/radarr",
@@ -528,7 +557,7 @@ def test_webhook_history_endpoint(authed_client):
     assert resp.status_code == 200
     data = resp.get_json()
     assert "events" in data
-    assert len(data["events"]) >= 1
+    assert len(data["events"]) == 1, f"Expected exactly 1 history event for one POST; got {len(data['events'])}"
     assert data["events"][0]["source"] == "radarr"
 
 
@@ -1412,3 +1441,341 @@ def test_create_vendor_webhook_job_server_id_filter_pins_publishers(mock_start, 
         "overrides['server_id'] must come from the server_id_filter kwarg, "
         f"not the source server_id; got {overrides.get('server_id')!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Hindsight backfills — HINDSIGHT_90_DAYS.md categories B/C
+# ---------------------------------------------------------------------------
+
+
+class TestExtractSonarrFilePathPayloadMatrix:
+    """``_extract_sonarr_file_path`` payload-shape matrix — covers the
+    full set of vendor payload shapes that map to a single helper.
+
+    Hindsight for commit ``7a721a6`` (Sportarr flat ``filePath`` payload):
+    pre-fix tests only used the nested ``episodeFile.path`` shape, so
+    Sportarr deliveries silently dropped on the floor.  HINDSIGHT_90_DAYS
+    flagged this row as Category C (zero coverage).  Now exercises every
+    branch of the helper:
+
+    1. ``episodeFile.path``                           — standard Sonarr
+    2. ``series.path`` + ``episodeFile.relativePath`` — Sonarr fallback
+    3. ``filePath`` (root level)                      — Sportarr flat
+    4. all of the above missing                       — empty string
+    5. precedence: standard wins over flat            — guards the order
+    """
+
+    def test_standard_episode_file_path(self):
+        from media_preview_generator.web.webhooks import _extract_sonarr_file_path
+
+        payload = {"episodeFile": {"path": "/tv/Show/S01E01.mkv"}}
+        assert _extract_sonarr_file_path(payload) == "/tv/Show/S01E01.mkv"
+
+    def test_series_path_plus_relative_path(self):
+        from media_preview_generator.web.webhooks import _extract_sonarr_file_path
+
+        payload = {
+            "series": {"path": "/tv/Show"},
+            "episodeFile": {"relativePath": "Season 01/S01E01.mkv"},
+        }
+        # _combine_path normalises and forward-slashes the result.
+        assert _extract_sonarr_file_path(payload) == "/tv/Show/Season 01/S01E01.mkv"
+
+    def test_sportarr_flat_file_path(self):
+        """Sportarr flat ``filePath`` — the cell that 7a721a6 added."""
+        from media_preview_generator.web.webhooks import _extract_sonarr_file_path
+
+        payload = {"filePath": "/sports/Match.mkv", "eventTitle": "Match Day"}
+        assert _extract_sonarr_file_path(payload) == "/sports/Match.mkv", (
+            "Sportarr flat filePath must be extracted; pre-7a721a6 this "
+            "returned '' and the webhook silently dropped the delivery."
+        )
+
+    def test_empty_payload_returns_empty_string(self):
+        from media_preview_generator.web.webhooks import _extract_sonarr_file_path
+
+        assert _extract_sonarr_file_path({}) == ""
+
+    def test_standard_wins_over_flat_when_both_present(self):
+        """Precedence guard: a payload that carries both
+        ``episodeFile.path`` AND ``filePath`` must take the nested
+        path (the standard Sonarr shape) — otherwise a Sonarr deployment
+        that someday adds the Sportarr key would silently switch shapes.
+        """
+        from media_preview_generator.web.webhooks import _extract_sonarr_file_path
+
+        payload = {
+            "episodeFile": {"path": "/tv/Real/S01E01.mkv"},
+            "filePath": "/sports/Match.mkv",
+        }
+        assert _extract_sonarr_file_path(payload) == "/tv/Real/S01E01.mkv"
+
+
+class TestWebhookContentTypeForceParse:
+    """Hindsight for commit ``357c442`` (parse webhook JSON regardless
+    of Content-Type).
+
+    Custom webhook senders frequently POST JSON with an incorrect
+    Content-Type (``text/plain``, ``application/x-www-form-urlencoded``,
+    or none at all).  The fix flipped ``request.get_json(force=True,
+    silent=True)`` so Flask parses the body anyway.
+
+    Pre-fix this returned ``None`` and the endpoint replied 400.  Test
+    cells: Radarr endpoint + custom endpoint, with each Content-Type
+    that real-world senders use.
+    """
+
+    @patch("media_preview_generator.web.webhooks._schedule_webhook_job")
+    def test_radarr_with_wrong_content_type_still_parses_json(self, mock_schedule, client):
+        """Radarr POST with Content-Type=text/plain — body is valid JSON.
+
+        force=True bypasses Content-Type check; without it Flask would
+        return ``None`` from get_json() and the endpoint 400s.
+        """
+        body = json.dumps(
+            {
+                "eventType": "Download",
+                "movie": {"title": "Plain Text JSON"},
+                "movieFile": {"path": "/movies/PT/PT.mkv"},
+            }
+        )
+        resp = client.post(
+            "/api/webhooks/radarr",
+            data=body,
+            headers={
+                "X-Auth-Token": "test-token-12345678",
+                # Deliberately wrong — real Tdarr/Sportarr deployments
+                # have shipped this exact misconfiguration.
+                "Content-Type": "text/plain",
+            },
+        )
+        assert resp.status_code == 202, (
+            f"Expected 202 with force=True parsing the JSON despite "
+            f"text/plain Content-Type; got {resp.status_code}: {resp.get_data(as_text=True)}"
+        )
+        assert mock_schedule.call_count == 1
+        # Pin the actual extracted file path — proves the body really
+        # was parsed and routed, not just that the endpoint returned 202
+        # for some unrelated reason. _schedule_webhook_job is called
+        # with positional (source, title, file_path).
+        assert mock_schedule.call_args.args[2] == "/movies/PT/PT.mkv"
+
+    @patch("media_preview_generator.web.webhooks._schedule_webhook_job")
+    def test_custom_with_form_urlencoded_content_type(self, mock_schedule, client):
+        """Custom POST with form-urlencoded Content-Type — body is JSON."""
+        body = json.dumps({"file_path": "/media/Movie.mkv"})
+        resp = client.post(
+            "/api/webhooks/custom",
+            data=body,
+            headers={
+                "X-Auth-Token": "test-token-12345678",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+        )
+        assert resp.status_code == 202
+        assert mock_schedule.call_count == 1
+
+
+class TestWebhookAuthHeaderPrecedence:
+    """Hindsight for commit ``51075c9`` (CORS + harden webhook auth).
+
+    HINDSIGHT_90_DAYS recommendation #1 in section 3: send a request
+    with BOTH a valid ``X-Auth-Token`` and an invalid
+    ``Authorization: Bearer xxx`` header — the request must succeed
+    because ``_authenticate_webhook`` collects ALL candidate tokens and
+    accepts as soon as one matches.
+
+    Pre-fix the Authorization header took precedence; if it carried a
+    junk Tdarr session JWT the valid X-Auth-Token would be ignored and
+    the legitimate webhook 401'd.
+    """
+
+    def test_valid_x_auth_token_accepted_when_invalid_bearer_also_present(self, client, app):
+        """Both headers present, X-Auth-Token valid, Bearer junk → 200.
+
+        This is the load-bearing matrix cell. A regression that swapped
+        the auth back to "Bearer wins, X-Auth-Token only as fallback"
+        would 401 this request because the junk Bearer token would be
+        the only candidate tested.
+        """
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        with app.app_context():
+            sm = get_settings_manager()
+            sm.set("webhook_secret", "the-real-secret")
+
+        resp = client.post(
+            "/api/webhooks/radarr",
+            json={"eventType": "Test"},
+            headers={
+                "X-Auth-Token": "the-real-secret",  # valid
+                "Authorization": "Bearer browser-leaked-jwt-xxxxxxx",  # junk
+                "Content-Type": "application/json",
+            },
+        )
+        assert resp.status_code == 200, (
+            f"X-Auth-Token must win over a junk Authorization Bearer "
+            f"shadow header; got {resp.status_code}: {resp.get_data(as_text=True)}"
+        )
+        assert resp.get_json()["success"] is True
+
+    def test_valid_bearer_accepted_when_invalid_x_auth_token_also_present(self, client, app):
+        """Both headers present, Bearer valid, X-Auth-Token junk → 200.
+
+        The inverse cell — the auth contract is "any candidate matches",
+        not strict precedence either direction. Without this cell, a
+        regression that ignored the Authorization header in favour of
+        X-Auth-Token-only would silently break Bearer-style senders.
+        """
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        with app.app_context():
+            sm = get_settings_manager()
+            sm.set("webhook_secret", "the-real-secret")
+
+        resp = client.post(
+            "/api/webhooks/radarr",
+            json={"eventType": "Test"},
+            headers={
+                "X-Auth-Token": "stale-old-secret",  # junk
+                "Authorization": "Bearer the-real-secret",  # valid
+                "Content-Type": "application/json",
+            },
+        )
+        assert resp.status_code == 200, (
+            f"A valid Bearer must be accepted when X-Auth-Token is junk; got {resp.status_code}"
+        )
+
+    def test_both_headers_invalid_returns_401(self, client, app):
+        """Negative cell: both junk → 401.
+
+        Without this, the matrix would accept "any header present at
+        all" — a real bug some auth refactors have shipped.
+        """
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        with app.app_context():
+            sm = get_settings_manager()
+            sm.set("webhook_secret", "the-real-secret")
+
+        resp = client.post(
+            "/api/webhooks/radarr",
+            json={"eventType": "Test"},
+            headers={
+                "X-Auth-Token": "junk-1",
+                "Authorization": "Bearer junk-2",
+                "Content-Type": "application/json",
+            },
+        )
+        assert resp.status_code == 401
+
+
+class TestWebhookHistoryDiskRoundTrip:
+    """Hindsight for commits ``197df73`` / ``d481eb6`` (persist webhook
+    history to disk).
+
+    The two consecutive identical commit titles "improve webhook failure
+    logging and persist history to disk" are the strongest possible
+    signal that the first round shipped without a regression test.
+    HINDSIGHT_90_DAYS Cat C — zero coverage.
+
+    Round-trip contract:
+    1. ``_add_history_entry`` writes a file at
+       ``$CONFIG_DIR/webhook_history.json``
+    2. ``_load_history_from_disk`` reads that file and rehydrates
+       the in-memory deque in append order
+    3. The cap (_HISTORY_MAX = 100) is enforced on load
+    """
+
+    def test_add_entry_writes_file_and_load_rehydrates_deque(self, tmp_path, monkeypatch):
+        import importlib
+
+        import media_preview_generator.web.webhooks as wh
+
+        # Point the persistence at a fresh tmp config dir for isolation.
+        monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+        importlib.reload(wh)
+
+        wh._webhook_history.clear()
+        wh._add_history_entry("radarr", "Download", "Movie A", "queued")
+        wh._add_history_entry("sonarr", "Download", "Show S01E01", "queued")
+
+        history_file = tmp_path / "webhook_history.json"
+        assert history_file.exists(), "_add_history_entry must persist to disk"
+
+        on_disk = json.loads(history_file.read_text())
+        assert isinstance(on_disk, list)
+        assert len(on_disk) == 2
+        assert [e["source"] for e in on_disk] == ["radarr", "sonarr"]
+        assert [e["title"] for e in on_disk] == ["Movie A", "Show S01E01"]
+        assert [e["status"] for e in on_disk] == ["queued", "queued"]
+        # ISO-8601 UTC timestamp recorded on each entry — guards against
+        # a regression that drops the timestamp field, breaking the UI.
+        for entry in on_disk:
+            assert "T" in entry["timestamp"] and entry["timestamp"].endswith("+00:00")
+
+        # Now blow away the in-memory deque and rehydrate from disk.
+        wh._webhook_history.clear()
+        assert len(wh._webhook_history) == 0
+        wh._load_history_from_disk()
+
+        rehydrated = list(wh._webhook_history)
+        assert len(rehydrated) == 2
+        assert [e["source"] for e in rehydrated] == ["radarr", "sonarr"], (
+            "Load-from-disk must preserve append order so the UI shows "
+            "events in the order they arrived (oldest first in deque, "
+            "newest last)."
+        )
+
+    def test_load_enforces_history_max_cap(self, tmp_path, monkeypatch):
+        """A persisted file with > _HISTORY_MAX entries must be tail-
+        truncated on load. Otherwise an ever-growing webhook_history.json
+        would slowly leak memory until the deque was overwritten.
+        """
+        import importlib
+
+        import media_preview_generator.web.webhooks as wh
+
+        monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+        importlib.reload(wh)
+
+        oversized = [
+            {
+                "timestamp": "2026-01-01T00:00:00+00:00",
+                "source": "radarr",
+                "event_type": "Download",
+                "title": f"Movie {i}",
+                "status": "queued",
+            }
+            for i in range(wh._HISTORY_MAX + 50)  # 50 over the cap
+        ]
+        (tmp_path / "webhook_history.json").write_text(json.dumps(oversized))
+
+        wh._webhook_history.clear()
+        wh._load_history_from_disk()
+
+        assert len(wh._webhook_history) == wh._HISTORY_MAX, (
+            f"Load must cap the deque at {wh._HISTORY_MAX}; got {len(wh._webhook_history)}"
+        )
+        # Tail-truncation: the LAST _HISTORY_MAX entries must be kept,
+        # not the first. Catches a regression that does ``entries[:cap]``
+        # and silently loses recent events on every restart.
+        kept = list(wh._webhook_history)
+        assert kept[0]["title"] == f"Movie {50}", (
+            "After truncation, the oldest kept entry must be index 50 (skipping the first 50 over the cap)."
+        )
+        assert kept[-1]["title"] == f"Movie {wh._HISTORY_MAX + 49}"
+
+    def test_load_silently_no_ops_when_file_missing(self, tmp_path, monkeypatch):
+        """Fresh install: no webhook_history.json exists → load must
+        not raise and the deque must remain empty."""
+        import importlib
+
+        import media_preview_generator.web.webhooks as wh
+
+        monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+        importlib.reload(wh)
+
+        wh._webhook_history.clear()
+        wh._load_history_from_disk()  # must not raise
+        assert len(wh._webhook_history) == 0

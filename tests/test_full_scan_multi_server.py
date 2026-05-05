@@ -1006,7 +1006,13 @@ class TestFriendlyDeviceLabel:
                 worker_callback=lambda w: snapshots.append(list(w)),
             )
         worker_names = {w["worker_name"] for snap in snapshots for w in snap}
-        assert any("NVIDIA GeForce RTX 4090" in n for n in worker_names), worker_names
+        # Audit fix — was loose `"NVIDIA GeForce RTX 4090" in n` which would
+        # pass even if the formatter dropped the "GPU Worker N (...)" prefix.
+        # Mirror the rigour of test_intel_long_name_collapses_to_bracketed_marketing_name
+        # at L933 by pinning the full label format.
+        assert "GPU Worker 1 (NVIDIA GeForce RTX 4090)" in worker_names, (
+            f"NVIDIA fallback label must use full 'GPU Worker N (full name)' format; got {worker_names!r}"
+        )
 
 
 class TestParallelismRespectsPerDeviceWorkerCount:

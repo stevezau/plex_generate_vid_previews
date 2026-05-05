@@ -322,11 +322,15 @@ def backend_real_app(tmp_path_factory, request) -> Generator[tuple[str, str], No
     point is exercising real wiring.
 
     Tests can pass ``request.param`` as a dict of settings overrides
-    via parametrize; default seeds an empty media_servers list.
+    via parametrize; default seeds an empty media_servers list. A
+    reserved ``_extra_env`` key (popped before seeding) is merged into
+    the subprocess environment — used by tests that need to spoof env
+    vars the app reads at boot (e.g. ``DOCKER_IMAGE_NAME``).
     """
     config_dir = tmp_path_factory.mktemp("backend_real_config")
-    overrides = getattr(request, "param", None) or {}
-    _seed_settings_complete(str(config_dir), overrides)
+    raw_overrides = dict(getattr(request, "param", None) or {})
+    extra_env_overrides = raw_overrides.pop("_extra_env", {}) or {}
+    _seed_settings_complete(str(config_dir), raw_overrides)
 
     fake_bin = _build_fake_ffmpeg_path(str(config_dir))
     extra_env = {
@@ -335,6 +339,7 @@ def backend_real_app(tmp_path_factory, request) -> Generator[tuple[str, str], No
         "PATH": fake_bin + os.pathsep + os.environ.get("PATH", ""),
         # Force CORS to a known value so SocketIO origin checks pass.
         "CORS_ORIGINS": "*",
+        **extra_env_overrides,
     }
     port = get_free_port()
     proc = _start_app(str(config_dir), port, extra_env=extra_env)

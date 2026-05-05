@@ -924,16 +924,37 @@ class TestWebhookPrefixTranslationReachesOwnerCheck:
 
 class TestUnknownPayload:
     def test_returns_400(self, client, auth_headers):
+        """Unknown payload returns 400 with body identifying why.
+
+        Audit fix — was status-code-only. A regression that returned 400 with
+        a misleading or empty body would pass. Production returns
+        ``{"status": "ignored", "reason": "<parse_error or 'unrecognised'>"}``.
+        """
         response = client.post(
             "/api/webhooks/incoming",
             headers={**auth_headers, "Content-Type": "application/json"},
             data=json.dumps({"random": "noise"}),
         )
         assert response.status_code == 400
+        body = response.get_json() or {}
+        assert body.get("status") == "ignored", f"Expected body.status=='ignored'; got {body!r}"
+        # Production returns "unrecognised" or a parse error message — pin the
+        # canonical anchor so a regression that emitted "" or "ok" fails.
+        reason = body.get("reason") or ""
+        assert "unrecognised" in reason or "no recognised vendor signature" in reason, (
+            f"Expected body.reason to identify the unrecognised payload; got {reason!r}"
+        )
 
 
 class TestPerServerFallback:
     def test_returns_404_for_unconfigured_server(self, client, auth_headers):
+        """Unconfigured server returns 404 naming the missing server id.
+
+        Audit fix — was status-code-only. Production returns
+        ``{"status": "ignored", "reason": "server 'nope' not configured"}``.
+        Pin the body so a regression that returned 404 with an empty/misleading
+        body fails.
+        """
         _seed_servers([])
         response = client.post(
             "/api/webhooks/server/nope",
@@ -941,6 +962,14 @@ class TestPerServerFallback:
             data=json.dumps({"path": "/x.mkv"}),
         )
         assert response.status_code == 404
+        body = response.get_json() or {}
+        assert body.get("status") == "ignored", f"Expected body.status=='ignored'; got {body!r}"
+        reason = body.get("reason") or ""
+        # Pin the unconfigured server id ("nope") in the reason — a regression
+        # that conflated server ids would fail.
+        assert "nope" in reason and "not configured" in reason, (
+            f"Expected body.reason to name the unconfigured server 'nope' and 'not configured'; got {reason!r}"
+        )
 
     def test_per_server_url_pins_dispatch_to_one_server(self, client, auth_headers):
         """B2: posting to /api/webhooks/server/<id> must scope dispatch to
@@ -1207,6 +1236,14 @@ class TestPayloadSizeLimit:
     """Webhook bodies cap at MAX_CONTENT_LENGTH (1 MiB) to thwart DoS."""
 
     def test_oversized_payload_returns_413(self, client, auth_headers):
+        """Oversized payload returns 413 with a body identifying the cause.
+
+        Audit fix — was status-code-only. A regression that custom-handled
+        this and returned 413 with a misleading body could miss the format
+        contract. Pin a body anchor so a regression that returned 413 with
+        an empty/wrong body fails. Flask's default 413 page returns HTML
+        containing 'Request Entity Too Large' and 'exceeds the capacity'.
+        """
         # 2 MiB JSON blob — well over the 1 MiB cap.
         oversized = json.dumps({"path": "/x.mkv", "junk": "A" * (2 * 1024 * 1024)})
         response = client.post(
@@ -1215,6 +1252,13 @@ class TestPayloadSizeLimit:
             data=oversized,
         )
         assert response.status_code == 413, response.status_code
+        body_text = response.get_data(as_text=True).lower()
+        # Pin canonical phrases from the Werkzeug default RequestEntityTooLarge
+        # page. A regression that swapped to a custom 413 must still surface
+        # at least one of these.
+        assert "request entity too large" in body_text or "exceeds the capacity" in body_text or "413" in body_text, (
+            f"413 body did not identify the size-limit cause: {body_text[:300]!r}"
+        )
 
     def test_normal_size_payload_is_accepted(self, client, auth_headers):
         """Sanity: a small (real-world-sized) payload still gets through.

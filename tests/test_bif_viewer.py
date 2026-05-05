@@ -4,7 +4,7 @@ import array
 import json
 import os
 import struct
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -526,6 +526,172 @@ class TestMultiServerBifSearch:
     def test_short_query_rejected(self, client):
         resp = client.get("/api/bif/servers/anything/search?q=a", headers=_api_headers())
         assert resp.status_code == 400
+
+
+class TestBifSearchShowHubUsesRatingKey:
+    """Hindsight for commit ``0a74c5b`` (use ``ratingKey`` not ``key`` for
+    show-hub episode lookup).
+
+    HINDSIGHT_90_DAYS row #79: pre-fix the show-hub branch built the
+    ``/allLeaves`` URL from ``show_item.get("key")`` which returns
+    ``/library/metadata/<id>/children`` for show-type items. That
+    yielded ``/library/metadata/<id>/children/allLeaves`` — a malformed
+    URL Plex returns 404 for, so episodes never appeared in BIF search
+    results for TV shows. The fix uses ``ratingKey`` (a bare integer)
+    and constructs ``/library/metadata/<id>/allLeaves`` cleanly.
+
+    Existing test_bif_viewer fixtures masked the bug because they used
+    the movie hub branch, where ``key`` happens to be the bare
+    metadata path. Category C / zero coverage.
+    """
+
+    def test_show_hub_constructs_show_key_from_rating_key(self, client, app):
+        """The /allLeaves URL must be built from ``ratingKey``, not
+        ``key``. We assert the URL Plex receives directly — the most
+        precise pin point for this regression.
+        """
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        with app.app_context():
+            sm = get_settings_manager()
+            sm.set("plex_url", "http://plex.test:32400")
+            sm.set("plex_token", "test-plex-token")
+            sm.set("plex_verify_ssl", False)
+
+        # Show-hub payload: ``key`` is the children-suffixed path that
+        # the bug used; ``ratingKey`` is the bare integer the fix uses.
+        # If a regression goes back to ``key``, the URL it requests
+        # becomes ``/library/metadata/9999/children/allLeaves`` (404).
+        hub_payload = {
+            "MediaContainer": {
+                "Hub": [
+                    {
+                        "type": "show",
+                        "Metadata": [
+                            {
+                                "ratingKey": "9999",
+                                "key": "/library/metadata/9999/children",
+                                "title": "Breaking Bad",
+                                "type": "show",
+                            }
+                        ],
+                    }
+                ]
+            }
+        }
+
+        # /allLeaves response — one episode with all the metadata the
+        # _item_to_result/_resolve_bif_for_item path needs.
+        leaves_payload = {
+            "MediaContainer": {
+                "Metadata": [
+                    {
+                        "ratingKey": "10001",
+                        "key": "/library/metadata/10001",
+                        "type": "episode",
+                        "title": "Pilot",
+                        "grandparentTitle": "Breaking Bad",
+                        "parentIndex": 1,
+                        "index": 1,
+                        "Media": [{"Part": [{"file": "/tv/BB/S01E01.mkv"}]}],
+                    }
+                ]
+            }
+        }
+
+        # Tree response — empty MediaPart list so _resolve_bif_for_item
+        # returns ('', False, {}) without touching the filesystem.
+        tree_xml = b"<?xml version='1.0'?><MediaContainer></MediaContainer>"
+        tree_resp = MagicMock(content=tree_xml)
+        tree_resp.raise_for_status = MagicMock()
+
+        captured_urls: list[str] = []
+
+        def fake_get(url, **kwargs):
+            captured_urls.append(url)
+            resp = MagicMock()
+            resp.raise_for_status = MagicMock()
+            if "/hubs/search" in url:
+                resp.json.return_value = hub_payload
+            elif "/allLeaves" in url:
+                resp.json.return_value = leaves_payload
+            elif "/tree" in url:
+                resp.content = tree_xml
+            else:  # pragma: no cover - guard
+                raise AssertionError(f"Unexpected URL: {url}")
+            return resp
+
+        with patch("requests.get", side_effect=fake_get):
+            resp = client.get("/api/bif/search?q=Breaking", headers=_api_headers())
+
+        assert resp.status_code == 200, resp.get_data(as_text=True)
+        results = resp.get_json()["results"]
+        assert len(results) == 1, "Expected the one mocked episode in results"
+        assert results[0]["title"] == "Breaking Bad S01E01 - Pilot"
+
+        # Pin the EXACT /allLeaves URL: must be built from ratingKey,
+        # not from the children-suffixed `key`. This is the regression
+        # marker — pre-0a74c5b this URL was
+        # ``http://plex.test:32400/library/metadata/9999/children/allLeaves``
+        # and Plex returned 404, dropping the episode from results.
+        all_leaves_calls = [u for u in captured_urls if "/allLeaves" in u]
+        assert all_leaves_calls == ["http://plex.test:32400/library/metadata/9999/allLeaves"], (
+            f"show_key must be derived from ratingKey, producing a clean "
+            f"/library/metadata/<id>/allLeaves URL. Got: {all_leaves_calls!r}"
+        )
+
+    def test_show_hub_skips_items_with_no_rating_key(self, client, app):
+        """A show-hub Metadata entry that lacks ``ratingKey`` must be
+        skipped, NOT silently fall back to ``key`` (which would
+        re-introduce the 0a74c5b bug). The production code uses
+        ``if not rating_key: continue`` — this test pins that behaviour.
+        """
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        with app.app_context():
+            sm = get_settings_manager()
+            sm.set("plex_url", "http://plex.test:32400")
+            sm.set("plex_token", "test-plex-token")
+            sm.set("plex_verify_ssl", False)
+
+        hub_payload = {
+            "MediaContainer": {
+                "Hub": [
+                    {
+                        "type": "show",
+                        "Metadata": [
+                            # Has key but NO ratingKey — must be skipped.
+                            {
+                                "key": "/library/metadata/9999/children",
+                                "title": "No Rating Key Show",
+                                "type": "show",
+                            }
+                        ],
+                    }
+                ]
+            }
+        }
+
+        captured_urls: list[str] = []
+
+        def fake_get(url, **kwargs):
+            captured_urls.append(url)
+            resp = MagicMock()
+            resp.raise_for_status = MagicMock()
+            if "/hubs/search" in url:
+                resp.json.return_value = hub_payload
+            else:  # pragma: no cover - guard against fallback
+                raise AssertionError(f"No /allLeaves call should fire when ratingKey missing; got {url}")
+            return resp
+
+        with patch("requests.get", side_effect=fake_get):
+            resp = client.get("/api/bif/search?q=NoKey", headers=_api_headers())
+
+        assert resp.status_code == 200
+        assert resp.get_json()["results"] == []
+        assert all("/allLeaves" not in u for u in captured_urls), (
+            "Items with no ratingKey must be skipped; no /allLeaves call expected"
+        )
 
 
 class TestMultiServerTrickplayInfo:

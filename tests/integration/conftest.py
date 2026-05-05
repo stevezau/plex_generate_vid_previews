@@ -3,6 +3,41 @@
 Loads ``servers.env`` (written by :mod:`setup_servers`) into module-level
 fixtures so each test gets the live container's URL, server-id, and
 admin token without re-parsing the file.
+
+Why a separate ``tests/integration/`` directory
+-----------------------------------------------
+
+Files in this directory drive **live** Emby / Jellyfin / Plex containers
+brought up by ``docker-compose.test.yml``. They are NOT mocked. They:
+
+* Require ``./generate_test_media.sh`` to have produced ``./media/``.
+* Require ``setup_servers.py`` to have written ``./servers.env`` with
+  per-vendor admin tokens captured from a live boot.
+* Take 5–60s each (real FFmpeg on real video, real HTTP to containers).
+
+To keep the default ``pytest`` run fast (~5s, 1300+ tests, no Docker
+dependency), every test file here is decorated with
+``@pytest.mark.integration`` (file-level ``pytestmark`` or per-class).
+The default ``pyproject.toml`` ``addopts`` includes
+``-m "not gpu and not e2e and not integration"`` which deselects the
+whole directory when nothing was asked for.
+
+Explicit invocations:
+
+* ``pytest -m integration --no-cov tests/integration/`` — full suite
+  against the live containers (boot the stack first).
+* ``pytest --no-cov tests/integration/`` — collects 94 tests but selects
+  0 (default ``-m`` filter still applies).  Confirms no ImportError.
+
+If you ever see ``no tests collected`` from an explicit
+``-m integration`` invocation, the most likely cause is a missing
+``servers.env`` triggering a session-scoped ``pytest.skip`` in this
+file (see ``servers_env`` fixture below) — bring the docker stack up.
+
+Note for tooling (mutmut, etc.): this directory should be excluded by
+default; mutating live-container code paths is meaningless and slow.
+The ``tool.pytest.ini_options.markers`` block in ``pyproject.toml``
+documents the ``integration`` marker explicitly.
 """
 
 from __future__ import annotations
