@@ -357,10 +357,15 @@ class TestWsgiModule:
 
         Environment isolation: ``wsgi.py`` calls ``create_app()`` at
         module load, which writes ``flask_secret.key`` into ``CONFIG_DIR``
-        (default ``/config``). On CI runners that path is unwritable and
-        the import raises PermissionError. Point ``CONFIG_DIR`` at a tmp
-        dir + drop any cached wsgi module so the import re-runs against
-        the override.
+        (default ``/config``) AND triggers ``save_auth_config()`` which
+        uses the module-level ``auth.AUTH_FILE`` captured at first import
+        of ``auth.py``. By the time this test runs, other tests have
+        already imported auth, so AUTH_FILE is locked to ``/config/auth.json``.
+        On CI runners that path is unwritable → PermissionError.
+
+        Fix: redirect both CONFIG_DIR (env) AND auth.AUTH_FILE (module
+        attribute) at tmp_path, then drop any cached wsgi module so the
+        re-import sees a writable target.
         """
         import importlib
         import sys
@@ -368,9 +373,18 @@ class TestWsgiModule:
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         monkeypatch.setenv("CONFIG_DIR", str(config_dir))
+
+        # auth.py captures AUTH_FILE at import time from CONFIG_DIR. Since
+        # it's almost certainly already imported, the env var alone won't
+        # retarget it — we must monkeypatch the attribute directly.
+        from media_preview_generator.web import auth as _auth_mod
+
+        monkeypatch.setattr(_auth_mod, "CONFIG_DIR", str(config_dir))
+        monkeypatch.setattr(_auth_mod, "AUTH_FILE", str(config_dir / "auth.json"))
+
         # Force a fresh import — if a previous test (or our own re-run)
         # left wsgi in sys.modules, ``import_module`` would return the
-        # cached module and never see the CONFIG_DIR override.
+        # cached module and never re-run create_app() against the override.
         sys.modules.pop("media_preview_generator.web.wsgi", None)
 
         # Find spec is the cheap pre-check.

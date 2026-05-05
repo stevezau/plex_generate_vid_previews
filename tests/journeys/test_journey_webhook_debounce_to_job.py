@@ -73,7 +73,7 @@ def _reset_singletons():
     wh_mod._pending_timers.clear()
 
 
-def _settings_with_debounce(config_dir, debounce_seconds: int) -> None:
+def _settings_with_debounce(config_dir, debounce_seconds: int, plex_cfg_path: str) -> None:
     settings_path = config_dir / "settings.json"
     settings_path.write_text(
         json.dumps(
@@ -92,6 +92,7 @@ def _settings_with_debounce(config_dir, debounce_seconds: int) -> None:
                         "url": "http://plex:32400",
                         "auth": {"token": "tok"},
                         "libraries": [{"id": "1", "name": "TV", "enabled": True}],
+                        "output": {"adapter": "plex_bundle", "plex_config_folder": plex_cfg_path},
                     }
                 ],
             }
@@ -101,6 +102,19 @@ def _settings_with_debounce(config_dir, debounce_seconds: int) -> None:
     auth_path.write_text(json.dumps({"token": "test-token-12345678"}))
 
 
+def _make_plex_cfg(tmp_path) -> str:
+    """Create a plex_config_folder layout that passes _validate_plex_config.
+
+    Without a real plex_config_folder + Media/ subdir, load_config raises
+    ConfigValidationError("PLEX_CONFIG_FOLDER is required") and the journey's
+    _start_job_async bails before invoking run_processing. The dev .env masks
+    this locally; CI has no .env and trips on every push.
+    """
+    plex_cfg = tmp_path / "plex_cfg"
+    (plex_cfg / "Media" / "localhost").mkdir(parents=True, exist_ok=True)
+    return str(plex_cfg)
+
+
 @pytest.fixture()
 def app_immediate(tmp_path, monkeypatch):
     """App with debounce = 0s — Timer fires immediately."""
@@ -108,7 +122,7 @@ def app_immediate(tmp_path, monkeypatch):
     config_dir.mkdir()
     monkeypatch.setenv("CONFIG_DIR", str(config_dir))
     monkeypatch.setenv("WEB_AUTH_TOKEN", "test-token-12345678")
-    _settings_with_debounce(config_dir, 0)
+    _settings_with_debounce(config_dir, 0, _make_plex_cfg(tmp_path))
     return create_app(config_dir=str(config_dir))
 
 
@@ -119,7 +133,7 @@ def app_debounced(tmp_path, monkeypatch):
     config_dir.mkdir()
     monkeypatch.setenv("CONFIG_DIR", str(config_dir))
     monkeypatch.setenv("WEB_AUTH_TOKEN", "test-token-12345678")
-    _settings_with_debounce(config_dir, 60)
+    _settings_with_debounce(config_dir, 60, _make_plex_cfg(tmp_path))
     return create_app(config_dir=str(config_dir))
 
 

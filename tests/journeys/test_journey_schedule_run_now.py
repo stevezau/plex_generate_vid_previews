@@ -82,6 +82,11 @@ def app(tmp_path, monkeypatch):
     config_dir.mkdir()
     monkeypatch.setenv("CONFIG_DIR", str(config_dir))
     monkeypatch.setenv("WEB_AUTH_TOKEN", "test-token-12345678")
+    # See test_journey_cancel_running_job.app for why plex_config_folder
+    # must be set + the path must contain Media/. CI lacks the dev .env
+    # that masks this locally.
+    plex_cfg = tmp_path / "plex_cfg"
+    (plex_cfg / "Media" / "localhost").mkdir(parents=True, exist_ok=True)
     settings_path = config_dir / "settings.json"
     settings_path.write_text(
         json.dumps(
@@ -96,6 +101,7 @@ def app(tmp_path, monkeypatch):
                         "url": "http://plex:32400",
                         "auth": {"token": "tok"},
                         "libraries": [{"id": "lib-1", "name": "Movies", "enabled": True}],
+                        "output": {"adapter": "plex_bundle", "plex_config_folder": str(plex_cfg)},
                     }
                 ],
             }

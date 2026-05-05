@@ -81,6 +81,13 @@ def app(tmp_path, monkeypatch):
     config_dir.mkdir()
     monkeypatch.setenv("CONFIG_DIR", str(config_dir))
     monkeypatch.setenv("WEB_AUTH_TOKEN", "test-token-12345678")
+    # _validate_plex_config requires plex_config_folder to exist + contain Media/.
+    # Without this the journey's _start_job_async → load_config raises
+    # ConfigValidationError("PLEX_CONFIG_FOLDER is required") and bails before
+    # invoking run_processing — passing locally only because the dev .env
+    # file provides PLEX_CONFIG_FOLDER, failing in CI where no .env exists.
+    plex_cfg = tmp_path / "plex_cfg"
+    (plex_cfg / "Media" / "localhost").mkdir(parents=True, exist_ok=True)
     settings_path = config_dir / "settings.json"
     settings_path.write_text(
         json.dumps(
@@ -97,6 +104,7 @@ def app(tmp_path, monkeypatch):
                         "url": "http://plex:32400",
                         "auth": {"token": "tok"},
                         "libraries": [{"id": "1", "name": "Movies", "enabled": True}],
+                        "output": {"adapter": "plex_bundle", "plex_config_folder": str(plex_cfg)},
                     }
                 ],
             }
