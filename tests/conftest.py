@@ -629,14 +629,167 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 
+def _scrub_request_uri(request):
+    """Replace the recorded URI's host/port/scheme with a fake one.
+
+    Cassettes commit to the repo, so the URI MUST NOT leak:
+    - LAN IPs (``172.16.10.210``)
+    - Plex direct cert hostnames (``172-16-10-240.262280e6da5f4e50adbc3bffffa82415.plex.direct``)
+      — these encode the user's Plex ``machineIdentifier``.
+    - Custom port numbers that hint at network topology.
+
+    Replaces every recorded request URI with a generic ``http://fake-server``
+    prefix, keeping the path + query (which IS the API contract we
+    want to pin) intact. vcrpy's ``match_on`` is configured to match
+    on path + query only, so the scrubbed URI still replays correctly.
+    """
+    from urllib.parse import urlparse, urlunparse
+
+    parsed = urlparse(request.uri)
+    fake = parsed._replace(scheme="http", netloc="fake-server")
+    request.uri = urlunparse(fake)
+    return request
+
+
+def _scrub_response_body(response):
+    """Scrub identifying data out of vendor API response bodies.
+
+    Cassettes commit to the repo, so the response body MUST NOT leak:
+    - Plex ``machineIdentifier`` (server fingerprint)
+    - Plex ``friendlyName`` (server name)
+    - Emby/Jellyfin ``ServerId`` / ``ServerName``
+    - Library titles / item titles / file paths from the user's actual
+      library
+
+    Replaces all of the above with FAKE_* placeholders. The scrub is
+    aggressive — it preserves request/response SHAPE but not the
+    user's data — exactly what the cassette is for (contract pinning,
+    not data fixture).
+
+    Called by vcrpy's ``before_record_response`` hook at record time.
+    Replay reads the already-scrubbed body from disk, so this never
+    runs in CI.
+    """
+    import re
+
+    body = response.get("body", {})
+    raw = body.get("string")
+    if not raw:
+        return response
+    if isinstance(raw, bytes):
+        try:
+            text = raw.decode("utf-8", errors="replace")
+        except Exception:
+            return response
+    else:
+        text = str(raw)
+
+    # JSON: Plex `/library/sections` returns
+    # ``{"MediaContainer": {"machineIdentifier": "...", "friendlyName": "...", "Directory": [...]}}``;
+    # Emby/Jellyfin return ``{"Items": [{"Path": "...", "Name": "..."}]}``.
+    substitutions = [
+        # Plex
+        (r'"machineIdentifier"\s*:\s*"[^"]+"', '"machineIdentifier":"FAKE_PLEX_MID"'),
+        (r'"friendlyName"\s*:\s*"[^"]+"', '"friendlyName":"FAKE_PLEX_NAME"'),
+        (r'machineIdentifier="[^"]+"', 'machineIdentifier="FAKE_PLEX_MID"'),
+        (r'friendlyName="[^"]+"', 'friendlyName="FAKE_PLEX_NAME"'),
+        # Emby / Jellyfin
+        (r'"ServerId"\s*:\s*"[^"]+"', '"ServerId":"FAKE_SERVER_ID"'),
+        (r'"ServerName"\s*:\s*"[^"]+"', '"ServerName":"FAKE_SERVER_NAME"'),
+    ]
+    scrubbed = text
+    for pattern, replacement in substitutions:
+        scrubbed = re.sub(pattern, replacement, scrubbed)
+
+    # JSON Items / Directory array collapse — when Emby/Jellyfin
+    # return Pass-2 enumeration responses, the array contains up to
+    # 1000 items each with Path / Name / Id / OriginalTitle / IMDB
+    # tags / etc. — full library taxonomy. Field-level scrubbing
+    # would need 20+ regexes and miss something. Cleaner: parse the
+    # JSON, collapse the array to ``[]``, re-serialize. Preserves
+    # the response SHAPE (which is what cassette contracts pin)
+    # while stripping ALL list contents. The MISS test we record
+    # asserts on None returned anyway — empty array is correct.
+    try:
+        import json
+
+        parsed = json.loads(scrubbed)
+    except (ValueError, TypeError):
+        parsed = None
+    if isinstance(parsed, dict):
+        # Emby/Jellyfin envelope.
+        if isinstance(parsed.get("Items"), list) and parsed["Items"]:
+            parsed["Items"] = []
+            parsed["TotalRecordCount"] = 0
+            scrubbed = json.dumps(parsed)
+        # Plex JSON envelope: ``{"MediaContainer": {"size": N, "Metadata": [...]}}``
+        # — collapse Metadata array.
+        mc = parsed.get("MediaContainer") if isinstance(parsed, dict) else None
+        if isinstance(mc, dict):
+            if isinstance(mc.get("Metadata"), list) and mc["Metadata"]:
+                mc["Metadata"] = []
+                mc["size"] = 0
+                scrubbed = json.dumps(parsed)
+            # Directory array (e.g. /library/sections lists library
+            # names + their on-disk locations — strong PII).
+            if isinstance(mc.get("Directory"), list) and mc["Directory"]:
+                mc["Directory"] = []
+                mc["size"] = 0
+                scrubbed = json.dumps(parsed)
+
+    # Plex XML responses (plexapi's session uses XML by default for
+    # ``plex.query`` / ``plex.fetchItems`` — different from raw
+    # requests with Accept: application/json). Scrub user-identifying
+    # attributes:
+    # - <Directory ...> entries inside <MediaContainer> list each
+    #   library by title + uuid + locations. Strip everything except
+    #   the structural envelope.
+    # - <Location path="/data_16tb/Movies" /> embeds the user's actual
+    #   mount paths.
+    # - <Video>/<Episode>/<Movie> Metadata children embed every
+    #   identifying field (title, summary, file path, IMDB tag).
+    xml_substitutions = [
+        # Strip child elements wholesale — keep the opening/closing
+        # tag of MediaContainer for shape, drop everything between.
+        (
+            r"<Directory\b[^>]*>.*?</Directory>",
+            '<Directory title="FAKE" />',
+        ),
+        (r"<Directory\b[^/]*/>", '<Directory title="FAKE" />'),
+        (
+            r"<Video\b[^>]*>.*?</Video>",
+            '<Video title="FAKE" />',
+        ),
+        (r"<Video\b[^/]*/>", '<Video title="FAKE" />'),
+        (
+            r"<Episode\b[^>]*>.*?</Episode>",
+            '<Episode title="FAKE" />',
+        ),
+        (
+            r"<Movie\b[^>]*>.*?</Movie>",
+            '<Movie title="FAKE" />',
+        ),
+        (r'<Location\b[^/]*path="[^"]*"[^/]*/>', '<Location path="/FAKE" />'),
+        (r'machineIdentifier="[^"]*"', 'machineIdentifier="FAKE_PLEX_MID"'),
+        (r'friendlyName="[^"]*"', 'friendlyName="FAKE_PLEX_NAME"'),
+    ]
+    for pattern, replacement in xml_substitutions:
+        scrubbed = re.sub(pattern, replacement, scrubbed, flags=re.DOTALL)
+
+    response["body"]["string"] = scrubbed.encode("utf-8") if isinstance(raw, bytes) else scrubbed
+    return response
+
+
 @pytest.fixture(scope="module")
 def vcr_config():
     """Default VCR config applied to every ``@pytest.mark.vcr`` test.
 
-    Scrubs every credential-bearing header and query parameter so cassettes
-    are safe to commit. Replays once-recorded interactions; in CI no
-    network calls happen at all (record_mode='none' set per-test or via
-    the project's pytest invocation).
+    Scrubs every credential-bearing header AND aggressively scrubs
+    response bodies (server identifiers, library/item titles) so
+    cassettes are safe to commit to a public repo. Replays
+    once-recorded interactions; in CI no network calls happen at all
+    (record_mode='none' set per-test or via the project's pytest
+    invocation).
     """
     return {
         # Scrub vendor auth headers — these MUST never land in committed
@@ -653,14 +806,27 @@ def vcr_config():
             ("X-Plex-Token", "FAKE_PLEX_TOKEN"),
             ("api_key", "FAKE_API_KEY"),
         ],
-        # POST bodies for /Library/Media/Updated etc. are JSON; vcr can
-        # match on body to keep contracts tight without recording the
-        # whole payload twice.
-        "match_on": ["method", "scheme", "host", "port", "path", "query"],
-        # Record mode default: 'none' means "use cassettes, fail on
-        # unmatched". Override per-test with @pytest.mark.vcr(record_mode='once')
-        # when you intentionally need to re-record.
-        "record_mode": "none",
+        # Aggressive request-URI scrubbing — strips LAN IPs and
+        # Plex direct cert hostnames (which encode machineIdentifier)
+        # so cassettes don't leak network topology.
+        "before_record_request": _scrub_request_uri,
+        # Aggressive response-body scrubbing — server identifiers,
+        # library names, item titles all become FAKE_* before hitting
+        # disk.
+        "before_record_response": _scrub_response_body,
+        # Match on URL shape only (method + path + query) — NOT host or
+        # port. Cassettes must be portable across recording environment
+        # (Steve's LAN Plex at 172.16.10.240) and CI (no live server),
+        # which means matching on the host the request was originally
+        # sent to would always fail. The cassette's role is to pin the
+        # API contract (path / query / method / response shape), not to
+        # tie the test to a specific server instance.
+        "match_on": ["method", "path", "query"],
         # Don't barf on the unknown 'urllib3' transport plexapi uses.
         "decode_compressed_response": True,
+        # NOTE: ``record_mode`` is intentionally NOT set here so the
+        # ``--record-mode=once`` CLI flag drives it during recording.
+        # Default behaviour without the flag is 'none' (replay-only) —
+        # missing cassette → strict failure → exactly the "fail
+        # loudly when cassette missing" contract the user asked for.
     }

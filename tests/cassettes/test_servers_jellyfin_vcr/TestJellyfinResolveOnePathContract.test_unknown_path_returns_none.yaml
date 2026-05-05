@@ -1,0 +1,146 @@
+interactions:
+- request:
+    body: null
+    headers:
+      Accept:
+      - application/json
+      Accept-Encoding:
+      - gzip, deflate, br
+      Connection:
+      - keep-alive
+      User-Agent:
+      - python-requests/2.33.0
+      X-Emby-Token:
+      - FAKE_EMBY_TOKEN
+    method: GET
+    uri: http://fake-server/MediaPreviewBridge/ResolvePath?path=%2Fdata%2FMovies%2FMPG_Cassette_Sentinel_DoesNotExist_99999.mkv
+  response:
+    body:
+      string: ''
+    headers:
+      Content-Length:
+      - '0'
+      Date:
+      - Tue, 05 May 2026 11:25:34 GMT
+      Server:
+      - Kestrel
+      X-Response-Time-ms:
+      - '0.3933'
+    status:
+      code: 404
+      message: Not Found
+- request:
+    body: null
+    headers:
+      Accept:
+      - application/json
+      Accept-Encoding:
+      - gzip, deflate, br
+      Connection:
+      - keep-alive
+      User-Agent:
+      - python-requests/2.33.0
+      X-Emby-Token:
+      - FAKE_EMBY_TOKEN
+    method: GET
+    uri: http://fake-server/Items?Fields=Path&IncludeItemTypes=Movie&Limit=500&NameStartsWith=Movies&ParentId=1&Recursive=true
+  response:
+    body:
+      string: '{"type":"https://tools.ietf.org/html/rfc9110#section-15.5.1","title":"One
+        or more validation errors occurred.","status":400,"errors":{"parentId":["The
+        value \u00271\u0027 is not valid."]},"traceId":"00-ebea7ab26fd1af7c12b4021ece005748-42d4fd543af7d62a-00"}'
+    headers:
+      Content-Type:
+      - application/json; charset=utf-8
+      Date:
+      - Tue, 05 May 2026 11:25:34 GMT
+      Server:
+      - Kestrel
+      Transfer-Encoding:
+      - chunked
+      Vary:
+      - Accept-Encoding
+      X-Response-Time-ms:
+      - '0.4148'
+      content-length:
+      - '256'
+    status:
+      code: 400
+      message: Bad Request
+- request:
+    body: null
+    headers:
+      Accept:
+      - application/json
+      Accept-Encoding:
+      - gzip, deflate, br
+      Connection:
+      - keep-alive
+      User-Agent:
+      - python-requests/2.33.0
+      X-Emby-Token:
+      - FAKE_EMBY_TOKEN
+    method: GET
+    uri: http://fake-server/Items?Fields=Path&IncludeItemTypes=Movie%2CEpisode&Limit=50&ParentId=1&Recursive=true&searchTerm=MPG_Cassette_Sentinel_DoesNotExist_99999
+  response:
+    body:
+      string: '{"type":"https://tools.ietf.org/html/rfc9110#section-15.5.1","title":"One
+        or more validation errors occurred.","status":400,"errors":{"parentId":["The
+        value \u00271\u0027 is not valid."]},"traceId":"00-3e9e2d4f65ec3492ff37097bba55e3fc-620d7f30539d4d60-00"}'
+    headers:
+      Content-Type:
+      - application/json; charset=utf-8
+      Date:
+      - Tue, 05 May 2026 11:25:34 GMT
+      Server:
+      - Kestrel
+      Transfer-Encoding:
+      - chunked
+      Vary:
+      - Accept-Encoding
+      X-Response-Time-ms:
+      - '0.4695'
+      content-length:
+      - '256'
+    status:
+      code: 400
+      message: Bad Request
+- request:
+    body: null
+    headers:
+      Accept:
+      - application/json
+      Accept-Encoding:
+      - gzip, deflate, br
+      Connection:
+      - keep-alive
+      User-Agent:
+      - python-requests/2.33.0
+      X-Emby-Token:
+      - FAKE_EMBY_TOKEN
+    method: GET
+    uri: http://fake-server/Items?Fields=Path&IncludeItemTypes=Movie%2CEpisode&Limit=1000&ParentId=1&Recursive=true
+  response:
+    body:
+      string: '{"type":"https://tools.ietf.org/html/rfc9110#section-15.5.1","title":"One
+        or more validation errors occurred.","status":400,"errors":{"parentId":["The
+        value \u00271\u0027 is not valid."]},"traceId":"00-392dce4d9233a112e08f9ff168a0ca13-bf203b0f7a5cbbbc-00"}'
+    headers:
+      Content-Type:
+      - application/json; charset=utf-8
+      Date:
+      - Tue, 05 May 2026 11:25:34 GMT
+      Server:
+      - Kestrel
+      Transfer-Encoding:
+      - chunked
+      Vary:
+      - Accept-Encoding
+      X-Response-Time-ms:
+      - '0.2983'
+      content-length:
+      - '256'
+    status:
+      code: 400
+      message: Bad Request
+version: 1

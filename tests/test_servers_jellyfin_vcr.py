@@ -1,0 +1,76 @@
+"""Cassette-backed contract tests for ``JellyfinServer`` vendor-API calls.
+
+Pins the URL contract for:
+- The Media Preview Bridge plugin's ``ResolvePath`` lookup.
+- The plugin's ``Trickplay/{itemId}`` registration endpoint
+  (audit L1 — params must include ``width`` + ``intervalMs``
+  matching the trickplay adapter's configured values).
+
+These initial cassettes are MISS-only — querying for a path that
+doesn't exist + a fake item_id for the trickplay registration. HIT
+cassettes can be added later against a dedicated test library.
+"""
+
+from __future__ import annotations
+
+import os
+
+import pytest
+
+from media_preview_generator.servers import JellyfinServer, Library, ServerConfig, ServerType
+
+pytestmark = [pytest.mark.vcr]
+
+_MISS_PATH = "/data/Movies/MPG_Cassette_Sentinel_DoesNotExist_99999.mkv"
+
+
+@pytest.fixture
+def jellyfin_under_test():
+    url = os.environ.get("JELLYFIN_URL", "http://fake-jellyfin.local:8096")
+    token = os.environ.get("JELLYFIN_TOKEN", "fake-token")
+    user_id = os.environ.get("JELLYFIN_USER_ID", "")
+    auth = {"method": "api_key", "api_key": token}
+    if user_id:
+        auth["user_id"] = user_id
+    cfg = ServerConfig(
+        id="jellyfin-vcr",
+        type=ServerType.JELLYFIN,
+        name="Jellyfin VCR",
+        enabled=True,
+        url=url,
+        auth=auth,
+        verify_ssl=False,
+        libraries=[
+            Library(id="1", name="Movies", remote_paths=("/data/Movies",), enabled=True),
+        ],
+        # Use non-default output settings so the L1 contract test
+        # asserts the params reflect adapter config, not hardcoded
+        # defaults.
+        output={"adapter": "jellyfin_trickplay", "width": 480, "frame_interval": 5},
+    )
+    return JellyfinServer(cfg)
+
+
+class TestJellyfinResolveOnePathContract:
+    """Pins the plugin's ``ResolvePath`` URL contract via a MISS
+    cassette. A regression that drops the plugin call (or sends to
+    a different endpoint) cassette-misses on replay.
+    """
+
+    def test_unknown_path_returns_none(self, jellyfin_under_test):
+        item_id = jellyfin_under_test._uncached_resolve_remote_path_to_item_id(_MISS_PATH)
+        assert item_id is None
+
+
+class TestJellyfinTrickplayRegistrationContract:
+    """Audit L1 contract pin: ``trigger_refresh`` calls the plugin's
+    ``POST /MediaPreviewBridge/Trickplay/{itemId}`` with ``width`` and
+    ``intervalMs`` query params reflecting the trickplay adapter's
+    configured values. The cassette records the EXACT request shape
+    the plugin accepts.
+    """
+
+    def test_plugin_call_uses_adapter_width_and_interval(self, jellyfin_under_test):
+        # Use a fake item_id; plugin returns 404 (no such item) but
+        # the cassette captures the URL shape.
+        jellyfin_under_test._trigger_item_refresh("MPG_FAKE_ITEM_ID_99999")

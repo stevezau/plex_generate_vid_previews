@@ -1,0 +1,208 @@
+interactions:
+- request:
+    body: null
+    headers:
+      Accept:
+      - application/json
+      Accept-Encoding:
+      - gzip, deflate, br
+      Connection:
+      - keep-alive
+      User-Agent:
+      - python-requests/2.33.0
+      X-Emby-Token:
+      - FAKE_EMBY_TOKEN
+    method: GET
+    uri: http://fake-server/Items?Fields=Path&IncludeItemTypes=Movie%2CEpisode&Limit=1&Path=%2Fdata%2FMovies%2FMPG_Cassette_Sentinel_DoesNotExist_99999.mkv&Recursive=true
+  response:
+    body:
+      string: '{"Items":[],"TotalRecordCount":0}'
+    headers:
+      Access-Control-Allow-Headers:
+      - Accept, Accept-Language, Authorization, Cache-Control, Content-Disposition,
+        Content-Encoding, Content-Language, Content-Length, Content-MD5, Content-Range,
+        Content-Type, Date, Host, If-Match, If-Modified-Since, If-None-Match, If-Unmodified-Since,
+        Origin, OriginToken, Pragma, Range, Slug, Transfer-Encoding, Want-Digest,
+        X-MediaBrowser-Token, X-Emby-Token, X-Emby-Client, X-Emby-Client-Version,
+        X-Emby-Device-Id, X-Emby-Device-Name, X-Emby-Authorization
+      Access-Control-Allow-Methods:
+      - GET, POST, PUT, DELETE, PATCH, OPTIONS
+      Access-Control-Allow-Origin:
+      - '*'
+      Access-Control-Allow-Private-Network:
+      - 'true'
+      Content-Length:
+      - '33'
+      Content-Type:
+      - application/json; charset=utf-8
+      Cross-Origin-Resource-Policy:
+      - cross-origin
+      Date:
+      - Tue, 05 May 2026 11:25:32 GMT
+      Expires:
+      - '-1'
+      Private-Network-Access-Id:
+      - 529b895d767e4a6f9a58be0fd60a45ba
+      Private-Network-Access-Name:
+      - aac50ddf6279
+      Server:
+      - UPnP/1.0 DLNADOC/1.50
+    status:
+      code: 200
+      message: OK
+- request:
+    body: null
+    headers:
+      Accept:
+      - application/json
+      Accept-Encoding:
+      - gzip, deflate, br
+      Connection:
+      - keep-alive
+      User-Agent:
+      - python-requests/2.33.0
+      X-Emby-Token:
+      - FAKE_EMBY_TOKEN
+    method: GET
+    uri: http://fake-server/Items?Fields=Path&IncludeItemTypes=Movie&Limit=500&NameStartsWith=Movies&ParentId=1&Recursive=true
+  response:
+    body:
+      string: '{"Items":[],"TotalRecordCount":0}'
+    headers:
+      Access-Control-Allow-Headers:
+      - Accept, Accept-Language, Authorization, Cache-Control, Content-Disposition,
+        Content-Encoding, Content-Language, Content-Length, Content-MD5, Content-Range,
+        Content-Type, Date, Host, If-Match, If-Modified-Since, If-None-Match, If-Unmodified-Since,
+        Origin, OriginToken, Pragma, Range, Slug, Transfer-Encoding, Want-Digest,
+        X-MediaBrowser-Token, X-Emby-Token, X-Emby-Client, X-Emby-Client-Version,
+        X-Emby-Device-Id, X-Emby-Device-Name, X-Emby-Authorization
+      Access-Control-Allow-Methods:
+      - GET, POST, PUT, DELETE, PATCH, OPTIONS
+      Access-Control-Allow-Origin:
+      - '*'
+      Access-Control-Allow-Private-Network:
+      - 'true'
+      Content-Length:
+      - '33'
+      Content-Type:
+      - application/json; charset=utf-8
+      Cross-Origin-Resource-Policy:
+      - cross-origin
+      Date:
+      - Tue, 05 May 2026 11:25:32 GMT
+      Expires:
+      - '-1'
+      Private-Network-Access-Id:
+      - 529b895d767e4a6f9a58be0fd60a45ba
+      Private-Network-Access-Name:
+      - aac50ddf6279
+      Server:
+      - UPnP/1.0 DLNADOC/1.50
+    status:
+      code: 200
+      message: OK
+- request:
+    body: null
+    headers:
+      Accept:
+      - application/json
+      Accept-Encoding:
+      - gzip, deflate, br
+      Connection:
+      - keep-alive
+      User-Agent:
+      - python-requests/2.33.0
+      X-Emby-Token:
+      - FAKE_EMBY_TOKEN
+    method: GET
+    uri: http://fake-server/Items?Fields=Path&IncludeItemTypes=Movie%2CEpisode&Limit=50&ParentId=1&Recursive=true&searchTerm=MPG_Cassette_Sentinel_DoesNotExist_99999
+  response:
+    body:
+      string: '{"Items":[],"TotalRecordCount":0}'
+    headers:
+      Access-Control-Allow-Headers:
+      - Accept, Accept-Language, Authorization, Cache-Control, Content-Disposition,
+        Content-Encoding, Content-Language, Content-Length, Content-MD5, Content-Range,
+        Content-Type, Date, Host, If-Match, If-Modified-Since, If-None-Match, If-Unmodified-Since,
+        Origin, OriginToken, Pragma, Range, Slug, Transfer-Encoding, Want-Digest,
+        X-MediaBrowser-Token, X-Emby-Token, X-Emby-Client, X-Emby-Client-Version,
+        X-Emby-Device-Id, X-Emby-Device-Name, X-Emby-Authorization
+      Access-Control-Allow-Methods:
+      - GET, POST, PUT, DELETE, PATCH, OPTIONS
+      Access-Control-Allow-Origin:
+      - '*'
+      Access-Control-Allow-Private-Network:
+      - 'true'
+      Content-Length:
+      - '33'
+      Content-Type:
+      - application/json; charset=utf-8
+      Cross-Origin-Resource-Policy:
+      - cross-origin
+      Date:
+      - Tue, 05 May 2026 11:25:34 GMT
+      Expires:
+      - '-1'
+      Private-Network-Access-Id:
+      - 529b895d767e4a6f9a58be0fd60a45ba
+      Private-Network-Access-Name:
+      - aac50ddf6279
+      Server:
+      - UPnP/1.0 DLNADOC/1.50
+    status:
+      code: 200
+      message: OK
+- request:
+    body: null
+    headers:
+      Accept:
+      - application/json
+      Accept-Encoding:
+      - gzip, deflate, br
+      Connection:
+      - keep-alive
+      User-Agent:
+      - python-requests/2.33.0
+      X-Emby-Token:
+      - FAKE_EMBY_TOKEN
+    method: GET
+    uri: http://fake-server/Items?Fields=Path&IncludeItemTypes=Movie%2CEpisode&Limit=1000&ParentId=1&Recursive=true
+  response:
+    body:
+      string: '{"Items": [], "TotalRecordCount": 0}'
+    headers:
+      Access-Control-Allow-Headers:
+      - Accept, Accept-Language, Authorization, Cache-Control, Content-Disposition,
+        Content-Encoding, Content-Language, Content-Length, Content-MD5, Content-Range,
+        Content-Type, Date, Host, If-Match, If-Modified-Since, If-None-Match, If-Unmodified-Since,
+        Origin, OriginToken, Pragma, Range, Slug, Transfer-Encoding, Want-Digest,
+        X-MediaBrowser-Token, X-Emby-Token, X-Emby-Client, X-Emby-Client-Version,
+        X-Emby-Device-Id, X-Emby-Device-Name, X-Emby-Authorization
+      Access-Control-Allow-Methods:
+      - GET, POST, PUT, DELETE, PATCH, OPTIONS
+      Access-Control-Allow-Origin:
+      - '*'
+      Access-Control-Allow-Private-Network:
+      - 'true'
+      Content-Type:
+      - application/json; charset=utf-8
+      Cross-Origin-Resource-Policy:
+      - cross-origin
+      Date:
+      - Tue, 05 May 2026 11:25:34 GMT
+      Expires:
+      - '-1'
+      Private-Network-Access-Id:
+      - 529b895d767e4a6f9a58be0fd60a45ba
+      Private-Network-Access-Name:
+      - aac50ddf6279
+      Server:
+      - UPnP/1.0 DLNADOC/1.50
+      Vary:
+      - Accept-Encoding
+      content-length:
+      - '800812'
+    status:
+      code: 200
+      message: OK
+version: 1
