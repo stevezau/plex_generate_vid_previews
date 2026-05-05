@@ -1,0 +1,56 @@
+interactions:
+- request:
+    body: null
+    headers:
+      Accept:
+      - application/json
+      Accept-Encoding:
+      - gzip, deflate, br
+      Connection:
+      - keep-alive
+      User-Agent:
+      - python-requests/2.33.0
+      X-Emby-Token:
+      - FAKE_EMBY_TOKEN
+    method: GET
+    uri: http://fake-server/Items?Fields=Path&IncludeItemTypes=Movie%2CEpisode&Limit=1&Path=%2Fem-media%2FMovies%2FTest+Movie+H264+%282024%29%2FTest+Movie+H264+%282024%29.mkv&Recursive=true
+  response:
+    body:
+      string: '{"Items": [{"Name": "Test Movie", "ServerId": "FAKE_SERVER_ID", "Id":
+        "7", "Path": "/em-media/Movies/Test Movie H264 (2024)/Test Movie H264 (2024).mkv",
+        "RunTimeTicks": 300230000, "IsFolder": false, "Type": "Movie", "ImageTags":
+        {}, "BackdropImageTags": [], "MediaType": "Video"}], "TotalRecordCount": 1}'
+    headers:
+      Access-Control-Allow-Headers:
+      - Accept, Accept-Language, Authorization, Cache-Control, Content-Disposition,
+        Content-Encoding, Content-Language, Content-Length, Content-MD5, Content-Range,
+        Content-Type, Date, Host, If-Match, If-Modified-Since, If-None-Match, If-Unmodified-Since,
+        Origin, OriginToken, Pragma, Range, Slug, Transfer-Encoding, Want-Digest,
+        X-MediaBrowser-Token, X-Emby-Token, X-Emby-Client, X-Emby-Client-Version,
+        X-Emby-Device-Id, X-Emby-Device-Name, X-Emby-Authorization
+      Access-Control-Allow-Methods:
+      - GET, POST, PUT, DELETE, PATCH, OPTIONS
+      Access-Control-Allow-Origin:
+      - '*'
+      Access-Control-Allow-Private-Network:
+      - 'true'
+      Content-Length:
+      - '300'
+      Content-Type:
+      - application/json; charset=utf-8
+      Cross-Origin-Resource-Policy:
+      - cross-origin
+      Date:
+      - Tue, 05 May 2026 16:45:04 GMT
+      Expires:
+      - '-1'
+      Private-Network-Access-Id:
+      - FAKE_PNA_ID
+      Private-Network-Access-Name:
+      - FAKE_PNA_NAME
+      Server:
+      - UPnP/1.0 DLNADOC/1.50
+    status:
+      code: 200
+      message: OK
+version: 1

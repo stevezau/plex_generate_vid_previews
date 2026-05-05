@@ -13,7 +13,7 @@ interactions:
       X-Emby-Token:
       - FAKE_EMBY_TOKEN
     method: GET
-    uri: http://fake-server/Items?Fields=Path&IncludeItemTypes=Movie%2CEpisode&Limit=1&Path=%2Fdata%2FMovies%2FMPG_Cassette_Sentinel_DoesNotExist_99999.mkv&Recursive=true
+    uri: http://fake-server/Items?Fields=Path&IncludeItemTypes=Movie%2CEpisode&Limit=1&Path=%2Fem-media%2FMovies%2FZzzzzz+Nonexistent+Show+%282099%29%2FZzzzzz+Nonexistent+Show+%282099%29+-+S01E01+-+Pilot.mkv&Recursive=true
   response:
     body:
       string: '{"Items":[],"TotalRecordCount":0}'
@@ -64,7 +64,7 @@ interactions:
       X-Emby-Token:
       - FAKE_EMBY_TOKEN
     method: GET
-    uri: http://fake-server/Items?Fields=Path&IncludeItemTypes=Movie&Limit=500&NameStartsWith=Movies&ParentId=1&Recursive=true
+    uri: http://fake-server/Items?Fields=Path&IncludeItemTypes=Series&Limit=500&NameStartsWith=Zzzzzz&ParentId=1&Recursive=true
   response:
     body:
       string: '{"Items":[],"TotalRecordCount":0}'
