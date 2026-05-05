@@ -66,6 +66,14 @@ test = [
     "pytest-playwright>=0.4.0",
     "playwright>=1.40.0",
     "flask-cors>=6.0.0,<7",
+    # vcrpy + pytest-recording for vendor-API contract cassettes.
+    # Records real HTTP request/response shapes against live Plex / Emby /
+    # Jellyfin to YAML cassettes; replays in CI so tests run offline AND
+    # catch contract drift (missing query params, response shape changes,
+    # status code regressions). Caught the production "Plex 500s when
+    # type= is omitted" bug that the mock-based unit test missed.
+    "pytest-recording>=0.13.0",
+    "vcrpy>=6.0.0",
 ]
 dev = [
     "media-preview-generator[test]",
@@ -115,6 +123,8 @@ markers = [
     "real_logging: opt out of the autouse setup_logging no-op in conftest",
     "real_job_async: opt out of the autouse _start_job_async no-op in conftest",
     "journey: cross-module integration journey tests (light unit-of-the-seam style)",
+    "vcr: vendor-API contract tests that replay recorded HTTP cassettes (no live server needed)",
+    "vcr_record: tests that re-record cassettes against a live server when run with --record-mode=once (skipped by default in CI)",
 ]
 
 [tool.coverage.run]

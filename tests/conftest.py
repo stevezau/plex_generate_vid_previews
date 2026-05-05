@@ -608,3 +608,59 @@ __all__ = [
     "create_mock_ffmpeg_process",
     "create_mock_mediainfo",
 ]
+
+
+# ---------------------------------------------------------------------------
+# VCR / pytest-recording fixtures for vendor-API contract tests.
+#
+# Cassettes live under ``tests/cassettes/<test_module>/<test_name>.yaml`` and
+# are committed to the repo so CI replays them without needing live
+# Plex/Emby/Jellyfin servers. Re-record by deleting a cassette and running
+# the test with ``--record-mode=once`` against a live server; environment
+# variables ``PLEX_URL`` / ``PLEX_TOKEN`` / ``EMBY_URL`` / ``EMBY_TOKEN`` /
+# ``EMBY_USER_ID`` / ``JELLYFIN_URL`` / ``JELLYFIN_TOKEN`` are consumed by
+# the contract-test fixtures only when recording.
+#
+# Why this exists: the production "Plex 500s when ``type=`` is omitted" bug
+# shipped because the unit test mocked ``plex.fetchItems`` and asserted on
+# a substring of the URL. Cassettes capture the exact API contract — Plex's
+# real response shape, status codes, and parameter requirements — so any
+# future change that strays from the recorded shape fails fast.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def vcr_config():
+    """Default VCR config applied to every ``@pytest.mark.vcr`` test.
+
+    Scrubs every credential-bearing header and query parameter so cassettes
+    are safe to commit. Replays once-recorded interactions; in CI no
+    network calls happen at all (record_mode='none' set per-test or via
+    the project's pytest invocation).
+    """
+    return {
+        # Scrub vendor auth headers — these MUST never land in committed
+        # cassettes. Each vendor uses one of these; we strip them all.
+        "filter_headers": [
+            ("X-Plex-Token", "FAKE_PLEX_TOKEN"),
+            ("X-Emby-Token", "FAKE_EMBY_TOKEN"),
+            ("Authorization", "FAKE_AUTH"),
+            ("Cookie", "FAKE_COOKIE"),
+            ("Set-Cookie", "FAKE_SET_COOKIE"),
+        ],
+        # Plex passes the token in a query string too. Scrub it.
+        "filter_query_parameters": [
+            ("X-Plex-Token", "FAKE_PLEX_TOKEN"),
+            ("api_key", "FAKE_API_KEY"),
+        ],
+        # POST bodies for /Library/Media/Updated etc. are JSON; vcr can
+        # match on body to keep contracts tight without recording the
+        # whole payload twice.
+        "match_on": ["method", "scheme", "host", "port", "path", "query"],
+        # Record mode default: 'none' means "use cassettes, fail on
+        # unmatched". Override per-test with @pytest.mark.vcr(record_mode='once')
+        # when you intentionally need to re-record.
+        "record_mode": "none",
+        # Don't barf on the unknown 'urllib3' transport plexapi uses.
+        "decode_compressed_response": True,
+    }
