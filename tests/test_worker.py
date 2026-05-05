@@ -266,6 +266,53 @@ class TestWorker:
         assert worker.completed == 1
 
     @patch("media_preview_generator.processing.multi_server.process_canonical_path")
+    def test_worker_logs_picked_up_not_started_when_assigned(self, mock_process):
+        """The worker's assignment-receipt log line must say "picked up:"
+        and never "started:". The log fires when a worker thread RECEIVES
+        an item — before any ownership check, cache lookup, or FFmpeg
+        invocation. "Started" wording previously appeared here and was
+        misleading: users read it as "encoding has begun" when in fact
+        the worker hadn't done any work yet (the abe52ab7 user report —
+        "GPU Worker 1 started: ..." followed milliseconds later by
+        "No owners: ...").
+
+        "Started" is reserved for the actual ffmpeg-encoding-starts log
+        line at multi_server.py:980 ("FFmpeg start: server=... gpu=...").
+        A regression here would re-introduce the user-confusion bug
+        without any other test catching it.
+        """
+        from loguru import logger
+
+        captured: list[str] = []
+        sink_id = logger.add(lambda msg: captured.append(str(msg)), level="INFO")
+        try:
+            worker = Worker(0, "CPU")
+            mock_process.side_effect = lambda *a, **kw: _ms("generated")
+
+            worker.assign_task(
+                _pi("k1", title="Test Movie", media_type="movie"),
+                MagicMock(),
+                MagicMock(),
+            )
+            worker.current_thread.join(timeout=2)
+        finally:
+            logger.remove(sink_id)
+
+        # Find the assignment-receipt line — produced before any
+        # processing happens, identified by the worker's display name.
+        pickup_lines = [line for line in captured if "picked up:" in line]
+        started_lines = [
+            line for line in captured if "CPU Worker" in line and " started:" in line and "FFmpeg" not in line
+        ]
+
+        assert pickup_lines, f"Worker pickup log must say 'picked up:'; full log was:\n{chr(10).join(captured)}"
+        assert not started_lines, (
+            "Worker pickup log must NOT say 'started:' — that wording is reserved "
+            f"for FFmpeg-actually-starting (multi_server.py FFmpeg start log). "
+            f"Found offending lines:\n{chr(10).join(started_lines)}"
+        )
+
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_last_task_outcome_delta(self, mock_process):
         """Test that last_task_outcome_delta returns correct per-task delta."""
         worker = Worker(0, "CPU")

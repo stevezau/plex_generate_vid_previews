@@ -537,3 +537,152 @@ class TestStartJobAsyncServerIdPin:
             f"Pinned-to-plex-1 job must project plex-1's URL onto config.plex_url; got {captured.get('plex_url')!r}"
         )
         assert captured.get("plex_token") == "tok"
+
+
+# ---------------------------------------------------------------------------
+# Branch 6: simplified webhook_resolution payload contract (post-K4 unification)
+# ---------------------------------------------------------------------------
+
+
+class TestStartJobAsyncSimplifiedPayload:
+    """Pin the contract between the orchestrator's unified webhook phase
+    and ``_start_job_async``'s result handler.
+
+    The unification (commit 3edd185) shrunk the ``webhook_resolution``
+    payload: ``resolution_source`` was dropped, ``path_hints`` now
+    carries the path-mapping mismatch diagnostics that used to come
+    from the Plex-first stage, and the job-level
+    ``trigger_plex_partial_scan`` call was removed in favour of the
+    per-server ``trigger_refresh`` already firing inside the worker.
+
+    Without these tests, a future refactor that re-introduces a field
+    under a new name (or drops ``path_hints`` thinking it's unused)
+    would silently break the file_result UI's "did you forget a path
+    mapping?" diagnostic — the exact UX regression risk the plan
+    called out.
+    """
+
+    def test_unresolved_path_with_mapping_hint_lands_in_file_result(self, app, tmp_path):
+        """When ``run_processing`` returns the unified payload with a
+        ``path_hints[0]`` carrying a path-mapping mismatch hint, the
+        job_runner must surface that hint as the file_result message.
+        """
+        from media_preview_generator.web.jobs import get_job_manager
+        from media_preview_generator.web.routes.job_runner import _start_job_async
+
+        hint = (
+            "Possible prefix mismatch: webhook sends '/mnt' but a configured library "
+            "uses '/data'. Add a path mapping in Settings: server path = /data, "
+            "webhook path = /mnt"
+        )
+
+        def fake_run_processing(config, selected_gpus, **kwargs):
+            return {
+                "outcome": {"generated": 0, "failed": 0},
+                "webhook_resolution": {
+                    "unresolved_paths": ["/mnt/data/Movies/X.mkv"],
+                    "skipped_paths": [],
+                    "resolved_count": 0,
+                    "total_paths": 1,
+                    "path_hints": [hint],
+                    # NB: no `resolution_source` — that field is gone post-unification.
+                },
+            }
+
+        with (
+            app.app_context(),
+            patch(
+                "media_preview_generator.jobs.orchestrator.run_processing",
+                side_effect=fake_run_processing,
+            ),
+            # Shrink retry backoff so the spawned retry job's countdown
+            # doesn't pin the test for 30s; the assertion below only
+            # cares about the parent job's file_result row.
+            patch(
+                "media_preview_generator.processing.retry_queue.BACKOFF_SCHEDULE",
+                [1, 1, 1, 1, 1],
+            ),
+        ):
+            job = get_job_manager().create_job(library_name="Movies", config={})
+            _start_job_async(
+                job.id,
+                config_overrides={
+                    "webhook_paths": ["/mnt/data/Movies/X.mkv"],
+                    "webhook_retry_count": 0,  # no retry — keeps the test focused
+                },
+            )
+
+        results = get_job_manager().get_file_results(job.id)
+        unresolved_rows = [r for r in results if r.get("file") == "/mnt/data/Movies/X.mkv"]
+        assert unresolved_rows, (
+            "file_result for the unresolved path was never written — "
+            "result handler stopped reading webhook_resolution.unresolved_paths"
+        )
+        row = unresolved_rows[0]
+        # The outcome key must match what the file_results UI filters on.
+        assert row["outcome"] == "unresolved_vendor", (
+            f"Post-unification outcome key must be 'unresolved_vendor' (was 'unresolved_plex' "
+            f"in the legacy Plex-first stage); got {row['outcome']!r}"
+        )
+        # The hint text must surface in the reason field — that's the
+        # entire point of porting _detect_path_prefix_mismatches into
+        # the unified phase. (file_results store the user-facing string
+        # under ``reason``; the row also carries it in case future UIs
+        # rename the field.)
+        reason = row.get("reason") or row.get("message") or ""
+        assert "/mnt" in reason and "/data" in reason, (
+            f"Path-mapping mismatch hint did not surface in file_result reason; got {reason!r}"
+        )
+
+    def test_legacy_resolution_source_field_absence_does_not_crash(self, app, tmp_path):
+        """A payload missing ``resolution_source`` must not raise — the
+        result handler used to do ``resolution.get('resolution_source') or 'plex'``
+        and switch on the value. Post-unification, the field is gone;
+        a regression that re-introduces a hard ``resolution['resolution_source']``
+        access would silently AttributeError on every webhook job.
+        """
+        from media_preview_generator.web.jobs import get_job_manager
+        from media_preview_generator.web.routes.job_runner import _start_job_async
+
+        def fake_run_processing(config, selected_gpus, **kwargs):
+            # Brand-new minimal payload — no resolution_source, no path_hints.
+            return {
+                "outcome": {"generated": 0, "failed": 0},
+                "webhook_resolution": {
+                    "unresolved_paths": ["/data/X.mkv"],
+                    "skipped_paths": [],
+                    "resolved_count": 0,
+                    "total_paths": 1,
+                    "path_hints": [],
+                },
+            }
+
+        with (
+            app.app_context(),
+            patch(
+                "media_preview_generator.jobs.orchestrator.run_processing",
+                side_effect=fake_run_processing,
+            ),
+        ):
+            job = get_job_manager().create_job(library_name="Movies", config={})
+            # Must not raise.
+            _start_job_async(
+                job.id,
+                config_overrides={
+                    "webhook_paths": ["/data/X.mkv"],
+                    "webhook_retry_count": 0,
+                },
+            )
+
+        # Job reached a terminal state (didn't get stuck on a missing-field crash).
+        final = get_job_manager().get_job(job.id)
+        assert final is not None
+        assert final.status.value in ("completed", "failed", "cancelled"), (
+            f"Job must reach terminal state with the simplified payload; got {final.status.value!r}. "
+            "An AttributeError on resolution_source would land the job in 'running' or 'failed'."
+        )
+        # And the file_result for the unresolved path was still written.
+        results = get_job_manager().get_file_results(job.id)
+        assert any(r.get("file") == "/data/X.mkv" for r in results), (
+            "Unresolved path's file_result missing — the result handler bailed before recording it."
+        )
