@@ -202,6 +202,7 @@ def schedule_retry_for_unindexed(
     def _callback(path: str, fired_attempt: int) -> None:
         # Imported lazily to break the import cycle:
         # multi_server -> retry_queue (here) -> multi_server.
+        from .generator import failure_scope
         from .multi_server import MultiServerStatus, PublisherStatus, process_canonical_path
 
         # K2: include server context. config.server_display_name is set when
@@ -211,6 +212,32 @@ def schedule_retry_for_unindexed(
             logger.info("Retry #{} firing for {} (server={})", fired_attempt, path, _retry_server_tag)
         else:
             logger.info("Retry #{} firing for {}", fired_attempt, path)
+
+        # Bind a synthetic failure scope for the retry. The original
+        # job has long completed by the time this APScheduler timer
+        # fires, so there's no active job_id to attribute failures to.
+        # A synthetic ``retry:<path>`` scope keeps ``record_failure``
+        # from logging the "Internal bookkeeping bug" warning every
+        # time a retry hits an FFmpeg failure (e.g. file deleted
+        # between scan and retry, codec gone unsupported after a
+        # driver update). The recorded failures are detached from
+        # any user-visible job summary — that's correct: retries
+        # are headless from the JobManager's perspective.
+        retry_scope_id = f"retry:{path}"
+        with failure_scope(retry_scope_id):
+            _run_retry_attempt(
+                path,
+                fired_attempt,
+                process_canonical_path,
+                MultiServerStatus,
+                PublisherStatus,
+            )
+
+    def _run_retry_attempt(path, fired_attempt, process_canonical_path, MultiServerStatus, PublisherStatus):
+        """Inner body of the retry callback, isolated so the wrapping
+        ``failure_scope`` block stays narrow and the original
+        try/except control flow is preserved verbatim.
+        """
         try:
             result = process_canonical_path(
                 canonical_path=path,
