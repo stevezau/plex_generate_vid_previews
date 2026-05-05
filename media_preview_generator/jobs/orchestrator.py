@@ -14,8 +14,43 @@ from loguru import logger
 
 from ..plex_client import plex_server
 from ..processing.generator import ProcessingResult, clear_failures, log_failure_summary
-from ..servers.ownership import find_owning_servers
+from ..servers.ownership import apply_webhook_prefixes, find_owning_servers
 from .worker import WorkerPool
+
+
+def _find_owners_with_webhook_translation(path: str, server_configs: list) -> list:
+    """Resolve owning servers for a webhook path, applying webhook-prefix translation.
+
+    Sonarr/Radarr emit paths in their own view (e.g. ``/data/TV Shows/X.mkv``)
+    which won't match a server's library ``remote_paths`` (e.g.
+    ``/data_16tb/TV Shows``) until translated through the server's
+    ``path_mappings`` ``webhook_prefixes`` list. Calling
+    :func:`find_owning_servers` with the raw webhook path silently
+    misses every install where the webhook source and the media-
+    server use different mount roots.
+
+    Tries the path as-is first, then every candidate produced by
+    expanding ``webhook_prefixes → local_prefix`` across every
+    server's mappings. De-duplicates per server so a path matching
+    via two webhook prefixes doesn't double-count.
+    """
+    if not path or not server_configs:
+        return []
+
+    candidate_paths: set[str] = {path}
+    for cfg in server_configs:
+        for translated in apply_webhook_prefixes(path, cfg.path_mappings or []):
+            candidate_paths.add(translated)
+
+    matches = []
+    seen_servers: set[str] = set()
+    for candidate in candidate_paths:
+        for match in find_owning_servers(candidate, server_configs):
+            if match.server_id in seen_servers:
+                continue
+            seen_servers.add(match.server_id)
+            matches.append(match)
+    return matches
 
 
 def _outcome_for_multi_server_status(status) -> ProcessingResult:
@@ -95,7 +130,6 @@ def _log_webhook_owning_servers(config, paths: list[str]) -> None:
     indistinguishable from the multi-server fan-out path.
     """
     try:
-        from ..servers.ownership import find_owning_servers
         from ..servers.registry import server_config_from_dict
         from ..web.settings_manager import get_settings_manager
 
@@ -118,35 +152,11 @@ def _log_webhook_owning_servers(config, paths: list[str]) -> None:
             )
             return
 
-        from ..servers.ownership import apply_webhook_prefixes
-
         name_by_id = {cfg.id: (cfg.name or cfg.id) for cfg in configs}
         owners_by_server: dict[str, int] = {}
         unowned = 0
         for path in paths:
-            # Try the path AS-IS first, then fall back to candidates produced
-            # by translating webhook_prefixes → local_prefix on every server's
-            # path_mappings. Sonarr/Radarr send paths in their own view
-            # (e.g. /data/Movies/X.mkv) which won't match library remote_paths
-            # like /data_16tb/Movies until translated. Without this, the
-            # breadcrumb cried "none match" even when path mapping would have
-            # resolved everything cleanly downstream.
-            candidate_paths = {path}
-            for cfg in configs:
-                for translated in apply_webhook_prefixes(path, cfg.path_mappings or []):
-                    candidate_paths.add(translated)
-            path_matches = []
-            for cp in candidate_paths:
-                path_matches.extend(find_owning_servers(cp, configs))
-            # Dedupe per (path, server_id) so a path that matches via two
-            # webhook prefixes doesn't double-count.
-            seen_servers = set()
-            uniq_matches = []
-            for m in path_matches:
-                if m.server_id in seen_servers:
-                    continue
-                seen_servers.add(m.server_id)
-                uniq_matches.append(m)
+            uniq_matches = _find_owners_with_webhook_translation(path, configs)
             if not uniq_matches:
                 unowned += 1
                 continue
@@ -1380,7 +1390,12 @@ def _run_webhook_paths_phase(
         # gate the path would still hit a worker thread, log
         # "Worker N picked up", then bail with NO_OWNERS milliseconds
         # later — confusing UI noise that has no useful side-effect.
-        owners = find_owning_servers(path, server_configs)
+        # Uses the webhook-translation helper so a Sonarr-view path
+        # (``/data/...``) matches a server library at ``/data_16tb/...``
+        # via the configured ``webhook_prefixes`` translation —
+        # otherwise the gate drops legitimate webhooks from any install
+        # that uses path mappings.
+        owners = _find_owners_with_webhook_translation(path, server_configs)
         if not owners:
             no_owners.append(path)
             continue

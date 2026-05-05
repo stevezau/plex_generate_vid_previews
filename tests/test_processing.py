@@ -354,6 +354,71 @@ class TestMultiServerGuards:
         assert items[0].canonical_path == "/data/movies/Foo.mkv"
         assert items[0].item_id_by_server == {"plex-1": "k1"}
 
+    def test_webhook_path_with_webhook_prefix_translates_before_fast_skip(self, tmp_path):
+        """Production regression — a Sonarr webhook for ``/data/TV Shows/X.mkv``
+        was being fast-skipped as "no enabled server claims" even though
+        Plex/Emby/Jellyfin all owned the path via their library
+        ``/data_16tb/TV Shows`` plus a configured
+        ``webhook_prefixes=['/data']`` translation.
+
+        The fast-skip gate must apply ``apply_webhook_prefixes`` before
+        calling :func:`find_owning_servers` — otherwise every install
+        with a webhook-source-vs-server mount discrepancy drops every
+        webhook with the misleading "no owners" log line.
+
+        Caught live in job c2500b7e where the breadcrumb said all three
+        servers owned the paths but the new fast-skip said no one did
+        — direct contradiction proving the gate skipped the
+        translation step the breadcrumb does.
+        """
+        config = _make_config(tmp_path, webhook_paths=["/data/TV Shows/Show/S01E01.mkv"])
+
+        with (
+            patch(f"{MODULE}.plex_server"),
+            patch(f"{MODULE}.WorkerPool") as MockPool,
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+        ):
+            MockPool.return_value.process_items_headless.return_value = _pool_result(completed=1)
+            # Plex library at /data_16tb/TV Shows; webhook_prefixes
+            # tells the resolver "/data" maps to "/data_16tb" for
+            # webhook payload translation. Webhook payload arrives with
+            # /data/... — must translate to /data_16tb/... before the
+            # ownership check.
+            mock_sm.return_value.get.return_value = [
+                {
+                    "id": "plex-a",
+                    "type": "plex",
+                    "enabled": True,
+                    "libraries": [
+                        {
+                            "id": "1",
+                            "name": "TV",
+                            "remote_paths": ["/data_16tb/TV Shows"],
+                            "enabled": True,
+                        }
+                    ],
+                    "path_mappings": [
+                        {
+                            "plex_prefix": "/data_16tb",
+                            "local_prefix": "/data_16tb",
+                            "webhook_prefixes": ["/data"],
+                        }
+                    ],
+                },
+            ]
+            run_processing(config, selected_gpus=[])
+
+        # The headline assertion: the path was DISPATCHED, not fast-skipped.
+        # Without the webhook-prefix translation in the fast-skip gate,
+        # this call_count would be 0.
+        MockPool.return_value.process_items_headless.assert_called_once()
+        items = MockPool.return_value.process_items_headless.call_args.args[0]
+        assert len(items) == 1, f"Expected one dispatched item; got {len(items)}"
+        # Canonical path stays as-is (the dispatcher's per-server resolver
+        # does the final translation per server); the orchestrator just
+        # needs to recognise the path is owned.
+        assert items[0].canonical_path == "/data/TV Shows/Show/S01E01.mkv"
+
     def test_path_mapping_mismatch_hint_surfaces_in_resolution_payload(self, tmp_path):
         """When a webhook path is unowned but a configured library's
         location is a path-boundary substring of it (the classic
