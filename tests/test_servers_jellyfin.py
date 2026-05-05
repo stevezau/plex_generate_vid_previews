@@ -326,20 +326,25 @@ class TestResolveRemotePathToItemIdViaPlugin:
             assert req.call_args_list[0].args == ("GET", "/MediaPreviewBridge/ResolvePath")
 
     def test_falls_back_when_plugin_request_raises(self, jelly):
-        # Network/transport error → quietly degrade to the public API.
+        # Non-transport error → quietly degrade to the public API.
         # Audit fix: ``assert got is None`` alone doesn't distinguish
         # "plugin raised → fell through to base class which also missed"
         # from "early-return None before ever hitting the base class".
         # We assert the fallback was ACTUALLY exercised by checking the
         # call sequence: 1st call = plugin (raises), 2nd+3rd = base
         # class's Pass-1 + Pass-2 ``GET /Items`` searchTerm queries.
+        #
+        # NOTE: ``RuntimeError`` here exercises the generic-Exception
+        # branch in jellyfin.py. The Timeout / ConnectionError branch
+        # behaves differently — see
+        # ``test_skips_base_fallback_when_plugin_times_out`` (task #51).
         empty_resp = MagicMock()
         empty_resp.json.return_value = {"Items": []}
         empty_resp.raise_for_status.return_value = None
         with patch.object(
             JellyfinServer,
             "_request",
-            side_effect=[RuntimeError("connection refused"), empty_resp, empty_resp],
+            side_effect=[RuntimeError("malformed plugin response"), empty_resp, empty_resp],
         ) as req:
             got = jelly._uncached_resolve_remote_path_to_item_id("/x.mkv")
             assert got is None  # base class also misses; that's fine for this assertion
@@ -358,6 +363,47 @@ class TestResolveRemotePathToItemIdViaPlugin:
             # retrying the plugin in a loop.
             assert req.call_args_list[1].args == ("GET", "/Items")
             assert req.call_args_list[2].args == ("GET", "/Items")
+
+    @pytest.mark.parametrize(
+        "transport_exc",
+        [
+            requests.exceptions.Timeout("plugin call timed out after 30s"),
+            requests.exceptions.ConnectTimeout("connect timeout"),
+            requests.exceptions.ReadTimeout("read timeout"),
+            requests.exceptions.ConnectionError("connection refused / broken pipe"),
+        ],
+        ids=["Timeout", "ConnectTimeout", "ReadTimeout", "ConnectionError"],
+    )
+    def test_skips_base_fallback_when_plugin_times_out(self, jelly, transport_exc):
+        """Task #51 regression pin — when the plugin call raises a
+        transport-level exception (Timeout / ConnectionError), the
+        Jellyfin server is unreachable or overloaded. The base
+        resolver hits the SAME server with the SAME symptoms — a
+        second 30s timeout is wasted. Skip it.
+
+        Live evidence: job baf4f9cc on 2026-05-06 08:36-37 fired 3
+        webhooks for Jersey Shore Family Vacation S04 episodes.
+        Sonarr's import had triggered a Jellyfin scan at 08:34.
+        At 08:36 our webhook hit JellyTest mid-scan and EVERY one of
+        the 3 files burned exactly 59.4-59.5s on JellyTest before
+        moving on to Plex. 30s × 2 timeouts == 60s.
+
+        Pin: when the plugin call raises a transport-level
+        exception, only ONE ``_request`` is dispatched (the plugin
+        probe). The base resolver MUST NOT run. The slow-backoff
+        retry queue picks the file up later when JellyTest is idle.
+        """
+        with patch.object(JellyfinServer, "_request", side_effect=[transport_exc]) as req:
+            got = jelly._uncached_resolve_remote_path_to_item_id("/x.mkv")
+            assert got is None
+            # Exactly ONE _request — the plugin probe. Base resolver
+            # MUST NOT fire (would be req.call_count >= 3).
+            assert req.call_count == 1, (
+                f"On transport-level plugin failure, base fallback MUST be skipped to avoid "
+                f"a second 30s timeout against the same overloaded server. Got "
+                f"{req.call_count} requests: {[c.args for c in req.call_args_list]!r}"
+            )
+            assert req.call_args_list[0].args == ("GET", "/MediaPreviewBridge/ResolvePath")
 
 
 class TestTriggerRefresh:

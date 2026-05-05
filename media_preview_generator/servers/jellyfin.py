@@ -25,6 +25,7 @@ import threading
 import time
 from typing import Any
 
+import requests
 from loguru import logger
 
 from ._embyish import EmbyApiClient
@@ -230,7 +231,33 @@ class JellyfinServer(EmbyApiClient):
                 "/MediaPreviewBridge/ResolvePath",
                 params={"path": remote_path},
             )
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
+            # Server is unreachable / overloaded. Falling through to
+            # the base resolver hits the SAME server with the SAME
+            # symptoms — wasted second 30s timeout. Job baf4f9cc
+            # (Jersey Shore Family Vacation, 2026-05-06 08:36-37)
+            # showed exactly this 30s × 2 = 59.4s pattern across all 3
+            # files when JellyTest was contention-locked by its own
+            # post-Sonarr-import scan.
+            #
+            # Return None and let the slow-backoff retry queue try
+            # again 30s later when the server should be idle. Recall
+            # is preserved by the retry — losing one webhook fire to
+            # an overloaded server is far cheaper than burning the
+            # second 30s on every per-file dispatch.
+            logger.warning(
+                "Media Preview Bridge ResolvePath unreachable for {!r} ({}: {}) — "
+                "skipping base-resolver fallback to avoid a second timeout against the "
+                "same overloaded server. Slow-backoff retry queue will pick this up.",
+                remote_path,
+                type(exc).__name__,
+                exc,
+            )
+            return None
         except Exception as exc:
+            # Any other exception (HTTPError, JSON decode errors, etc.)
+            # is plugin-specific and the base resolver may still find
+            # the file via Pass 0/1/2. Fall through.
             logger.debug(
                 "Media Preview Bridge ResolvePath failed for {!r}: {} — falling back to public API",
                 remote_path,
