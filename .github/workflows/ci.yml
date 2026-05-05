@@ -96,10 +96,19 @@ jobs:
         # shared libraries: libblas.so.3"), which makes load_config()
         # raise ConfigValidationError and silently kills the journey
         # tests that drive _start_job_async → run_processing.
+        #
+        # execute_install_scripts: the action restores cached packages
+        # as raw tarballs and skips dpkg post-install hooks by default —
+        # which means libblas3's ldconfig step never runs on a cache HIT
+        # and ffmpeg fails to find libblas.so.3 the next push (the first
+        # push installs from apt fresh and works; the second push hits
+        # the cache and breaks). Force the post-install scripts so the
+        # dynamic linker actually sees the cached .so files.
         uses: awalsh128/cache-apt-pkgs-action@v1
         with:
           packages: ffmpeg mediainfo libblas3 liblapack3
-          version: 2
+          version: 3
+          execute_install_scripts: true
 
       - name: Install dependencies
         run: pip install -e ".[test]"
@@ -172,7 +181,11 @@ jobs:
             libxkbcommon0
             libxrandr2
             xvfb
-          version: 3
+          version: 4
+          # Same reason as the test job's apt cache step: a cache hit
+          # without post-install scripts leaves ffmpeg's libblas.so.3 /
+          # liblapack.so.3 invisible to the dynamic linker.
+          execute_install_scripts: true
 
       - name: Install dependencies
         run: pip install -e ".[test]"
