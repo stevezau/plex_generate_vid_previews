@@ -10,6 +10,7 @@ re-routed through this class.
 from __future__ import annotations
 
 import json
+import threading
 from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -140,6 +141,15 @@ class PlexServer(MediaServer):
                 name=name or "Plex",
             )
         self._plex = None  # type: ignore[assignment]
+        # Double-checked-locking guard for ``_connect``. Without this,
+        # N parallel workers cold-hitting the same PlexServer instance
+        # all see ``self._plex is None`` simultaneously, all open a
+        # fresh ``plexapi.PlexServer`` (each with its own TLS
+        # handshake), and N-1 immediately leak to GC. Visible on
+        # multi-file webhook jobs as N "Connecting to Plex…" log lines
+        # firing within milliseconds (e.g. 24-file The Dry batch with
+        # 4 workers → 4 connections in 4ms).
+        self._plex_lock = threading.Lock()
 
     @property
     def type(self) -> ServerType:
@@ -151,11 +161,21 @@ class PlexServer(MediaServer):
         return self._config
 
     def _connect(self):
-        """Lazily create the underlying ``plexapi`` server connection."""
+        """Lazily create the underlying ``plexapi`` server connection.
+
+        Thread-safe via double-checked locking: the fast path (cache
+        hit) skips the lock entirely, the slow path (cache miss)
+        acquires the lock and re-checks before constructing — so under
+        N parallel cold-hits exactly ONE connection is established.
+        """
+        plex = self._plex
+        if plex is not None:
+            return plex
         from ..plex_client import plex_server as _build_plex
 
-        if self._plex is None:
-            self._plex = _build_plex(self._config)
+        with self._plex_lock:
+            if self._plex is None:
+                self._plex = _build_plex(self._config)
         return self._plex
 
     def test_connection(self) -> ConnectionResult:

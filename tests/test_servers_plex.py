@@ -48,6 +48,56 @@ class TestConstruction:
             PlexServer(mock_config)
             connect.assert_not_called()
 
+    def test_connect_is_thread_safe_under_concurrent_cold_hits(self, mock_config):
+        """N parallel workers cold-hitting ``_connect`` MUST establish
+        exactly ONE underlying ``plexapi.PlexServer`` — task #50.
+
+        Pre-fix the lazy ``if self._plex is None: self._plex = …``
+        guard had no lock, so 4 workers seeing ``None`` simultaneously
+        all opened a fresh connection (each with a TLS handshake) and
+        N-1 immediately leaked to GC. Visible on the live container
+        as N "Connecting to Plex…" log lines firing within
+        milliseconds of each other on multi-file webhook batches.
+
+        Pin: across 16 concurrent ``_connect`` calls, the underlying
+        ``plex_client.plex_server`` builder runs exactly once.
+        """
+        import threading
+
+        wrapper = PlexServer(mock_config)
+        sentinel = object()
+        call_count = {"n": 0}
+        # Block until every thread has reached _connect, so the test
+        # actually exercises the race window. Without the barrier the
+        # threads serialize naturally and the lock is never contended.
+        ready = threading.Event()
+        results: list[object] = []
+        results_lock = threading.Lock()
+
+        def slow_build(_config):
+            # Simulate the real ~300ms TLS+probe cost so all threads
+            # are guaranteed to be inside ``_connect`` together.
+            ready.wait(timeout=2)
+            call_count["n"] += 1
+            return sentinel
+
+        with patch("media_preview_generator.plex_client.plex_server", side_effect=slow_build):
+            threads = [threading.Thread(target=lambda: results.append(wrapper._connect())) for _ in range(16)]
+            for t in threads:
+                t.start()
+            ready.set()
+            for t in threads:
+                t.join(timeout=5)
+
+        with results_lock:
+            assert call_count["n"] == 1, (
+                f"Expected exactly 1 underlying connection across 16 concurrent cold-hits; "
+                f"got {call_count['n']}. The lazy-init lock regressed."
+            )
+            assert all(r is sentinel for r in results), (
+                f"All {len(results)} threads MUST receive the same connection instance"
+            )
+
 
 class TestTestConnection:
     def test_success_carries_identity(self, plex_wrapper):

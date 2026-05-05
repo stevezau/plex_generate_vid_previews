@@ -67,6 +67,14 @@ class EmbyApiClient(MediaServer):
         # handshake + TLS negotiation tax — a 500-item scan amortised that out
         # to seconds of wasted wall time on top of the actual API latency.
         self._session: requests.Session | None = None
+        # Double-checked-locking guard for ``_get_session``. Without
+        # this, N parallel workers cold-hitting the same client all
+        # see ``self._session is None`` and create their own Session
+        # objects — N-1 immediately leak to GC. Cheaper to leak than
+        # PlexServer's TLS handshakes but still wrong, and the lock
+        # is also virtually free on the hot path (single attribute
+        # read, no acquire) thanks to double-checked locking.
+        self._session_lock = threading.Lock()
         # Reverse-lookup cache: ``{remote_path: (expires_at, item_id_or_none)}``.
         # Caches BOTH positive ("found item X") and negative ("not in library")
         # results — the negative case is the dominant cost (Pass-2 enum is
@@ -80,9 +88,19 @@ class EmbyApiClient(MediaServer):
         return self._config
 
     def _get_session(self) -> requests.Session:
-        """Return the lazy-init requests.Session for this client."""
-        if self._session is None:
-            self._session = requests.Session()
+        """Return the lazy-init requests.Session for this client.
+
+        Thread-safe via double-checked locking — see comment on
+        ``self._session_lock``. Hot path is a single attribute read
+        with no lock acquisition; cold path acquires the lock and
+        re-checks before constructing.
+        """
+        session = self._session
+        if session is not None:
+            return session
+        with self._session_lock:
+            if self._session is None:
+                self._session = requests.Session()
         return self._session
 
     # ------------------------------------------------------------------ HTTP

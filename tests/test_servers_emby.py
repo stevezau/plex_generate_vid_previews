@@ -164,6 +164,48 @@ class TestRequestUrlConstruction:
         second = emby._get_session()
         assert first is second, "Session must be reused across calls"
 
+    def test_get_session_is_thread_safe_under_concurrent_cold_hits(self, emby):
+        """N parallel workers cold-hitting ``_get_session`` MUST get
+        the same Session — task #50.
+
+        Pre-fix the lazy ``if self._session is None: self._session =
+        requests.Session()`` guard had no lock, so 16 concurrent
+        workers all saw ``None`` and all created their own Session.
+        Less impactful than Plex (Sessions don't reach out at
+        construction) but still wrong, and the lock is virtually free
+        on the hot path via double-checked locking.
+
+        Pin: across 16 concurrent ``_get_session`` calls, exactly ONE
+        Session object is constructed and every caller gets the same
+        instance.
+        """
+        import threading
+
+        # Force a cold-start state for this test.
+        emby._session = None
+        sessions: list[object] = []
+        ready = threading.Event()
+
+        def grab_session():
+            ready.wait(timeout=2)
+            sessions.append(emby._get_session())
+
+        threads = [threading.Thread(target=grab_session) for _ in range(16)]
+        for t in threads:
+            t.start()
+        ready.set()
+        for t in threads:
+            t.join(timeout=5)
+
+        # Exactly one Session instance should be visible across all
+        # threads — id() comparison rules out value-equal-but-distinct
+        # objects which would still leak.
+        unique_ids = {id(s) for s in sessions}
+        assert len(unique_ids) == 1, (
+            f"Expected exactly 1 Session across 16 concurrent cold-hits; "
+            f"got {len(unique_ids)} distinct instances. The lazy-init lock regressed."
+        )
+
 
 class TestTestConnection:
     def test_success(self, emby):
