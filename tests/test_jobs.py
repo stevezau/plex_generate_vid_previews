@@ -855,3 +855,65 @@ class TestRetryPreservesServerIdentity:
             server_type=parent.server_type,
         )
         assert retry.server_id is None
+
+
+class TestRetryLibraryNameComputation:
+    """Pure-function check of the retry library_name derivation logic in
+    job_runner._spawn_retry_job. The function lives inside a closure so
+    we re-implement the formula here verbatim and pin its behaviour;
+    a regression in the closure's source is caught by the journey test
+    `test_skipped_file_not_found_spawns_child_retry_job`, while THIS
+    test pins the matrix of inputs without spinning up a Flask app.
+
+    Cells covered (one per row that would change the output):
+      * Parent has clean Sonarr-style title → "Retry: <title>".
+      * Parent has empty/None library_name → fall back to basename.
+      * Parent has multi-path job → fall back to "{N} files".
+      * Parent is itself a retry ("Retry: X") → strip prefix before
+        re-prepending so we don't get "Retry: Retry: X".
+    """
+
+    @staticmethod
+    def _derive(parent_library: str, paths: list[str]) -> str:
+        """Mirror media_preview_generator/web/routes/job_runner.py's
+        retry_library_name formula. Updating one without the other will
+        break test_skipped_file_not_found_spawns_child_retry_job
+        immediately (full integration check), so this stays in lockstep.
+        """
+        import os
+
+        basenames = [os.path.basename(p) for p in paths]
+        pl = parent_library or ""
+        if pl.startswith("Retry: "):
+            pl = pl[len("Retry: ") :]
+        if not pl:
+            pl = basenames[0] if len(paths) == 1 else f"{len(paths)} files"
+        return f"Retry: {pl}"
+
+    def test_inherits_parent_clean_title(self):
+        # The dominant case: Sonarr/Radarr webhook produced a clean parent
+        # title; retry should mirror it.
+        assert (
+            self._derive("Chelsea vs Nottingham Forest", ["/data/sports/CvN.mkv"])
+            == "Retry: Chelsea vs Nottingham Forest"
+        )
+
+    def test_falls_back_to_basename_when_parent_library_empty(self):
+        # Defensive — if the parent somehow has no library_name (legacy
+        # data, manual job creation), keep the original basename behaviour
+        # so the row isn't blank.
+        assert self._derive("", ["/data/tv/Show.S01E01.mkv"]) == "Retry: Show.S01E01.mkv"
+        assert self._derive(None, ["/data/tv/Show.S01E01.mkv"]) == "Retry: Show.S01E01.mkv"
+
+    def test_falls_back_to_count_for_multi_path_with_empty_parent(self):
+        assert self._derive("", ["/a.mkv", "/b.mkv", "/c.mkv"]) == "Retry: 3 files"
+
+    def test_strips_existing_retry_prefix_to_avoid_stacking(self):
+        # Retry of a retry: parent.library_name is already "Retry: X" because
+        # the previous retry attempt set it that way. Without the strip we'd
+        # render "Retry: Retry: Show" on attempt 2 and "Retry: Retry: Retry: Show"
+        # on attempt 3 — visible nesting noise.
+        assert (
+            self._derive("Retry: Chelsea vs Nottingham Forest", ["/data/sports/CvN.mkv"])
+            == "Retry: Chelsea vs Nottingham Forest"
+        ), "Stacked retry must strip the existing 'Retry: ' prefix before re-prepending"

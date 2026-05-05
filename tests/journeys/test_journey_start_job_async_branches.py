@@ -337,10 +337,20 @@ class TestStartJobAsyncRetryBranch:
         assert retry.config.get("retry_attempt") == 1, (
             f"First retry must carry retry_attempt=1; got {retry.config.get('retry_attempt')!r}"
         )
-        # The "Retry: " library_name prefix is the user-visible signal that
-        # this is a retry, not the original. Pin it (not just substring).
-        assert retry.library_name.startswith("Retry: "), (
-            f"Retry job library_name must start with 'Retry: ' so the Jobs UI tags it; got {retry.library_name!r}"
+        # The retry must inherit the PARENT's library_name (so the row in
+        # the Jobs UI reads identically — "The Show" → "Retry: The Show",
+        # NOT "Retry: S01E01.mkv"). Original behaviour used the raw
+        # filename which produced ugly mismatched rows like:
+        #   parent: Chelsea vs Nottingham Forest    [Sportarr]
+        #   retry:  Retry: English Premier League - S2025E348 - Chelsea vs Nottingham Forest - HDTV-2160p.mkv
+        # Inheriting the parent's library_name keeps the two visually
+        # aligned and lets the user trace the retry back to its parent
+        # at a glance.
+        assert retry.library_name == "Retry: The Show", (
+            f"Retry library_name must be 'Retry: <parent.library_name>' — got {retry.library_name!r}. "
+            f"A regression that falls back to the raw filename produces ugly "
+            f"'Retry: episode-file-with-codec-tags.mkv' rows that don't match "
+            f"the parent's clean Sonarr-derived title."
         )
 
         # The retry's run_processing call carried the ORIGINAL webhook path

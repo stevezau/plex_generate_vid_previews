@@ -627,11 +627,24 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                         # trigger label now, so the prefix is duplicate noise.
                         # The "Retry:" prefix stays — it tells the user this row
                         # is a retry, not the original.
+                        #
+                        # Inherit the parent job's library_name so retry rows
+                        # read identically to their parent (e.g. parent
+                        # "Chelsea vs Nottingham Forest" → retry
+                        # "Retry: Chelsea vs Nottingham Forest"). Webhooks
+                        # build the parent's library_name from the structured
+                        # payload (Sonarr series + episode title, Radarr movie
+                        # title) which is the human-readable form; the legacy
+                        # raw-basename fallback only applies when no parent
+                        # title can be recovered. Strips any existing "Retry: "
+                        # to avoid stacking on a retry-of-a-retry.
                         basenames = [_os.path.basename(p) for p in paths]
-                        if len(paths) == 1:
-                            retry_library_name = f"Retry: {basenames[0]}"
-                        else:
-                            retry_library_name = f"Retry: {len(paths)} files"
+                        parent_library = (current_job.library_name or "") if current_job else ""
+                        if parent_library.startswith("Retry: "):
+                            parent_library = parent_library[len("Retry: ") :]
+                        if not parent_library:
+                            parent_library = basenames[0] if len(paths) == 1 else f"{len(paths)} files"
+                        retry_library_name = f"Retry: {parent_library}"
                         parent_id = job_config.get("parent_job_id") or job_id
                         # D15 — borrow the slow-backoff schedule from the
                         # publisher-step retry queue (30s, 2m, 5m, 15m, 60m).
