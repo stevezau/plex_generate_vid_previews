@@ -12,7 +12,6 @@ import time
 
 from loguru import logger
 
-from ..plex_client import plex_server
 from ..processing.generator import ProcessingResult, clear_failures, log_failure_summary
 from ..servers.ownership import apply_webhook_prefixes, find_owning_servers
 from .worker import WorkerPool
@@ -1426,7 +1425,6 @@ def _build_path_mapping_mismatch_hints(unresolved_paths: list[str], server_confi
 
 def _run_webhook_paths_phase(
     config,
-    plex,
     registry,
     *,
     dispatch_items,
@@ -1771,18 +1769,22 @@ def run_processing(
             )
             return {"outcome": outcome_counts}
 
-        # Webhook-paths jobs on a no-Plex install used to bypass straight
-        # to ``_dispatch_webhook_paths_multi_server`` (which loops over
-        # paths on the orchestrator thread, no worker pool, no GPU). Now
-        # they fall through to the same hint-aware ``_run_webhook_paths_phase``
-        # the Plex install uses — which in turn routes through ``dispatch_items``
-        # so workers and GPU show up in the UI. We just skip ``plex_server()``
-        # connection.
-        plex = None
-        if config.plex_url and config.plex_token:
-            if progress_callback:
-                progress_callback(0, 0, "Connecting to Plex...")
-            plex = plex_server(config)
+        # Per-server PlexServer instances are established lazily by
+        # the dispatch path (`process_canonical_path` → adapter →
+        # `_resolve_one_path`) when a path actually needs Plex
+        # resolution. The orchestrator no longer pre-connects:
+        # * The result was a dead parameter on
+        #   ``_run_webhook_paths_phase`` after the K4 → peer-equal
+        #   unification (commit 3edd185). The full-scan phase never
+        #   took it.
+        # * Eagerly opening a Plex session blocked job start by ~300ms
+        #   even on jobs whose paths only Emby/Jellyfin own — and
+        #   would abort the entire job (ConnectionError) on a Plex
+        #   outage that shouldn't have touched non-Plex paths at all.
+        # * The "[Plex] Connecting to Plex" log line landing before
+        #   the unified-dispatch "Resolving N webhook path(s)…" read
+        #   like Plex-first dispatch in the timeline (user-flagged on
+        #   job 3b154264).
         clear_failures()
 
         # Build a registry covering EVERY configured media server so the
@@ -1924,7 +1926,6 @@ def run_processing(
         if getattr(config, "webhook_paths", None):
             webhook_resolution_payload = _run_webhook_paths_phase(
                 config,
-                plex,
                 registry,
                 dispatch_items=_dispatch_items,
                 progress_callback=progress_callback,

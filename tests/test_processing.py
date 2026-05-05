@@ -120,13 +120,18 @@ def loguru_lines():
 
 @pytest.fixture(autouse=True)
 def _isolate(tmp_path):
-    """Prevent real Plex/FFmpeg/GPU calls during tests."""
+    """Prevent real FFmpeg/GPU calls during tests.
+
+    Note: ``plex_server`` is no longer imported by orchestrator (the
+    eager pre-connection was vestigial — task #49). Per-server Plex
+    connections are now established by the dispatcher's per-server
+    publishers, mocked at a different boundary by individual tests.
+    """
     with (
-        patch(f"{MODULE}.plex_server", return_value=MagicMock()) as _ps,
         patch(f"{MODULE}.clear_failures"),
         patch(f"{MODULE}.log_failure_summary"),
     ):
-        yield _ps
+        yield None
 
 
 # ---------------------------------------------------------------------------
@@ -237,7 +242,6 @@ class TestMultiServerGuards:
         )
 
         with (
-            patch(f"{MODULE}.plex_server"),
             patch(f"{MODULE}.WorkerPool") as MockPool,
             patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
         ):
@@ -288,7 +292,6 @@ class TestMultiServerGuards:
         sink_id = logger.add(lambda msg: captured.append(str(msg)), level="INFO")
         try:
             with (
-                patch(f"{MODULE}.plex_server"),
                 patch(f"{MODULE}.WorkerPool") as MockPool,
                 patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
             ):
@@ -333,7 +336,6 @@ class TestMultiServerGuards:
         config.webhook_item_id_hints = {"/data/movies/Foo.mkv": {"plex-1": "k1"}}
 
         with (
-            patch(f"{MODULE}.plex_server"),
             patch(f"{MODULE}.WorkerPool") as MockPool,
             patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
         ):
@@ -371,7 +373,6 @@ class TestMultiServerGuards:
         config = _make_config(tmp_path, webhook_paths=["/data/Movies/X.mkv"])
 
         with (
-            patch(f"{MODULE}.plex_server"),
             patch(f"{MODULE}.WorkerPool") as MockPool,
             patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
         ):
@@ -449,7 +450,6 @@ class TestMultiServerGuards:
         config = _make_config(tmp_path, webhook_paths=["/data/TV Shows/Show/S01E01.mkv"])
 
         with (
-            patch(f"{MODULE}.plex_server"),
             patch(f"{MODULE}.WorkerPool") as MockPool,
             patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
         ):
@@ -515,7 +515,6 @@ class TestMultiServerGuards:
         config = _make_config(tmp_path, webhook_paths=["/mnt/data/Movies/X.mkv"])
 
         with (
-            patch(f"{MODULE}.plex_server"),
             patch(f"{MODULE}.WorkerPool") as MockPool,
             patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
         ):
@@ -559,7 +558,6 @@ class TestMultiServerGuards:
         config.server_id_filter = "plex-a"
 
         with (
-            patch(f"{MODULE}.plex_server"),
             patch(f"{MODULE}.WorkerPool") as MockPool,
             patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
         ):
@@ -600,7 +598,6 @@ class TestMultiServerGuards:
         config = _make_config(tmp_path, webhook_paths=["/data/Movies/X.mkv"])
 
         with (
-            patch(f"{MODULE}.plex_server"),
             patch(f"{MODULE}.WorkerPool") as MockPool,
             patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
         ):
@@ -667,7 +664,6 @@ class TestMultiServerGuards:
         config.webhook_item_id_hints = {"/data/freshly_added_library/X.mkv": {"plex-1": "k1"}}
 
         with (
-            patch(f"{MODULE}.plex_server"),
             patch(f"{MODULE}.WorkerPool") as MockPool,
             patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
         ):
@@ -710,7 +706,6 @@ class TestMultiServerGuards:
         config = _make_config(tmp_path, webhook_paths=["/data/Sports/Match.mkv"])
 
         with (
-            patch(f"{MODULE}.plex_server"),
             patch(f"{MODULE}.WorkerPool") as MockPool,
             patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
         ):
@@ -865,8 +860,14 @@ class TestLibraryScanFlow:
             MockPool.return_value.process_items_headless.return_value = _pool_result(completed=2)
             run_processing(config, selected_gpus=[], progress_callback=progress)
 
-        messages = [call.args[2] for call in progress.call_args_list if call.args]
-        assert any("Connecting to Plex" in m for m in messages)
+        # Pre-task #49 the orchestrator emitted "Connecting to Plex…"
+        # as the first progress event from the eager pre-connection.
+        # That eager connection is gone (it was vestigial — the result
+        # was a dead parameter on _run_webhook_paths_phase). The
+        # remaining contract is that progress IS reported during the
+        # job — and specifically that the dispatch tick fires with the
+        # total item count.
+        assert progress.call_args_list, "progress_callback must be invoked at least once during a scan"
         # Dispatch tick carries the total item count.
         dispatch_calls = [
             call for call in progress.call_args_list if call.args and call.args[1] == 2 and "Starting" in call.args[2]
@@ -901,7 +902,6 @@ class TestWebhookFlow:
         config = _make_config(tmp_path, webhook_paths=["/data/movie.mkv"])
 
         with (
-            patch(f"{MODULE}.plex_server"),
             patch(f"{MODULE}.WorkerPool") as MockPool,
             patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
         ):
@@ -922,7 +922,6 @@ class TestWebhookFlow:
         config = _make_config(tmp_path, webhook_paths=["/data/no_match.mkv"])
 
         with (
-            patch(f"{MODULE}.plex_server"),
             patch(f"{MODULE}.WorkerPool") as MockPool,
             patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
         ):
@@ -940,7 +939,6 @@ class TestWebhookFlow:
         progress = MagicMock()
 
         with (
-            patch(f"{MODULE}.plex_server"),
             patch(f"{MODULE}.WorkerPool") as MockPool,
             patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
         ):
@@ -1123,29 +1121,56 @@ class TestSummaryAndWarnings:
 
 
 class TestErrorHandling:
-    """Tests for exception paths in run_processing."""
+    """Tests for exception paths in run_processing.
 
-    def test_connection_error_returns_none(self, tmp_path):
-        """ConnectionError from plex_server returns None."""
+    The orchestrator no longer eagerly opens a Plex connection at job
+    start (task #49 — that pre-connection was vestigial post-K4
+    unification). Plex outages during enumeration are now caught
+    inside ``_run_plex_full_scan_phase`` (line 1668-1672 — log via
+    ``logger.exception``, return False, job completes gracefully with
+    empty outcome) instead of crashing the whole job. This is the
+    correct peer-equal behaviour: a Plex outage shouldn't abort jobs
+    whose paths only Emby / Jellyfin own.
+    """
+
+    def test_full_scan_enumeration_error_swallowed(self, tmp_path):
+        """ConnectionError during full-scan enumeration is caught by
+        ``_run_plex_full_scan_phase`` and the job still returns a
+        result dict (with empty outcome) rather than crashing.
+        """
         config = _make_config(tmp_path)
-        with patch(f"{MODULE}.plex_server", side_effect=ConnectionError("refused")):
+        with patch(f"{MODULE}._enumerate_plex_full_scan_items", side_effect=ConnectionError("refused")):
             result = run_processing(config, selected_gpus=[])
 
-        assert result is None
+        # Job completes with the enum-failed-then-returned-False shape
+        # — outcome dict present (counts are zeroed since no items
+        # were processed). Pre-fix #49 a ConnectionError here would
+        # have aborted the entire job (return None); the new
+        # peer-equal architecture treats Plex outages as a single-
+        # server failure, not a job-level fatality.
+        assert isinstance(result, dict)
+        outcome = result.get("outcome") or {}
+        # Either empty dict (legacy aggregate_outcome path) or the
+        # full counts dict with all-zero entries — both are valid
+        # "no items processed" signals. The contract is ``no items
+        # were processed and the job returned cleanly``.
+        total = sum(int(v) for v in outcome.values())
+        assert total == 0, f"expected zero items processed, got {outcome}"
 
-    def test_unexpected_exception_re_raised(self, tmp_path):
-        """Unexpected exceptions propagate after logging."""
+    def test_keyboard_interrupt_swallowed(self, tmp_path):
+        """KeyboardInterrupt during enumeration is caught and returns
+        None implicitly (the outer except KeyboardInterrupt handler in
+        ``run_processing`` falls through without an explicit return).
+        Same path as Ctrl+C from the operator during a scan.
+        """
         config = _make_config(tmp_path)
-        with patch(f"{MODULE}.plex_server", side_effect=RuntimeError("boom")):
-            with pytest.raises(RuntimeError, match="boom"):
-                run_processing(config, selected_gpus=[])
-
-    def test_keyboard_interrupt_returns_none(self, tmp_path):
-        """KeyboardInterrupt is caught and returns None (implicit)."""
-        config = _make_config(tmp_path)
-        with patch(f"{MODULE}.plex_server", side_effect=KeyboardInterrupt):
+        with patch(f"{MODULE}._enumerate_plex_full_scan_items", side_effect=KeyboardInterrupt):
             result = run_processing(config, selected_gpus=[])
 
+        # The full-scan-phase catches Exception (NOT BaseException), so
+        # KeyboardInterrupt propagates up to ``run_processing``'s outer
+        # ``except KeyboardInterrupt`` handler, which logs and falls
+        # through (implicit ``return None``).
         assert result is None
 
 
@@ -1218,12 +1243,17 @@ class TestCleanup:
         assert not work_dir.exists()
 
     def test_cleanup_on_error(self, tmp_path):
-        """Temp folder is cleaned even when plex_server raises."""
+        """Temp folder is cleaned even when enumeration fails.
+
+        Even though ``_run_plex_full_scan_phase`` catches the
+        ConnectionError internally and returns False, the orchestrator's
+        finally block still runs and removes ``working_tmp_folder``.
+        """
         work_dir = tmp_path / "work"
         work_dir.mkdir()
         config = _make_config(tmp_path, working_tmp_folder=str(work_dir))
 
-        with patch(f"{MODULE}.plex_server", side_effect=ConnectionError("fail")):
+        with patch(f"{MODULE}._enumerate_plex_full_scan_items", side_effect=ConnectionError("fail")):
             run_processing(config, selected_gpus=[])
 
         assert not work_dir.exists()
