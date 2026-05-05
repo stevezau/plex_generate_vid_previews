@@ -260,6 +260,89 @@ class TestSiblingMountProbe:
             f"rebound to wrong path: expected {live_file!s}, got {result.canonical_path!r}"
         )
 
+    def test_sibling_rebind_re_resolves_publishers_for_new_disk(self, mock_config_for_processing, tmp_path):
+        """Audit P3 — when ``_probe_sibling_mounts`` rebinds the
+        canonical path to a different disk, the publisher list must be
+        re-resolved. Otherwise publishers whose libraries cover the
+        new disk (but not the original stale disk) silently never get
+        a chance to publish.
+
+        Reproducer setup:
+        - Plex's library covers ``/stale/Movies`` only.
+        - Emby's library covers ``/live/Movies`` only.
+        - Webhook arrives with canonical ``/stale/Movies/X.mkv``.
+        - File doesn't exist at /stale (stale path); sibling probe
+          rebinds to ``/live/Movies/X.mkv`` (where it actually lives).
+        - Plex was the original publisher; Emby owns /live but was
+          missing from the publisher list.
+        - After rebind we MUST add Emby (and drop Plex, since /live
+          isn't in Plex's library).
+        """
+        # The file lives at /live/Movies/X.mkv only.
+        live_dir = tmp_path / "live" / "Movies"
+        live_dir.mkdir(parents=True)
+        live_file = live_dir / "X (2024).mkv"
+        live_file.write_bytes(b"fake mkv")
+
+        stale_path = str(tmp_path / "stale" / "Movies" / "X (2024).mkv")
+
+        # Plex covers /stale only. Emby covers /live only.
+        plex_cfg = _server_config(
+            server_id="plex-1",
+            server_type=ServerType.PLEX,
+            libraries=[Library(id="1", name="Movies", remote_paths=(str(tmp_path / "stale"),), enabled=True)],
+        )
+        plex_cfg["path_mappings"] = [
+            {"plex_prefix": str(tmp_path / "stale"), "local_prefix": str(tmp_path / "stale")},
+            # Sibling probe needs to know about /live to rebind.
+            {"plex_prefix": str(tmp_path / "live"), "local_prefix": str(tmp_path / "live")},
+        ]
+
+        emby_cfg = _server_config(
+            server_id="emby-1",
+            server_type=ServerType.EMBY,
+            libraries=[Library(id="11", name="Movies", remote_paths=(str(tmp_path / "live"),), enabled=True)],
+        )
+
+        registry = ServerRegistry.from_settings([plex_cfg, emby_cfg])
+
+        # Mock generate_images so the publish actually goes through —
+        # we want to assert the PUBLISHER LIST not the BIF content.
+        def fake_generate_images(video_file, output_folder, *args, **kwargs):
+            _populate_frames(output_folder, count=3)
+            return (True, 3, "h264", 1.0, 30.0, None)
+
+        with patch(
+            "media_preview_generator.processing.multi_server.generate_images",
+            side_effect=fake_generate_images,
+        ):
+            result = process_canonical_path(
+                canonical_path=stale_path,
+                registry=registry,
+                config=mock_config_for_processing,
+                schedule_retry_on_not_indexed=False,
+            )
+
+        # The rebound canonical_path is the live one.
+        assert result.canonical_path == str(live_file)
+
+        # The headline contract: Emby is now in the publisher list
+        # (because its library covers the rebound /live path), and
+        # Plex is NOT (because its library covers /stale only).
+        # Without the P3 fix the original publisher list (built from
+        # /stale/Movies/X.mkv) would have only Plex, and Emby's
+        # publish would be silently lost.
+        publisher_ids = {p.server_id for p in result.publishers}
+        assert "emby-1" in publisher_ids, (
+            f"Emby owns the rebound /live path but was missing from publishers — "
+            f"audit P3 regression. publisher_ids={publisher_ids!r}, "
+            f"result.canonical_path={result.canonical_path!r}"
+        )
+        assert "plex-1" not in publisher_ids, (
+            f"Plex's library covered /stale only — after rebind it shouldn't be "
+            f"in publishers. publisher_ids={publisher_ids!r}"
+        )
+
     def test_single_mount_falls_through_to_skipped(self, mock_config_for_processing, tmp_path):
         """No siblings to probe → behave exactly like before D35."""
         registry = ServerRegistry.from_settings(

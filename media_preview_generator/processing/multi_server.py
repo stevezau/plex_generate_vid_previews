@@ -755,6 +755,56 @@ def process_canonical_path(
                 rebound_path,
             )
             canonical_path = rebound_path
+
+            # Audit P3 — re-resolve publishers against the rebound path.
+            # The original publisher list was built from the stale path
+            # and may be missing servers whose libraries actually cover
+            # the new disk (e.g. Plex library is rooted at /data_16tb3,
+            # Emby at /data_16tb; canonical was /data_16tb3/X.mkv,
+            # publishers=[Plex] only; sibling probe rebinds to
+            # /data_16tb/X.mkv, but Emby — which owns /data_16tb —
+            # never gets added). Without this re-resolve the rebound
+            # path silently skips Emby's publish.
+            #
+            # Idempotency: re-resolved publishers may differ from the
+            # original. The pinned-server filter still applies; if the
+            # pin's server no longer owns the rebound path we surface
+            # the same NO_OWNERS path the gate above does.
+            publishers = _resolve_publishers(
+                canonical_path,
+                registry,
+                item_id_by_server=item_id_by_server,
+            )
+            if server_id_filter:
+                before = len(publishers)
+                publishers = [p for p in publishers if p[0].id == server_id_filter]
+                if before and not publishers:
+                    logger.info(
+                        "After sibling-mount rebind, pinned server {!r} no longer owns {} — skipping.",
+                        server_id_filter,
+                        canonical_path,
+                    )
+                    return MultiServerResult(
+                        canonical_path=canonical_path,
+                        status=MultiServerStatus.NO_OWNERS,
+                        message=f"Pinned server {server_id_filter} does not own the rebound path",
+                    )
+            if not publishers:
+                logger.info(
+                    "After sibling-mount rebind, no enabled library covers {} on any server — skipping.",
+                    canonical_path,
+                )
+                return MultiServerResult(
+                    canonical_path=canonical_path,
+                    status=MultiServerStatus.NO_OWNERS,
+                    message="No enabled library covers the rebound path on any configured server",
+                )
+            logger.info(
+                "Owners re-resolved post-rebind: {} server(s) for {} → [{}]",
+                len(publishers),
+                canonical_path,
+                ", ".join(f"{srv.name}/{adp.name}" for srv, adp, _ in publishers),
+            )
         else:
             logger.warning(
                 "Source video file is missing on disk: {}. "
