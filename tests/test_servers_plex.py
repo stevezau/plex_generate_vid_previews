@@ -487,10 +487,11 @@ class TestResolveOnePath:
     returns the right id, just very slowly.
     """
 
-    def _section(self, *, key: str = "1", title: str = "Movies"):
+    def _section(self, *, key: str = "1", title: str = "Movies", metadata_type: str = "movie"):
         section = MagicMock()
         section.key = key
         section.title = title
+        section.METADATA_TYPE = metadata_type
         return section
 
     def _item(self, *, rating_key: str, file_path: str):
@@ -504,11 +505,17 @@ class TestResolveOnePath:
         return item
 
     def test_uses_file_filter_not_section_all(self, plex_wrapper):
-        """The resolver must hit ``/library/sections/{key}/all?file=<basename>``
-        (Plex's indexed Path equality lookup) and must NOT call
-        ``section.all()`` (the slow client-side walk).
+        """The resolver must hit
+        ``/library/sections/{key}/all?type=<id>&file=<basename>``
+        (Plex's indexed Path equality lookup, scoped to a media type)
+        and must NOT call ``section.all()`` (the slow client-side
+        walk). The ``type=`` parameter is REQUIRED — omitting it
+        makes Plex return HTTP 500 silently, killing the resolver
+        on every webhook (live regression: every Plex publish was
+        SKIPPED_NOT_IN_LIBRARY and the retry queue spun until max
+        attempts).
         """
-        section = self._section(key="1")
+        section = self._section(key="1", metadata_type="movie")
         plex = MagicMock()
         plex.library.sections.return_value = [section]
         plex.fetchItems.return_value = [self._item(rating_key="100", file_path="/media/movies/Foo.mkv")]
@@ -523,6 +530,11 @@ class TestResolveOnePath:
         plex.fetchItems.assert_called_once()
         ekey = plex.fetchItems.call_args.args[0]
         assert ekey.startswith("/library/sections/1/all?"), ekey
+        assert "type=1" in ekey, (
+            f"Plex's file= filter REQUIRES type=<media_type_id> (1=movie, 4=episode); "
+            f"omitting type= returns HTTP 500 and silently bricks every reverse-lookup. "
+            f"got {ekey!r}"
+        )
         assert "file=Foo.mkv" in ekey, f"Expected file= filter on basename; got {ekey!r}"
 
     def test_url_encodes_basename_with_special_chars(self, plex_wrapper):

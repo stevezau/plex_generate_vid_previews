@@ -769,12 +769,18 @@ class PlexServer(MediaServer):
     def _resolve_one_path(self, server_view_path: str) -> str | None:
         """Return the Plex ratingKey for the file at ``server_view_path``.
 
-        Uses Plex's per-section ``file=<basename>`` filter
-        (``/library/sections/{key}/all?file=<basename>``) — an indexed
-        equality lookup against MediaPart.file, sub-second on libraries
-        of any size. The legacy ``section.all()`` walk this replaced
-        burned 30-90s on large libraries because it streamed every
-        item's metadata just to filter client-side.
+        Uses Plex's per-section ``type=<media_type>&file=<basename>``
+        filter — an indexed equality lookup against MediaPart.file
+        scoped to a single Plex media type, sub-second on libraries
+        of any size. The ``type=`` parameter is REQUIRED: omitting it
+        makes Plex return HTTP 500 silently (the legacy
+        ``section.all()`` walk this replaced burned 30-90s on large
+        libraries because it streamed every item's metadata just to
+        filter client-side; the legacy ``_search_by_file_path`` in
+        plex_client.py always sent ``type=``, but a copy of the URL
+        without it bricks every reverse-lookup. ``type=`` is 1 for
+        movies, 4 for episodes — derived from the section's
+        ``METADATA_TYPE``.)
 
         Verifies via the trailing two path components (parent dir +
         basename) so two unrelated files with the same basename don't
@@ -788,7 +794,7 @@ class PlexServer(MediaServer):
         import os as _os
         import urllib.parse
 
-        from ..plex_client import retry_plex_call
+        from ..plex_client import _resolve_item_media_type, retry_plex_call
 
         if not server_view_path:
             return None
@@ -805,11 +811,23 @@ class PlexServer(MediaServer):
             logger.debug("Plex reverse-lookup: section enumeration failed: {}", exc)
             return None
 
+        # Plex's file= filter is scoped per (section_key, type_id). Movie
+        # libraries use type=1, TV libraries use type=4 (episodes); other
+        # METADATA_TYPEs (artist/photo/etc.) don't host video for previews
+        # and are skipped.
+        type_id_for_section = {
+            "movie": 1,
+            "episode": 4,
+        }
         for section in sections:
             section_key = getattr(section, "key", None)
             if section_key is None:
                 continue
-            ekey = f"/library/sections/{section_key}/all?file={urllib.parse.quote(basename)}"
+            media_type = _resolve_item_media_type(getattr(section, "METADATA_TYPE", ""))
+            type_id = type_id_for_section.get(media_type or "")
+            if type_id is None:
+                continue
+            ekey = f"/library/sections/{section_key}/all?type={type_id}&file={urllib.parse.quote(basename)}"
             try:
                 items = retry_plex_call(plex.fetchItems, ekey)
             except Exception as exc:
