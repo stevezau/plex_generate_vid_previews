@@ -2281,19 +2281,39 @@ function _patchWorkerCard(col, worker) {
     // actually reads as that, not as a hung worker. Hide speed + ETA
     // chips during this phase — they're meaningless without FFmpeg
     // reporting and would otherwise crowd the phase text.
+    //
+    // Visual styling:
+    // * Resolution / publishing phases — neutral text, default styling.
+    //   "Working…" or e.g. "Resolving item id on EmbyTest…".
+    // * Reuse phases ("Reusing sibling BIF" / "Reusing cached frames")
+    //   — success-coloured + ✓ icon. These are the cases the worker
+    //   short-circuits FFmpeg via cache; without distinct styling, a
+    //   user watching the row sees a brief phase string flicker by
+    //   and assumes "nothing happened" (user-flagged on job
+    //   7a9d025b). The green check makes "fast cache hit" obvious.
     const etaWrap = eta.parentElement;
+    const _PHASE_REUSE_RE = /(reusing|reused|already exists|skipped)/i;
     if (isProcessing && !ffmpegStarted) {
-        const phase = (worker.current_phase || '').trim() || 'Working…';
-        if (percent.textContent !== phase) percent.textContent = phase;
-        if (percent.title !== phase) percent.title = phase;
+        const phaseRaw = (worker.current_phase || '').trim();
+        const isReusePhase = phaseRaw && _PHASE_REUSE_RE.test(phaseRaw);
+        const phaseLabel = phaseRaw || 'Working…';
+        const phaseDisplay = isReusePhase ? `✓ ${phaseLabel}` : phaseLabel;
+        if (percent.textContent !== phaseDisplay) percent.textContent = phaseDisplay;
+        if (percent.title !== phaseLabel) percent.title = phaseLabel;
         percent.classList.add('text-truncate');
         percent.style.flex = '1 1 auto';
         percent.style.minWidth = '0';
+        // Toggle a success colour on the percent label when we're in a
+        // reuse phase. Same Bootstrap utility class the Files panel's
+        // "Frames reused" badge uses, so colour semantics stay
+        // consistent across the UI.
+        percent.classList.toggle('text-success', !!isReusePhase);
+        percent.classList.toggle('fw-semibold', !!isReusePhase);
         speed.style.display = 'none';
         if (etaWrap) etaWrap.style.display = 'none';
     } else {
         if (percent.title) percent.title = '';
-        percent.classList.remove('text-truncate');
+        percent.classList.remove('text-truncate', 'text-success', 'fw-semibold');
         percent.style.flex = '';
         percent.style.minWidth = '';
         speed.style.display = '';

@@ -215,6 +215,48 @@ class TestRenderMarkdownBasicHandlesGitHubReleaseBodies:
         )
         assert "^[ \\t]{0,4}## " in snippet, "Same reasoning for H2."
 
+    def test_worker_card_styles_reuse_phase_distinctly(self, app_js):
+        """Worker card must visually distinguish "Reusing sibling BIF" /
+        "Reusing cached frames" / "Output already exists" phases from
+        plain "Working…" or "Resolving item id on EmbyTest…".
+
+        Without the visual marker the user reads a fast cache hit as
+        "nothing happened" — every publisher returned skipped_*, FFmpeg
+        never ran, and the only feedback was a brief phase string. Job
+        7a9d025b symptom: "I didn't see FFmpeg running in the threads
+        or speeds — what happened?" Answer: BIF was reused, work was
+        correct, the worker card just didn't make it visible.
+
+        The fix sets a success colour (``text-success``) + a leading
+        check icon when the phase string contains "reusing", "reused",
+        "already exists", or "skipped". Pin both the regex and the
+        class toggle so a regression doesn't silently drop one of them.
+        """
+        # Locate the worker-card phase render block. It's anchored by the
+        # ``current_phase`` reference in the ``isProcessing && !ffmpegStarted``
+        # branch — the only place ``current_phase`` is rendered.
+        idx = app_js.find("worker.current_phase")
+        assert idx != -1, "worker.current_phase render block missing — UI feedback regressed"
+        snippet = app_js[idx : idx + 1500]
+        # Reuse-phase regex must be present and case-insensitive.
+        assert "_PHASE_REUSE_RE" in snippet or "reusing" in snippet.lower(), (
+            "Worker card render must detect reuse phases with a regex; see _PHASE_REUSE_RE in app.js"
+        )
+        # text-success class toggle so the phase reads as "succeeded fast",
+        # not as "Working…". Same Bootstrap utility the Files panel uses
+        # for the "Frames reused" badge — colour semantics consistent.
+        assert "text-success" in snippet, (
+            "Reuse phase must toggle 'text-success' — without distinct styling, "
+            "a fast cache hit is indistinguishable from a hung worker."
+        )
+        # Leading check icon (✓) makes the success state obvious at a
+        # glance, especially against the muted phase strings used for
+        # in-flight resolution.
+        assert "✓" in snippet, (
+            "Reuse phase must prefix the label with a check icon so the user "
+            "sees 'work happened, fast' rather than just a colour change."
+        )
+
     def test_supports_markdown_links_with_safe_schemes(self, app_js):
         """[text](url) is the most common construct in any release body, and
         the URL group must be locked to safe schemes so a hand-crafted body
