@@ -83,36 +83,20 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
-      - name: Install FFmpeg + mediainfo (cached)
-        # apt cache scoped to this exact package list + ubuntu version.
-        # Bump `version:` to force a re-fetch (e.g. when Ubuntu upstream
-        # ships a newer ffmpeg). Warm runs save ~25s of apt-get update +
-        # download.
-        #
-        # libblas3 / liblapack3 are transitive runtime deps of ffmpeg
-        # (ldd /usr/bin/ffmpeg | grep blas confirms). The cache action
-        # only restores the explicitly-listed packages, so leaving them
-        # implicit leaves ffmpeg unable to start ("error while loading
-        # shared libraries: libblas.so.3"), which makes load_config()
-        # raise ConfigValidationError and silently kills the journey
-        # tests that drive _start_job_async → run_processing.
-        uses: awalsh128/cache-apt-pkgs-action@v1
-        with:
-          packages: ffmpeg mediainfo libblas3 liblapack3
-          version: 3
-          execute_install_scripts: true
-
-      - name: Refresh dynamic linker cache for restored libs
-        # The apt-cache action restores .so files as raw tar extractions
-        # without invoking the libc-bin trigger that normally rebuilds
-        # /etc/ld.so.cache after an install. ``execute_install_scripts``
-        # only runs each package's own postinst (libblas3 has none for
-        # ldconfig), so on a cache HIT the dynamic linker never learns
-        # about the restored libblas.so.3 and ffmpeg fails the moment
-        # load_config() asks for its version. ``ldconfig`` rebuilds the
-        # cache from /etc/ld.so.conf.d/* and the standard search dirs;
-        # cheap (~50ms) and idempotent.
-        run: sudo ldconfig
+      - name: Install FFmpeg + mediainfo
+        # Plain apt-get rather than awalsh128/cache-apt-pkgs-action: the
+        # cache action restored ffmpeg's transitive deps (libblas3,
+        # liblapack3) as raw tar extractions that bypass dpkg's trigger
+        # pass — /etc/ld.so.cache stayed stale on cache HIT and ffmpeg
+        # failed every time with "error while loading shared libraries:
+        # libblas.so.3". Three escalations couldn't fix it (adding the
+        # transitive deps, ``execute_install_scripts: true``, an explicit
+        # ``sudo ldconfig`` step). Plain apt-get always runs the trigger
+        # pass; the ~25 s we lose vs the cache is worth a deterministic
+        # build. apt-get's own download cache is on the runner anyway.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg mediainfo
 
       - name: Install dependencies
         run: pip install -e ".[test]"
