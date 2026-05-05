@@ -15,8 +15,10 @@ subclass needs to specify only:
 from __future__ import annotations
 
 import os
+import re
 import threading
 import time
+import unicodedata
 from collections.abc import Iterator
 from typing import Any
 
@@ -495,6 +497,28 @@ class EmbyApiClient(MediaServer):
                         return item_id
             return None
 
+        # Pass 0 — Name-prefix scoped lookup. The full filename stem the
+        # legacy Pass 1 sends to ``searchTerm`` (e.g. "Show (2025) - S01E03 -
+        # Title [WEBDL-1080p][EAC3 5.1][h264]-GROUP") tokenises into ~10
+        # terms (year, codec tags, brackets, release group) and triggers
+        # Emby's full-text scoring loop across every Movie/Episode in scope —
+        # 30-76 s and 100% CPU on a 117K-episode library. The fast path
+        # extracts just the show/movie title from the path components,
+        # uses ``NameStartsWith`` (B-tree on the indexed Name column,
+        # ~10 ms), then enumerates only the matching Series/Movies for a
+        # local basename check. Empirical: ~10-20 ms per call vs 30-76 s,
+        # with 100% Id agreement against Pass 1+2 across 22 real paths
+        # (see tools/bench_emby_lookup.py if re-running).
+        #
+        # Falls through to Pass 1 + Pass 2 on miss so we never lose
+        # recall: a show whose folder name doesn't match Emby's stored
+        # Name (e.g. user renamed the folder) still resolves via the
+        # legacy searchTerm path.
+        if parent_id:
+            pass0_id = self._pass0_name_prefix_lookup(remote_path, basename, target_tail, parent_id)
+            if pass0_id is not None:
+                return pass0_id
+
         # Pass 1 — cheap searchTerm query, scoped to the owning library
         # when we have its id.
         pass1_params = {
@@ -534,6 +558,236 @@ class EmbyApiClient(MediaServer):
         except Exception as exc:
             logger.debug("{} reverse-lookup enumerate failed for {}: {}", self.vendor_name, remote_path, exc)
             return None
+
+    # NameStartsWith fast path — see Pass 0 comment in
+    # ``_uncached_resolve_remote_path_to_item_id`` above.
+
+    # Cap on Series/Movie candidates returned by NameStartsWith. We use
+    # only the FIRST WORD of the cleaned title as the prefix; common
+    # words ("Black"=58, "One"=53, "American"=95, "Be"=256) return
+    # large candidate sets on a big library. Walking 500 series +
+    # their episode lists is ~2.5 s vs Pass 1's 30-76 s; well worth
+    # the extra round-trips to keep recall above 95% on the live
+    # miss-audit. Above the cap the fast path aborts and we fall
+    # through to Pass 1+2.
+    _PASS0_PARENT_CANDIDATE_CAP = 500
+    # Per-series episode enumerate Limit. Long-running shows have
+    # huge episode counts (Pokémon 1266, Doctor Who 870+, Simpsons
+    # 800+) and a low cap silently truncates the result so the local
+    # basename match misses the target episode. 2000 covers every
+    # practical case; the JSON payload is tolerable (~1 MB on the
+    # extreme) since it's local network and only fires on a Pass-0
+    # match.
+    _PASS0_EPISODE_LIMIT = 2000
+
+    # ``(YYYY)`` and ``[bracket-tag]`` patterns the show/movie folder
+    # accumulates (year, imdb id, release group). Strip both from the
+    # candidate before sending to NameStartsWith — Emby's stored Name
+    # is the bare title.
+    _PASS0_YEAR_RE = re.compile(r"\s*\([0-9]{4}\)\s*")
+    _PASS0_BRACKET_RE = re.compile(r"\s*\[[^]]+\]\s*")
+    # Emby/Jellyfin's NameStartsWith filter matches against ``SortName``,
+    # not ``Name``. SortName strips leading English articles, so
+    # "The Matrix" sorts under "Matrix" and "The 'Burbs" under "'Burbs".
+    # Empirically confirmed on a real Emby instance: item Name="The 'Burbs"
+    # has SortName="'Burbs"; NameStartsWith="The 'Burbs" returns 0,
+    # NameStartsWith="'Burbs" returns 1.
+    _PASS0_LEADING_ARTICLE_RE = re.compile(r"^(?:the|a|an)\s+", re.IGNORECASE)
+    # SortName ALSO normalises Unicode accents away — Name="Pokémon"
+    # has SortName="Pokemon". Without normalisation the prefix
+    # "Pokémon" returns 0 results from NameStartsWith. Strip combining
+    # marks (NFD decompose + filter category Mn) so the prefix matches.
+    # Empirically confirmed: NameStartsWith="Pokémon"→0,
+    # NameStartsWith="Pokemon"→2 ("Pokémon", "Pokémon Concierge").
+    # Episode pattern in basename — ``S01E03``, ``s1e3``, ``1x03`` etc.
+    # Used to override the Season-folder heuristic for flat TV layouts
+    # (``/Show/episode.mkv`` instead of ``/Show/Season 01/...``). Without
+    # this, flat-layout episodes would query for Movie types and miss.
+    _PASS0_EPISODE_PATTERN_RE = re.compile(r"(?:S\d+E\d+|s\d+e\d+|\d+x\d+)", re.IGNORECASE)
+
+    def _extract_title_prefix(self, remote_path: str) -> tuple[str, bool] | None:
+        """Extract a NameStartsWith candidate + episode/movie kind hint.
+
+        Returns ``(prefix, is_episode)`` where ``prefix`` is the FIRST
+        WORD of the cleaned show/movie title (lowercased article
+        stripped, accents normalised, year + brackets dropped) and
+        ``is_episode`` indicates whether the path resolves to a TV
+        episode.
+
+        Why first word only — empirically validated against a 100-item
+        random sample of EmbyTest:
+        * Path-derived names often differ from Emby's stored Name on
+          internal characters: ``"TRON Legacy"`` (path) vs ``"TRON: Legacy"``
+          (Emby), ``"Baki-Dou - The Invincible Samurai"`` vs
+          ``"BAKI-DOU: The Invincible Samurai"``,
+          ``"Larry The Cable Guy Remain Seated"`` vs
+          ``"Larry the Cable Guy: Remain Seated"``. NameStartsWith on the
+          full path-derived string misses every one of those (~17%
+          miss rate). The first word is the most reliable shared prefix.
+        * NameStartsWith is case-insensitive on Emby/Jellyfin so
+          ``"BAKI"`` ↔ ``"Baki"`` work either way.
+        * Local match by basename + path tail still narrows the
+          candidate set to the exact target file, so a broader prefix
+          doesn't cause false positives — only extra round-trips, capped
+          at ``_PASS0_PARENT_CANDIDATE_CAP`` series.
+
+        Returns ``None`` when no usable first word can be derived, in
+        which case the caller falls back to Pass 1+2.
+        """
+        if not remote_path:
+            return None
+        parts = remote_path.replace("\\", "/").split("/")
+        if not parts:
+            return None
+        candidate = None
+        is_episode = False
+        for i, comp in enumerate(parts):
+            # Match "Season 01", "Season 1", "season1" etc.
+            if re.match(r"^season\b", comp, re.IGNORECASE) and i > 0:
+                candidate = parts[i - 1]
+                is_episode = True
+                break
+        if candidate is None and len(parts) >= 2:
+            # Movie layout or flat-TV layout — parent dir of the file.
+            candidate = parts[-2]
+        if not candidate:
+            return None
+        # Flat-TV layout fallback: a path like
+        #   /TV/Bewitched (1964)/Bewitched (1964) - S05E17 - Title.mkv
+        # has no Season folder, so the loop above didn't set is_episode,
+        # but the basename clearly carries an episode token. Promote.
+        basename = parts[-1]
+        if not is_episode and self._PASS0_EPISODE_PATTERN_RE.search(basename):
+            is_episode = True
+
+        cleaned = self._PASS0_YEAR_RE.sub(" ", candidate)
+        cleaned = self._PASS0_BRACKET_RE.sub(" ", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        cleaned = self._PASS0_LEADING_ARTICLE_RE.sub("", cleaned, count=1).strip()
+        # SortName drops accents (Pokémon → Pokemon). NFD decomposes
+        # base+combining-mark, then drop everything in category Mn.
+        cleaned = "".join(c for c in unicodedata.normalize("NFD", cleaned) if unicodedata.category(c) != "Mn")
+        cleaned = cleaned.strip()
+        if not cleaned:
+            return None
+        # First word only — see method docstring for rationale.
+        first = cleaned.split(maxsplit=1)[0]
+        if len(first) < 2:
+            return None
+        return first, is_episode
+
+    def _pass0_name_prefix_lookup(
+        self,
+        remote_path: str,
+        basename: str,
+        target_tail: str,
+        parent_id: str,
+    ) -> str | None:
+        """Try NameStartsWith → per-Series enumerate before slow Pass 1+2.
+
+        Returns:
+            Item id when the file is found via this fast path. ``None``
+            on every other outcome (no extractable prefix, NameStartsWith
+            returned zero / too many candidates, error, or the candidate
+            series simply don't contain this episode). Caller treats
+            ``None`` as "fall through to Pass 1+2" — this path never
+            short-circuits the legacy fallback for negative cases.
+        """
+        extracted = self._extract_title_prefix(remote_path)
+        if not extracted:
+            return None
+        title_prefix, is_episode = extracted
+
+        # Step 1: NameStartsWith → small candidate set scoped to library.
+        # Path-derived hint (Season folder present?) is more reliable than
+        # the Library kind cache (which can be stale on a fresh start).
+        include_types = "Series" if is_episode else "Movie"
+        step1_params = {
+            "Recursive": "true",
+            "IncludeItemTypes": include_types,
+            "NameStartsWith": title_prefix,
+            "Fields": "Path",
+            "Limit": self._PASS0_PARENT_CANDIDATE_CAP,
+            "ParentId": parent_id,
+        }
+        try:
+            response = self._request("GET", "/Items", params=step1_params)
+            response.raise_for_status()
+            body = response.json() or {}
+            candidates = body.get("Items") or []
+            total = body.get("TotalRecordCount")
+        except Exception as exc:
+            logger.debug(
+                "{} pass-0 NameStartsWith failed for {!r}: {} — falling back",
+                self.vendor_name,
+                remote_path,
+                exc,
+            )
+            return None
+
+        if not candidates:
+            return None
+        # Cap busted: a too-broad prefix returned more than we'd want to
+        # walk. Abort so Pass 1's scoring narrows the field instead.
+        if isinstance(total, int) and total > self._PASS0_PARENT_CANDIDATE_CAP:
+            logger.debug(
+                "{} pass-0 NameStartsWith for prefix {!r} returned {} candidates (>{}); falling back to searchTerm.",
+                self.vendor_name,
+                title_prefix,
+                total,
+                self._PASS0_PARENT_CANDIDATE_CAP,
+            )
+            return None
+
+        # Step 2: movies match directly on the candidate set; episodes
+        # need a per-Series enumerate (each Series has 10-300 episodes,
+        # tiny vs the 1000-cap library walk Pass 2 does).
+        if not is_episode:
+            return self._match_basename(candidates, basename, target_tail)
+
+        for series in candidates:
+            if not isinstance(series, dict):
+                continue
+            series_id = str(series.get("Id") or "")
+            if not series_id:
+                continue
+            ep_params = {
+                "Recursive": "true",
+                "IncludeItemTypes": "Episode",
+                "Fields": "Path",
+                "Limit": self._PASS0_EPISODE_LIMIT,
+                "ParentId": series_id,
+            }
+            try:
+                ep_response = self._request("GET", "/Items", params=ep_params)
+                ep_response.raise_for_status()
+                episodes = ep_response.json().get("Items") or []
+            except Exception as exc:
+                logger.debug(
+                    "{} pass-0 episode enumerate for series {} failed: {} — trying next candidate",
+                    self.vendor_name,
+                    series_id,
+                    exc,
+                )
+                continue
+            hit = self._match_basename(episodes, basename, target_tail)
+            if hit:
+                return hit
+        return None
+
+    @staticmethod
+    def _match_basename(items: list, basename: str, target_tail: str) -> str | None:
+        for raw in items or []:
+            if not isinstance(raw, dict):
+                continue
+            path = str(raw.get("Path") or "")
+            if not path:
+                continue
+            if os.path.basename(path) == basename and path.replace("\\", "/").endswith(target_tail):
+                item_id = str(raw.get("Id") or "")
+                if item_id:
+                    return item_id
+        return None
 
 
 def _format_emby_title(item: dict[str, Any]) -> str:

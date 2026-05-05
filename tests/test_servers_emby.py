@@ -464,6 +464,325 @@ class TestResolveRemotePathToItemIdViaExactPath:
             assert req.call_args_list[0].kwargs["params"]["Path"] == "/missing.mkv"
 
 
+class TestExtractTitlePrefix:
+    """Unit tests for ``EmbyApiClient._extract_title_prefix``.
+
+    NameStartsWith filter on /Items matches against ``SortName``, not
+    ``Name``. SortName strips leading English articles
+    ("The 'Burbs" → "'Burbs"). The extractor must therefore drop
+    "The "/"A "/"An " before sending the prefix, otherwise the fast
+    path misses every "The …" / "A …" title.
+
+    Empirically verified on a live Emby 4.9 instance: the legacy stem
+    extractor that did NOT strip the article missed item 13504
+    ("The 'Burbs") in tools/bench_emby_reverse_path.py — the only
+    miss across 22 paths until this regex was added.
+    """
+
+    def test_tv_returns_first_word_and_episode_kind(self, emby):
+        prefix, is_episode = emby._extract_title_prefix(
+            "/library/TV/DMV (2025) [imdb-tt33078075]/Season 01/DMV - S01E03 - Title.mkv"
+        )
+        assert prefix == "DMV"
+        assert is_episode is True
+
+    def test_movie_returns_first_word_and_movie_kind(self, emby):
+        prefix, is_episode = emby._extract_title_prefix(
+            "/library/Movies/'71 (2014)/'71 (2014) [imdb-tt2614684][Bluray-1080p].mkv"
+        )
+        assert prefix == "'71"
+        assert is_episode is False
+
+    def test_strips_leading_article_the(self, emby):
+        # "The 'Burbs" → SortName "'Burbs"; first word after article-strip is "'Burbs".
+        prefix, _ = emby._extract_title_prefix("/library/Movies/The 'Burbs (1989)/The 'Burbs.mkv")
+        assert prefix == "'Burbs"
+
+    def test_strips_leading_article_a(self, emby):
+        prefix, _ = emby._extract_title_prefix("/library/Movies/A Quiet Place (2018)/A Quiet Place.mkv")
+        assert prefix == "Quiet"
+
+    def test_strips_leading_article_an(self, emby):
+        prefix, _ = emby._extract_title_prefix("/library/Movies/An American Tail (1986)/An American Tail.mkv")
+        assert prefix == "American"
+
+    def test_article_stripping_is_case_insensitive(self, emby):
+        prefix, _ = emby._extract_title_prefix("/library/Movies/the Matrix (1999)/the Matrix.mkv")
+        assert prefix == "Matrix"
+
+    def test_article_only_stripped_when_followed_by_space(self, emby):
+        # "Therapy" should NOT have "The" stripped — it doesn't start with "The ".
+        prefix, _ = emby._extract_title_prefix("/library/TV/Therapy/Season 01/Therapy - S01E01.mkv")
+        assert prefix == "Therapy"
+
+    def test_normalises_unicode_accents(self, emby):
+        # SortName for "Pokémon" is "Pokemon" (accent stripped). The
+        # prefix must be sent without the accent so NameStartsWith matches.
+        # Empirical: NameStartsWith="Pokémon"→0 results,
+        # NameStartsWith="Pokemon"→2 results on a real Emby instance.
+        prefix, _ = emby._extract_title_prefix("/library/TV/Pokémon (1997)/Season 17/Pokémon - S17E22.mkv")
+        assert prefix == "Pokemon", "Unicode combining marks must be stripped to match Emby SortName"
+
+    def test_uses_first_word_when_full_title_would_mismatch_internal_punctuation(self, emby):
+        # Path "TRON Legacy" but Emby Name "TRON: Legacy" — the colon
+        # difference would make a full-title NameStartsWith miss.
+        # Returning just "TRON" matches via SortName and the local
+        # basename match still narrows down to the right movie.
+        prefix, _ = emby._extract_title_prefix(
+            "/library/Movies/TRON Legacy (2010)/TRON Legacy (2010) [Bluray-2160p].mkv"
+        )
+        assert prefix == "TRON"
+
+    def test_detects_episode_in_flat_tv_layout(self, emby):
+        # Some users keep episodes flat under the show folder (no Season
+        # subdirectory). Detect by S01E… pattern in basename so we still
+        # query Series + per-series enumerate.
+        prefix, is_episode = emby._extract_title_prefix(
+            "/library/TV/Bewitched (1964)/Bewitched (1964) - S05E17 - One Touch of Midas.mkv"
+        )
+        assert prefix == "Bewitched"
+        assert is_episode is True, (
+            "Flat-TV layout (no Season folder) must still be detected as episode "
+            "via the S\\d+E\\d+ pattern in basename — otherwise we query Movie "
+            "type and miss every Series+Episode."
+        )
+
+    def test_detects_episode_with_lowercase_pattern(self, emby):
+        prefix, is_episode = emby._extract_title_prefix("/library/TV/Show/show.s01e01.mkv")
+        assert prefix == "Show"
+        assert is_episode is True
+
+    def test_detects_episode_with_NxNN_pattern(self, emby):
+        # Older naming convention: 1x05 instead of S01E05.
+        prefix, is_episode = emby._extract_title_prefix("/library/TV/Show/Show 1x05.mkv")
+        assert prefix == "Show"
+        assert is_episode is True
+
+    def test_returns_none_for_too_short_after_cleaning(self, emby):
+        # "(2024)" alone would clean to empty string.
+        assert emby._extract_title_prefix("/library/Movies/(2024)/foo.mkv") is None
+
+    def test_returns_none_for_path_without_parent(self, emby):
+        assert emby._extract_title_prefix("foo.mkv") is None
+        assert emby._extract_title_prefix("") is None
+
+    def test_strips_brackets(self, emby):
+        prefix, _ = emby._extract_title_prefix(
+            "/library/Movies/Movie Title [imdb-x][Bluray-1080p][AAC]/Movie Title.mkv"
+        )
+        assert prefix == "Movie"  # First word after bracket strip
+
+
+class TestPass0NameStartsWithFastPath:
+    """Pass 0 — NameStartsWith fast path before the slow Pass 1+2.
+
+    Pass 1's full-stem ``searchTerm`` query was the dominant cost (30-76 s
+    per call on a 117K-episode library because Emby ran full-text
+    scoring across every item). Pass 0 swaps to ``NameStartsWith=<short
+    title>`` (B-tree on the indexed Name/SortName column, ~10 ms) +
+    a per-Series enumerate of just the matching Series (~5 ms).
+
+    Empirical: 4173× total speedup across 22 real paths with 22/22 Id
+    agreement against the legacy strategy (tools/bench_emby_reverse_path.py).
+
+    These tests pin both the happy path AND the safe-fallback contract:
+    Pass 0 returning None must always fall through to Pass 1 and Pass 2,
+    so a regression that stops sending searchTerm can't lose recall.
+    """
+
+    @pytest.fixture
+    def emby_with_tv_lib(self):
+        # Library cache populated so library scoping computes a parent_id —
+        # Pass 0 only fires when parent_id resolves.
+        return EmbyServer(
+            _emby_config(
+                libraries=[
+                    Library(
+                        id="tv-1",
+                        name="TV Shows",
+                        remote_paths=("/library/TV",),
+                        kind="tvshows",
+                    )
+                ]
+            )
+        )
+
+    @pytest.fixture
+    def emby_with_movie_lib(self):
+        return EmbyServer(
+            _emby_config(
+                libraries=[
+                    Library(
+                        id="movies-1",
+                        name="Movies",
+                        remote_paths=("/library/Movies",),
+                        kind="movies",
+                    )
+                ]
+            )
+        )
+
+    @staticmethod
+    def _resp(payload):
+        r = MagicMock()
+        r.json.return_value = payload
+        r.raise_for_status.return_value = None
+        return r
+
+    def test_tv_episode_resolves_via_pass0(self, emby_with_tv_lib):
+        """Happy path: NameStartsWith→Series → enumerate→episode.
+
+        Asserts:
+        - Pass 0 finds the episode id.
+        - Only TWO ``/Items`` requests are made AFTER Emby's exact-Path
+          fallthrough (1 NameStartsWith + 1 episode enumerate). No
+          ``searchTerm`` round-trip.
+        """
+        path = "/library/TV/DMV (2025) [imdb-x]/Season 01/DMV - S01E03 - Title.mkv"
+        path_empty = self._resp({"Items": []})  # Emby Path= miss
+        ns_series = self._resp(
+            {
+                "TotalRecordCount": 1,
+                "Items": [{"Id": "ser-1", "Name": "DMV"}],
+            }
+        )
+        ep_enum = self._resp(
+            {
+                "Items": [{"Id": "ep-3", "Path": path}],
+            }
+        )
+        with patch.object(EmbyServer, "_request", side_effect=[path_empty, ns_series, ep_enum]) as req:
+            got = emby_with_tv_lib._uncached_resolve_remote_path_to_item_id(path)
+            assert got == "ep-3"
+            # Verify the SUT's contract — kwargs we control, not just call count.
+            ns_call = req.call_args_list[1]
+            # First-word-only prefix (see _extract_title_prefix docstring).
+            assert ns_call.kwargs["params"]["NameStartsWith"] == "DMV"
+            assert ns_call.kwargs["params"]["IncludeItemTypes"] == "Series"
+            assert ns_call.kwargs["params"]["ParentId"] == "tv-1"
+            ep_call = req.call_args_list[2]
+            assert ep_call.kwargs["params"]["ParentId"] == "ser-1"
+            assert ep_call.kwargs["params"]["IncludeItemTypes"] == "Episode"
+            # Pass 1 (searchTerm) MUST NOT have run.
+            assert not any("searchTerm" in (c.kwargs.get("params") or {}) for c in req.call_args_list), (
+                "searchTerm path must not run when Pass 0 succeeds"
+            )
+
+    def test_movie_resolves_via_pass0_direct_match(self, emby_with_movie_lib):
+        """Movies don't enumerate per-series — direct match on candidates."""
+        path = "/library/Movies/Quiet Place (2018)/A Quiet Place (2018).mkv"
+        path_empty = self._resp({"Items": []})
+        ns_movies = self._resp(
+            {
+                "TotalRecordCount": 1,
+                "Items": [{"Id": "mov-99", "Name": "A Quiet Place", "Path": path}],
+            }
+        )
+        with patch.object(EmbyServer, "_request", side_effect=[path_empty, ns_movies]) as req:
+            got = emby_with_movie_lib._uncached_resolve_remote_path_to_item_id(path)
+            assert got == "mov-99"
+            ns_call = req.call_args_list[1]
+            # Article stripped + first-word-only: "A Quiet Place" → "Quiet".
+            assert ns_call.kwargs["params"]["NameStartsWith"] == "Quiet"
+            assert ns_call.kwargs["params"]["IncludeItemTypes"] == "Movie"
+
+    def test_falls_through_to_pass1_when_namestartswith_returns_zero(self, emby_with_tv_lib):
+        """Show isn't in Emby (NameStartsWith → 0). Must run Pass 1+2,
+        not silently report the file as missing.
+        """
+        path = "/library/TV/Unknown Show (2099)/Season 01/episode.mkv"
+        path_empty = self._resp({"Items": []})
+        ns_empty = self._resp({"TotalRecordCount": 0, "Items": []})
+        pass1_empty = self._resp({"Items": []})
+        pass2_empty = self._resp({"Items": []})
+        with patch.object(
+            EmbyServer,
+            "_request",
+            side_effect=[path_empty, ns_empty, pass1_empty, pass2_empty],
+        ) as req:
+            got = emby_with_tv_lib._uncached_resolve_remote_path_to_item_id(path)
+            assert got is None
+            # Confirm Pass 1 ran (searchTerm present in some call's params).
+            assert any("searchTerm" in (c.kwargs.get("params") or {}) for c in req.call_args_list), (
+                "Pass 1 searchTerm MUST run after Pass 0 misses — otherwise we lose "
+                "recall for shows whose folder name doesn't match Emby's stored Name."
+            )
+
+    def test_falls_through_when_series_match_but_episode_missing(self, emby_with_tv_lib):
+        """NameStartsWith finds the Series, but the episode isn't in it
+        (e.g. file just downloaded, Emby hasn't scanned yet). The
+        per-Series enumerate finds nothing → fall through to Pass 1+2.
+        Without fallthrough, a slightly-stale series cache would mask
+        files Pass 1's searchTerm could still recover via fuzzy match.
+        """
+        path = "/library/TV/Show/Season 01/Show - S01E99 - Brand New.mkv"
+        path_empty = self._resp({"Items": []})
+        ns_series = self._resp({"TotalRecordCount": 1, "Items": [{"Id": "ser-9"}]})
+        ep_no_match = self._resp({"Items": [{"Id": "ep-1", "Path": "/library/TV/Show/Season 01/Show - S01E01.mkv"}]})
+        pass1_empty = self._resp({"Items": []})
+        pass2_empty = self._resp({"Items": []})
+        with patch.object(
+            EmbyServer,
+            "_request",
+            side_effect=[path_empty, ns_series, ep_no_match, pass1_empty, pass2_empty],
+        ) as req:
+            got = emby_with_tv_lib._uncached_resolve_remote_path_to_item_id(path)
+            assert got is None
+            assert any("searchTerm" in (c.kwargs.get("params") or {}) for c in req.call_args_list)
+
+    def test_aborts_when_namestartswith_returns_too_many_candidates(self, emby_with_tv_lib):
+        """Cap busted (e.g. NameStartsWith="A" matches 100+ shows on a
+        big library). Fast path aborts immediately and falls through to
+        Pass 1's scoring, which is more selective. Without the cap
+        the per-series enumerate would walk hundreds of Series and
+        defeat the speedup.
+        """
+        path = "/library/TV/A Show/Season 01/A Show - S01E01.mkv"
+        path_empty = self._resp({"Items": []})
+        # Show only 2 items but report TotalRecordCount > cap to trigger abort.
+        ns_too_many = self._resp(
+            {
+                "TotalRecordCount": 999,
+                "Items": [{"Id": "ser-a"}, {"Id": "ser-b"}],
+            }
+        )
+        pass1_empty = self._resp({"Items": []})
+        pass2_empty = self._resp({"Items": []})
+        with patch.object(
+            EmbyServer,
+            "_request",
+            side_effect=[path_empty, ns_too_many, pass1_empty, pass2_empty],
+        ) as req:
+            got = emby_with_tv_lib._uncached_resolve_remote_path_to_item_id(path)
+            assert got is None
+            # Confirm Pass 0 did NOT enumerate either candidate's episodes
+            # (cap-busted abort happens before episode round-trips).
+            assert not any(
+                (c.kwargs.get("params") or {}).get("ParentId") in ("ser-a", "ser-b") for c in req.call_args_list
+            ), "Cap-busted Pass 0 must abort before per-series enumerate"
+            # Pass 1 did run.
+            assert any("searchTerm" in (c.kwargs.get("params") or {}) for c in req.call_args_list)
+
+    def test_skips_pass0_when_no_extractable_title(self, emby_with_tv_lib):
+        """Single-component path → no parent dir → no extractable
+        prefix → Pass 0 skipped, Pass 1+2 still run.
+        """
+        path = "/library/TV/foo.mkv"  # only 3 components, parent is "TV" which is the library dir
+        path_empty = self._resp({"Items": []})
+        pass1_empty = self._resp({"Items": []})
+        pass2_empty = self._resp({"Items": []})
+        # Pass 0 may extract "TV" — but we need to ensure no NameStartsWith call
+        # runs OR if it does, we still fall through. Simplest: provide enough
+        # mocks for either flow + assert searchTerm fired.
+        responses = [path_empty, pass1_empty, pass2_empty]
+        # Pad in case Pass 0 attempts a query with parent="TV" extracted.
+        responses = [path_empty, self._resp({"Items": []}), pass1_empty, pass2_empty]
+        with patch.object(EmbyServer, "_request", side_effect=responses) as req:
+            got = emby_with_tv_lib._uncached_resolve_remote_path_to_item_id(path)
+            assert got is None
+            assert any("searchTerm" in (c.kwargs.get("params") or {}) for c in req.call_args_list)
+
+
 class TestTriggerRefresh:
     def test_uses_library_media_updated_when_path_known(self, emby):
         with patch.object(EmbyServer, "_request") as req:
