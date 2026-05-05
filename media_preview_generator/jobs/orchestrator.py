@@ -1240,6 +1240,85 @@ def _format_outcome_summary(aggregate_outcome: dict) -> str:
     return ", ".join(parts) if parts else "no items processed"
 
 
+def _build_path_mapping_mismatch_hints(unresolved_paths: list[str], server_configs: list) -> list[str]:
+    """Detect likely path-mapping mismatches and return user-facing hints.
+
+    For each unresolved webhook path, walks every configured server's
+    library remote_paths and looks for a Plex/Emby/Jellyfin location
+    that's a path-boundary substring of the webhook path — the
+    fingerprint of "Sonarr/Radarr is reporting one prefix but the
+    server stores another." When found, returns a hint string the
+    file_result row can show in place of the generic "Not found"
+    message.
+
+    Returns an empty list when no mismatches are detectable (e.g. the
+    webhook path is genuinely outside every library, or the user
+    already has a covering mapping).
+    """
+    if not unresolved_paths or not server_configs:
+        return []
+
+    from ..plex_client import _detect_path_prefix_mismatches, _mismatch_covered_by_mappings
+
+    locations: list[str] = []
+    location_owners: dict[str, list[tuple[str, list[dict]]]] = {}
+    for cfg in server_configs:
+        if not getattr(cfg, "enabled", True):
+            continue
+        for lib in cfg.libraries or []:
+            if not getattr(lib, "enabled", True):
+                continue
+            for loc in lib.remote_paths or ():
+                if not str(loc).strip():
+                    continue
+                norm_loc = str(loc).rstrip("/")
+                locations.append(norm_loc)
+                location_owners.setdefault(norm_loc, []).append((cfg.name or cfg.id, list(cfg.path_mappings or [])))
+
+    if not locations:
+        return []
+
+    mismatches = _detect_path_prefix_mismatches(unresolved_paths, locations)
+    hints: list[str] = []
+    for webhook_pfx, server_pfx in mismatches:
+        # ``server_pfx`` is the parent of the matched library location,
+        # so we look up direct owners of the original location AND any
+        # whose library lives under ``server_pfx``. Either coverage
+        # path counts.
+        candidate_owners: list[tuple[str, list[dict]]] = []
+        for loc, owners_list in location_owners.items():
+            if loc == server_pfx or loc.startswith(server_pfx.rstrip("/") + "/"):
+                candidate_owners.extend(owners_list)
+
+        owner_covers = any(
+            _mismatch_covered_by_mappings(webhook_pfx, server_pfx, mappings) for _, mappings in candidate_owners
+        )
+        if owner_covers:
+            hints.append(
+                f"Path mapping '{webhook_pfx}' → '{server_pfx}' is configured but file not found "
+                "(may not be indexed yet)"
+            )
+            continue
+
+        # Mapping might be configured on a non-owning server (the
+        # other-server-has-it-but-not-this-one diagnostic).
+        all_mappings = [mappings for owners_list in location_owners.values() for _, mappings in owners_list]
+        other_covers = any(_mismatch_covered_by_mappings(webhook_pfx, server_pfx, m) for m in all_mappings)
+        if other_covers:
+            hints.append(
+                f"Path mapping '{webhook_pfx}' → '{server_pfx}' is configured on a different server "
+                "but the owning server is missing it — add the mapping there too in Settings → "
+                "Path mappings"
+            )
+        else:
+            hints.append(
+                f"Possible prefix mismatch: webhook sends '{webhook_pfx}' but a configured library "
+                f"uses '{server_pfx}'. Add a path mapping in Settings: server path = {server_pfx}, "
+                f"webhook path = {webhook_pfx}"
+            )
+    return hints
+
+
 def _run_webhook_paths_phase(
     config,
     plex,
@@ -1329,6 +1408,7 @@ def _run_webhook_paths_phase(
         )
 
     unresolved: list[str] = list(no_owners)
+    path_hints: list[str] = []
 
     if no_owners:
         logger.info(
@@ -1337,6 +1417,15 @@ def _run_webhook_paths_phase(
             "what each server reports for its libraries.",
             len(no_owners),
         )
+        # When a path is unowned but a configured library's location is
+        # a path-boundary substring of the webhook path, the user almost
+        # certainly has a path-mapping mismatch (Sonarr/Radarr send
+        # ``/data/Movies/X.mkv`` but Plex/Emby/Jellyfin reports
+        # ``/media/Movies/X.mkv``, no mapping configured). Surfacing
+        # this hint here keeps the UX the legacy Plex-first stage gave
+        # users — without it, the file_result row just says "Not
+        # found", which doesn't tell the user *why*.
+        path_hints.extend(_build_path_mapping_mismatch_hints(no_owners, server_configs))
 
     if webhook_items:
         result = dispatch_items(webhook_items, "Webhook Targets")
@@ -1361,7 +1450,7 @@ def _run_webhook_paths_phase(
         "skipped_paths": [],
         "resolved_count": total_paths - len(unresolved),
         "total_paths": total_paths,
-        "path_hints": [],
+        "path_hints": path_hints,
     }
 
 

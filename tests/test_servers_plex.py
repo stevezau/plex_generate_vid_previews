@@ -474,6 +474,137 @@ class TestResolveItemToRemotePath:
         assert plex_wrapper.resolve_item_to_remote_path("42") is None
 
 
+class TestResolveOnePath:
+    """Plex's per-server-view-path resolver hook (called by the base
+    class wrapper for each candidate produced by
+    ``expand_path_mapping_candidates``).
+
+    Pins the fast ``file=<basename>`` filter path. The legacy
+    ``section.all()`` walk this replaced burned 30-90s on a large
+    library because it streamed every item's metadata client-side
+    before filtering. A regression to that walk is a perf cliff
+    invisible to the test suite without this pin — the function still
+    returns the right id, just very slowly.
+    """
+
+    def _section(self, *, key: str = "1", title: str = "Movies"):
+        section = MagicMock()
+        section.key = key
+        section.title = title
+        return section
+
+    def _item(self, *, rating_key: str, file_path: str):
+        part = MagicMock()
+        part.file = file_path
+        media = MagicMock()
+        media.parts = [part]
+        item = MagicMock()
+        item.media = [media]
+        item.ratingKey = rating_key
+        return item
+
+    def test_uses_file_filter_not_section_all(self, plex_wrapper):
+        """The resolver must hit ``/library/sections/{key}/all?file=<basename>``
+        (Plex's indexed Path equality lookup) and must NOT call
+        ``section.all()`` (the slow client-side walk).
+        """
+        section = self._section(key="1")
+        plex = MagicMock()
+        plex.library.sections.return_value = [section]
+        plex.fetchItems.return_value = [self._item(rating_key="100", file_path="/media/movies/Foo.mkv")]
+        plex_wrapper._plex = plex
+
+        result = plex_wrapper._resolve_one_path("/media/movies/Foo.mkv")
+
+        assert result == "100"
+        # Slow path must not fire — section.all() is the regression we're guarding.
+        section.all.assert_not_called()
+        # Fast path must use the URL-encoded file= filter against this section.
+        plex.fetchItems.assert_called_once()
+        ekey = plex.fetchItems.call_args.args[0]
+        assert ekey.startswith("/library/sections/1/all?"), ekey
+        assert "file=Foo.mkv" in ekey, f"Expected file= filter on basename; got {ekey!r}"
+
+    def test_url_encodes_basename_with_special_chars(self, plex_wrapper):
+        """Filenames with spaces, parentheses, '+' etc. must be URL-encoded
+        so Plex's query parser sees the basename literally.
+        """
+        section = self._section()
+        plex = MagicMock()
+        plex.library.sections.return_value = [section]
+        plex.fetchItems.return_value = []
+        plex_wrapper._plex = plex
+
+        plex_wrapper._resolve_one_path("/media/Show (2024) S01E01.mkv")
+
+        ekey = plex.fetchItems.call_args.args[0]
+        assert "Show%20%282024%29%20S01E01.mkv" in ekey, f"Basename special chars must be percent-encoded; got {ekey!r}"
+
+    def test_walks_every_section_until_match(self, plex_wrapper):
+        """When section 1 has no match, section 2 is queried — the
+        resolver isn't allowed to give up after a single section miss.
+        """
+        s1 = self._section(key="1", title="Movies")
+        s2 = self._section(key="2", title="TV")
+        plex = MagicMock()
+        plex.library.sections.return_value = [s1, s2]
+        # Section 1: query returns no match. Section 2: hit.
+        plex.fetchItems.side_effect = [
+            [],
+            [self._item(rating_key="42", file_path="/media/tv/Show/S01E01.mkv")],
+        ]
+        plex_wrapper._plex = plex
+
+        result = plex_wrapper._resolve_one_path("/media/tv/Show/S01E01.mkv")
+
+        assert result == "42"
+        assert plex.fetchItems.call_count == 2
+
+    def test_target_tail_disambiguates_basename_collision(self, plex_wrapper):
+        """Two items sharing a basename across libraries must NOT collide —
+        the resolver verifies via the trailing two path components.
+        ``/media/movies/Foo.mkv`` should match the movie, not the TV item
+        also called ``Foo.mkv`` under a different parent dir.
+        """
+        section = self._section()
+        plex = MagicMock()
+        plex.library.sections.return_value = [section]
+        plex.fetchItems.return_value = [
+            self._item(rating_key="111", file_path="/media/tv/OtherShow/Foo.mkv"),
+            self._item(rating_key="222", file_path="/media/movies/Foo.mkv"),
+        ]
+        plex_wrapper._plex = plex
+
+        result = plex_wrapper._resolve_one_path("/media/movies/Foo.mkv")
+
+        assert result == "222", "expected the movies-folder item, not the TV-folder collision"
+
+    def test_empty_path_returns_none_without_querying(self, plex_wrapper):
+        plex = MagicMock()
+        plex_wrapper._plex = plex
+
+        assert plex_wrapper._resolve_one_path("") is None
+        plex.library.sections.assert_not_called()
+
+    def test_section_query_failure_falls_through_to_next_section(self, plex_wrapper):
+        """A single section's HTTP failure must not prevent matching in
+        the next section — best-effort per-section iteration.
+        """
+        s1 = self._section(key="1")
+        s2 = self._section(key="2")
+        plex = MagicMock()
+        plex.library.sections.return_value = [s1, s2]
+        plex.fetchItems.side_effect = [
+            RuntimeError("section 1 transient 5xx"),
+            [self._item(rating_key="9", file_path="/media/movies/Foo.mkv")],
+        ]
+        plex_wrapper._plex = plex
+
+        result = plex_wrapper._resolve_one_path("/media/movies/Foo.mkv")
+
+        assert result == "9"
+
+
 class TestGetBundleMetadata:
     """D31 — get_bundle_metadata is the canary's path to Plex's bundle hash.
 

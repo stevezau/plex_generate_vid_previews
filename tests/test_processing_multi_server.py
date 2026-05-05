@@ -964,6 +964,132 @@ class TestSkipIfExists:
         assert result.publishers[0].status is PublisherStatus.PUBLISHED
 
 
+class TestPartialSuccessRetryIdempotency:
+    """When one publisher succeeds and another reports SKIPPED_NOT_INDEXED,
+    the retry must NOT re-run FFmpeg or re-publish for the
+    already-succeeded publisher. The contract is enforced by the
+    skip-if-exists short-circuit at multi_server's per-publisher loop:
+    output paths exist + ``outputs_fresh_for_source`` returns True →
+    publisher returns SKIPPED_OUTPUT_EXISTS without touching disk.
+
+    The plan called this out as a load-bearing contract for the
+    retry-queue path: the retry callback re-invokes
+    ``process_canonical_path`` on the same canonical path, and the
+    only thing keeping it cheap is this idempotency. A regression
+    where a successful publisher silently re-publishes on every retry
+    would inflate FFmpeg work N× per retry attempt — invisible at the
+    aggregate level since each call still returns PUBLISHED.
+    """
+
+    def test_retry_does_not_regenerate_already_published_emby_when_jellyfin_still_skipping(
+        self, mock_config_for_processing, tmp_path
+    ):
+        """Two-server fan-out where Emby publishes successfully on the
+        first call and Jellyfin returns SKIPPED_NOT_IN_LIBRARY (the
+        adapter needs an item id but ``resolve_remote_path_to_item_id``
+        couldn't find one). A second invocation simulates the retry-
+        queue callback firing on the same canonical path: Emby's
+        sidecar is now on disk + .meta is fresh, so Emby short-circuits
+        with SKIPPED_OUTPUT_EXISTS. Jellyfin keeps trying.
+
+        Headline assertion: ``generate_images`` is called exactly ONCE
+        across both invocations. A regression that re-runs FFmpeg for
+        Emby on the retry would push call_count to 2.
+        """
+        media_dir = tmp_path / "data" / "movies" / "PartialRetry (2024)"
+        media_file = _seed_canonical_file(media_dir)
+        media_root = str(tmp_path / "data" / "movies")
+
+        registry = ServerRegistry.from_settings(
+            [
+                _server_config(
+                    server_id="emby-1",
+                    server_type=ServerType.EMBY,
+                    libraries=[Library(id="1", name="Movies", remote_paths=(media_root,), enabled=True)],
+                    output={"adapter": "emby_sidecar", "width": 320, "frame_interval": 10},
+                ),
+                _server_config(
+                    server_id="jelly-1",
+                    server_type=ServerType.JELLYFIN,
+                    libraries=[Library(id="2", name="Movies", remote_paths=(media_root,), enabled=True)],
+                    output={"adapter": "jellyfin_trickplay", "width": 320, "frame_interval": 10},
+                ),
+            ],
+        )
+
+        def fake_generate_images(video_file, output_folder, *args, **kwargs):
+            _populate_frames(output_folder, count=4)
+            return (True, 4, "h264", 1.0, 30.0, None)
+
+        # Force Jellyfin's reverse-lookup to return None on every call so
+        # it stays in the SKIPPED_NOT_IN_LIBRARY state across both
+        # invocations. Emby's adapter doesn't need an item id for the
+        # sidecar, so it publishes on first call and short-circuits on
+        # second.
+        with (
+            patch(
+                "media_preview_generator.processing.multi_server.generate_images",
+                side_effect=fake_generate_images,
+            ) as gen,
+            patch(
+                "media_preview_generator.servers.jellyfin.JellyfinServer.resolve_remote_path_to_item_id",
+                return_value=None,
+            ),
+            patch(
+                "media_preview_generator.servers.jellyfin.JellyfinServer.trigger_refresh",
+                return_value=None,
+            ),
+        ):
+            first = process_canonical_path(
+                canonical_path=str(media_file),
+                registry=registry,
+                config=mock_config_for_processing,
+                schedule_retry_on_not_indexed=False,
+            )
+            # Same canonical path — simulates the retry callback firing.
+            second = process_canonical_path(
+                canonical_path=str(media_file),
+                registry=registry,
+                config=mock_config_for_processing,
+                schedule_retry_on_not_indexed=False,
+                retry_attempt=1,
+            )
+
+        # First call: Emby publishes, Jellyfin reports SKIPPED_NOT_IN_LIBRARY.
+        first_statuses = {p.server_id: p.status for p in first.publishers}
+        assert first_statuses["emby-1"] is PublisherStatus.PUBLISHED, first_statuses
+        assert first_statuses["jelly-1"] is PublisherStatus.SKIPPED_NOT_IN_LIBRARY, first_statuses
+
+        # Second call (the retry): Emby's output is now on disk + fresh,
+        # so the per-publisher skip_if_exists short-circuit kicks in.
+        # Jellyfin still can't resolve an item id, so it keeps reporting
+        # not-in-library — that's what triggers another retry round in
+        # production.
+        second_statuses = {p.server_id: p.status for p in second.publishers}
+        assert second_statuses["emby-1"] is PublisherStatus.SKIPPED_OUTPUT_EXISTS, (
+            f"Emby's already-published BIF must short-circuit on retry (output exists, "
+            f"source unchanged) — got {second_statuses['emby-1']}. A regression here would "
+            "burn FFmpeg every retry round for the publisher that already succeeded."
+        )
+        assert second_statuses["jelly-1"] is PublisherStatus.SKIPPED_NOT_IN_LIBRARY, second_statuses
+
+        # The headline contract: FFmpeg ran exactly once across both
+        # invocations. The retry inherits Emby's output and pays nothing
+        # for the re-check.
+        assert gen.call_count == 1, (
+            f"FFmpeg ran {gen.call_count} times across first publish + retry; "
+            "the retry must reuse Emby's already-published BIF, not re-extract."
+        )
+        # Frame-source provenance on the retry confirms the cheap path
+        # was taken — "output_existed" rather than "extracted". Look up
+        # by server_id since publisher order isn't stable across calls.
+        emby_second = next(p for p in second.publishers if p.server_id == "emby-1")
+        assert emby_second.frame_source == "output_existed", (
+            f"Retry's Emby publisher reported frame_source={emby_second.frame_source!r}; "
+            "must be 'output_existed' so the Jobs UI badge correctly says 'Already Existed'."
+        )
+
+
 class TestPublisherFailureModes:
     """Disk-full / EACCES scenarios — verify graceful PublisherStatus.FAILED."""
 

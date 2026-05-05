@@ -354,6 +354,53 @@ class TestMultiServerGuards:
         assert items[0].canonical_path == "/data/movies/Foo.mkv"
         assert items[0].item_id_by_server == {"plex-1": "k1"}
 
+    def test_path_mapping_mismatch_hint_surfaces_in_resolution_payload(self, tmp_path):
+        """When a webhook path is unowned but a configured library's
+        location is a path-boundary substring of it (the classic
+        webhook-with-extra-mount-prefix mismatch — Sonarr sends
+        ``/mnt/data/Movies/X.mkv``, server stores ``/data/Movies``,
+        no mapping configured), the orchestrator must surface a
+        path_hints row the file_result UI can show. Without this,
+        the unification regresses the legacy Plex-first stage's "did
+        you forget a path mapping?" diagnostic.
+        """
+        config = _make_config(tmp_path, webhook_paths=["/mnt/data/Movies/X.mkv"])
+
+        with (
+            patch(f"{MODULE}.plex_server"),
+            patch(f"{MODULE}.WorkerPool") as MockPool,
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+        ):
+            MockPool.return_value.process_items_headless.return_value = _pool_result(completed=0)
+            # Server's library at /data/Movies appears as a path-
+            # boundary substring of the webhook's /mnt/data/Movies/X.mkv;
+            # extra prefix is /mnt — that's the gap a path mapping
+            # would close.
+            mock_sm.return_value.get.return_value = [
+                {
+                    "id": "plex-a",
+                    "type": "plex",
+                    "enabled": True,
+                    "libraries": [{"id": "1", "name": "Movies", "remote_paths": ["/data/Movies"], "enabled": True}],
+                    "path_mappings": [],
+                },
+            ]
+            result = run_processing(config, selected_gpus=[])
+
+        resolution = result.get("webhook_resolution") or {}
+        assert "/mnt/data/Movies/X.mkv" in (resolution.get("unresolved_paths") or [])
+        hints = resolution.get("path_hints") or []
+        assert hints, "expected a path-mapping mismatch hint, got none"
+        joined = " ".join(hints)
+        # Hint must mention path mapping as the action so the user
+        # knows where to fix it.
+        assert "mapping" in joined.lower(), f"hint must mention path mapping; got {hints!r}"
+        # And must surface BOTH the webhook prefix and the server
+        # prefix so the user can configure the mapping without
+        # guessing which side is which.
+        assert "/mnt" in joined, f"hint missing webhook prefix '/mnt'; got {hints!r}"
+        assert "/data" in joined, f"hint missing server prefix '/data'; got {hints!r}"
+
     def test_webhook_pinned_to_plex_does_not_fan_out(self, tmp_path):
         """Audit M4 — a Plex-pinned webhook publishes to Plex only.
         Pinning means "publish to this server only", and the dispatcher
