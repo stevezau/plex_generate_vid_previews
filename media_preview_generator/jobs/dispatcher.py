@@ -674,6 +674,14 @@ class JobDispatcher:
                     "remaining_time": (progress_data["remaining_time"] if is_busy else 0.0),
                     "fallback_active": bool(getattr(worker, "fallback_active", False)),
                     "fallback_reason": getattr(worker, "fallback_reason", None),
+                    # ffmpeg_started + current_phase drive the UI's pre-FFmpeg
+                    # branch. When the dispatcher dropped these (the legacy
+                    # process_items_headless path emitted them, this one did
+                    # not) every dispatcher-driven job got stuck rendering
+                    # "Working…" and hid the speed/ETA chips for the entire
+                    # run — user-reported "I never see ffmpeg %/speed".
+                    "ffmpeg_started": bool(getattr(worker, "ffmpeg_started", False)) if is_busy else False,
+                    "current_phase": (getattr(worker, "current_phase", "") or "") if is_busy else "",
                 }
             )
         return statuses

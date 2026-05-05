@@ -881,12 +881,22 @@ def _build_idle_workers_from_config():
     with _gpu_cache_lock:
         gpu_infos = _gpu_cache["result"] or []
 
+    # Mirror the dispatcher's _build_worker_statuses() idle-branch contract
+    # so the synthesised idle list (used before any pool exists) has the
+    # SAME key set as live dispatcher rows. Without this, a regression that
+    # drops a field from one path but not the other would silently flip
+    # the UI between rendering modes when the dispatcher takes over.
     idle_entry = {
         "status": "idle",
         "current_title": "",
+        "library_name": "",
         "progress_percent": 0,
         "speed": "0.0x",
         "remaining_time": 0.0,
+        "fallback_active": False,
+        "fallback_reason": None,
+        "ffmpeg_started": False,
+        "current_phase": "",
     }
 
     # Use the shared label helper so the panel reads identically whether

@@ -1041,11 +1041,34 @@ class TestJobsAPI:
         assert isinstance(data["workers"], list)
         # 3 CPU workers + 0 GPUs = 3 entries.
         assert len(data["workers"]) == 3, data
-        # Every entry must be a dict carrying the synth-idle-worker
-        # contract the UI binds to: worker_id, worker_type, worker_name,
-        # status, current_title, progress_percent, speed.
+        # Every entry must carry the FULL idle-worker contract — same key
+        # set the dispatcher's _build_worker_statuses() emits for idle rows.
+        # Without parity, a regression that drops a field from one path but
+        # not the other would silently flip the UI between rendering modes
+        # when the dispatcher takes over (e.g. missing ffmpeg_started =
+        # workers stuck in "Working…" branch as in the dev regression).
+        idle_contract_keys = {
+            "worker_id",
+            "worker_type",
+            "worker_name",
+            "status",
+            "current_title",
+            "library_name",
+            "progress_percent",
+            "speed",
+            "remaining_time",
+            "fallback_active",
+            "fallback_reason",
+            "ffmpeg_started",
+            "current_phase",
+        }
         for entry in data["workers"]:
             assert isinstance(entry, dict), entry
+            missing = idle_contract_keys - entry.keys()
+            assert not missing, (
+                f"synth idle worker dropped {missing!r} — diverges from the dispatcher's "
+                f"idle row shape and lets a regression slip through. entry={entry!r}"
+            )
             assert isinstance(entry["worker_id"], int), entry
             assert entry["worker_type"] in {"GPU", "CPU"}, entry
             assert isinstance(entry["worker_name"], str) and entry["worker_name"], entry
@@ -1053,6 +1076,47 @@ class TestJobsAPI:
             assert entry["current_title"] == "", entry
             assert entry["progress_percent"] == 0, entry
             assert entry["speed"] == "0.0x", entry
+            # Idle-state defaults the UI relies on.
+            assert entry["ffmpeg_started"] is False, entry
+            assert entry["current_phase"] == "", entry
+
+    def test_synth_idle_workers_match_dispatcher_idle_shape(self, client):
+        """Parity guard: ``_build_idle_workers_from_config`` (used before
+        any pool exists) and ``JobDispatcher._build_worker_statuses``
+        (used once the pool is created) MUST produce the same key set
+        for an idle worker. Otherwise the row's key set silently changes
+        the moment the first job runs, and any UI field bound to a key
+        present in only one path flickers on/off across that boundary.
+        """
+        from media_preview_generator.jobs.dispatcher import JobDispatcher, reset_dispatcher
+        from media_preview_generator.jobs.worker import WorkerPool
+        from media_preview_generator.web.routes.api_jobs import _build_idle_workers_from_config
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        sm.set("cpu_threads", 1)
+        sm.set("gpu_config", [])
+
+        synth = _build_idle_workers_from_config()
+        assert synth, "Need at least one synthesised idle worker for parity check"
+        synth_keys = set(synth[0].keys())
+
+        reset_dispatcher()
+        pool = WorkerPool(cpu_workers=1, gpu_workers=0, selected_gpus=[])
+        dispatcher = JobDispatcher(pool)
+        try:
+            dispatch_idle = dispatcher._build_worker_statuses()
+            assert dispatch_idle, "dispatcher idle row missing"
+            dispatch_keys = set(dispatch_idle[0].keys())
+        finally:
+            dispatcher.shutdown()
+            reset_dispatcher()
+
+        assert synth_keys == dispatch_keys, (
+            f"idle row shape diverges between paths.\n"
+            f"  synth-only: {sorted(synth_keys - dispatch_keys)!r}\n"
+            f"  dispatcher-only: {sorted(dispatch_keys - synth_keys)!r}"
+        )
 
     def test_get_job_logs(self, client):
         with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
