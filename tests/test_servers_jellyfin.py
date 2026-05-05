@@ -406,38 +406,41 @@ class TestTriggerRefresh:
                 json_body={"Updates": [{"Path": "/some/path.mkv", "UpdateType": "Created"}]},
             )
 
-    def test_falls_back_to_full_refresh_when_no_path_and_no_id(self, jelly):
-        # Neither item_id nor remote_path given — last-resort full
-        # /Library/Refresh fires (rate-limited).
+    def test_no_path_or_id_is_a_noop(self, jelly):
+        # When neither item_id nor remote_path is supplied there's
+        # nothing to refresh — the base wrapper short-circuits and no
+        # API call is made. (Old behaviour was to fall back to a full
+        # /Library/Refresh; that was an expensive guess fired by no
+        # production caller, removed when path-mapping centralisation
+        # moved the candidate-walk into the base class.)
         with patch.object(JellyfinServer, "_request") as req:
-            response = MagicMock()
-            response.raise_for_status.return_value = None
-            req.return_value = response
-
             jelly.trigger_refresh(item_id=None, remote_path=None)
-
-            req.assert_called_once_with("POST", "/Library/Refresh")
+            req.assert_not_called()
 
     def test_full_refresh_is_rate_limited_per_server(self, jelly):
         # /Library/Refresh is heavyweight (full library scan, no path
-        # filter). A burst of nudges with neither item_id nor
-        # remote_path — the only branch that reaches the full refresh —
+        # filter). The fallback-to-full path fires when the per-path
+        # nudge errors — a burst of nudges with the same failure mode
         # must NOT trigger one /Library/Refresh per call or Jellyfin
         # pins for minutes. The cooldown lives on the server instance
-        # so concurrent calls for the same server collapse to a single
-        # scan.
-        with patch.object(JellyfinServer, "_request") as req:
-            response = MagicMock()
-            response.raise_for_status.return_value = None
-            req.return_value = response
+        # so concurrent calls collapse to a single scan.
+        path_exc = RuntimeError("path nudge failed")
+        full_resp = MagicMock(raise_for_status=MagicMock(return_value=None))
 
-            jelly.trigger_refresh(item_id=None, remote_path=None)
-            jelly.trigger_refresh(item_id=None, remote_path=None)
-            jelly.trigger_refresh(item_id=None, remote_path=None)
+        def side_effect(method, endpoint, *args, **kwargs):
+            if endpoint == "/Library/Media/Updated":
+                raise path_exc
+            return full_resp
 
-            # Only the first nudge fires the API call; the next two
-            # land inside the cooldown window and short-circuit.
-            req.assert_called_once_with("POST", "/Library/Refresh")
+        with patch.object(JellyfinServer, "_request", side_effect=side_effect) as req:
+            jelly.trigger_refresh(item_id=None, remote_path="/some/path.mkv")
+            jelly.trigger_refresh(item_id=None, remote_path="/some/path.mkv")
+            jelly.trigger_refresh(item_id=None, remote_path="/some/path.mkv")
+
+            # Each call attempts the path-based nudge; only the first
+            # is allowed to escalate to /Library/Refresh.
+            full_refresh_calls = [c for c in req.call_args_list if c.args == ("POST", "/Library/Refresh")]
+            assert len(full_refresh_calls) == 1, f"Expected one full refresh, got {len(full_refresh_calls)}"
 
     def test_path_nudge_failure_falls_back_to_full_refresh(self, jelly):
         # Path-based nudge raises (e.g. older Jellyfin without the

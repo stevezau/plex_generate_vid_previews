@@ -76,33 +76,29 @@ class EmbyServer(EmbyApiClient):
             )
         return super()._uncached_resolve_remote_path_to_item_id(remote_path)
 
-    def trigger_refresh(self, *, item_id: str | None, remote_path: str | None) -> None:
-        """Notify Emby that a media path changed.
+    def _trigger_path_refresh(self, server_view_path: str) -> None:
+        """Nudge Emby to scan a single server-view path.
 
-        Prefers ``POST /Library/Media/Updated`` (path-based; matches the
-        path-centric dispatcher). Falls back to a per-item refresh when
-        only an item id is available. Failures are best-effort —
-        publishers already wrote the BIF; the scan trigger is only a
-        nudge so Emby picks the change up promptly.
+        Calls ``POST /Library/Media/Updated`` which is Emby's
+        path-based scan-nudge — same shape Sonarr/Radarr's own
+        path-update notifier uses. Best-effort; failures are logged at
+        debug level by the base wrapper.
+
+        The base class (see
+        :meth:`MediaServer.trigger_refresh`) calls this once per
+        mapped candidate so multi-disk installs nudge every mount.
         """
-        if remote_path:
-            try:
-                response = self._request(
-                    "POST",
-                    "/Library/Media/Updated",
-                    json_body={"Updates": [{"Path": remote_path, "UpdateType": "Modified"}]},
-                )
-                response.raise_for_status()
-                return
-            except Exception as exc:
-                logger.debug("Emby /Library/Media/Updated failed for {}: {}", remote_path, exc)
+        response = self._request(
+            "POST",
+            "/Library/Media/Updated",
+            json_body={"Updates": [{"Path": server_view_path, "UpdateType": "Modified"}]},
+        )
+        response.raise_for_status()
 
-        if item_id:
-            try:
-                response = self._request("POST", f"/Items/{item_id}/Refresh")
-                response.raise_for_status()
-            except Exception as exc:
-                logger.debug("Emby item refresh failed for {}: {}", item_id, exc)
+    def _trigger_item_refresh(self, item_id: str) -> None:
+        """Refresh metadata for a single Emby item id."""
+        response = self._request("POST", f"/Items/{item_id}/Refresh")
+        response.raise_for_status()
 
     def set_vendor_extraction(
         self,

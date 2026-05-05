@@ -386,48 +386,36 @@ class EmbyApiClient(MediaServer):
         path = str(data.get("Path") or "")
         return path or None
 
-    def resolve_remote_path_to_item_id(self, remote_path: str) -> str | None:
-        """Search for an item whose stored ``Path`` matches ``remote_path``.
+    def _resolve_one_path(self, server_view_path: str) -> str | None:
+        """Cached per-server-view-path lookup.
 
-        Best-effort: matches on basename and verifies via the trailing
-        two path components (parent dir + basename). Accurate enough
-        for the typical ``/library/Show/Season X/Episode.mkv`` layout
-        but **does not** translate canonical-local paths through the
-        server's path mappings — callers that already have the
-        server-view path get an exact match; callers that pass a
-        canonical-local path rely on the basename match working.
+        The base class loops mapped candidates through this hook (see
+        :meth:`MediaServer.resolve_remote_path_to_item_id`). This
+        wrapper TTL-caches results — both positive AND negative —
+        because the dominant cost is a Pass-2 enumeration (~30s cold
+        on a 200K-item Jellyfin) and the same server is typically
+        asked about 200+ files in a row during a full-library scan.
 
-        Two-pass strategy:
-
-        1. Cheap path: query ``/Items?searchTerm=<stem>``. Works for
-           99% of titles.
-        2. Fallback: when the search returns zero items, enumerate
-           ``/Items`` without a search term (capped to 1000) and apply
-           the same path-tail match locally. Needed because Jellyfin's
-           full-text index quietly skips title tokens like ``4K``,
-           ``HDR``, ``DV``, etc. — so a search for ``"Test 4K HDR
-           (2024)"`` returns nothing even though the item exists.
-
-        Results — both positive AND negative — are cached on the
-        instance for ``_REVERSE_LOOKUP_TTL_S`` seconds. The negative
-        case is the dominant cost (Pass-2 enumeration is ~30s cold on
-        Jellyfin) and is also the most repeated query during full-
-        library scans where the same server gets asked about 200+
-        files in a row.
+        Best-effort match: ``_uncached_resolve_remote_path_to_item_id``
+        does a basename + trailing-two-component path-tail check
+        against each candidate the underlying API returns. Subclasses
+        replace just the uncached body with their vendor-native
+        per-path lookup (Emby's ``Path=<exact>`` filter, Jellyfin's
+        ``MediaPreviewBridge/ResolvePath``).
         """
-        basename = os.path.basename(remote_path or "")
+        basename = os.path.basename(server_view_path or "")
         if not basename:
             return None
 
         # Cache check first.
         now = time.monotonic()
         with self._reverse_lookup_lock:
-            cached = self._reverse_lookup_cache.get(remote_path)
+            cached = self._reverse_lookup_cache.get(server_view_path)
             if cached is not None and cached[0] > now:
                 return cached[1]
-        result = self._uncached_resolve_remote_path_to_item_id(remote_path)
+        result = self._uncached_resolve_remote_path_to_item_id(server_view_path)
         with self._reverse_lookup_lock:
-            self._reverse_lookup_cache[remote_path] = (now + _REVERSE_LOOKUP_TTL_S, result)
+            self._reverse_lookup_cache[server_view_path] = (now + _REVERSE_LOOKUP_TTL_S, result)
         return result
 
     def _find_owning_library_id(self, remote_path: str) -> str | None:

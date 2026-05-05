@@ -65,109 +65,113 @@ class JellyfinServer(EmbyApiClient):
     def type(self) -> ServerType:
         return ServerType.JELLYFIN
 
-    def trigger_refresh(self, *, item_id: str | None, remote_path: str | None) -> None:
-        """Notify Jellyfin to re-scan an item AND register published trickplay.
+    def _trigger_path_refresh(self, server_view_path: str) -> None:
+        """Nudge Jellyfin to scan a single server-view path.
 
-        Three best-effort steps in order:
+        Calls ``POST /Library/Media/Updated`` (same shape as Emby's,
+        despite Jellyfin's docs claiming otherwise) — feeds the path
+        into Jellyfin's library monitor as if real-time-monitor's
+        inotify watcher had posted it. Per-file, no global scan, no
+        cooldown needed.
+
+        On failure (4xx/5xx), falls back to a rate-limited full
+        ``/Library/Refresh`` so we still nudge the server even when
+        the path-based endpoint is unavailable. The base wrapper logs
+        any exception this method raises at debug level.
+
+        The base class (see :meth:`MediaServer.trigger_refresh`) calls
+        this once per mapped candidate so multi-disk installs nudge
+        every mount.
+        """
+        try:
+            response = self._request(
+                "POST",
+                "/Library/Media/Updated",
+                json_body={"Updates": [{"Path": server_view_path, "UpdateType": "Created"}]},
+            )
+            response.raise_for_status()
+            logger.debug(
+                "Jellyfin /Library/Media/Updated nudged scan for {}",
+                server_view_path,
+            )
+            return
+        except Exception as exc:
+            logger.debug(
+                "Jellyfin /Library/Media/Updated failed for {}: {} — falling back to /Library/Refresh",
+                server_view_path,
+                exc,
+            )
+
+        self._maybe_trigger_full_refresh()
+
+    def _trigger_item_refresh(self, item_id: str) -> None:
+        """Refresh metadata + register published trickplay for one item.
+
+        Two best-effort steps:
 
         1. ``POST /MediaPreviewBridge/Trickplay/{itemId}`` — the
            Jellyfin Plugin Bridge installed alongside this tool.
            Registers the trickplay row directly via Jellyfin's
-           ``ITrickplayManager.SaveTrickplayInfo`` so the player
-           can serve scrubbing previews immediately, no flag flips
-           and no ffmpeg. Returns 404 if the plugin isn't installed
-           — silently swallowed so single-step setups still work
-           (the standard refresh fallback below picks up trickplay
-           on the next library scan, with the user's
-           ``ExtractTrickplayImagesDuringLibraryScan`` flag's caveats).
+           ``ITrickplayManager.SaveTrickplayInfo`` so the player can
+           serve scrubbing previews immediately, no flag flips and no
+           ffmpeg. Returns 404 if the plugin isn't installed —
+           silently swallowed so single-step setups still work.
 
-        2. ``POST /Items/{id}/Refresh`` — standard metadata refresh
-           when we already know the item id (post-publish path).
+        2. ``POST /Items/{id}/Refresh`` — standard metadata refresh.
+           On failure, falls back to a rate-limited full
+           ``/Library/Refresh``.
 
-        3. ``POST /Library/Media/Updated`` with ``{"Updates":[{"Path":
-           remote_path,"UpdateType":"Created"}]}`` — Jellyfin's
-           path-based scan-nudge (same shape as Emby's, despite the
-           old docstring claiming otherwise). Used when the item
-           isn't in Jellyfin's library yet (the
-           SKIPPED_NOT_IN_LIBRARY branch in multi_server). This
-           triggers a per-file scan instead of a global library scan
-           — no thrash, no cooldown needed.
-
-        4. Last-resort full ``/Library/Refresh`` (rate-limited via
-           ``_full_refresh_lock``). Only fires when neither item_id
-           nor remote_path was usable.
+        The base wrapper logs any exception this method raises.
         """
-        if item_id:
-            # 1. Plugin bridge — instant trickplay registration.
-            try:
-                resp = self._request(
-                    "POST",
-                    f"/MediaPreviewBridge/Trickplay/{item_id}",
-                    params={"width": 320, "intervalMs": 10000},
-                )
-                if resp.status_code == 204:
-                    logger.debug(
-                        "Jellyfin trickplay registered via Media Preview Bridge plugin for {}",
-                        item_id,
-                    )
-                elif resp.status_code == 404:
-                    logger.debug(
-                        "Media Preview Bridge plugin not installed on Jellyfin {!r} — "
-                        "trickplay will be picked up by the next library scan instead.",
-                        self.name,
-                    )
-                else:
-                    logger.debug(
-                        "Media Preview Bridge plugin returned HTTP {} for {}: {}",
-                        resp.status_code,
-                        item_id,
-                        resp.text[:200] if resp.text else "",
-                    )
-            except Exception as exc:
+        # 1. Plugin bridge — instant trickplay registration.
+        try:
+            resp = self._request(
+                "POST",
+                f"/MediaPreviewBridge/Trickplay/{item_id}",
+                params={"width": 320, "intervalMs": 10000},
+            )
+            if resp.status_code == 204:
                 logger.debug(
-                    "Media Preview Bridge plugin call failed for {}: {}",
+                    "Jellyfin trickplay registered via Media Preview Bridge plugin for {}",
                     item_id,
-                    exc,
                 )
-
-            # 2. Standard metadata refresh (separate concern from trickplay).
-            try:
-                response = self._request("POST", f"/Items/{item_id}/Refresh")
-                response.raise_for_status()
-                return
-            except Exception as exc:
-                logger.debug("Jellyfin per-item refresh failed for {}: {}", item_id, exc)
-
-        # 3. Path-based scan-nudge for items not yet in the library.
-        # Jellyfin has /Library/Media/Updated (same shape as Emby's,
-        # despite this module's old docstring) — feeds the same path
-        # into Jellyfin's library monitor that real-time-monitor's
-        # inotify watcher would post. Per-file, no global scan, no
-        # cooldown needed.
-        if remote_path:
-            try:
-                response = self._request(
-                    "POST",
-                    "/Library/Media/Updated",
-                    json_body={"Updates": [{"Path": remote_path, "UpdateType": "Created"}]},
-                )
-                response.raise_for_status()
+            elif resp.status_code == 404:
                 logger.debug(
-                    "Jellyfin /Library/Media/Updated nudged scan for {}",
-                    remote_path,
+                    "Media Preview Bridge plugin not installed on Jellyfin {!r} — "
+                    "trickplay will be picked up by the next library scan instead.",
+                    self.name,
                 )
-                return
-            except Exception as exc:
+            else:
                 logger.debug(
-                    "Jellyfin /Library/Media/Updated failed for {}: {} — falling back to /Library/Refresh",
-                    remote_path,
-                    exc,
+                    "Media Preview Bridge plugin returned HTTP {} for {}: {}",
+                    resp.status_code,
+                    item_id,
+                    resp.text[:200] if resp.text else "",
                 )
+        except Exception as exc:
+            logger.debug(
+                "Media Preview Bridge plugin call failed for {}: {}",
+                item_id,
+                exc,
+            )
 
-        # 4. Last-resort full scan. Rate-limited because a webhook
-        # burst (e.g. Sonarr season-pack import) would otherwise trigger
-        # one full library scan per file — pins Jellyfin for minutes
-        # and quickly outpaces what a real scan can cover.
+        # 2. Standard metadata refresh (separate concern from trickplay).
+        try:
+            response = self._request("POST", f"/Items/{item_id}/Refresh")
+            response.raise_for_status()
+            return
+        except Exception as exc:
+            logger.debug("Jellyfin per-item refresh failed for {}: {}", item_id, exc)
+
+        self._maybe_trigger_full_refresh()
+
+    def _maybe_trigger_full_refresh(self) -> None:
+        """Last-resort rate-limited full ``/Library/Refresh``.
+
+        Without rate-limiting, a webhook burst (Sonarr season-pack
+        import) would trigger one full library scan per file — pins
+        Jellyfin for minutes and outpaces what a real scan can cover.
+        """
         with self._full_refresh_lock:
             now = time.monotonic()
             elapsed = now - self._last_full_refresh_at

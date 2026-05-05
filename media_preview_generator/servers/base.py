@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from loguru import logger
+
 
 class ServerType(str, Enum):
     """Enumeration of supported media server types."""
@@ -253,33 +255,113 @@ class MediaServer(ABC):
         the dispatcher can canonicalise.
         """
 
+    @property
+    def path_mappings(self) -> list[dict[str, Any]]:
+        """Per-server path mappings used to translate canonical paths
+        into server-view paths during resolve / refresh fan-out.
+
+        Subclasses backed by a :class:`ServerConfig` inherit the
+        default, which reads ``self._config.path_mappings``. Stub
+        servers used in tests can override directly.
+        """
+        cfg = getattr(self, "_config", None)
+        return getattr(cfg, "path_mappings", None) or []
+
     def resolve_remote_path_to_item_id(self, remote_path: str) -> str | None:
         """Inverse of :meth:`resolve_item_to_remote_path`.
 
-        Given a server-side absolute path, return that server's item id
-        (Plex ratingKey, Emby/Jellyfin ItemId), or ``None`` when no
-        matching item exists. Used by the secondary-publisher fan-out
-        from the legacy single-Plex scan path: when a scheduled scan
-        produces a file at ``/data/movies/Foo.mkv``, this helper lets
-        us populate the ``item_id_by_server`` hint for the Jellyfin
-        publisher (whose manifest is keyed by item id) without waiting
-        for a Jellyfin webhook to fire.
+        Given a canonical absolute path, walk every server-view
+        candidate produced by ``expand_path_mapping_candidates`` (which
+        bidirectionally expands the path through the server's
+        ``path_mappings``) and return the first non-None hit from
+        :meth:`_resolve_one_path`. Returns ``None`` when no candidate
+        resolves — the dispatcher then skips publishers that need an
+        item id.
 
-        Default implementation returns ``None`` — the dispatcher then
-        skips publishers that need an item id. Concrete subclasses
-        override when their API supports a reverse lookup.
+        This loop is the single source of truth for path-mapping
+        translation during reverse lookup; subclasses implement only
+        the per-path API call in :meth:`_resolve_one_path`.
         """
-        del remote_path  # unused in base; override
+        if not remote_path:
+            return None
+        from ..config.paths import expand_path_mapping_candidates
+
+        for candidate in expand_path_mapping_candidates(remote_path, self.path_mappings):
+            item_id = self._resolve_one_path(candidate)
+            if item_id is not None:
+                return item_id
         return None
 
-    @abstractmethod
-    def trigger_refresh(self, *, item_id: str | None, remote_path: str | None) -> None:
-        """Notify the server that media or sidecar files changed.
+    def _resolve_one_path(self, server_view_path: str) -> str | None:
+        """Subclass hook: server-view path → item id, or ``None`` on miss.
 
-        Implementations should accept either an item id or a path (whichever
-        the vendor's API supports more naturally) and silently no-op when the
-        target isn't yet known to the server.
+        Default returns ``None``. Subclasses override with their
+        vendor-specific per-path lookup (Plex section walk by
+        basename, Emby ``Path=<exact>`` filter, Jellyfin
+        ``MediaPreviewBridge/ResolvePath``) — the base class loops
+        candidates so each subclass only has to handle a single
+        already-translated path.
         """
+        del server_view_path
+        return None
+
+    def trigger_refresh(self, *, item_id: str | None, remote_path: str | None) -> None:
+        """Notify the server about media or sidecar changes.
+
+        For path-based scan-nudges, fires :meth:`_trigger_path_refresh`
+        once per mapped candidate. Multi-disk installs that map a
+        single canonical root onto multiple server-view mounts get one
+        nudge per mount — Plex has done this since the targeted-scan
+        feature shipped, and the unified path here means Emby and
+        Jellyfin inherit the same behaviour.
+
+        For item-based metadata refresh, fires
+        :meth:`_trigger_item_refresh` once. Both hooks are best-effort:
+        per-candidate exceptions are swallowed and logged so a single
+        transient HTTP failure can't suppress the rest of the fan-out.
+        """
+        if remote_path:
+            from ..config.paths import expand_path_mapping_candidates
+
+            for candidate in expand_path_mapping_candidates(remote_path, self.path_mappings):
+                try:
+                    self._trigger_path_refresh(candidate)
+                except Exception as exc:
+                    logger.debug(
+                        "Scan-nudge failed on {} for {}: {}",
+                        self.name,
+                        candidate,
+                        exc,
+                    )
+        if item_id:
+            try:
+                self._trigger_item_refresh(item_id)
+            except Exception as exc:
+                logger.debug(
+                    "Item refresh failed on {} for item {}: {}",
+                    self.name,
+                    item_id,
+                    exc,
+                )
+
+    def _trigger_path_refresh(self, server_view_path: str) -> None:
+        """Subclass hook: nudge the server to scan a single path.
+
+        Default is a no-op. Subclasses override with their
+        vendor-specific scan-nudge call (Plex
+        ``/library/sections/{key}/refresh?path=…``, Emby/Jellyfin
+        ``/Library/Media/Updated``).
+        """
+        del server_view_path
+
+    def _trigger_item_refresh(self, item_id: str) -> None:
+        """Subclass hook: refresh metadata for a single item id.
+
+        Default is a no-op. Subclasses override with the vendor's
+        per-item refresh call (Emby/Jellyfin ``/Items/{id}/Refresh``;
+        Plex has no equivalent and inherits the default).
+        """
+        del item_id
 
     @abstractmethod
     def parse_webhook(self, payload: dict[str, Any] | bytes, headers: dict[str, str]) -> WebhookEvent | None:

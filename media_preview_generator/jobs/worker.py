@@ -371,7 +371,12 @@ class Worker:
                 media_title=self.media_title,
                 canonical_path=item.canonical_path,
             )
-            ctx_logger.info("{} started: {}", self.display_name, display_name)
+            # "Picked up" rather than "started" — this fires when the worker
+            # thread RECEIVES the assignment, before any ownership check, cache
+            # check, or FFmpeg invocation. The actual encoding-start log lives
+            # at multi_server.py:980 ("FFmpeg start: server=... gpu=..."); this
+            # one only signals the worker is now responsible for the item.
+            ctx_logger.info("{} picked up: {}", self.display_name, display_name)
 
             def _record_outcome(status: MultiServerStatus) -> ProcessingResult:
                 # MultiServerStatus → ProcessingResult mapping so per-job

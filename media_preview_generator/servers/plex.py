@@ -766,31 +766,37 @@ class PlexServer(MediaServer):
                     return str(file_path)
         return None
 
-    def resolve_remote_path_to_item_id(self, remote_path: str) -> str | None:
-        """Return the Plex ratingKey for the file at ``remote_path``.
+    def _resolve_one_path(self, server_view_path: str) -> str | None:
+        """Return the Plex ratingKey for the file at ``server_view_path``.
 
-        Walks every enabled library section and searches for an item
-        whose first MediaPart's ``file`` ends with the basename and
-        trailing parent dir of ``remote_path``. Used by the dispatcher
-        when a path-based webhook (Sonarr/Radarr) fires and the
-        :class:`PlexBundleAdapter` needs an item id to look up the
-        bundle hash.
+        Uses Plex's per-section ``file=<basename>`` filter
+        (``/library/sections/{key}/all?file=<basename>``) — an indexed
+        equality lookup against MediaPart.file, sub-second on libraries
+        of any size. The legacy ``section.all()`` walk this replaced
+        burned 30-90s on large libraries because it streamed every
+        item's metadata just to filter client-side.
 
-        Returns ``None`` when no match exists or the API call fails;
-        the dispatcher then routes the publisher to the slow-backoff
-        retry queue (the file may not yet be indexed).
+        Verifies via the trailing two path components (parent dir +
+        basename) so two unrelated files with the same basename don't
+        collide. Returns ``None`` when no match exists or the API call
+        fails; the dispatcher then routes the publisher to the
+        slow-backoff retry queue (the file may not yet be indexed).
+        The base class :meth:`MediaServer.resolve_remote_path_to_item_id`
+        loops mapped candidates through this hook so callers can pass
+        canonical paths.
         """
         import os as _os
+        import urllib.parse
 
         from ..plex_client import retry_plex_call
 
-        if not remote_path:
+        if not server_view_path:
             return None
 
-        basename = _os.path.basename(remote_path)
+        basename = _os.path.basename(server_view_path)
         if not basename:
             return None
-        target_tail = "/".join(remote_path.rstrip("/").split("/")[-2:])
+        target_tail = "/".join(server_view_path.rstrip("/").split("/")[-2:]).replace("\\", "/")
 
         try:
             plex = self._connect()
@@ -799,56 +805,52 @@ class PlexServer(MediaServer):
             logger.debug("Plex reverse-lookup: section enumeration failed: {}", exc)
             return None
 
-        # Search by basename within each section. plexapi's search is
-        # by title/keyword, not filename, so we iterate all() and
-        # match on the part path. Scales with library size, but for
-        # the dispatcher's use this fires once per webhook, and
-        # ratingKey caching upstream means the cost is bounded.
         for section in sections:
+            section_key = getattr(section, "key", None)
+            if section_key is None:
+                continue
+            ekey = f"/library/sections/{section_key}/all?file={urllib.parse.quote(basename)}"
             try:
-                items = retry_plex_call(section.all)
+                items = retry_plex_call(plex.fetchItems, ekey)
             except Exception as exc:
-                logger.debug("Plex reverse-lookup: section.all() failed for {}: {}", section, exc)
+                logger.debug(
+                    "Plex reverse-lookup: file= query failed for {!r} in section {}: {}",
+                    basename,
+                    section_key,
+                    exc,
+                )
                 continue
             for item in items:
                 for media in getattr(item, "media", None) or []:
                     for part in getattr(media, "parts", None) or []:
-                        file_path = str(getattr(part, "file", None) or "")
+                        file_path = str(getattr(part, "file", None) or "").replace("\\", "/")
                         if not file_path:
                             continue
-                        if _os.path.basename(file_path) == basename and file_path.replace("\\", "/").endswith(
-                            target_tail
-                        ):
+                        if _os.path.basename(file_path) == basename and file_path.endswith(target_tail):
                             rating_key = getattr(item, "ratingKey", None)
                             if rating_key is not None:
                                 return str(rating_key)
         return None
 
-    def trigger_refresh(self, *, item_id: str | None, remote_path: str | None) -> None:
-        """Trigger a partial Plex library scan for ``remote_path``.
+    def _trigger_path_refresh(self, server_view_path: str) -> None:
+        """Trigger a partial Plex library scan for one server-view path.
 
-        Plex's targeted-scan endpoint accepts a folder path within a library
-        section, so we delegate to the existing
-        :func:`plex_client.trigger_plex_partial_scan` helper. Item-id-only
-        refresh is not natively supported; callers should pass a path when
-        they have one.
+        Plex's targeted-scan endpoint accepts a folder path within a
+        library section. We pass ``path_mappings=None`` so the helper
+        does not re-expand candidates — the base class
+        :meth:`MediaServer.trigger_refresh` has already looped every
+        mapped candidate through this hook.
         """
-        if not remote_path:
-            return
         from ..plex_client import trigger_plex_partial_scan
 
-        path_mappings = getattr(self._config, "path_mappings", None) or []
-        try:
-            trigger_plex_partial_scan(
-                plex_url=self._config.plex_url,
-                plex_token=self._config.plex_token,
-                unresolved_paths=[remote_path],
-                path_mappings=path_mappings,
-                verify_ssl=bool(getattr(self._config, "plex_verify_ssl", True)),
-                server_display_name=getattr(self._config, "server_display_name", None) or self.name,
-            )
-        except Exception as exc:
-            logger.debug("Plex partial scan trigger failed for {}: {}", remote_path, exc)
+        trigger_plex_partial_scan(
+            plex_url=self._config.plex_url,
+            plex_token=self._config.plex_token,
+            unresolved_paths=[server_view_path],
+            path_mappings=None,
+            verify_ssl=bool(getattr(self._config, "plex_verify_ssl", True)),
+            server_display_name=getattr(self._config, "server_display_name", None) or self.name,
+        )
 
     def get_bundle_metadata(self, item_id: str) -> list[tuple[str, str]]:
         """Return ``(bundle_hash, remote_path)`` for every MediaPart of an item.

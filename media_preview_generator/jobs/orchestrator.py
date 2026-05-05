@@ -12,9 +12,9 @@ import time
 
 from loguru import logger
 
-from ..plex_client import get_media_items_by_paths, plex_server
+from ..plex_client import plex_server
 from ..processing.generator import ProcessingResult, clear_failures, log_failure_summary
-from ..servers.ownership import apply_path_mappings
+from ..servers.ownership import find_owning_servers
 from .worker import WorkerPool
 
 
@@ -1253,244 +1253,116 @@ def _run_webhook_paths_phase(
     totals: dict,
     aggregate_outcome: dict,
 ) -> dict:
-    """Resolve webhook paths via Plex, dispatch the resolved items, and run the K4 fallback.
+    """Dispatch every webhook path through the unified peer-equal fan-out.
 
     Mutates ``totals`` (keys: ``processed``, ``successful``, ``failed``,
     ``cancelled``) and ``aggregate_outcome`` in place so the caller can
     keep accumulating across phases. Returns the ``webhook_resolution``
     dict that becomes part of the job's return_data.
 
-    The K4 fallback dispatches any path Plex couldn't claim through the
-    multi-server registry so Emby/Jellyfin webhooks resolve via their own
-    APIs instead of dying at the Plex resolver. Only fires when at least
-    one non-Plex server is configured AND the server_id pin (if any)
-    isn't a Plex server itself.
+    Architecture: every webhook path is a :class:`ProcessableItem` and
+    runs through ``dispatch_items`` → ``process_canonical_path``. That
+    worker handles per-server ownership resolution + parallel fan-out
+    so Plex, Emby, and Jellyfin all publish for any path they own.
+    There is no Plex-first stage, no fallback, and no K4: every server
+    is a peer. Paths owned by no enabled server fast-skip here so a
+    worker thread never gets handed a path it can't process.
+
+    Vendor-webhook hints (Plex/Emby/Jellyfin native plugins that
+    already named the item id) flow through unchanged via
+    ``ProcessableItem.item_id_by_server`` so the relevant adapter
+    skips a slow reverse-lookup. The dispatcher's lazy
+    ``_make_item_id_resolver`` handles the no-hint case per-server.
     """
-    # Pre-resolved short-circuit: skip Plex resolution when EITHER
-    # (a) the inbound vendor payload supplied ``{server_id: item_id}`` hints
-    #     (Plex/Emby/Jellyfin native webhooks already named the item), OR
-    # (b) Plex isn't configured at all (Emby/Jellyfin-only install — no Plex
-    #     to resolve through; the multi-server registry will find owners).
-    # Both routes build ProcessableItems and run them through the same
-    # ``dispatch_items`` worker pool the Plex-resolved path uses, so the
-    # job gets real GPU/CPU worker rows + parallelism instead of running
-    # synchronously on the orchestrator thread.
-    hints = getattr(config, "webhook_item_id_hints", None) or {}
-    no_plex = plex is None or not (config.plex_url and config.plex_token)
-    if hints or no_plex:
-        from ..processing.types import ProcessableItem as _PI
+    from ..processing.types import ProcessableItem as _PI
 
-        path_count = len(config.webhook_paths or [])
-        if progress_callback:
-            label = "pre-resolved" if hints else "vendor"
-            progress_callback(0, path_count, f"Dispatching {path_count} {label} path(s)…")
-        _log_webhook_owning_servers(config, config.webhook_paths)
-
-        webhook_items: list[_PI] = []
-        for path in config.webhook_paths or []:
-            per_path = hints.get(path) or {}
-            # Server_id picks the originating vendor when known; empty
-            # otherwise so process_canonical_path walks every owning
-            # server. Hint dicts always have one entry today (vendor
-            # webhooks carry exactly one server hint), but if a future
-            # caller passes multiple, dict-insertion order picks one and
-            # we log a debug line so it's traceable.
-            if len(per_path) > 1:
-                logger.debug(
-                    "ProcessableItem for {} has {} hint server(s); using first ({}). "
-                    "Other hints still flow into item_id_by_server.",
-                    path,
-                    len(per_path),
-                    next(iter(per_path)),
-                )
-            server_id = next(iter(per_path), "")
-            webhook_items.append(
-                _PI(
-                    canonical_path=path,
-                    server_id=server_id,
-                    item_id_by_server=dict(per_path),
-                    title=os.path.basename(path.rstrip("/")) or path,
-                    library_id=None,
-                )
-            )
-
-        if not webhook_items:
-            logger.info("Webhook phase short-circuit fired but produced no items — skipping dispatch.")
-            unresolved: list[str] = []
-        else:
-            result = dispatch_items(webhook_items, "Webhook Targets")
-            totals["successful"] += result["completed"]
-            totals["failed"] += result["failed"]
-            totals["processed"] += result["completed"] + result["failed"]
-            totals["cancelled"] = totals["cancelled"] or result["cancelled"]
-            for k, v in (result.get("outcome") or {}).items():
-                aggregate_outcome[k] = aggregate_outcome.get(k, 0) + v
-            # Surface failed paths so the retry queue's
-            # ``unresolved_paths + not_found_on_disk`` decision logic can
-            # schedule a retry. ``dispatch_items`` doesn't tell us WHICH
-            # paths failed — only the aggregate count — so:
-            #
-            # * single-path batch (vendor webhooks today) → unambiguous
-            # * multi-path batch with N failures → mark exactly N (the
-            #   identity is unknowable but the COUNT is correct, so the
-            #   retry job picks up N retries which is right; .meta on the
-            #   already-succeeded ones short-circuits cheaply)
-            #
-            # Audit H2: previously marked ALL paths on any failure, which
-            # over-triggered retries + falsely flagged successful paths
-            # as "unresolved" in the file-results UI.
-            failed_count = result.get("failed", 0)
-            if failed_count and webhook_items:
-                unresolved = [item.canonical_path for item in webhook_items[:failed_count]]
-            else:
-                unresolved = []
-
-        # Audit H3: vendor webhooks took the hint short-circuit, so no Plex
-        # resolution ever happened — flag the resolution shape with a label
-        # the job_runner can use to write a correct file_result reason
-        # ("Not found by Plex" vs "Not found by Emby/Jellyfin").
+    paths = list(config.webhook_paths or [])
+    total_paths = len(paths)
+    if not paths:
         return {
-            "unresolved_paths": unresolved,
+            "unresolved_paths": [],
             "skipped_paths": [],
-            "resolved_count": len(config.webhook_paths or []) - len(unresolved),
-            "total_paths": len(config.webhook_paths or []),
+            "resolved_count": 0,
+            "total_paths": 0,
             "path_hints": [],
-            "resolution_source": "vendor" if hints else "no_plex",
         }
 
     if progress_callback:
-        path_count = len(config.webhook_paths)
-        progress_callback(0, 0, f"Looking up {path_count} file path(s) in Plex — this can take a while...")
-    _log_webhook_owning_servers(config, config.webhook_paths)
-    webhook_resolution = get_media_items_by_paths(plex, config, config.webhook_paths)
-    return_payload = {
-        "unresolved_paths": list(webhook_resolution.unresolved_paths),
-        "skipped_paths": list(webhook_resolution.skipped_paths),
-        "resolved_count": len(webhook_resolution.items),
-        "total_paths": len(config.webhook_paths),
-        "path_hints": list(webhook_resolution.path_hints),
-    }
+        progress_callback(0, total_paths, f"Resolving {total_paths} webhook path(s) across configured servers…")
+    _log_webhook_owning_servers(config, paths)
 
-    if not webhook_resolution.items:
-        logger.warning(
-            "Webhook arrived with {} file path(s) but Plex doesn't have any of them indexed yet — "
-            "nothing to process. The retry queue will keep checking; if this persists, verify "
-            "Plex's library scan is finishing and the path mappings under Settings line up between "
-            "the source (e.g. Sonarr/Radarr) and Plex.",
-            len(config.webhook_paths or []),
+    hints = getattr(config, "webhook_item_id_hints", None) or {}
+    server_configs = list(registry.configs())
+
+    webhook_items: list[_PI] = []
+    no_owners: list[str] = []
+    for path in paths:
+        # Fast skip for paths no enabled server claims. Without this
+        # gate the path would still hit a worker thread, log
+        # "Worker N picked up", then bail with NO_OWNERS milliseconds
+        # later — confusing UI noise that has no useful side-effect.
+        owners = find_owning_servers(path, server_configs)
+        if not owners:
+            no_owners.append(path)
+            continue
+        per_path = hints.get(path) or {}
+        # Hint dicts always have one entry today (vendor webhooks carry
+        # exactly one server hint); a future caller passing multiple
+        # gets dict-insertion order with a debug line so it's traceable.
+        if len(per_path) > 1:
+            logger.debug(
+                "ProcessableItem for {} has {} hint server(s); using first ({}). "
+                "Other hints still flow into item_id_by_server.",
+                path,
+                len(per_path),
+                next(iter(per_path)),
+            )
+        server_id = next(iter(per_path), "")
+        webhook_items.append(
+            _PI(
+                canonical_path=path,
+                server_id=server_id,
+                item_id_by_server=dict(per_path),
+                title=os.path.basename(path.rstrip("/")) or path,
+                library_id=None,
+            )
         )
-    else:
-        # Convert resolved Plex matches into ProcessableItems with canonical
-        # paths already filled in. process_canonical_path then publishes via
-        # every owning server's adapter (Plex BIF plus any Emby/Jellyfin
-        # sibling that owns the same path).
-        from ..processing.types import ProcessableItem as _PI
-        from ..servers.base import ServerType as _ST
 
-        plex_cfg_for_webhook = next((c for c in registry.configs() if c.type is _ST.PLEX), None)
-        webhook_items: list[_PI] = []
-        for key, locations, title, _media_type in webhook_resolution.items_with_locations:
-            if not locations:
-                continue
-            remote_path = str(locations[0])
-            canonicals: list[str] = []
-            if plex_cfg_for_webhook is not None:
-                canonicals = apply_path_mappings(remote_path, plex_cfg_for_webhook.path_mappings or [])
-            if not canonicals:
-                canonicals = [remote_path]
-            canonical = canonicals[0]
-            webhook_items.append(
-                _PI(
-                    canonical_path=canonical,
-                    server_id=(plex_cfg_for_webhook.id if plex_cfg_for_webhook else ""),
-                    item_id_by_server=({plex_cfg_for_webhook.id: key} if (plex_cfg_for_webhook and key) else {}),
-                    title=title or canonical,
-                    library_id=None,
-                )
-            )
+    unresolved: list[str] = list(no_owners)
 
-        if not webhook_items:
-            logger.info(
-                "Webhook resolved {} item(s) but no canonical paths were derivable — skipping dispatch.",
-                len(webhook_resolution.items),
-            )
-        else:
-            result = dispatch_items(webhook_items, "Webhook Targets")
-            totals["successful"] += result["completed"]
-            totals["failed"] += result["failed"]
-            totals["processed"] += result["completed"] + result["failed"]
-            totals["cancelled"] = totals["cancelled"] or result["cancelled"]
-            outcome = result.get("outcome") or {}
-            for k, v in outcome.items():
-                aggregate_outcome[k] = aggregate_outcome.get(k, 0) + v
+    if no_owners:
+        logger.info(
+            "Webhook arrived with {} path(s) that no enabled server claims — fast-skipping "
+            "(no worker pickup, no retry). Verify path mappings under Settings line up with "
+            "what each server reports for its libraries.",
+            len(no_owners),
+        )
 
-    # K4 fallback for paths Plex couldn't claim.
-    unresolved = list(webhook_resolution.unresolved_paths or [])
-    if unresolved:
-        try:
-            from ..web.settings_manager import get_settings_manager
+    if webhook_items:
+        result = dispatch_items(webhook_items, "Webhook Targets")
+        totals["successful"] += result["completed"]
+        totals["failed"] += result["failed"]
+        totals["processed"] += result["completed"] + result["failed"]
+        totals["cancelled"] = totals["cancelled"] or result["cancelled"]
+        for k, v in (result.get("outcome") or {}).items():
+            aggregate_outcome[k] = aggregate_outcome.get(k, 0) + v
+        # ``dispatch_items`` doesn't tell us WHICH paths failed — only
+        # the aggregate count. Single-path batch (the dominant vendor-
+        # webhook case) is unambiguous; multi-path batches mark exactly
+        # N (count is correct, identity is unknowable, retries on
+        # already-succeeded paths short-circuit cheaply via .meta).
+        # See audit H2.
+        failed_count = result.get("failed", 0)
+        if failed_count:
+            unresolved.extend(item.canonical_path for item in webhook_items[:failed_count])
 
-            raw = get_settings_manager().get("media_servers") or []
-            has_non_plex = any(
-                isinstance(e, dict) and (e.get("type") or "").lower() in ("emby", "jellyfin") and e.get("enabled", True)
-                for e in raw
-            )
-        except Exception:
-            raw = []
-            has_non_plex = False
-        pinned = getattr(config, "server_id_filter", None)
-        pinned_entry = None
-        if pinned and isinstance(pinned, str):
-            try:
-                pinned_entry = next((e for e in raw if isinstance(e, dict) and e.get("id") == pinned), None)
-            except Exception:
-                pinned_entry = None
-        # K4 cascades to Emby/Jellyfin only when the user hasn't pinned to
-        # Plex — pinning to Plex means "publish to Plex only" and we must
-        # not silently fall through to a sibling server (audit M4). Three
-        # safe cases: not pinned at all, pinned to Emby/Jellyfin, or
-        # pinned to a server id that doesn't resolve (treat as unpinned).
-        pinned_is_plex = bool(pinned_entry and (pinned_entry.get("type") or "").lower() == "plex")
-        if has_non_plex and not pinned_is_plex:
-            logger.info(
-                "K4 fallback: {} path(s) unresolved by Plex — dispatching through multi-server registry "
-                "for Emby/Jellyfin owners.",
-                len(unresolved),
-            )
-            try:
-                # Build ProcessableItems and run through dispatch_items
-                # so the K4 fallback uses the same worker pool as everything
-                # else — gets GPU, parallelism, and worker UI rows. The old
-                # ``_dispatch_webhook_paths_multi_server`` direct-call path
-                # ran synchronously on the orchestrator thread and produced
-                # zero workers in the UI (audit #5).
-                from ..processing.types import ProcessableItem as _PI
-
-                k4_items = [
-                    _PI(
-                        canonical_path=p,
-                        server_id="",
-                        item_id_by_server={},
-                        title=os.path.basename(p.rstrip("/")) or p,
-                        library_id=None,
-                    )
-                    for p in unresolved
-                ]
-                k4_result = dispatch_items(k4_items, "Webhook Targets (K4)")
-                totals["successful"] += k4_result.get("completed", 0)
-                totals["failed"] += k4_result.get("failed", 0)
-                totals["processed"] += k4_result.get("completed", 0) + k4_result.get("failed", 0)
-                totals["cancelled"] = totals["cancelled"] or k4_result.get("cancelled", False)
-                fallback_counts = k4_result.get("outcome") or {}
-                for k, v in (fallback_counts or {}).items():
-                    aggregate_outcome[k] = aggregate_outcome.get(k, 0) + v
-            except Exception:
-                logger.warning(
-                    "K4 multi-server fallback failed. The unresolved paths will go through the retry queue as usual.",
-                    exc_info=True,
-                )
-
-    return return_payload
+    return {
+        "unresolved_paths": unresolved,
+        "skipped_paths": [],
+        "resolved_count": total_paths - len(unresolved),
+        "total_paths": total_paths,
+        "path_hints": [],
+    }
 
 
 def _run_plex_full_scan_phase(

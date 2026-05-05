@@ -546,31 +546,26 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                     total_paths = resolution.get("total_paths", 0)
                     resolved_count = resolution.get("resolved_count", 0)
                     path_hints = resolution.get("path_hints") or []
-                    # ``resolution_source`` is set by ``_run_webhook_paths_phase``
-                    # to indicate whether Plex was consulted or the hint
-                    # short-circuit / no-Plex path was used. Drives the
-                    # file_result label below so an Emby/Jellyfin failure
-                    # doesn't show "Not found in Plex". Audit H3.
-                    resolution_source = resolution.get("resolution_source") or "plex"
 
                     if path_hints:
                         for hint in path_hints:
                             job_manager.add_log(job_id, f"INFO - {hint}")
 
+                    # Unified-dispatch payload: the orchestrator already
+                    # walked every configured server's ownership and
+                    # fanned out per-server publishers. Anything left in
+                    # ``unresolved_paths`` is either (a) owned by no
+                    # enabled server, or (b) owned but every publisher
+                    # failed. Per-server outcome counters in ``outcome``
+                    # carry the precise breakdown \u2014 this row is the
+                    # job-level summary line.
                     unresolved_detail = (
                         path_hints[0]
                         if path_hints
                         else "file may not be scanned yet, or path mappings in Settings may need adjusting"
                     )
-                    if resolution_source == "vendor":
-                        unresolved_outcome = "unresolved_vendor"
-                        unresolved_label = "Not found on the originating vendor server"
-                    elif resolution_source == "no_plex":
-                        unresolved_outcome = "unresolved_vendor"
-                        unresolved_label = "Not found on any configured media server"
-                    else:
-                        unresolved_outcome = "unresolved_plex"
-                        unresolved_label = "Not found in Plex"
+                    unresolved_outcome = "unresolved_vendor"
+                    unresolved_label = "Not found on any configured media server"
                     for upath in unresolved_paths:
                         job_manager.record_file_result(
                             job_id,
@@ -715,31 +710,15 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                         _start_job_async(rj.id, retry_async_config)
                         return rj.id
 
-                    if all_scan_paths and not (result.get("cancelled") or status_value == "cancelled"):
-                        try:
-                            from ...plex_client import trigger_plex_partial_scan
-
-                            scan_results = trigger_plex_partial_scan(
-                                plex_url=config.plex_url,
-                                plex_token=config.plex_token,
-                                unresolved_paths=all_scan_paths,
-                                path_mappings=config.path_mappings,
-                                verify_ssl=config.plex_verify_ssl,
-                                server_display_name=getattr(config, "server_display_name", None),
-                            )
-                            if scan_results:
-                                parts = []
-                                if unresolved_paths:
-                                    parts.append(f"{len(unresolved_paths)} unresolved")
-                                if not_found_on_disk:
-                                    parts.append(f"{len(not_found_on_disk)} stale")
-                                detail = " + ".join(parts) or "affected"
-                                job_manager.add_log(
-                                    job_id,
-                                    f"INFO - Triggered Plex scan for {len(scan_results)} path(s) ({detail})",
-                                )
-                        except Exception as scan_exc:  # noqa: BLE001
-                            logger.debug("Plex partial scan attempt failed (non-fatal): {}", scan_exc)
+                    # Per-server scan-nudges already fired from
+                    # ``multi_server.py`` for every publisher whose
+                    # SKIPPED_NOT_IN_LIBRARY branch ran (Plex's partial
+                    # scan, Emby's /Library/Media/Updated, Jellyfin's
+                    # equivalent). The job-level Plex partial-scan call
+                    # that lived here pre-unification is redundant now
+                    # that every server's adapter triggers its own
+                    # scan-nudge for unresolved paths.
+                    del all_scan_paths
 
                     spawned_retry_id = None
                     if retry_paths and not (result.get("cancelled") or status_value == "cancelled"):

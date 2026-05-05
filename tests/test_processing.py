@@ -181,12 +181,11 @@ class TestMultiServerGuards:
         assert "outcome" in result
 
     def test_no_plex_with_webhook_paths_dispatches_via_worker_pool(self, tmp_path):
-        """No-Plex install routes webhook_paths through the worker pool
-        (audit fix #1). The legacy direct-call to
-        ``_dispatch_webhook_paths_multi_server`` ran synchronously on the
-        orchestrator thread — no GPU, no worker UI rows. The fix makes it
-        fall through to ``_run_webhook_paths_phase`` which builds
-        ProcessableItems and runs them through ``WorkerPool``.
+        """No-Plex install routes webhook_paths through the worker pool.
+
+        Confirms the unified webhook phase builds ProcessableItems and
+        runs them through ``WorkerPool`` for any path an enabled
+        non-Plex server claims (Emby in this case).
         """
         config = _make_config(
             tmp_path,
@@ -200,7 +199,19 @@ class TestMultiServerGuards:
         ):
             MockPool.return_value.process_items_headless.return_value = _pool_result(completed=1)
             mock_sm.return_value.get.return_value = [
-                {"id": "emby-1", "type": "emby", "enabled": True, "libraries": []},
+                {
+                    "id": "emby-1",
+                    "type": "emby",
+                    "enabled": True,
+                    "libraries": [
+                        {
+                            "id": "1",
+                            "name": "Movies",
+                            "remote_paths": ["/data/movies"],
+                            "enabled": True,
+                        }
+                    ],
+                },
             ]
             result = run_processing(config, selected_gpus=[])
 
@@ -213,77 +224,70 @@ class TestMultiServerGuards:
         assert result is not None
         assert "outcome" in result
 
-    def test_k4_unresolved_paths_fall_back_to_worker_pool_when_emby_present(self, tmp_path):
-        """K4: when Plex is configured AND has at least one Emby/Jellyfin
-        sibling, paths Plex couldn't resolve flow through the worker
-        pool (audit fix #5). The legacy direct-call to
-        ``_dispatch_webhook_paths_multi_server`` ran synchronously on the
-        orchestrator thread — no GPU, no worker UI rows. The fix builds
-        ProcessableItems for the unresolved subset and runs them through
-        ``WorkerPool``.
+    def test_webhook_dispatches_to_all_owning_servers(self, tmp_path):
+        """Unified peer-equal dispatch: every webhook path runs through
+        a single ``WorkerPool`` call. ``process_canonical_path`` then
+        fans out to every owning server (Plex, Emby, Jellyfin) in
+        parallel — the orchestrator no longer pre-resolves through Plex
+        and falls back to a "K4" stage for the rest.
         """
-        from media_preview_generator.plex_client import WebhookResolutionResult
-
         config = _make_config(
             tmp_path,
             webhook_paths=["/data/a.mkv", "/data/b.mkv", "/data/c.mkv"],
         )
 
-        # Plex resolves only "a.mkv"; b + c are unresolved → K4 fallback
-        # should dispatch only those two through the worker pool.
-        resolution = WebhookResolutionResult(
-            items=[(MagicMock(name="MediaPart-A"), MagicMock())],
-            unresolved_paths=["/data/b.mkv", "/data/c.mkv"],
-            skipped_paths=[],
-            path_hints={},
-        )
-
         with (
-            patch(f"{MODULE}.get_media_items_by_paths", return_value=resolution),
             patch(f"{MODULE}.plex_server"),
             patch(f"{MODULE}.WorkerPool") as MockPool,
             patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
         ):
-            MockPool.return_value.process_items_headless.return_value = _pool_result(completed=1)
+            MockPool.return_value.process_items_headless.return_value = _pool_result(completed=3)
+            # Both servers own /data/* — unified dispatch builds one
+            # ProcessableItem per webhook path and lets process_canonical_path
+            # publish to whichever servers own each path.
             mock_sm.return_value.get.return_value = [
-                {"id": "plex-a", "type": "plex", "enabled": True},
-                {"id": "emby-1", "type": "emby", "enabled": True},
+                {
+                    "id": "plex-a",
+                    "type": "plex",
+                    "enabled": True,
+                    "libraries": [{"id": "1", "name": "Movies", "remote_paths": ["/data"], "enabled": True}],
+                },
+                {
+                    "id": "emby-1",
+                    "type": "emby",
+                    "enabled": True,
+                    "libraries": [{"id": "11", "name": "Movies", "remote_paths": ["/data"], "enabled": True}],
+                },
             ]
             run_processing(config, selected_gpus=[])
 
-        # The K4 fallback call (last one) carries only b + c — not a.
-        # The MagicMock'd Plex resolution may or may not produce a
-        # dispatchable item depending on what its locations look like;
-        # the assertion that matters is that K4 received the right subset.
+        # Exactly one dispatch_items call carrying all three webhook
+        # paths — there's no K4 fallback split.
         all_calls = MockPool.return_value.process_items_headless.call_args_list
-        assert len(all_calls) >= 1, "expected at least one K4 worker-pool dispatch"
-        k4_items = all_calls[-1].args[0]
-        k4_paths = sorted(i.canonical_path for i in k4_items)
-        assert k4_paths == ["/data/b.mkv", "/data/c.mkv"]
+        webhook_calls = [
+            c
+            for c in all_calls
+            if c.args[0]
+            and any(getattr(it, "canonical_path", None) and it.canonical_path.startswith("/data/") for it in c.args[0])
+        ]
+        assert len(webhook_calls) == 1, f"Expected exactly one unified webhook dispatch; got {len(webhook_calls)}"
+        items = webhook_calls[0].args[0]
+        assert sorted(i.canonical_path for i in items) == ["/data/a.mkv", "/data/b.mkv", "/data/c.mkv"]
 
     def test_owning_servers_breadcrumb_logged_before_resolver(self, tmp_path):
-        """Before the resolver runs, an info-level breadcrumb names the
+        """Before dispatch runs, an info-level breadcrumb names the
         owning server(s) for the webhook paths so an operator reading the
         log top-down sees the routing decision before per-server work
         starts. Single-Plex install: the message names Plex.
         """
         from loguru import logger
 
-        from media_preview_generator.plex_client import WebhookResolutionResult
-
         config = _make_config(tmp_path, webhook_paths=["/data_16tb/Movies/x.mkv"])
-        resolution = WebhookResolutionResult(
-            items=[(MagicMock(), MagicMock())],
-            unresolved_paths=[],
-            skipped_paths=[],
-            path_hints={},
-        )
 
         captured: list[str] = []
         sink_id = logger.add(lambda msg: captured.append(str(msg)), level="INFO")
         try:
             with (
-                patch(f"{MODULE}.get_media_items_by_paths", return_value=resolution),
                 patch(f"{MODULE}.plex_server"),
                 patch(f"{MODULE}.WorkerPool") as MockPool,
                 patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
@@ -314,13 +318,13 @@ class TestMultiServerGuards:
 
         assert any("owning server" in line.lower() and "plex" in line.lower() for line in captured), captured
 
-    def test_hint_short_circuit_skips_plex_resolution_when_hints_present(self, tmp_path):
-        """Audit L5 — hint short-circuit doesn't touch Plex.
-
-        When ``Config.webhook_item_id_hints`` is set (vendor webhook), the
-        orchestrator must build ProcessableItems directly from the hints
-        and dispatch without calling ``get_media_items_by_paths`` (the
-        slow Plex resolution roundtrip the hint exists to skip).
+    def test_vendor_hints_propagate_to_processable_items(self, tmp_path):
+        """Vendor-webhook hints (Plex/Emby/Jellyfin native plugin
+        payloads with a known item id) flow through into
+        ``ProcessableItem.item_id_by_server`` so the relevant adapter
+        skips a slow reverse-lookup. The unified dispatch path treats
+        hints as a per-server pre-population, not a Plex-only
+        short-circuit.
         """
         config = _make_config(
             tmp_path,
@@ -329,100 +333,101 @@ class TestMultiServerGuards:
         config.webhook_item_id_hints = {"/data/movies/Foo.mkv": {"plex-1": "k1"}}
 
         with (
-            patch(f"{MODULE}.get_media_items_by_paths") as mock_resolve,
             patch(f"{MODULE}.plex_server"),
             patch(f"{MODULE}.WorkerPool") as MockPool,
             patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
         ):
             MockPool.return_value.process_items_headless.return_value = _pool_result(completed=1)
             mock_sm.return_value.get.return_value = [
-                {"id": "plex-1", "type": "plex", "enabled": True, "libraries": []},
+                {
+                    "id": "plex-1",
+                    "type": "plex",
+                    "enabled": True,
+                    "libraries": [{"id": "1", "name": "Movies", "remote_paths": ["/data/movies"], "enabled": True}],
+                },
             ]
             run_processing(config, selected_gpus=[])
 
-        # Plex resolution must NOT be called — that's the whole point.
-        mock_resolve.assert_not_called()
-        # Worker pool DOES dispatch the path.
         MockPool.return_value.process_items_headless.assert_called_once()
         items = MockPool.return_value.process_items_headless.call_args.args[0]
         assert len(items) == 1
         assert items[0].canonical_path == "/data/movies/Foo.mkv"
         assert items[0].item_id_by_server == {"plex-1": "k1"}
 
-    def test_k4_does_not_cascade_when_pinned_to_plex(self, tmp_path):
-        """Audit M4 — a Plex-pinned webhook must NOT fall through to Emby/Jellyfin
-        K4 fallback when Plex resolution comes up empty. Pinning means
-        "publish to Plex only".
+    def test_webhook_pinned_to_plex_does_not_fan_out(self, tmp_path):
+        """Audit M4 — a Plex-pinned webhook publishes to Plex only.
+        Pinning means "publish to this server only", and the dispatcher
+        carries ``server_id_filter`` through to ``process_canonical_path``
+        so Emby/Jellyfin owners are intentionally excluded.
         """
-        from media_preview_generator.plex_client import WebhookResolutionResult
-
         config = _make_config(tmp_path, webhook_paths=["/data/x.mkv"])
         config.server_id_filter = "plex-a"
-        resolution = WebhookResolutionResult(
-            items=[],
-            unresolved_paths=["/data/x.mkv"],
-            skipped_paths=[],
-            path_hints={},
-        )
 
         with (
-            patch(f"{MODULE}.get_media_items_by_paths", return_value=resolution),
+            patch(f"{MODULE}.plex_server"),
+            patch(f"{MODULE}.WorkerPool") as MockPool,
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+        ):
+            MockPool.return_value.process_items_headless.return_value = _pool_result(completed=1)
+            mock_sm.return_value.get.return_value = [
+                {
+                    "id": "plex-a",
+                    "type": "plex",
+                    "enabled": True,
+                    "libraries": [{"id": "1", "name": "Movies", "remote_paths": ["/data"], "enabled": True}],
+                },
+                {
+                    "id": "emby-1",
+                    "type": "emby",
+                    "enabled": True,
+                    "libraries": [{"id": "11", "name": "Movies", "remote_paths": ["/data"], "enabled": True}],
+                },
+            ]
+            run_processing(config, selected_gpus=[])
+
+        MockPool.return_value.process_items_headless.assert_called_once()
+        items = MockPool.return_value.process_items_headless.call_args.args[0]
+        assert len(items) == 1
+        # ProcessableItem.server_id is empty (no vendor hint) but the
+        # Config.server_id_filter pin propagates separately through to
+        # process_canonical_path (verified via a downstream contract test
+        # in test_jobs.py / test_dispatcher_*).
+
+    def test_webhook_path_no_owners_fast_skips(self, tmp_path):
+        """No enabled server claims the path → orchestrator fast-skips
+        with no worker pickup. Without this gate the path would still hit
+        a worker thread, log "Worker N picked up", then bail with
+        NO_OWNERS milliseconds later (the original abe52ab7 user report).
+        """
+        config = _make_config(tmp_path, webhook_paths=["/data/Sports/Match.mkv"])
+
+        with (
             patch(f"{MODULE}.plex_server"),
             patch(f"{MODULE}.WorkerPool") as MockPool,
             patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
         ):
             MockPool.return_value.process_items_headless.return_value = _pool_result(completed=0)
+            # Plex configured but with /data/Movies — no library claims
+            # /data/Sports/* so the path has no owners.
             mock_sm.return_value.get.return_value = [
-                {"id": "plex-a", "type": "plex", "enabled": True},
-                {"id": "emby-1", "type": "emby", "enabled": True},
+                {
+                    "id": "plex-a",
+                    "type": "plex",
+                    "enabled": True,
+                    "libraries": [{"id": "1", "name": "Movies", "remote_paths": ["/data/Movies"], "enabled": True}],
+                },
             ]
-            run_processing(config, selected_gpus=[])
+            result = run_processing(config, selected_gpus=[])
 
-        # No K4 dispatch for the unresolved path — pin contract held.
+        # No worker dispatch for the unowned path.
         for call in MockPool.return_value.process_items_headless.call_args_list:
             for item in call.args[0]:
-                assert item.canonical_path != "/data/x.mkv", (
-                    "K4 fallback fired despite Plex pin — would silently publish to Emby"
+                assert item.canonical_path != "/data/Sports/Match.mkv", (
+                    "Unowned path was dispatched to a worker — should fast-skip with no pickup."
                 )
-
-    def test_k4_no_fallback_when_only_plex_configured(self, tmp_path):
-        """K4: don't churn — when only Plex is configured, the unresolved
-        paths go to the existing retry queue, not through the worker pool
-        as a fallback."""
-        from media_preview_generator.plex_client import WebhookResolutionResult
-
-        config = _make_config(tmp_path, webhook_paths=["/data/x.mkv"])
-        resolution = WebhookResolutionResult(
-            items=[],
-            unresolved_paths=["/data/x.mkv"],
-            skipped_paths=[],
-            path_hints={},
-        )
-
-        with (
-            patch(f"{MODULE}.get_media_items_by_paths", return_value=resolution),
-            patch(f"{MODULE}.plex_server"),
-            patch(f"{MODULE}.WorkerPool") as MockPool,
-            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
-        ):
-            MockPool.return_value.process_items_headless.return_value = _pool_result(completed=0)
-            # Only Plex configured → no Emby/Jellyfin → K4 fallback should NOT fire.
-            mock_sm.return_value.get.return_value = [
-                {"id": "plex-a", "type": "plex", "enabled": True},
-            ]
-            run_processing(config, selected_gpus=[])
-
-        # No K4 worker-pool dispatch — the resolved (empty) items branch
-        # may still call process_items_headless once for the empty Plex
-        # resolution result, but the K4 fallback for unresolved_paths
-        # must not fire when only Plex is configured.
-        all_calls = MockPool.return_value.process_items_headless.call_args_list
-        for call in all_calls:
-            items_arg = call.args[0]
-            for item in items_arg:
-                assert item.canonical_path != "/data/x.mkv", (
-                    "K4 fallback fired for the unresolved path despite no Emby/Jellyfin sibling"
-                )
+        # Path is reported as unresolved so the file_results UI carries it.
+        resolution = result.get("webhook_resolution") or {}
+        assert "/data/Sports/Match.mkv" in (resolution.get("unresolved_paths") or [])
 
 
 class TestLibraryScanFlow:
@@ -567,73 +572,76 @@ class TestLibraryScanFlow:
 
 
 class TestWebhookFlow:
-    """Tests for the webhook-targeted processing path."""
+    """Tests for the unified webhook-dispatch path."""
 
-    def _webhook_resolution(self, items=None, unresolved=None, skipped=None, path_hints=None):
-        return _webhook_resolution_payload(
-            items=items,
-            unresolved=unresolved,
-            skipped=skipped,
-            path_hints=path_hints,
-        )
+    def _webhook_settings(self, *, server_type="plex", server_id=None, lib_root="/data"):
+        """Build a settings_manager.get('media_servers') stub that owns
+        paths under ``lib_root`` so the unified phase has someone to
+        dispatch to.
+        """
+        return [
+            {
+                "id": server_id or f"{server_type}-1",
+                "type": server_type,
+                "enabled": True,
+                "libraries": [{"id": "1", "name": "Movies", "remote_paths": [lib_root], "enabled": True}],
+            }
+        ]
 
-    def test_webhook_with_resolved_items(self, tmp_path):
-        """Webhook paths that resolve to Plex items are dispatched."""
+    def test_webhook_with_owned_paths_dispatches(self, tmp_path):
+        """Webhook paths owned by an enabled server are dispatched."""
         config = _make_config(tmp_path, webhook_paths=["/data/movie.mkv"])
-        resolved_items = [("k1", "Movie", "movie")]
 
         with (
-            patch(
-                f"{MODULE}.get_media_items_by_paths",
-                return_value=self._webhook_resolution(items=resolved_items, unresolved=["/data/missing.mkv"]),
-            ),
+            patch(f"{MODULE}.plex_server"),
             patch(f"{MODULE}.WorkerPool") as MockPool,
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
         ):
             MockPool.return_value.process_items_headless.return_value = _pool_result(completed=1)
+            mock_sm.return_value.get.return_value = self._webhook_settings()
             result = run_processing(config, selected_gpus=[])
 
         assert result is not None
         assert "webhook_resolution" in result
         assert result["webhook_resolution"]["resolved_count"] == 1
-        assert result["webhook_resolution"]["unresolved_paths"] == ["/data/missing.mkv"]
+        assert result["webhook_resolution"]["unresolved_paths"] == []
         assert result["outcome"]["generated"] == 1
 
-    def test_webhook_no_matches_skips_dispatch(self, tmp_path):
-        """When no webhook paths resolve, no dispatch occurs."""
+    def test_webhook_no_owners_skips_dispatch(self, tmp_path):
+        """When no enabled server owns the webhook path, no dispatch
+        occurs and the path lands in unresolved_paths.
+        """
         config = _make_config(tmp_path, webhook_paths=["/data/no_match.mkv"])
 
         with (
-            patch(
-                f"{MODULE}.get_media_items_by_paths",
-                return_value=self._webhook_resolution(items=[]),
-            ),
+            patch(f"{MODULE}.plex_server"),
             patch(f"{MODULE}.WorkerPool") as MockPool,
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
         ):
+            mock_sm.return_value.get.return_value = self._webhook_settings(lib_root="/somewhere/else")
             result = run_processing(config, selected_gpus=[])
 
         MockPool.return_value.process_items_headless.assert_not_called()
         assert result is not None
         assert result["webhook_resolution"]["resolved_count"] == 0
+        assert result["webhook_resolution"]["unresolved_paths"] == ["/data/no_match.mkv"]
 
     def test_webhook_progress_callback(self, tmp_path):
-        """Progress callback reports pre-resolution stages + dispatch tick."""
+        """Progress callback reports the unified resolution + dispatch tick."""
         config = _make_config(tmp_path, webhook_paths=["/data/movie.mkv"])
-        items = [("k1", "Movie", "movie")]
         progress = MagicMock()
 
         with (
-            patch(
-                f"{MODULE}.get_media_items_by_paths",
-                return_value=self._webhook_resolution(items=items),
-            ),
+            patch(f"{MODULE}.plex_server"),
             patch(f"{MODULE}.WorkerPool") as MockPool,
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
         ):
             MockPool.return_value.process_items_headless.return_value = _pool_result(completed=1)
+            mock_sm.return_value.get.return_value = self._webhook_settings()
             run_processing(config, selected_gpus=[], progress_callback=progress)
 
         messages = [call.args[2] for call in progress.call_args_list if call.args]
-        assert any("Connecting to Plex" in m for m in messages)
-        assert any("Looking up 1 file path" in m for m in messages)
+        assert any("Resolving 1 webhook path" in m for m in messages), messages
         dispatch_calls = [
             call for call in progress.call_args_list if call.args and call.args[1] == 1 and "Starting" in call.args[2]
         ]
