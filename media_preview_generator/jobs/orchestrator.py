@@ -18,8 +18,8 @@ from ..servers.ownership import apply_webhook_prefixes, find_owning_servers
 from .worker import WorkerPool
 
 
-def _find_owners_with_webhook_translation(path: str, server_configs: list) -> list:
-    """Resolve owning servers for a webhook path, applying webhook-prefix translation.
+def _resolve_webhook_path_to_canonical(path: str, server_configs: list) -> tuple[str, list]:
+    """Resolve a webhook-source path to a canonical server-view path + its owners.
 
     Sonarr/Radarr emit paths in their own view (e.g. ``/data/TV Shows/X.mkv``)
     which won't match a server's library ``remote_paths`` (e.g.
@@ -27,30 +27,46 @@ def _find_owners_with_webhook_translation(path: str, server_configs: list) -> li
     ``path_mappings`` ``webhook_prefixes`` list. Calling
     :func:`find_owning_servers` with the raw webhook path silently
     misses every install where the webhook source and the media-
-    server use different mount roots.
+    server use different mount roots — including the downstream
+    ownership check inside ``process_canonical_path``, which uses the
+    canonical path stored on the :class:`ProcessableItem` directly.
 
-    Tries the path as-is first, then every candidate produced by
-    expanding ``webhook_prefixes → local_prefix`` across every
-    server's mappings. De-duplicates per server so a path matching
-    via two webhook prefixes doesn't double-count.
+    Returns ``(canonical_path, matches)``:
+
+    * ``canonical_path`` — the path form to store on the
+      ``ProcessableItem``. The first candidate whose ownership check
+      returns at least one match wins. Falls back to the raw input
+      when nothing matches (the caller fast-skips that case).
+    * ``matches`` — the deduplicated list of
+      :class:`~servers.ownership.OwnershipMatch` for that canonical
+      path.
+
+    Tries the raw path first (the dominant case for installs without
+    webhook_prefixes mappings), then every translated candidate.
     """
     if not path or not server_configs:
-        return []
+        return path, []
 
-    candidate_paths: set[str] = {path}
+    candidate_paths: list[str] = [path]
+    seen_candidates: set[str] = {path}
     for cfg in server_configs:
         for translated in apply_webhook_prefixes(path, cfg.path_mappings or []):
-            candidate_paths.add(translated)
+            if translated not in seen_candidates:
+                seen_candidates.add(translated)
+                candidate_paths.append(translated)
 
-    matches = []
-    seen_servers: set[str] = set()
     for candidate in candidate_paths:
-        for match in find_owning_servers(candidate, server_configs):
-            if match.server_id in seen_servers:
-                continue
-            seen_servers.add(match.server_id)
-            matches.append(match)
-    return matches
+        matches = find_owning_servers(candidate, server_configs)
+        if matches:
+            seen_servers: set[str] = set()
+            uniq: list = []
+            for match in matches:
+                if match.server_id in seen_servers:
+                    continue
+                seen_servers.add(match.server_id)
+                uniq.append(match)
+            return candidate, uniq
+    return path, []
 
 
 def _outcome_for_multi_server_status(status) -> ProcessingResult:
@@ -156,7 +172,7 @@ def _log_webhook_owning_servers(config, paths: list[str]) -> None:
         owners_by_server: dict[str, int] = {}
         unowned = 0
         for path in paths:
-            uniq_matches = _find_owners_with_webhook_translation(path, configs)
+            _canonical, uniq_matches = _resolve_webhook_path_to_canonical(path, configs)
             if not uniq_matches:
                 unowned += 1
                 continue
@@ -1386,16 +1402,18 @@ def _run_webhook_paths_phase(
     webhook_items: list[_PI] = []
     no_owners: list[str] = []
     for path in paths:
-        # Fast skip for paths no enabled server claims. Without this
-        # gate the path would still hit a worker thread, log
-        # "Worker N picked up", then bail with NO_OWNERS milliseconds
-        # later — confusing UI noise that has no useful side-effect.
-        # Uses the webhook-translation helper so a Sonarr-view path
-        # (``/data/...``) matches a server library at ``/data_16tb/...``
-        # via the configured ``webhook_prefixes`` translation —
-        # otherwise the gate drops legitimate webhooks from any install
-        # that uses path mappings.
-        owners = _find_owners_with_webhook_translation(path, server_configs)
+        # Resolve the webhook-source path to a server-view canonical
+        # path AND its owners in one pass. Sonarr/Radarr emit paths in
+        # their own namespace (``/data/TV Shows/...``) and the server
+        # libraries report a different one (``/data_16tb/TV Shows``);
+        # the helper translates via webhook_prefixes and returns the
+        # canonical form that matches the library, so the downstream
+        # ``process_canonical_path._resolve_owners`` lookup (which
+        # doesn't translate) gets a path it can match. Without this
+        # the worker picks up the path, the per-server check fails,
+        # and the job lands NO_OWNERS milliseconds later despite
+        # multiple servers actually owning the file.
+        canonical_path, owners = _resolve_webhook_path_to_canonical(path, server_configs)
         if not owners:
             no_owners.append(path)
             continue
@@ -1414,10 +1432,10 @@ def _run_webhook_paths_phase(
         server_id = next(iter(per_path), "")
         webhook_items.append(
             _PI(
-                canonical_path=path,
+                canonical_path=canonical_path,
                 server_id=server_id,
                 item_id_by_server=dict(per_path),
-                title=os.path.basename(path.rstrip("/")) or path,
+                title=os.path.basename(canonical_path.rstrip("/")) or canonical_path,
                 library_id=None,
             )
         )

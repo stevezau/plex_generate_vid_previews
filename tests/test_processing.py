@@ -409,15 +409,23 @@ class TestMultiServerGuards:
             run_processing(config, selected_gpus=[])
 
         # The headline assertion: the path was DISPATCHED, not fast-skipped.
-        # Without the webhook-prefix translation in the fast-skip gate,
-        # this call_count would be 0.
+        # Without the webhook-prefix translation, this call_count would
+        # be 0.
         MockPool.return_value.process_items_headless.assert_called_once()
         items = MockPool.return_value.process_items_headless.call_args.args[0]
         assert len(items) == 1, f"Expected one dispatched item; got {len(items)}"
-        # Canonical path stays as-is (the dispatcher's per-server resolver
-        # does the final translation per server); the orchestrator just
-        # needs to recognise the path is owned.
-        assert items[0].canonical_path == "/data/TV Shows/Show/S01E01.mkv"
+        # And the canonical_path on the ProcessableItem is the
+        # SERVER-VIEW form, not the raw webhook-view form. This is
+        # critical because process_canonical_path._resolve_owners
+        # checks ownership against this exact string and does NOT
+        # translate webhook prefixes itself; storing the raw
+        # ``/data/...`` would let the orchestrator gate pass while
+        # the downstream worker bails NO_OWNERS — the precise live
+        # regression caught in job 6eca6721.
+        assert items[0].canonical_path == "/data_16tb/TV Shows/Show/S01E01.mkv", (
+            f"canonical_path must be translated to the server-view form so "
+            f"process_canonical_path's ownership check finds the owner; got {items[0].canonical_path!r}"
+        )
 
     def test_path_mapping_mismatch_hint_surfaces_in_resolution_payload(self, tmp_path):
         """When a webhook path is unowned but a configured library's
