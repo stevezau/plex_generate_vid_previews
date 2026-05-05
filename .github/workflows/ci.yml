@@ -96,19 +96,23 @@ jobs:
         # shared libraries: libblas.so.3"), which makes load_config()
         # raise ConfigValidationError and silently kills the journey
         # tests that drive _start_job_async → run_processing.
-        #
-        # execute_install_scripts: the action restores cached packages
-        # as raw tarballs and skips dpkg post-install hooks by default —
-        # which means libblas3's ldconfig step never runs on a cache HIT
-        # and ffmpeg fails to find libblas.so.3 the next push (the first
-        # push installs from apt fresh and works; the second push hits
-        # the cache and breaks). Force the post-install scripts so the
-        # dynamic linker actually sees the cached .so files.
         uses: awalsh128/cache-apt-pkgs-action@v1
         with:
           packages: ffmpeg mediainfo libblas3 liblapack3
           version: 3
           execute_install_scripts: true
+
+      - name: Refresh dynamic linker cache for restored libs
+        # The apt-cache action restores .so files as raw tar extractions
+        # without invoking the libc-bin trigger that normally rebuilds
+        # /etc/ld.so.cache after an install. ``execute_install_scripts``
+        # only runs each package's own postinst (libblas3 has none for
+        # ldconfig), so on a cache HIT the dynamic linker never learns
+        # about the restored libblas.so.3 and ffmpeg fails the moment
+        # load_config() asks for its version. ``ldconfig`` rebuilds the
+        # cache from /etc/ld.so.conf.d/* and the standard search dirs;
+        # cheap (~50ms) and idempotent.
+        run: sudo ldconfig
 
       - name: Install dependencies
         run: pip install -e ".[test]"
@@ -186,6 +190,13 @@ jobs:
           # without post-install scripts leaves ffmpeg's libblas.so.3 /
           # liblapack.so.3 invisible to the dynamic linker.
           execute_install_scripts: true
+
+      - name: Refresh dynamic linker cache for restored libs
+        # See the test job's identical step — apt cache action skips the
+        # libc-bin trigger that rebuilds /etc/ld.so.cache, so on a cache
+        # HIT ffmpeg can't find libblas.so.3 / liblapack.so.3 even though
+        # the files are on disk.
+        run: sudo ldconfig
 
       - name: Install dependencies
         run: pip install -e ".[test]"
