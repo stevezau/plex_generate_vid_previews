@@ -1372,6 +1372,122 @@ class TestWorkerCancellation:
         assert call_kwargs.get("cancel_check") is cancel_fn
 
 
+class TestWorkerForwardsServerIdFilter:
+    """Pin the contract that the Worker forwards ``server_id_filter`` to
+    ``process_canonical_path``. Audit P1 / D34-shape regression: the
+    Worker dispatch path silently dropped this kwarg, so every pinned
+    vendor webhook fanned out to every owning server. The retry path
+    (via retry_queue) correctly forwarded it, so the user observed
+    "first attempt fans out, retries scoped" — the exact pattern that
+    hides the bug.
+
+    Mirrors the kwargs-matrix style of ``test_dispatcher_kwargs_matrix.py``
+    — boundary-call assertions on the SUT-controlled values, not just
+    call-count. Per CLAUDE.md: "if removing a parameter from the SUT
+    wouldn't break the test, the test isn't covering that parameter."
+    """
+
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
+    def test_explicit_config_pin_overrides_item_originator(self, mock_process):
+        """``Config.server_id_filter`` is the user's explicit pin —
+        always wins over the item's originator. A Plex-pinned job whose
+        webhook items came in with originator=jellyfin must publish
+        only to Plex, not fan out.
+        """
+        mock_process.return_value = _ms("generated")
+        worker = Worker(0, "CPU")
+        config = MagicMock(server_id_filter="plex-default", regenerate_thumbnails=False)
+        registry = MagicMock()
+        registry.get_config.return_value = MagicMock()  # any cfg — pin precedes lookup
+        item = _pi("k1", title="T", media_type="movie", server_id="jellyfin-spare")
+
+        worker.assign_task(item, config, registry)
+        if worker.current_thread:
+            worker.current_thread.join(timeout=2)
+
+        kwargs = mock_process.call_args.kwargs
+        assert kwargs["server_id_filter"] == "plex-default", (
+            f"Explicit Config.server_id_filter pin must reach process_canonical_path; "
+            f"got {kwargs.get('server_id_filter')!r}. A regression here lets a "
+            "Plex-pinned webhook silently publish to the originating Jellyfin too."
+        )
+
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
+    def test_no_pin_with_non_plex_originator_scopes_to_originator(self, mock_process):
+        """No explicit pin + Emby-originated webhook → publish only to
+        the originating Emby. Falling out to "fan out to all" leaks
+        publishes to other vendors who didn't ask for them.
+        """
+        from media_preview_generator.servers.base import ServerType
+
+        mock_process.return_value = _ms("generated")
+        worker = Worker(0, "CPU")
+        config = MagicMock(server_id_filter=None, regenerate_thumbnails=False)
+        emby_cfg = MagicMock()
+        emby_cfg.type = ServerType.EMBY
+        registry = MagicMock()
+        registry.get_config.return_value = emby_cfg
+        item = _pi("k1", title="T", media_type="movie", server_id="emby-1")
+
+        worker.assign_task(item, config, registry)
+        if worker.current_thread:
+            worker.current_thread.join(timeout=2)
+
+        kwargs = mock_process.call_args.kwargs
+        assert kwargs["server_id_filter"] == "emby-1", (
+            f"Emby-originated webhook with no explicit pin must scope to emby-1; "
+            f"got {kwargs.get('server_id_filter')!r}. Without this pin a "
+            "Sonarr → Emby webhook fans out to Plex+Jellyfin too."
+        )
+
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
+    def test_no_pin_with_plex_originator_fans_out(self, mock_process):
+        """No explicit pin + Plex-originated webhook → fan out (None).
+        This is the one case where unscoped publishing is intended:
+        the user wired up a Plex webhook expecting cross-vendor fan-out.
+        """
+        from media_preview_generator.servers.base import ServerType
+
+        mock_process.return_value = _ms("generated")
+        worker = Worker(0, "CPU")
+        config = MagicMock(server_id_filter=None, regenerate_thumbnails=False)
+        plex_cfg = MagicMock()
+        plex_cfg.type = ServerType.PLEX
+        registry = MagicMock()
+        registry.get_config.return_value = plex_cfg
+        item = _pi("k1", title="T", media_type="movie", server_id="plex-1")
+
+        worker.assign_task(item, config, registry)
+        if worker.current_thread:
+            worker.current_thread.join(timeout=2)
+
+        kwargs = mock_process.call_args.kwargs
+        assert kwargs["server_id_filter"] is None, (
+            f"Plex-originated webhook with no explicit pin must fan out (None); "
+            f"got {kwargs.get('server_id_filter')!r}. Pinning to plex-1 here would "
+            "break the cross-vendor publish path users have come to expect."
+        )
+
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
+    def test_no_pin_no_originator_fans_out(self, mock_process):
+        """No pin + no originator (full-scan-style ProcessableItem) →
+        fan out. Full library scans dispatch items without a server_id;
+        the Worker shouldn't invent a pin from thin air.
+        """
+        mock_process.return_value = _ms("generated")
+        worker = Worker(0, "CPU")
+        config = MagicMock(server_id_filter=None, regenerate_thumbnails=False)
+        registry = MagicMock()
+        item = _pi("k1", title="T", media_type="movie", server_id="")
+
+        worker.assign_task(item, config, registry)
+        if worker.current_thread:
+            worker.current_thread.join(timeout=2)
+
+        kwargs = mock_process.call_args.kwargs
+        assert kwargs["server_id_filter"] is None
+
+
 class TestBuildSelectedGpus:
     """Test _build_selected_gpus() — merges gpu_config with detected GPU cache."""
 
