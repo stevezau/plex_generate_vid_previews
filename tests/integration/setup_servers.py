@@ -218,18 +218,16 @@ def setup_jellyfin_via_api_key_injection(*, base_url: str = JELLYFIN_URL) -> Ser
     import subprocess
     from datetime import datetime, timezone
 
-    # Stop the container so the SQLite DB isn't held open by Jellyfin.
-    subprocess.run(
-        ["docker", "compose", "-f", str(HERE / "docker-compose.test.yml"), "stop", "jellyfin"],
-        check=True,
-        capture_output=True,
-    )
-
-    token = f"integration-{secrets.token_hex(16)}"
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.0000000Z")
-
-    # Inject the API key via a throwaway alpine container that has sqlite.
-    inject_cmd = [
+    # Idempotency: check if an ``integration-test`` API key already
+    # exists in the volume. Re-running ``up.sh`` shouldn't accumulate
+    # rows in ``ApiKeys`` (every fresh INSERT leaves a stale token
+    # active forever — ``DateLastActivity`` decides nothing about
+    # validity, just sorts the admin UI). Architecture-review #46
+    # MED finding: the previous flow stopped Jellyfin, INSERTed a
+    # new token, restarted, and rewrote ``servers.env`` on every
+    # ``up.sh`` invocation — destructive when the user just wanted to
+    # verify the stack was healthy.
+    select_cmd = [
         "docker",
         "run",
         "--rm",
@@ -240,22 +238,53 @@ def setup_jellyfin_via_api_key_injection(*, base_url: str = JELLYFIN_URL) -> Ser
         "-c",
         (
             "apk add --quiet sqlite && "
-            f'sqlite3 /c/data/data/jellyfin.db "INSERT INTO ApiKeys '
-            f"(DateCreated, DateLastActivity, Name, AccessToken) VALUES "
-            f"('{now}', '{now}', 'integration-test', '{token}');\""
+            "sqlite3 /c/data/data/jellyfin.db "
+            "\"SELECT AccessToken FROM ApiKeys WHERE Name='integration-test' "
+            'ORDER BY DateLastActivity DESC LIMIT 1;"'
         ),
     ]
-    inject_result = subprocess.run(inject_cmd, capture_output=True, text=True, check=False)
-    if inject_result.returncode != 0:
-        raise RuntimeError(f"Failed to inject Jellyfin API key: {inject_result.stderr.strip()}")
+    existing = subprocess.run(select_cmd, capture_output=True, text=True, check=False)
+    existing_token = existing.stdout.strip() if existing.returncode == 0 else ""
 
-    # Restart Jellyfin and wait for it.
-    subprocess.run(
-        ["docker", "compose", "-f", str(HERE / "docker-compose.test.yml"), "start", "jellyfin"],
-        check=True,
-        capture_output=True,
-    )
-    _wait_for_http(f"{base_url}/System/Info/Public")
+    if existing_token:
+        # Token already exists; reuse it without stopping the container
+        # (server is already running with this key registered).
+        token = existing_token
+        _wait_for_http(f"{base_url}/System/Info/Public")
+    else:
+        # First-time setup: stop, INSERT, restart.
+        subprocess.run(
+            ["docker", "compose", "-f", str(HERE / "docker-compose.test.yml"), "stop", "jellyfin"],
+            check=True,
+            capture_output=True,
+        )
+        token = f"integration-{secrets.token_hex(16)}"
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.0000000Z")
+        inject_cmd = [
+            "docker",
+            "run",
+            "--rm",
+            "-v",
+            "plex-previews-test_jellyfin_config:/c",
+            "alpine",
+            "sh",
+            "-c",
+            (
+                "apk add --quiet sqlite && "
+                f'sqlite3 /c/data/data/jellyfin.db "INSERT INTO ApiKeys '
+                f"(DateCreated, DateLastActivity, Name, AccessToken) VALUES "
+                f"('{now}', '{now}', 'integration-test', '{token}');\""
+            ),
+        ]
+        inject_result = subprocess.run(inject_cmd, capture_output=True, text=True, check=False)
+        if inject_result.returncode != 0:
+            raise RuntimeError(f"Failed to inject Jellyfin API key: {inject_result.stderr.strip()}")
+        subprocess.run(
+            ["docker", "compose", "-f", str(HERE / "docker-compose.test.yml"), "start", "jellyfin"],
+            check=True,
+            capture_output=True,
+        )
+        _wait_for_http(f"{base_url}/System/Info/Public")
 
     # Verify the token works + capture identity.
     info = requests.get(

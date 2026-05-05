@@ -225,68 +225,55 @@ def schedule_retry_for_unindexed(
         # are headless from the JobManager's perspective.
         retry_scope_id = f"retry:{path}"
         with failure_scope(retry_scope_id):
-            _run_retry_attempt(
-                path,
-                fired_attempt,
-                process_canonical_path,
-                MultiServerStatus,
-                PublisherStatus,
-            )
+            try:
+                result = process_canonical_path(
+                    canonical_path=path,
+                    registry=registry,
+                    config=config,
+                    item_id_by_server=item_id_by_server,
+                    # The retry callback manages its own scheduling — don't
+                    # let process_canonical_path spawn yet another timer
+                    # alongside ours.
+                    schedule_retry_on_not_indexed=False,
+                    retry_attempt=fired_attempt,
+                    server_id_filter=(
+                        config.server_id_filter
+                        if isinstance(getattr(config, "server_id_filter", None), str) and config.server_id_filter
+                        else None
+                    ),
+                )
+            except Exception as exc:
+                logger.exception(
+                    "Retry #{} for {} could not be dispatched ({}: {}). "
+                    "Scheduling another retry — if this keeps happening, the underlying error needs investigation; "
+                    "share the traceback above when reporting.",
+                    fired_attempt,
+                    path,
+                    type(exc).__name__,
+                    exc,
+                )
+                schedule_retry_for_unindexed(
+                    path,
+                    registry=registry,
+                    config=config,
+                    item_id_by_server=item_id_by_server,
+                    attempt=fired_attempt + 1,
+                )
+                return
 
-    def _run_retry_attempt(path, fired_attempt, process_canonical_path, MultiServerStatus, PublisherStatus):
-        """Inner body of the retry callback, isolated so the wrapping
-        ``failure_scope`` block stays narrow and the original
-        try/except control flow is preserved verbatim.
-        """
-        try:
-            result = process_canonical_path(
-                canonical_path=path,
-                registry=registry,
-                config=config,
-                item_id_by_server=item_id_by_server,
-                # The retry callback manages its own scheduling — don't
-                # let process_canonical_path spawn yet another timer
-                # alongside ours.
-                schedule_retry_on_not_indexed=False,
-                retry_attempt=fired_attempt,
-                server_id_filter=(
-                    config.server_id_filter
-                    if isinstance(getattr(config, "server_id_filter", None), str) and config.server_id_filter
-                    else None
-                ),
-            )
-        except Exception as exc:
-            logger.exception(
-                "Retry #{} for {} could not be dispatched ({}: {}). "
-                "Scheduling another retry — if this keeps happening, the underlying error needs investigation; "
-                "share the traceback above when reporting.",
-                fired_attempt,
-                path,
-                type(exc).__name__,
-                exc,
-            )
-            schedule_retry_for_unindexed(
-                path,
-                registry=registry,
-                config=config,
-                item_id_by_server=item_id_by_server,
-                attempt=fired_attempt + 1,
-            )
-            return
-
-        # Did any publisher remain SKIPPED_NOT_INDEXED? If so, schedule
-        # another retry; otherwise we're done. PUBLISHED, FAILED, and
-        # SKIPPED_OUTPUT_EXISTS all terminate the retry chain.
-        still_unindexed = any(p.status is PublisherStatus.SKIPPED_NOT_INDEXED for p in result.publishers)
-        if still_unindexed and result.status is not MultiServerStatus.FAILED:
-            schedule_retry_for_unindexed(
-                path,
-                registry=registry,
-                config=config,
-                item_id_by_server=item_id_by_server,
-                attempt=fired_attempt + 1,
-            )
-        else:
-            logger.info("Retry chain for {} complete on attempt #{}", path, fired_attempt)
+            # Did any publisher remain SKIPPED_NOT_INDEXED? If so, schedule
+            # another retry; otherwise we're done. PUBLISHED, FAILED, and
+            # SKIPPED_OUTPUT_EXISTS all terminate the retry chain.
+            still_unindexed = any(p.status is PublisherStatus.SKIPPED_NOT_INDEXED for p in result.publishers)
+            if still_unindexed and result.status is not MultiServerStatus.FAILED:
+                schedule_retry_for_unindexed(
+                    path,
+                    registry=registry,
+                    config=config,
+                    item_id_by_server=item_id_by_server,
+                    attempt=fired_attempt + 1,
+                )
+            else:
+                logger.info("Retry chain for {} complete on attempt #{}", path, fired_attempt)
 
     return scheduler.schedule(canonical_path, _callback, attempt=attempt)

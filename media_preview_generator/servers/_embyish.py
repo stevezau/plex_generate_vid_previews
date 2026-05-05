@@ -512,6 +512,16 @@ class EmbyApiClient(MediaServer):
         #   through to Pass 1+2 to preserve recall on edge cases
         #   (folder name fundamentally differs from Emby's stored
         #   Name, basename slightly varied, etc.).
+        #
+        # Jellyfin note: ``JellyfinServer`` extends this base class, so
+        # the short-circuit applies to it too. Jellyfin's ``Items?Path=``
+        # is indexed and cheap (no 30s scoring pathology), so the perf
+        # payoff is much smaller there — but the recall trade-off is
+        # the same, and it's strictly an improvement (skipping a fast
+        # query is still faster than running it). For users with the
+        # MediaPreviewBridge plugin installed, ``JellyfinServer._resolve_one_path``
+        # short-circuits earlier on the plugin's authoritative answer
+        # and never reaches this base implementation at all.
         if parent_id:
             pass0_id, definitive_miss = self._pass0_name_prefix_lookup(remote_path, basename, target_tail, parent_id)
             if pass0_id is not None:

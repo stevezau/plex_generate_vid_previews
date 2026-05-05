@@ -227,32 +227,55 @@ class TestRenderMarkdownBasicHandlesGitHubReleaseBodies:
         or speeds — what happened?" Answer: BIF was reused, work was
         correct, the worker card just didn't make it visible.
 
-        The fix sets a success colour (``text-success``) + a leading
-        check icon when the phase string contains "reusing", "reused",
-        "already exists", or "skipped". Pin both the regex and the
-        class toggle so a regression doesn't silently drop one of them.
+        Anchors on EXECUTABLE code (not docstrings/comments) so a
+        future regression that deletes the actual ``classList.toggle``
+        line but keeps the explanatory comment block fails this test.
+        Architecture-review #46 specifically called out the original
+        version of this test as bug-blind because every assertion
+        could pass on the doc-comment substring alone.
         """
-        # Locate the worker-card phase render block. It's anchored by the
-        # ``current_phase`` reference in the ``isProcessing && !ffmpegStarted``
-        # branch — the only place ``current_phase`` is rendered.
-        idx = app_js.find("worker.current_phase")
-        assert idx != -1, "worker.current_phase render block missing — UI feedback regressed"
-        snippet = app_js[idx : idx + 1500]
-        # Reuse-phase regex must be present and case-insensitive.
-        assert "_PHASE_REUSE_RE" in snippet or "reusing" in snippet.lower(), (
-            "Worker card render must detect reuse phases with a regex; see _PHASE_REUSE_RE in app.js"
+        # Locate the worker-card phase render block. Anchor on the
+        # ``isProcessing && !ffmpegStarted`` branch — the regex
+        # declaration sits a few lines above and the executable code
+        # sits below, all within ~50 lines.
+        idx = app_js.find("isProcessing && !ffmpegStarted")
+        assert idx != -1, "worker-card phase render block missing — UI feedback regressed"
+        # Reach back ~10 lines so the ``const _PHASE_REUSE_RE = …``
+        # declaration (which is hoisted just above the if-branch) is
+        # in the window, plus forward 1500 chars for the body.
+        start = max(0, idx - 600)
+        snippet = app_js[start : idx + 1500]
+
+        # Strip JS-style comments from the snippet so assertions hit
+        # actual code lines. ``//`` line comments and ``/* … */`` block
+        # comments both lie outside the executed program — keeping
+        # them in the haystack would let the test pass on documentation
+        # alone (the bug-blind shape called out in architecture review).
+        import re as _re
+
+        code_only = _re.sub(r"/\*.*?\*/", "", snippet, flags=_re.DOTALL)
+        code_only = _re.sub(r"//[^\n]*", "", code_only)
+
+        # 1. The regex literal MUST exist as executable code (a
+        #    ``const _PHASE_REUSE_RE = /…/i;`` declaration). A regex
+        #    mention inside a comment doesn't count.
+        assert _re.search(r"_PHASE_REUSE_RE\s*=\s*/", code_only), (
+            "Worker card render must declare ``const _PHASE_REUSE_RE = /…/`` "
+            "so the regex actually fires at runtime — see app.js."
         )
-        # text-success class toggle so the phase reads as "succeeded fast",
-        # not as "Working…". Same Bootstrap utility the Files panel uses
-        # for the "Frames reused" badge — colour semantics consistent.
-        assert "text-success" in snippet, (
-            "Reuse phase must toggle 'text-success' — without distinct styling, "
-            "a fast cache hit is indistinguishable from a hung worker."
+
+        # 2. The ``text-success`` class toggle MUST be a real
+        #    ``classList.toggle('text-success', …)`` call, not a
+        #    comment reference to the Files panel's badge.
+        assert _re.search(r"classList\.toggle\(\s*['\"]text-success['\"]", code_only), (
+            "Reuse phase must call ``classList.toggle('text-success', …)`` — without "
+            "the actual toggle, a fast cache hit is indistinguishable from a hung worker."
         )
-        # Leading check icon (✓) makes the success state obvious at a
-        # glance, especially against the muted phase strings used for
-        # in-flight resolution.
-        assert "✓" in snippet, (
+
+        # 3. The check icon (✓) MUST be emitted into the phase string,
+        #    e.g. ``isReusePhase ? \`✓ ${phaseLabel}\` : phaseLabel``.
+        #    A ✓ inside a comment block doesn't make it to the DOM.
+        assert "✓" in code_only, (
             "Reuse phase must prefix the label with a check icon so the user "
             "sees 'work happened, fast' rather than just a colour change."
         )
