@@ -34,12 +34,19 @@ def _resolve_webhook_path_to_canonical(path: str, server_configs: list) -> tuple
     Returns ``(canonical_path, matches)``:
 
     * ``canonical_path`` — the path form to store on the
-      ``ProcessableItem``. The first candidate whose ownership check
-      returns at least one match wins. Falls back to the raw input
-      when nothing matches (the caller fast-skips that case).
-    * ``matches`` — the deduplicated list of
-      :class:`~servers.ownership.OwnershipMatch` for that canonical
-      path.
+      ``ProcessableItem``. Picked from the candidates by preferring,
+      in order: (1) a candidate that exists on disk via
+      :func:`os.path.exists` so frame extraction can read the source,
+      (2) any candidate that owners agree on, (3) the raw input.
+    * ``matches`` — the **aggregated** deduplicated list of
+      :class:`~servers.ownership.OwnershipMatch` across EVERY
+      candidate. This is the audit-P2 fix: the previous version
+      returned at the first matching candidate, silently dropping
+      owners whose libraries matched a different candidate. On a
+      heterogeneous-mount install (Plex on ``/data_16tb``, Emby on
+      ``/em-media``, both with ``webhook_prefixes=['/data']``), the
+      first match would return Plex only and Emby would never publish.
+      Now both servers' owners are returned.
 
     Tries the raw path first (the dominant case for installs without
     webhook_prefixes mappings), then every translated candidate.
@@ -55,18 +62,51 @@ def _resolve_webhook_path_to_canonical(path: str, server_configs: list) -> tuple
                 seen_candidates.add(translated)
                 candidate_paths.append(translated)
 
+    # Aggregate owners across ALL candidates that match. Track which
+    # candidate each owner came from so we can pick a canonical path
+    # form that at least one owner agrees on.
+    seen_servers: set[str] = set()
+    aggregated: list = []
+    matching_candidates: list[str] = []
     for candidate in candidate_paths:
-        matches = find_owning_servers(candidate, server_configs)
-        if matches:
-            seen_servers: set[str] = set()
-            uniq: list = []
-            for match in matches:
-                if match.server_id in seen_servers:
-                    continue
-                seen_servers.add(match.server_id)
-                uniq.append(match)
-            return candidate, uniq
-    return path, []
+        owners = find_owning_servers(candidate, server_configs)
+        if not owners:
+            continue
+        if candidate not in matching_candidates:
+            matching_candidates.append(candidate)
+        for match in owners:
+            if match.server_id in seen_servers:
+                continue
+            seen_servers.add(match.server_id)
+            aggregated.append(match)
+
+    if not aggregated:
+        return path, []
+
+    # Canonical-path picker:
+    #   1. If a matching candidate exists on disk, pick that. Frame
+    #      extraction reads from this path, so on multi-disk installs
+    #      (file lives on /data_16tb2 but /data_16tb is the first
+    #      mapping) we MUST pick the disk that actually has the file
+    #      or FFmpeg fails with "no such file or directory".
+    #   2. Otherwise pick the first candidate any owner matched. Beats
+    #      the raw input because the raw is usually the source-side
+    #      view (Sonarr's /data/...) which the publishers' downstream
+    #      ownership check (registry.find_owning_servers) doesn't
+    #      translate.
+    canonical: str | None = None
+    for cand in matching_candidates:
+        try:
+            if os.path.exists(cand):
+                canonical = cand
+                break
+        except OSError:
+            # Defensive: a malformed path (super long, weird chars)
+            # could raise on some filesystems. Skip it.
+            continue
+    if canonical is None:
+        canonical = matching_candidates[0]
+    return canonical, aggregated
 
 
 def _outcome_for_multi_server_status(status) -> ProcessingResult:

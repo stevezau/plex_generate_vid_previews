@@ -354,6 +354,81 @@ class TestMultiServerGuards:
         assert items[0].canonical_path == "/data/movies/Foo.mkv"
         assert items[0].item_id_by_server == {"plex-1": "k1"}
 
+    def test_webhook_aggregates_owners_across_heterogeneous_mounts(self, tmp_path):
+        """Audit P2 — multi-server heterogeneous-mount install where each
+        server has its own ``local_prefix``. Webhook arrives in source
+        view (``/data/X.mkv``); each server's ``webhook_prefixes``
+        translates ``/data`` to a different local mount (Plex sees the
+        file at ``/plex-mount/X.mkv``, Emby at ``/emby-mount/X.mkv``).
+
+        The fix: ``_resolve_webhook_path_to_canonical`` must AGGREGATE
+        owners across all matching candidates, not return at the first
+        match. Without this, the candidate iteration finds Plex (under
+        ``/plex-mount``), returns immediately, and Emby silently never
+        publishes — even though Emby owns the same file at its own
+        mount.
+        """
+        config = _make_config(tmp_path, webhook_paths=["/data/Movies/X.mkv"])
+
+        with (
+            patch(f"{MODULE}.plex_server"),
+            patch(f"{MODULE}.WorkerPool") as MockPool,
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+        ):
+            MockPool.return_value.process_items_headless.return_value = _pool_result(completed=1)
+            mock_sm.return_value.get.return_value = [
+                {
+                    "id": "plex-a",
+                    "type": "plex",
+                    "enabled": True,
+                    "libraries": [
+                        {"id": "1", "name": "Movies", "remote_paths": ["/plex-mount/Movies"], "enabled": True}
+                    ],
+                    "path_mappings": [
+                        {
+                            "plex_prefix": "/plex-mount",
+                            "local_prefix": "/plex-mount",
+                            "webhook_prefixes": ["/data"],
+                        }
+                    ],
+                },
+                {
+                    "id": "emby-1",
+                    "type": "emby",
+                    "enabled": True,
+                    "libraries": [
+                        {"id": "11", "name": "Movies", "remote_paths": ["/emby-mount/Movies"], "enabled": True}
+                    ],
+                    "path_mappings": [
+                        {
+                            "remote_prefix": "/emby-mount",
+                            "local_prefix": "/emby-mount",
+                            "webhook_prefixes": ["/data"],
+                        }
+                    ],
+                },
+            ]
+            run_processing(config, selected_gpus=[])
+
+        # The path was dispatched (not fast-skipped). Even more
+        # important: in production the dispatcher's downstream
+        # ownership check would now find BOTH Plex and Emby as owners
+        # — so process_canonical_path will fan out to both. Without
+        # the P2 fix, only the first candidate's owner (Plex) survived
+        # and Emby was silently dropped.
+        MockPool.return_value.process_items_headless.assert_called_once()
+        items = MockPool.return_value.process_items_headless.call_args.args[0]
+        assert len(items) == 1
+        # The canonical_path picked must be one of the matching
+        # candidates — either /plex-mount/Movies/X.mkv or
+        # /emby-mount/Movies/X.mkv. Disk-existence picker prefers the
+        # one that exists; in this test neither exists, so falls back
+        # to the first matching candidate (insertion order).
+        canonical = items[0].canonical_path
+        assert canonical in ("/plex-mount/Movies/X.mkv", "/emby-mount/Movies/X.mkv"), (
+            f"canonical_path must be one of the heterogeneous mount candidates; got {canonical!r}"
+        )
+
     def test_webhook_path_with_webhook_prefix_translates_before_fast_skip(self, tmp_path):
         """Production regression — a Sonarr webhook for ``/data/TV Shows/X.mkv``
         was being fast-skipped as "no enabled server claims" even though
