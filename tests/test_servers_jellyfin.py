@@ -376,6 +376,70 @@ class TestTriggerRefresh:
             assert req.call_args_list[0].args == ("POST", "/MediaPreviewBridge/Trickplay/42")
             assert req.call_args_list[1].args == ("POST", "/Items/42/Refresh")
 
+    def test_plugin_registration_uses_adapter_width_and_interval_not_hardcoded_defaults(self):
+        """Audit L1 — plugin's ``Trickplay`` endpoint MUST be called
+        with the same ``width`` and ``intervalMs`` the trickplay
+        adapter wrote tiles for. The plugin's controller checks that
+        ``<basename>.trickplay/<width> - 10x10/`` exists on disk
+        before registering the trickplay row; mismatched width =
+        404 = silent registration miss = trickplay only appears at
+        the next 3 AM scheduled scan instead of immediately.
+
+        Pre-fix: the params dict hardcoded ``width=320`` and
+        ``intervalMs=10000`` regardless of what
+        ``server_config.output`` configured. A user who set
+        ``output.width=480`` got 100% silent failure on the plugin
+        bridge — same shape as the Plex ``type=`` bug.
+        """
+        custom_jelly = JellyfinServer(
+            _jelly_config(),
+        )
+        # Inject non-default output settings on the wrapped config so
+        # the plugin call has to read them, not fall back to defaults.
+        custom_jelly._config.output = {"adapter": "jellyfin_trickplay", "width": 480, "frame_interval": 5}
+
+        plugin_resp = MagicMock(status_code=204, text="")
+        refresh_resp = MagicMock()
+        refresh_resp.raise_for_status.return_value = None
+
+        with patch.object(JellyfinServer, "_request", side_effect=[plugin_resp, refresh_resp]) as req:
+            custom_jelly.trigger_refresh(item_id="42", remote_path=None)
+
+        # The plugin call's params must reflect the adapter's actual
+        # configured values (width=480, interval=5s → 5000 ms), NOT
+        # the hardcoded defaults that pre-fix landed in production.
+        plugin_call = req.call_args_list[0]
+        params = plugin_call.kwargs.get("params") or {}
+        assert params.get("width") == 480, (
+            f"Plugin width must mirror server_config.output.width (480); got {params!r}. "
+            "A regression here re-introduces the silent 404 → next-3-AM-scan registration delay."
+        )
+        assert params.get("intervalMs") == 5000, (
+            f"Plugin intervalMs must equal frame_interval * 1000 (5*1000=5000); got {params!r}."
+        )
+
+    def test_plugin_registration_falls_back_to_safe_defaults_when_output_missing(self):
+        """Belt-and-braces — when ``server_config.output`` is empty
+        (older configs, mid-migration), the plugin call still uses
+        sensible defaults (width=320, intervalMs=10000) rather than
+        raising. The 320/10000 case is the dominant default shape in
+        production today, so a user who hasn't touched their settings
+        keeps working unchanged.
+        """
+        bare_jelly = JellyfinServer(_jelly_config())
+        bare_jelly._config.output = {}  # no width / frame_interval
+
+        plugin_resp = MagicMock(status_code=204, text="")
+        refresh_resp = MagicMock()
+        refresh_resp.raise_for_status.return_value = None
+
+        with patch.object(JellyfinServer, "_request", side_effect=[plugin_resp, refresh_resp]) as req:
+            bare_jelly.trigger_refresh(item_id="42", remote_path=None)
+
+        params = req.call_args_list[0].kwargs.get("params") or {}
+        assert params.get("width") == 320
+        assert params.get("intervalMs") == 10000
+
     def test_continues_to_per_item_refresh_when_plugin_not_installed(self, jelly):
         # Plugin returns 404 (not installed) — log and continue to the
         # standard refresh so the call chain still fires.

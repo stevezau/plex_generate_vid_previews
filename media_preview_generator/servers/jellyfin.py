@@ -124,11 +124,28 @@ class JellyfinServer(EmbyApiClient):
         The base wrapper logs any exception this method raises.
         """
         # 1. Plugin bridge — instant trickplay registration.
+        # Audit L1: width / intervalMs MUST match the
+        # JellyfinTrickplayAdapter's configured values, NOT hardcoded
+        # defaults. Without this, a user with a non-default
+        # ``output.width`` (e.g. 480) writes tiles into
+        # ``<basename>.trickplay/480 - 10x10/`` but the plugin gets
+        # asked to register ``<basename>.trickplay/320 - 10x10/`` —
+        # which doesn't exist → 404 → silent registration miss → the
+        # user-visible delay drops from "instant" to "next 3 AM scan".
+        # Plugin's controller verifies the width-specific tile dir
+        # exists before committing the trickplay row.
+        output = (self._config.output or {}) if getattr(self, "_config", None) else {}
+        adapter_width = int(output.get("width") or 320)
+        # Plugin expects intervalMs (milliseconds); the adapter's
+        # ``frame_interval`` is in seconds. Convert here so the two
+        # views agree: tiles named "<width> - 10x10/<index>.jpg"
+        # match the row registered with the matching intervalMs.
+        adapter_interval_ms = int(output.get("frame_interval") or 10) * 1000
         try:
             resp = self._request(
                 "POST",
                 f"/MediaPreviewBridge/Trickplay/{item_id}",
-                params={"width": 320, "intervalMs": 10000},
+                params={"width": adapter_width, "intervalMs": adapter_interval_ms},
             )
             if resp.status_code == 204:
                 logger.debug(
