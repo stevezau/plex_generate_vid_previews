@@ -734,27 +734,79 @@ class TestPass0NameStartsWithFastPath:
                 f"{[(c.args, c.kwargs.get('params')) for c in req.call_args_list]}"
             )
 
-    def test_falls_through_when_series_match_but_episode_missing(self, emby_with_tv_lib):
-        """NameStartsWith finds the Series, but the episode isn't in it
-        (e.g. file just downloaded, Emby hasn't scanned yet). The
-        per-Series enumerate finds nothing → fall through to Pass 1+2.
-        Without fallthrough, a slightly-stale series cache would mask
-        files Pass 1's searchTerm could still recover via fuzzy match.
+    def test_short_circuits_when_all_candidate_series_walked_without_match(self, emby_with_tv_lib):
+        """perf #44 (live follow-up) — when Pass 0 finds N candidate
+        Series matching the prefix and walks every one of them via
+        per-series episode enumerate without finding the basename, the
+        file is definitively NOT in this library (under any candidate
+        series). Skip Pass 1+2.
+
+        Live evidence: Boy Band Confidential webhook fired against an
+        EmbyTest where 23 other ``Boy*`` shows exist. Pre-fix Pass 0
+        walked all 23 series, found no match, then fell through to
+        Pass 1's 30s scoring loop just to confirm what Pass 0 already
+        proved.
+
+        Recall trade: ~1% of items actually in Emby live under a
+        series Name whose first word fundamentally differs from the
+        folder name. Those miss on this webhook and recover via the
+        next webhook fire / scheduled scan. The 30s × every-non-owning-
+        server tax on multi-server installs is the dominant cost
+        otherwise.
         """
         path = "/library/TV/Show/Season 01/Show - S01E99 - Brand New.mkv"
         path_empty = self._resp({"Items": []})
         ns_series = self._resp({"TotalRecordCount": 1, "Items": [{"Id": "ser-9"}]})
         ep_no_match = self._resp({"Items": [{"Id": "ep-1", "Path": "/library/TV/Show/Season 01/Show - S01E01.mkv"}]})
+        # No Pass 1+2 mocks — they MUST NOT run.
+        with patch.object(
+            EmbyServer,
+            "_request",
+            side_effect=[path_empty, ns_series, ep_no_match],
+        ) as req:
+            got = emby_with_tv_lib._uncached_resolve_remote_path_to_item_id(path)
+            assert got is None
+            # Pass 1's searchTerm MUST NOT have run.
+            assert not any("searchTerm" in (c.kwargs.get("params") or {}) for c in req.call_args_list), (
+                "Pass 0 walked every candidate series and found no match → definitive miss. "
+                "Pass 1's slow scoring loop must be skipped (perf #44 live follow-up)."
+            )
+            # Exactly three: Path=, NameStartsWith, per-series enumerate.
+            assert req.call_count == 3, (
+                f"Expected 3 requests (Path=, NameStartsWith, episode enumerate); "
+                f"got {req.call_count}: {[(c.args, c.kwargs.get('params')) for c in req.call_args_list]}"
+            )
+
+    def test_falls_through_when_series_enumerate_errors(self, emby_with_tv_lib):
+        """Recall safety net for perf #44 episode-walk short-circuit:
+        if any per-series episode enumerate raised an exception, the
+        file MIGHT have been in that series — Pass 0's miss is
+        indeterminate. Fall through to Pass 1+2.
+
+        Without this distinction, a transient 5xx on one of the
+        candidate series silently turns into a permanent ``not found``
+        until the next scheduled scan.
+        """
+        path = "/library/TV/Show/Season 01/Show - S01E99 - Brand New.mkv"
+        path_empty = self._resp({"Items": []})
+        ns_series = self._resp({"TotalRecordCount": 2, "Items": [{"Id": "ser-9"}, {"Id": "ser-10"}]})
+        # First series enumerate ERRORS, second succeeds with no match.
+        ep_error = MagicMock()
+        ep_error.raise_for_status.side_effect = RuntimeError("transient 5xx from emby")
+        ep_no_match = self._resp({"Items": [{"Id": "ep-1", "Path": "/library/TV/Other Show/E01.mkv"}]})
         pass1_empty = self._resp({"Items": []})
         pass2_empty = self._resp({"Items": []})
         with patch.object(
             EmbyServer,
             "_request",
-            side_effect=[path_empty, ns_series, ep_no_match, pass1_empty, pass2_empty],
+            side_effect=[path_empty, ns_series, ep_error, ep_no_match, pass1_empty, pass2_empty],
         ) as req:
             got = emby_with_tv_lib._uncached_resolve_remote_path_to_item_id(path)
             assert got is None
-            assert any("searchTerm" in (c.kwargs.get("params") or {}) for c in req.call_args_list)
+            # Pass 1 MUST run because we couldn't fully verify Pass 0's miss.
+            assert any("searchTerm" in (c.kwargs.get("params") or {}) for c in req.call_args_list), (
+                "Per-series enumerate error makes Pass 0 miss indeterminate; Pass 1+2 must run for recall."
+            )
 
     def test_aborts_when_namestartswith_returns_too_many_candidates(self, emby_with_tv_lib):
         """Cap busted (e.g. NameStartsWith="A" matches 100+ shows on a

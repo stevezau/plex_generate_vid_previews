@@ -770,13 +770,34 @@ class EmbyApiClient(MediaServer):
         # Step 2: movies match directly on the candidate set; episodes
         # need a per-Series enumerate (each Series has 10-300 episodes,
         # tiny vs the 1000-cap library walk Pass 2 does).
+        #
+        # Definitive-miss reasoning for the "candidates returned but no
+        # basename match" case (live perf #44 follow-up): the dominant
+        # multi-server scenario is "show/movie isn't on this server but
+        # other items share the first word" — e.g. Boy Band Confidential
+        # webhook fires, EmbyTest has 23 other ``Boy*`` shows. Without
+        # this branch, Pass 0 walked every sibling's episodes (correct,
+        # ~1s on TV libraries), found no match, then fell through to
+        # Pass 1's 30s scoring loop just to confirm what we already knew.
+        # Short-circuit to skip Pass 1+2.
+        #
+        # Recall trade: an item that IS in Emby/Jellyfin but stored
+        # under a series Name whose first word fundamentally differs
+        # from the folder name (~1% rate per the live audit in commit
+        # f211dd7) misses on this webhook. Recovers via the next
+        # webhook fire, scheduled scan, or manual refresh.
         if not is_episode:
             hit = self._match_basename(candidates, basename, target_tail)
-            # Indeterminate when no basename match: candidates exist
-            # but none matched — could be a basename variation Pass 1's
-            # full-stem scoring still recovers. Preserve recall.
-            return (hit, False)
+            # Movies: the candidate set already contained Path on every
+            # entry, so we did exhaustive matching. ``hit is None`` →
+            # definitive miss.
+            return (hit, hit is None)
 
+        # Episodes: walk each candidate Series's episodes. Track whether
+        # any per-series enumerate ERRORED — if so, we can't be sure
+        # the file isn't in a series we couldn't read, so the miss is
+        # indeterminate (preserve recall via Pass 1+2).
+        any_enumerate_error = False
         for series in candidates:
             if not isinstance(series, dict):
                 continue
@@ -801,11 +822,15 @@ class EmbyApiClient(MediaServer):
                     series_id,
                     exc,
                 )
+                any_enumerate_error = True
                 continue
             hit = self._match_basename(episodes, basename, target_tail)
             if hit:
                 return (hit, False)
-        return (None, False)
+        # All candidate Series enumerated successfully and none contained
+        # the target episode → definitive miss. Any error → indeterminate
+        # (the missed-enumerate series might have had the file).
+        return (None, not any_enumerate_error)
 
     @staticmethod
     def _match_basename(items: list, basename: str, target_tail: str) -> str | None:
