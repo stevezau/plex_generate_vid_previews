@@ -58,6 +58,14 @@ class EmbyServer(EmbyApiClient):
                 params={
                     "Path": remote_path,
                     "Recursive": "true",
+                    # Audit L2: restrict to Movie/Episode so a non-video
+                    # item indexed at the same Path (e.g. an audiobook
+                    # mistakenly classified as Audio with overlapping
+                    # path layout) can't return a non-preview-worthy
+                    # item id. The legacy ``_search_by_file_path`` in
+                    # plex_client.py applies the same filter for the
+                    # exact same reason.
+                    "IncludeItemTypes": "Movie,Episode",
                     "Fields": "Path",
                     "Limit": 1,
                 },

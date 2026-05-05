@@ -443,6 +443,16 @@ class TestResolveRemotePathToItemIdViaExactPath:
             assert kwargs["params"]["Path"] == "/m/movie.mkv"
             # Don't accidentally hit a slow full-enumeration cap here.
             assert kwargs["params"].get("Limit") == 1
+            # Audit L2: scope to Movie,Episode so a non-video item
+            # (audiobook misclassified as Audio with overlapping
+            # path layout) can't return a non-preview-worthy item id.
+            # Pre-fix: no IncludeItemTypes filter → any item type
+            # could match → wrong id flowed downstream → publisher
+            # would compute output paths against a non-video item.
+            assert kwargs["params"].get("IncludeItemTypes") == "Movie,Episode", (
+                f"Emby exact-Path query must scope to Movie,Episode; got params={kwargs['params']!r}. "
+                "Without this, a non-video item at the same Path can be returned."
+            )
 
     def test_falls_back_to_search_when_exact_path_returns_empty(self, emby):
         empty_path_resp = MagicMock()

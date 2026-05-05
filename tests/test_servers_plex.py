@@ -598,6 +598,42 @@ class TestResolveOnePath:
         assert plex_wrapper._resolve_one_path("") is None
         plex.library.sections.assert_not_called()
 
+    def test_disabled_library_is_skipped_when_plex_library_ids_set(self, plex_wrapper):
+        """Audit L3 — when ``Config.plex_library_ids`` filters libraries
+        the user has disabled, the resolver must NOT walk the disabled
+        sections. Legacy ``_search_by_file_path`` honours this filter;
+        the new ``_resolve_one_path`` must too.
+
+        Regression scenario: a user disables their 4K library (uses
+        their HD library only). A movie with the same basename exists
+        in BOTH libraries. Pre-fix the resolver walks both and may
+        return the disabled library's ratingKey first → downstream
+        ``server_owns_path`` (via ``apply_path_mappings`` against
+        enabled libraries only) drops the publisher → silent
+        no-publish on the movie the user actually wanted.
+        """
+        section_enabled = self._section(key="1", title="Movies HD", metadata_type="movie")
+        section_disabled = self._section(key="2", title="Movies 4K", metadata_type="movie")
+        plex = MagicMock()
+        plex.library.sections.return_value = [section_disabled, section_enabled]
+        plex.fetchItems.return_value = [self._item(rating_key="100", file_path="/media/movies/Foo.mkv")]
+        plex_wrapper._plex = plex
+        # User has only enabled the HD library (key=1).
+        plex_wrapper._config.plex_library_ids = ["1"]
+
+        plex_wrapper._resolve_one_path("/media/movies/Foo.mkv")
+
+        # Disabled library (key=2) must NOT be queried — only the
+        # enabled one (key=1).
+        keys_queried = [
+            call.args[0].split("/library/sections/")[1].split("/")[0] for call in plex.fetchItems.call_args_list
+        ]
+        assert "2" not in keys_queried, (
+            f"Disabled library key=2 (Movies 4K) was queried; only enabled key=1 should be. "
+            f"keys_queried={keys_queried!r}"
+        )
+        assert "1" in keys_queried, f"Enabled library key=1 should be queried; got {keys_queried!r}"
+
     def test_section_query_failure_falls_through_to_next_section(self, plex_wrapper):
         """A single section's HTTP failure must not prevent matching in
         the next section — best-effort per-section iteration.

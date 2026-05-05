@@ -819,7 +819,31 @@ class PlexServer(MediaServer):
             "movie": 1,
             "episode": 4,
         }
+        # Audit L3: respect the user's enabled-library selection. The
+        # legacy ``_search_by_file_path`` in plex_client.py honours
+        # this; the new resolver must too. Without it, a same-basename
+        # collision in a user-disabled library (e.g. a 4K mirror of a
+        # movie also in the enabled HD library) returns the disabled
+        # library's id → downstream ``server_owns_path`` re-check
+        # drops the publisher → silent no-publish for the file the
+        # user actually wanted.
+        selected_library_ids: set[str] = {
+            str(s).strip() for s in (getattr(self._config, "plex_library_ids", None) or []) if str(s).strip()
+        }
+        selected_library_titles: set[str] = {
+            str(n).strip().lower() for n in (getattr(self._config, "plex_libraries", None) or []) if str(n).strip()
+        }
+
+        def _is_selected(section) -> bool:
+            if selected_library_ids:
+                return str(getattr(section, "key", "")).strip() in selected_library_ids
+            if selected_library_titles:
+                return str(getattr(section, "title", "")).strip().lower() in selected_library_titles
+            return True
+
         for section in sections:
+            if not _is_selected(section):
+                continue
             section_key = getattr(section, "key", None)
             if section_key is None:
                 continue
