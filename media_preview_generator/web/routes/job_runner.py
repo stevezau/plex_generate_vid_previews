@@ -546,6 +546,11 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                     total_paths = resolution.get("total_paths", 0)
                     resolved_count = resolution.get("resolved_count", 0)
                     path_hints = resolution.get("path_hints") or []
+                    # Audit P4 \u2014 per-path hint map. Fallback to the flat
+                    # ``path_hints`` list (legacy callers may still
+                    # produce it) when the map isn't present, but this
+                    # is the canonical source post-unification.
+                    path_hint_map: dict[str, str] = resolution.get("path_hint_map") or {}
 
                     if path_hints:
                         for hint in path_hints:
@@ -559,19 +564,29 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                     # failed. Per-server outcome counters in ``outcome``
                     # carry the precise breakdown \u2014 this row is the
                     # job-level summary line.
-                    unresolved_detail = (
-                        path_hints[0]
-                        if path_hints
-                        else "file may not be scanned yet, or path mappings in Settings may need adjusting"
-                    )
+                    generic_detail = "file may not be scanned yet, or path mappings in Settings may need adjusting"
+                    # Legacy fallback: when ``path_hint_map`` isn't
+                    # populated (older payloads, single-path callers
+                    # that didn't bother building a map), fall back to
+                    # ``path_hints[0]`` for every row. Worse than
+                    # per-path correspondence but better than the
+                    # generic message \u2014 and only fires when we know
+                    # there's exactly one mismatch class in play.
+                    legacy_single_hint = path_hints[0] if path_hints and not path_hint_map else None
                     unresolved_outcome = "unresolved_vendor"
                     unresolved_label = "Not found on any configured media server"
                     for upath in unresolved_paths:
+                        # Audit P4: pick THIS path's hint, not slot 0
+                        # of the flat list. Multi-path webhooks with
+                        # different mismatches now show the right hint
+                        # on each row instead of borrowing the first
+                        # hint for everything.
+                        per_path_detail = path_hint_map.get(upath) or legacy_single_hint or generic_detail
                         job_manager.record_file_result(
                             job_id,
                             upath,
                             unresolved_outcome,
-                            f"{unresolved_label} \u2014 {unresolved_detail}",
+                            f"{unresolved_label} \u2014 {per_path_detail}",
                         )
                     is_retry = job_config.get("is_retry", False)
                     retry_attempt = int(job_config.get("retry_attempt", 0))

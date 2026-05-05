@@ -634,6 +634,72 @@ class TestStartJobAsyncSimplifiedPayload:
             f"Path-mapping mismatch hint did not surface in file_result reason; got {reason!r}"
         )
 
+    def test_multi_path_webhook_each_row_gets_its_own_hint(self, app, tmp_path):
+        """Audit P4 — multi-path webhook with DIFFERENT mismatches per
+        path: each file_result row must carry the hint for THAT path,
+        not slot 0 of the flat list.
+
+        Pre-fix bug: ``unresolved_detail = path_hints[0]`` smeared the
+        same hint across every row in the Files panel. A user looking
+        at a 2-path webhook (one Movies, one TV with different prefix
+        mismatches) saw both rows reporting the Movies hint — wrong
+        diagnosis on N-1 of N rows.
+        """
+        from media_preview_generator.web.jobs import get_job_manager
+        from media_preview_generator.web.routes.job_runner import _start_job_async
+
+        movies_hint = "Possible prefix mismatch: webhook sends '/mnt/movies' …"
+        tv_hint = "Possible prefix mismatch: webhook sends '/mnt/tv' …"
+
+        def fake_run_processing(config, selected_gpus, **kwargs):
+            return {
+                "outcome": {"generated": 0, "failed": 0},
+                "webhook_resolution": {
+                    "unresolved_paths": ["/mnt/movies/Foo.mkv", "/mnt/tv/Bar.mkv"],
+                    "skipped_paths": [],
+                    "resolved_count": 0,
+                    "total_paths": 2,
+                    "path_hints": [movies_hint, tv_hint],
+                    "path_hint_map": {
+                        "/mnt/movies/Foo.mkv": movies_hint,
+                        "/mnt/tv/Bar.mkv": tv_hint,
+                    },
+                },
+            }
+
+        with (
+            app.app_context(),
+            patch(
+                "media_preview_generator.jobs.orchestrator.run_processing",
+                side_effect=fake_run_processing,
+            ),
+        ):
+            job = get_job_manager().create_job(library_name="Movies", config={})
+            _start_job_async(
+                job.id,
+                config_overrides={
+                    "webhook_paths": ["/mnt/movies/Foo.mkv", "/mnt/tv/Bar.mkv"],
+                    "webhook_retry_count": 0,
+                },
+            )
+
+        results = get_job_manager().get_file_results(job.id)
+        by_path = {r["file"]: r for r in results}
+
+        assert "/mnt/movies/Foo.mkv" in by_path and "/mnt/tv/Bar.mkv" in by_path, (
+            f"both unresolved paths must produce file_result rows; got {list(by_path.keys())!r}"
+        )
+        movies_reason = by_path["/mnt/movies/Foo.mkv"].get("reason") or ""
+        tv_reason = by_path["/mnt/tv/Bar.mkv"].get("reason") or ""
+        assert "/mnt/movies" in movies_reason, (
+            f"Movies row must show Movies hint, not the TV one. row.reason={movies_reason!r}"
+        )
+        assert "/mnt/tv" in tv_reason, (
+            f"TV row must show TV hint, not the Movies one. row.reason={tv_reason!r}. "
+            "This is the audit-P4 regression: pre-fix the row would show whatever "
+            "hint landed at path_hints[0] regardless of which path it's about."
+        )
+
     def test_legacy_resolution_source_field_absence_does_not_crash(self, app, tmp_path):
         """A payload missing ``resolution_source`` must not raise — the
         result handler used to do ``resolution.get('resolution_source') or 'plex'``

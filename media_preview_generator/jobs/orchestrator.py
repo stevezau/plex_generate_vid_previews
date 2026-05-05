@@ -1306,25 +1306,28 @@ def _format_outcome_summary(aggregate_outcome: dict) -> str:
     return ", ".join(parts) if parts else "no items processed"
 
 
-def _build_path_mapping_mismatch_hints(unresolved_paths: list[str], server_configs: list) -> list[str]:
-    """Detect likely path-mapping mismatches and return user-facing hints.
+def _build_path_mapping_mismatch_hints(unresolved_paths: list[str], server_configs: list) -> dict[str, str]:
+    """Detect likely path-mapping mismatches and return per-path hints.
+
+    Audit P4 fix — previously returned ``list[str]``; the consumer
+    (``job_runner.py``) used ``hints[0]`` for every unresolved row, so
+    a multi-path webhook with different mismatches showed the SAME
+    hint on every row (often the wrong one). Returning a dict keyed
+    by the originating path lets each row pick its own hint.
 
     For each unresolved webhook path, walks every configured server's
-    library remote_paths and looks for a Plex/Emby/Jellyfin location
-    that's a path-boundary substring of the webhook path — the
-    fingerprint of "Sonarr/Radarr is reporting one prefix but the
-    server stores another." When found, returns a hint string the
+    library remote_paths and looks for a location that's a
+    path-boundary substring of the webhook path — the fingerprint of
+    "Sonarr/Radarr is reporting one prefix but the server stores
+    another." When found, the dict entry contains a hint string the
     file_result row can show in place of the generic "Not found"
-    message.
-
-    Returns an empty list when no mismatches are detectable (e.g. the
-    webhook path is genuinely outside every library, or the user
-    already has a covering mapping).
+    message. Paths with no detectable mismatch are simply absent from
+    the dict (the caller should fall back to a generic message).
     """
     if not unresolved_paths or not server_configs:
-        return []
+        return {}
 
-    from ..plex_client import _detect_path_prefix_mismatches, _mismatch_covered_by_mappings
+    from ..plex_client import _mismatch_covered_by_mappings
 
     locations: list[str] = []
     location_owners: dict[str, list[tuple[str, list[dict]]]] = {}
@@ -1342,46 +1345,71 @@ def _build_path_mapping_mismatch_hints(unresolved_paths: list[str], server_confi
                 location_owners.setdefault(norm_loc, []).append((cfg.name or cfg.id, list(cfg.path_mappings or [])))
 
     if not locations:
-        return []
+        return {}
 
-    mismatches = _detect_path_prefix_mismatches(unresolved_paths, locations)
-    hints: list[str] = []
-    for webhook_pfx, server_pfx in mismatches:
-        # ``server_pfx`` is the parent of the matched library location,
-        # so we look up direct owners of the original location AND any
-        # whose library lives under ``server_pfx``. Either coverage
-        # path counts.
-        candidate_owners: list[tuple[str, list[dict]]] = []
-        for loc, owners_list in location_owners.items():
-            if loc == server_pfx or loc.startswith(server_pfx.rstrip("/") + "/"):
-                candidate_owners.extend(owners_list)
+    # Longest-first so more-specific library locations match before
+    # broader ones (e.g. /media/tv before /media so the hint suggests
+    # the closer parent).
+    norm_locations = sorted({loc for loc in locations}, key=len, reverse=True)
+    all_mappings = [mappings for owners_list in location_owners.values() for _, mappings in owners_list]
 
-        owner_covers = any(
-            _mismatch_covered_by_mappings(webhook_pfx, server_pfx, mappings) for _, mappings in candidate_owners
-        )
-        if owner_covers:
-            hints.append(
-                f"Path mapping '{webhook_pfx}' → '{server_pfx}' is configured but file not found "
-                "(may not be indexed yet)"
-            )
-            continue
+    hints: dict[str, str] = {}
+    for upath in unresolved_paths:
+        upath_norm = upath.replace("\\", "/")
+        upath_lower = upath_norm.lower()
+        for server_loc in norm_locations:
+            loc_lower = server_loc.lower()
+            idx = upath_lower.find(loc_lower)
+            if idx <= 0:
+                continue
+            # Path-boundary check — /media/tv must not match /media/tv2.
+            end_idx = idx + len(loc_lower)
+            if end_idx < len(upath_lower) and upath_lower[end_idx] != "/":
+                continue
 
-        # Mapping might be configured on a non-owning server (the
-        # other-server-has-it-but-not-this-one diagnostic).
-        all_mappings = [mappings for owners_list in location_owners.values() for _, mappings in owners_list]
-        other_covers = any(_mismatch_covered_by_mappings(webhook_pfx, server_pfx, m) for m in all_mappings)
-        if other_covers:
-            hints.append(
-                f"Path mapping '{webhook_pfx}' → '{server_pfx}' is configured on a different server "
-                "but the owning server is missing it — add the mapping there too in Settings → "
-                "Path mappings"
+            extra = upath_norm[:idx]
+            # Suggest the parent so the mapping covers sibling
+            # libraries (e.g. /media covers both /media/tv and
+            # /media/movies).
+            server_parent = os.path.dirname(server_loc)
+            if server_parent and server_parent != "/":
+                server_pfx = server_parent
+                webhook_pfx = extra.rstrip("/") + server_parent
+            else:
+                server_pfx = server_loc
+                webhook_pfx = extra.rstrip("/") + server_loc
+
+            # Coverage check: is there already a mapping that would
+            # have bridged this prefix gap on the owning server?
+            candidate_owners: list[tuple[str, list[dict]]] = []
+            for loc, owners_list in location_owners.items():
+                if loc == server_pfx or loc.startswith(server_pfx.rstrip("/") + "/"):
+                    candidate_owners.extend(owners_list)
+            owner_covers = any(
+                _mismatch_covered_by_mappings(webhook_pfx, server_pfx, mappings) for _, mappings in candidate_owners
             )
-        else:
-            hints.append(
-                f"Possible prefix mismatch: webhook sends '{webhook_pfx}' but a configured library "
-                f"uses '{server_pfx}'. Add a path mapping in Settings: server path = {server_pfx}, "
-                f"webhook path = {webhook_pfx}"
-            )
+            if owner_covers:
+                hints[upath] = (
+                    f"Path mapping '{webhook_pfx}' → '{server_pfx}' is configured but file not "
+                    "found (may not be indexed yet)"
+                )
+                break
+
+            other_covers = any(_mismatch_covered_by_mappings(webhook_pfx, server_pfx, m) for m in all_mappings)
+            if other_covers:
+                hints[upath] = (
+                    f"Path mapping '{webhook_pfx}' → '{server_pfx}' is configured on a different "
+                    "server but the owning server is missing it — add the mapping there too in "
+                    "Settings → Path mappings"
+                )
+            else:
+                hints[upath] = (
+                    f"Possible prefix mismatch: webhook sends '{webhook_pfx}' but a configured "
+                    f"library uses '{server_pfx}'. Add a path mapping in Settings: server path = "
+                    f"{server_pfx}, webhook path = {webhook_pfx}"
+                )
+            break
+
     return hints
 
 
@@ -1481,7 +1509,11 @@ def _run_webhook_paths_phase(
         )
 
     unresolved: list[str] = list(no_owners)
-    path_hints: list[str] = []
+    # Path-keyed mismatch hints (audit P4). Built per-path so a
+    # multi-path webhook with N different mismatches displays N
+    # different hints — one per file_result row, not one borrowed
+    # from slot 0.
+    path_hint_map: dict[str, str] = {}
 
     if no_owners:
         logger.info(
@@ -1495,10 +1527,10 @@ def _run_webhook_paths_phase(
         # certainly has a path-mapping mismatch (Sonarr/Radarr send
         # ``/data/Movies/X.mkv`` but Plex/Emby/Jellyfin reports
         # ``/media/Movies/X.mkv``, no mapping configured). Surfacing
-        # this hint here keeps the UX the legacy Plex-first stage gave
-        # users — without it, the file_result row just says "Not
+        # this hint per-row keeps the UX the legacy Plex-first stage
+        # gave users — without it, the file_result row just says "Not
         # found", which doesn't tell the user *why*.
-        path_hints.extend(_build_path_mapping_mismatch_hints(no_owners, server_configs))
+        path_hint_map.update(_build_path_mapping_mismatch_hints(no_owners, server_configs))
 
     if webhook_items:
         result = dispatch_items(webhook_items, "Webhook Targets")
@@ -1516,14 +1548,28 @@ def _run_webhook_paths_phase(
         # See audit H2.
         failed_count = result.get("failed", 0)
         if failed_count:
-            unresolved.extend(item.canonical_path for item in webhook_items[:failed_count])
+            failed_paths = [item.canonical_path for item in webhook_items[:failed_count]]
+            unresolved.extend(failed_paths)
+            # Pass-1 audit #6: also build hints for FAILED items, not
+            # only no_owners. A path that owners exist for but every
+            # publisher failed (e.g. publisher 5xx, source missing
+            # post-rebind) gets the same diagnostic UX as a no-owner
+            # path. Hints are best-effort — if no mismatch is detected
+            # the path simply doesn't appear in the dict and the
+            # consumer falls back to a generic message.
+            path_hint_map.update(_build_path_mapping_mismatch_hints(failed_paths, server_configs))
 
     return {
         "unresolved_paths": unresolved,
         "skipped_paths": [],
         "resolved_count": total_paths - len(unresolved),
         "total_paths": total_paths,
-        "path_hints": path_hints,
+        # Backwards-compatible: legacy callers that consumed
+        # ``path_hints`` as a list still see a flat list of hint
+        # strings (the same set, dedup-preserved). New callers read
+        # ``path_hint_map`` for per-path correspondence.
+        "path_hints": list(dict.fromkeys(path_hint_map.values())),
+        "path_hint_map": dict(path_hint_map),
     }
 
 
