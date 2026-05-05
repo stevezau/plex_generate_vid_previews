@@ -280,6 +280,88 @@ class TestScheduleRetryForUnindexed:
         # The retry callback must opt out of further auto-scheduling so
         # we don't get a runaway timer fork bomb.
         assert captured[0]["schedule_retry_on_not_indexed"] is False
+        # No pin specified at schedule time → no pin at retry time.
+        # (See test_callback_forwards_explicit_server_id_filter for the
+        # pinned variant — final-audit MED regression pin.)
+        assert captured[0]["server_id_filter"] is None
+
+    @pytest.mark.parametrize(
+        "originator_id",
+        ["plex-default", "emby-test", "jelly-test"],
+        ids=["plex-pin", "emby-pin", "jelly-pin"],
+    )
+    def test_callback_forwards_explicit_server_id_filter(self, originator_id):
+        """Final-audit MED regression pin — retry callback MUST forward
+        the explicit ``server_id_filter`` it was scheduled with, NOT
+        sniff the pin off ``config.server_id_filter``.
+
+        The dispatch pin can come from two sources:
+        1. ``config.server_id_filter`` — vendor-webhook job-config pin.
+        2. Originator-derived (worker.py per_item_pin = item.server_id) —
+           lives ONLY on the function-param ``server_id_filter`` of
+           ``process_canonical_path``, NOT on ``config``.
+
+        Pre-fix, the retry callback read ``config.server_id_filter``
+        only — case 2 silently lost the pin and the retry fanned out
+        to every owning server. Bug-blind test gap that this row
+        closes: kwargs were checked but ``server_id_filter`` wasn't.
+
+        Parametrised across Plex / Emby / Jellyfin originators per
+        ``.claude/rules/testing.md`` "cover the matrix" guidance.
+        """
+        registry = MagicMock(name="registry")
+        # Config pin DELIBERATELY not set — proves the explicit param,
+        # not config.server_id_filter, is what reaches the SUT.
+        config = MagicMock(name="config")
+        config.server_id_filter = None
+        captured: list[dict] = []
+        ran = threading.Event()
+
+        def fake_process(**kwargs):
+            captured.append(kwargs)
+            ran.set()
+            from media_preview_generator.processing.multi_server import (
+                MultiServerResult,
+                MultiServerStatus,
+            )
+
+            return MultiServerResult(
+                canonical_path=kwargs["canonical_path"],
+                status=MultiServerStatus.PUBLISHED,
+                publishers=[],
+                frame_count=0,
+                message="ok",
+            )
+
+        with (
+            patch(
+                "media_preview_generator.processing.retry_queue._BACKOFF",
+                (0.05,) + tuple([0.5] * (len(_BACKOFF) - 1)),
+            ),
+            patch(
+                "media_preview_generator.processing.multi_server.process_canonical_path",
+                side_effect=fake_process,
+            ),
+        ):
+            ok = schedule_retry_for_unindexed(
+                "/canonical/foo.mkv",
+                registry=registry,
+                config=config,
+                item_id_by_server={originator_id: "abc"},
+                attempt=1,
+                server_id_filter=originator_id,
+            )
+            assert ok is True
+            assert ran.wait(timeout=2)
+
+        assert len(captured) == 1
+        assert captured[0]["server_id_filter"] == originator_id, (
+            f"Retry MUST forward the explicit pin. "
+            f"Expected server_id_filter={originator_id!r}, "
+            f"got {captured[0]['server_id_filter']!r}. "
+            f"Without this the originator-pinned dispatch's retry fans "
+            f"out to non-originator servers — M4 contract violation."
+        )
 
     def test_chained_retry_fires_when_still_unindexed(self):
         """Retry that returns SKIPPED_NOT_INDEXED schedules a follow-up."""
@@ -566,6 +648,107 @@ class TestProcessCanonicalPathIntegration:
         # canonical_path is positional in the production call site.
         assert args and args[0] == "/x.mkv", schedule_calls
         assert kw.get("attempt") == 1
+
+    @pytest.mark.parametrize(
+        "pin",
+        [None, "plex-1", "emby-1", "jelly-1"],
+        ids=["no-pin", "plex-pin", "emby-pin", "jelly-pin"],
+    )
+    def test_dispatcher_forwards_server_id_filter_to_retry_schedule(self, _isolated_frame_cache, pin):  # noqa: PLR0913
+        # Server id matches the pin so the publisher actually runs and
+        # hits SKIPPED_NOT_INDEXED — without this, a non-matching id
+        # would short-circuit at the pin filter (NO_OWNERS) and no
+        # retry would be scheduled, masking the assertion we want.
+        # The ``no-pin`` case keeps a stable id; pin filtering is a
+        # no-op when ``pin is None``.
+        server_id_for_run = pin or "plex-1"
+        """Final-audit MED regression pin — the dispatcher's call to
+        ``schedule_retry_for_unindexed`` MUST forward the same
+        ``server_id_filter`` it ran with, so the retry inherits the
+        same dispatch pin instead of fanning out.
+
+        Pre-fix the dispatcher passed only ``config`` and the retry
+        queue read ``config.server_id_filter``. That path missed the
+        worker's originator-derived pin (worker.py case 2) which lives
+        on the function-param ``server_id_filter``, NOT on
+        ``config.server_id_filter``.
+
+        Parametrised across ``no-pin`` (peer-equal fanout retry) and
+        each vendor pin (M4 contract: pinned dispatch retries to the
+        same server only) per ``.claude/rules/testing.md`` "cover the
+        matrix" guidance.
+        """
+        registry = MagicMock()
+        server = MagicMock(id=server_id_for_run, name=server_id_for_run)
+        adapter = self._make_adapter(raise_not_indexed=True)
+
+        config = MagicMock()
+        config.working_tmp_folder = "/tmp/x"
+        config.plex_bif_frame_interval = 5
+        config.thumbnail_interval = 5
+        # Keep config.server_id_filter unset to prove the dispatcher
+        # forwards the FUNCTION-PARAMETER ``server_id_filter``, not the
+        # config attribute. (config_attr-only would mask the originator-
+        # pin case.)
+        config.server_id_filter = None
+
+        schedule_calls: list[dict] = []
+
+        def _spy_schedule(*args, **kwargs):
+            schedule_calls.append({"args": args, "kwargs": kwargs})
+            return True
+
+        with (
+            patch(
+                "media_preview_generator.processing.multi_server._resolve_publishers",
+                return_value=[(server, adapter, "rk-1")],
+            ),
+            patch(
+                "media_preview_generator.processing.multi_server._resolve_item_id_for",
+                return_value="rk-1",
+            ),
+            patch(
+                "media_preview_generator.processing.multi_server.os.path.isfile",
+                return_value=True,
+            ),
+            patch(
+                "media_preview_generator.processing.multi_server.generate_images",
+                return_value=(True, 6, "h264", 1.0, 30.0, 320),
+            ),
+            patch(
+                "media_preview_generator.processing.multi_server.os.makedirs",
+            ),
+            patch(
+                "media_preview_generator.processing.multi_server.os.listdir",
+                return_value=["00001.jpg"] * 6,
+            ),
+            patch(
+                "media_preview_generator.processing.retry_queue.schedule_retry_for_unindexed",
+                side_effect=_spy_schedule,
+            ),
+        ):
+            from media_preview_generator.processing.multi_server import process_canonical_path
+
+            process_canonical_path(
+                canonical_path="/x.mkv",
+                registry=registry,
+                config=config,
+                use_frame_cache=False,
+                server_id_filter=pin,
+            )
+
+        # The dispatcher MUST have scheduled exactly one retry with the
+        # same pin it ran with — proves the function-parameter
+        # ``server_id_filter`` is plumbed through, not just the config
+        # attribute.
+        assert len(schedule_calls) == 1, schedule_calls
+        kw = schedule_calls[0]["kwargs"]
+        assert kw.get("server_id_filter") == pin, (
+            f"Dispatcher MUST forward the function-parameter pin to retry. "
+            f"Expected server_id_filter={pin!r}, got {kw.get('server_id_filter')!r}. "
+            f"Pre-fix the dispatcher silently dropped non-config pins, breaking "
+            f"the M4 contract for originator-pinned webhooks (worker.py case 2)."
+        )
 
     def test_skipped_not_indexed_no_retry_when_disabled(self, _isolated_frame_cache):
         """schedule_retry_on_not_indexed=False suppresses scheduling.

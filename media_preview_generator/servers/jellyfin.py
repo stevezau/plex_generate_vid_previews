@@ -243,6 +243,18 @@ class JellyfinServer(EmbyApiClient):
                 item_id = str(payload.get("itemId") or "")
                 if item_id:
                     return item_id
+                # Plugin returned 200 but with an empty / missing
+                # itemId. Two known shapes: (a) a malformed plugin
+                # response, (b) plugin installed but unable to resolve.
+                # Either way the caller falls through to the base
+                # class (Pass 0/1/2) — log it so a buggy plugin
+                # silently re-paying the Pass-0 cost on every webhook
+                # is visible (final-audit LOW finding).
+                logger.debug(
+                    "Media Preview Bridge ResolvePath returned 200 with empty itemId for {!r} "
+                    "— falling back to base resolver. Plugin may be misconfigured.",
+                    remote_path,
+                )
             except (ValueError, AttributeError) as exc:
                 logger.debug(
                     "Media Preview Bridge ResolvePath returned bad JSON for {!r}: {}",

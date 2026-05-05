@@ -1254,6 +1254,12 @@ def process_canonical_path(
                 config=config,
                 item_id_by_server=item_id_by_server,
                 attempt=retry_attempt + 1,
+                # Forward the same pin this dispatch ran with — covers
+                # the worker's originator-derived case (item.server_id)
+                # which doesn't live on ``config.server_id_filter``.
+                # Without this the retry fans out to non-originator
+                # servers (final-audit MED).
+                server_id_filter=server_id_filter,
             )
 
         return MultiServerResult(

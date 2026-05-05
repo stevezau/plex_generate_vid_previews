@@ -185,6 +185,7 @@ def schedule_retry_for_unindexed(
     config: Any,
     item_id_by_server: dict[str, str] | None = None,
     attempt: int = 1,
+    server_id_filter: str | None = None,
 ) -> bool:
     """Convenience wrapper that schedules a retry calling back into process_canonical_path.
 
@@ -193,6 +194,22 @@ def schedule_retry_for_unindexed(
     avoid passing live objects whose state matters at retry time —
     fresh registry/config snapshots are taken each retry firing by the
     caller's normal path.
+
+    ``server_id_filter`` MUST match the value that was passed to the
+    original :func:`process_canonical_path` invocation that hit
+    ``SKIPPED_NOT_INDEXED``. The dispatch pin is derived from two
+    sources (final-audit MED finding):
+
+    * ``config.server_id_filter`` — set when the job-level config
+      pinned to one server (vendor webhooks always hit this path).
+    * Worker / orchestrator originator-derived pin — set when the
+      caller routed an item via its non-Plex originator's id (worker.py
+      "case 2" — ``per_item_pin = item.server_id``).
+
+    Reading the pin off ``config`` alone misses the second case; the
+    retry would then fan out to every owning server, defeating the
+    M4 contract that originator-pinned webhooks publish only to the
+    originator. Pass it explicitly here so retries inherit it.
 
     Returns the underlying scheduler's :meth:`RetryScheduler.schedule`
     result.
@@ -205,9 +222,11 @@ def schedule_retry_for_unindexed(
         from .generator import failure_scope
         from .multi_server import MultiServerStatus, PublisherStatus, process_canonical_path
 
-        # K2: include server context. config.server_display_name is set when
-        # the parent job pinned to a specific server (Phase K1 thread-through).
-        _retry_server_tag = getattr(config, "server_display_name", None)
+        # K2: include server context. ``server_id_filter`` is the
+        # authoritative pin for this retry chain — prefer it over the
+        # legacy config.server_display_name when emitting the log tag.
+        _retry_pin_id = server_id_filter or None
+        _retry_server_tag = _retry_pin_id or getattr(config, "server_display_name", None)
         if _retry_server_tag:
             logger.info("Retry #{} firing for {} (server={})", fired_attempt, path, _retry_server_tag)
         else:
@@ -236,11 +255,10 @@ def schedule_retry_for_unindexed(
                     # alongside ours.
                     schedule_retry_on_not_indexed=False,
                     retry_attempt=fired_attempt,
-                    server_id_filter=(
-                        config.server_id_filter
-                        if isinstance(getattr(config, "server_id_filter", None), str) and config.server_id_filter
-                        else None
-                    ),
+                    # Use the explicit pin captured at schedule time
+                    # — covers BOTH config-pinned (vendor webhook)
+                    # and originator-pinned (worker case 2) dispatches.
+                    server_id_filter=server_id_filter,
                 )
             except Exception as exc:
                 logger.exception(
@@ -258,6 +276,7 @@ def schedule_retry_for_unindexed(
                     config=config,
                     item_id_by_server=item_id_by_server,
                     attempt=fired_attempt + 1,
+                    server_id_filter=server_id_filter,
                 )
                 return
 
@@ -272,6 +291,7 @@ def schedule_retry_for_unindexed(
                     config=config,
                     item_id_by_server=item_id_by_server,
                     attempt=fired_attempt + 1,
+                    server_id_filter=server_id_filter,
                 )
             else:
                 logger.info("Retry chain for {} complete on attempt #{}", path, fired_attempt)
