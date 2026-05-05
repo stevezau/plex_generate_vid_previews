@@ -1468,6 +1468,18 @@ def _run_webhook_paths_phase(
     server_configs = list(registry.configs())
 
     webhook_items: list[_PI] = []
+    # Audit A3/A4 — keep a parallel canonical→raw-input map so the
+    # ``unresolved_paths`` list (consumed by job_runner.py for
+    # file_result rows + retry hint lookup keying) can stay in a
+    # SINGLE namespace (the raw webhook input) regardless of whether
+    # a path was a no_owner skip or a FAILED dispatch outcome.
+    # Without this, no_owner paths landed in unresolved_paths as raw
+    # webhook strings while FAILED paths landed as server-view
+    # canonical strings → the retry job's
+    # ``webhook_item_id_hints`` lookup (keyed by raw input) missed
+    # FAILED items entirely → retries paid the slow Jellyfin Pass 2
+    # cost instead of using the hint short-circuit.
+    canonical_to_input: dict[str, str] = {}
     no_owners: list[str] = []
     for path in paths:
         # Resolve the webhook-source path to a server-view canonical
@@ -1482,10 +1494,33 @@ def _run_webhook_paths_phase(
         # and the job lands NO_OWNERS milliseconds later despite
         # multiple servers actually owning the file.
         canonical_path, owners = _resolve_webhook_path_to_canonical(path, server_configs)
-        if not owners:
-            no_owners.append(path)
-            continue
         per_path = hints.get(path) or {}
+        if not owners:
+            # Audit A2 — when no library covers the path BUT the
+            # webhook payload supplied a vendor item-id hint (Plex
+            # ``library.new``, Emby ``ItemAdded``, Jellyfin plugin
+            # webhook all do), the dispatcher's ``_resolve_publishers``
+            # would still honour the hint via the hinted server's
+            # adapter. The orchestrator gate previously fast-skipped
+            # this case → user adds a library, gets a webhook before
+            # our cache refreshes, the very webhook that should
+            # bootstrap the new library silently does nothing.
+            #
+            # Library-cache staleness during library-add → first
+            # webhook silently dropped. Honour the hint: dispatch the
+            # path with the hinted server pinned via item.server_id;
+            # downstream resolver looks up the hinted server's id and
+            # fans out only there.
+            if not per_path:
+                no_owners.append(path)
+                continue
+            logger.debug(
+                "Webhook path {} has no library coverage but vendor hint(s) supplied "
+                "{!r} — honouring hint and dispatching anyway (library cache may be "
+                "stale post library-add).",
+                path,
+                list(per_path.keys()),
+            )
         # Hint dicts always have one entry today (vendor webhooks carry
         # exactly one server hint); a future caller passing multiple
         # gets dict-insertion order with a debug line so it's traceable.
@@ -1507,6 +1542,9 @@ def _run_webhook_paths_phase(
                 library_id=None,
             )
         )
+        # Track canonical → raw input so a FAILED outcome can be
+        # surfaced under the original webhook path (audit A3/A4).
+        canonical_to_input[canonical_path] = path
 
     unresolved: list[str] = list(no_owners)
     # Path-keyed mismatch hints (audit P4). Built per-path so a
@@ -1548,8 +1586,18 @@ def _run_webhook_paths_phase(
         # See audit H2.
         failed_count = result.get("failed", 0)
         if failed_count:
-            failed_paths = [item.canonical_path for item in webhook_items[:failed_count]]
-            unresolved.extend(failed_paths)
+            # Audit A3/A4 — surface the RAW webhook-input path in the
+            # unresolved list so the retry job's
+            # ``webhook_item_id_hints`` lookup (keyed by raw input)
+            # finds its hint. Pre-fix this stored the server-view
+            # canonical_path; the retry job's webhook_paths matched,
+            # but the hint dict (keyed by raw) didn't → retries paid
+            # full reverse-lookup cost on every retry round.
+            failed_inputs = [
+                canonical_to_input.get(item.canonical_path, item.canonical_path)
+                for item in webhook_items[:failed_count]
+            ]
+            unresolved.extend(failed_inputs)
             # Pass-1 audit #6: also build hints for FAILED items, not
             # only no_owners. A path that owners exist for but every
             # publisher failed (e.g. publisher 5xx, source missing
@@ -1557,7 +1605,7 @@ def _run_webhook_paths_phase(
             # path. Hints are best-effort — if no mismatch is detected
             # the path simply doesn't appear in the dict and the
             # consumer falls back to a generic message.
-            path_hint_map.update(_build_path_mapping_mismatch_hints(failed_paths, server_configs))
+            path_hint_map.update(_build_path_mapping_mismatch_hints(failed_inputs, server_configs))
 
     return {
         "unresolved_paths": unresolved,

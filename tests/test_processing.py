@@ -588,6 +588,119 @@ class TestMultiServerGuards:
         # process_canonical_path (verified via a downstream contract test
         # in test_jobs.py / test_dispatcher_*).
 
+    def test_failed_dispatch_returns_raw_webhook_path_not_canonical(self, tmp_path):
+        """Audit A3/A4 — when a webhook arrives in source view
+        (``/data/Movies/X.mkv``), gets translated to a server-view
+        canonical (``/data_16tb/Movies/X.mkv``), and dispatch reports
+        a FAILED outcome, the unresolved_paths list must store the
+        RAW webhook input (``/data/...``), not the translated
+        canonical. Retry jobs key webhook_item_id_hints by the raw
+        input; a mixed-namespace list silently drops hints on retry.
+        """
+        config = _make_config(tmp_path, webhook_paths=["/data/Movies/X.mkv"])
+
+        with (
+            patch(f"{MODULE}.plex_server"),
+            patch(f"{MODULE}.WorkerPool") as MockPool,
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+        ):
+            # Simulate dispatch returning FAILED for the item.
+            MockPool.return_value.process_items_headless.return_value = _pool_result(
+                completed=0,
+                failed=1,
+            )
+            mock_sm.return_value.get.return_value = [
+                {
+                    "id": "plex-1",
+                    "type": "plex",
+                    "enabled": True,
+                    "libraries": [
+                        {"id": "1", "name": "Movies", "remote_paths": ["/data_16tb/Movies"], "enabled": True}
+                    ],
+                    "path_mappings": [
+                        {
+                            "plex_prefix": "/data_16tb",
+                            "local_prefix": "/data_16tb",
+                            "webhook_prefixes": ["/data"],
+                        }
+                    ],
+                },
+            ]
+            result = run_processing(config, selected_gpus=[])
+
+        # The orchestrator translated the webhook path to
+        # ``/data_16tb/Movies/X.mkv`` for the ProcessableItem, but the
+        # FAILED outcome must be reported against the RAW input
+        # ``/data/Movies/X.mkv`` so retry hint keying still works.
+        resolution = result.get("webhook_resolution") or {}
+        unresolved = resolution.get("unresolved_paths") or []
+        assert "/data/Movies/X.mkv" in unresolved, (
+            f"FAILED dispatch must surface the raw webhook input in unresolved_paths "
+            f"so retry hint keying matches; got {unresolved!r}. "
+            "Audit A3/A4: a mixed-namespace list silently breaks the retry flow."
+        )
+        # And the canonical (translated) form must NOT be in the list
+        # — that's the namespace-mixing bug the audit flagged.
+        assert "/data_16tb/Movies/X.mkv" not in unresolved, (
+            f"Server-view canonical leaked into unresolved_paths; namespace mixing. got {unresolved!r}"
+        )
+
+    def test_vendor_hint_dispatches_even_when_library_cache_stale(self, tmp_path):
+        """Audit A2 — when a webhook arrives with a vendor item-id hint
+        (Plex/Emby/Jellyfin native plugin) but the library cache hasn't
+        caught up to the new library yet, the orchestrator must
+        DISPATCH (not fast-skip). The dispatcher's downstream
+        ``_resolve_publishers`` honours the hint via the hinted
+        server's adapter, so the publish still works.
+
+        Pre-fix: orchestrator fast-skipped because no library covers
+        the path → the very webhook that should bootstrap a freshly-
+        added library silently did nothing. User had to wait for the
+        library-cache refresh + a re-fired webhook.
+        """
+        config = _make_config(
+            tmp_path,
+            webhook_paths=["/data/freshly_added_library/X.mkv"],
+        )
+        # Vendor hint says "this is item k1 on plex-1" — even though
+        # plex-1 has no libraries cached yet that cover this path.
+        config.webhook_item_id_hints = {"/data/freshly_added_library/X.mkv": {"plex-1": "k1"}}
+
+        with (
+            patch(f"{MODULE}.plex_server"),
+            patch(f"{MODULE}.WorkerPool") as MockPool,
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+        ):
+            MockPool.return_value.process_items_headless.return_value = _pool_result(completed=1)
+            # Plex configured but its libraries don't cover the
+            # webhook path — staleness simulated by an unrelated
+            # library entry.
+            mock_sm.return_value.get.return_value = [
+                {
+                    "id": "plex-1",
+                    "type": "plex",
+                    "enabled": True,
+                    "libraries": [{"id": "1", "name": "Movies", "remote_paths": ["/data/movies"], "enabled": True}],
+                    "path_mappings": [],
+                },
+            ]
+            run_processing(config, selected_gpus=[])
+
+        # The path was DISPATCHED despite no library coverage. The
+        # ProcessableItem carries the hint so the dispatcher can
+        # publish via plex-1's adapter directly.
+        MockPool.return_value.process_items_headless.assert_called_once()
+        items = MockPool.return_value.process_items_headless.call_args.args[0]
+        assert len(items) == 1, (
+            f"Expected one dispatched item; got {len(items)}. Audit A2: a vendor hint "
+            "for a path with no library coverage must STILL dispatch — the dispatcher's "
+            "_resolve_publishers honours the hint."
+        )
+        assert items[0].canonical_path == "/data/freshly_added_library/X.mkv"
+        assert items[0].item_id_by_server == {"plex-1": "k1"}, (
+            f"Vendor hint must propagate to ProcessableItem.item_id_by_server; got {items[0]!r}"
+        )
+
     def test_webhook_path_no_owners_fast_skips(self, tmp_path):
         """No enabled server claims the path → orchestrator fast-skips
         with no worker pickup. Without this gate the path would still hit
