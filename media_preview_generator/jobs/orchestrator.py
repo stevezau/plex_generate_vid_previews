@@ -317,7 +317,7 @@ def _dispatch_processable_items(
     import threading
     from concurrent.futures import ThreadPoolExecutor
 
-    from ..processing.generator import _notify_file_result
+    from ..processing.generator import _notify_file_result, failure_scope
     from ..processing.multi_server import process_canonical_path
     from ..servers.base import ServerType
 
@@ -774,39 +774,50 @@ def _dispatch_processable_items(
             # captures status changes; periodic snapshots come from the
             # dispatcher poll thread (1Hz throttled).
 
-        try:
-            result = process_canonical_path(
-                canonical_path=item.canonical_path,
-                registry=registry,
-                config=config,
-                item_id_by_server=item.item_id_by_server or None,
-                bundle_metadata_by_server=item.bundle_metadata_by_server or None,
-                gpu=gpu_type,
-                gpu_device_path=gpu_device,
-                progress_callback=_slot_progress_callback,
-                cancel_check=cancel_check,
-                server_id_filter=per_item_pin,
-                regenerate=bool(getattr(config, "regenerate_thumbnails", False)),
-            )
-            return (worker_label, result)
-        except Exception as exc:
-            logger.warning(
-                "Multi-server {}: per-item processing failed for {!r} ({}: {}). "
-                "Other items in this run will still be processed.",
-                label,
-                item.canonical_path,
-                type(exc).__name__,
-                exc,
-            )
-            return (worker_label, None)
-        finally:
-            # Release the slot (auto-removes if poller flagged it) and
-            # the concurrency permit. Order matters: free the slot
-            # first so the snapshot reflects "idle" before another
-            # thread grabs it.
-            _release_slot(slot)
-            _emit_worker_snapshot()
-            _release_concurrency()
+        # Bind the worker thread's failure-tracking scope to this
+        # job so any FFmpeg failure inside ``process_canonical_path``
+        # → ``generate_images`` → ``record_failure`` is attributed
+        # to the right job's run summary. Without this scope every
+        # FFmpeg failure on the multi-server full-scan path was
+        # logged as "Internal bookkeeping bug: failure ... reported
+        # outside an active job" — the codebase's self-flagged
+        # diagnostic. The Worker dispatch path (worker.py:_process_item)
+        # has the equivalent ``with failure_scope(self.current_job_id)``;
+        # this scan path was missing it.
+        with failure_scope(job_id):
+            try:
+                result = process_canonical_path(
+                    canonical_path=item.canonical_path,
+                    registry=registry,
+                    config=config,
+                    item_id_by_server=item.item_id_by_server or None,
+                    bundle_metadata_by_server=item.bundle_metadata_by_server or None,
+                    gpu=gpu_type,
+                    gpu_device_path=gpu_device,
+                    progress_callback=_slot_progress_callback,
+                    cancel_check=cancel_check,
+                    server_id_filter=per_item_pin,
+                    regenerate=bool(getattr(config, "regenerate_thumbnails", False)),
+                )
+                return (worker_label, result)
+            except Exception as exc:
+                logger.warning(
+                    "Multi-server {}: per-item processing failed for {!r} ({}: {}). "
+                    "Other items in this run will still be processed.",
+                    label,
+                    item.canonical_path,
+                    type(exc).__name__,
+                    exc,
+                )
+                return (worker_label, None)
+            finally:
+                # Release the slot (auto-removes if poller flagged it)
+                # and the concurrency permit. Order matters: free the
+                # slot first so the snapshot reflects "idle" before
+                # another thread grabs it.
+                _release_slot(slot)
+                _emit_worker_snapshot()
+                _release_concurrency()
 
     completed = 0
     # Index inputs alongside their outcomes so the per-item record can
