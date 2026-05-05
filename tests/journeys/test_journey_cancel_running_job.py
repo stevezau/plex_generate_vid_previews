@@ -247,3 +247,70 @@ class TestCancelRunningJob:
             "subsequent retry for this job id doesn't immediately self-cancel. "
             "Production: run_job's finally block calls clear_cancellation_flag."
         )
+
+    @pytest.mark.real_job_async
+    def test_cancel_then_orchestrator_bails_marks_cancelled_not_failed(self, app):
+        """User cancels a job; orchestrator independently bails (returns None).
+
+        Race scenario from the e2e batch: a user cancels a job that's in a
+        config with no usable media servers. The orchestrator's no-servers
+        bail path returns None — the legacy code marked this FAILED with a
+        red badge implying something broke. Now: if cancellation was
+        requested before run_processing returned None, ``_start_job_async``
+        prefers the user's intent and lands the job CANCELLED.
+        """
+        from media_preview_generator.web.jobs import JobStatus, get_job_manager
+        from media_preview_generator.web.routes.job_runner import _start_job_async
+
+        run_started = threading.Event()
+
+        def fake_run_processing_returns_none(config, selected_gpus, **kwargs):
+            run_started.set()
+            # Simulate the orchestrator's no-servers / connection-error bail
+            # AFTER the user has cancelled. The cancellation flag is set
+            # before we return None, so the new branch in _start_job_async
+            # should see it and prefer CANCELLED.
+            time.sleep(0.05)
+            return None
+
+        client = app.test_client()
+        with (
+            app.app_context(),
+            patch(
+                "media_preview_generator.jobs.orchestrator.run_processing",
+                side_effect=fake_run_processing_returns_none,
+            ),
+        ):
+            job = get_job_manager().create_job(library_name="Movies", config={})
+            _start_job_async(job.id, None)
+
+            assert run_started.wait(timeout=3.0), "Orchestrator was never invoked"
+
+            # Fire cancel WHILE the orchestrator is mid-bail (the 50 ms sleep
+            # in the fake gives us a window to set the flag before the None
+            # return reaches _start_job_async's `if result is None` branch).
+            cancel_response = client.post(
+                f"/api/jobs/{job.id}/cancel",
+                headers=_auth_headers(),
+            )
+            assert cancel_response.status_code == 200
+
+            assert _wait_until(
+                lambda: get_job_manager().get_job(job.id).status in (JobStatus.CANCELLED, JobStatus.FAILED),
+                timeout=5.0,
+            ), "Job never reached terminal state within 5s"
+
+        final_job = get_job_manager().get_job(job.id)
+        assert final_job is not None
+        assert final_job.status is JobStatus.CANCELLED, (
+            f"Cancel-then-bail must land CANCELLED, not {final_job.status}. "
+            "A user who clicked Stop should not see a red FAILED badge — that "
+            "implies the app broke. The new branch at _start_job_async checks "
+            "is_cancellation_requested before marking FAILED on a None result."
+        )
+        # Error field must NOT be set — the cancel path doesn't carry an
+        # error message; FAILED would have set the long Plex-outage string.
+        assert not final_job.error, (
+            f"Cancelled job must not carry an error message; got error={final_job.error!r}. "
+            "If this is non-empty, the FAILED branch fired instead of cancel_job."
+        )
