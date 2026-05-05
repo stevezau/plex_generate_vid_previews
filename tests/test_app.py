@@ -346,7 +346,7 @@ class TestRunScheduledJob:
 class TestWsgiModule:
     """Smoke test for wsgi.py module."""
 
-    def test_wsgi_importable(self):
+    def test_wsgi_importable(self, tmp_path, monkeypatch):
         """wsgi module IMPORTS cleanly + exports the WSGI app object.
 
         Audit fix — original asserted ``find_spec is not None`` which only
@@ -354,8 +354,24 @@ class TestWsgiModule:
         (e.g. circular import, missing dependency) would only show up at
         gunicorn startup, not in this test. Actually IMPORT the module
         and verify it exposes ``app`` (the WSGI callable gunicorn loads).
+
+        Environment isolation: ``wsgi.py`` calls ``create_app()`` at
+        module load, which writes ``flask_secret.key`` into ``CONFIG_DIR``
+        (default ``/config``). On CI runners that path is unwritable and
+        the import raises PermissionError. Point ``CONFIG_DIR`` at a tmp
+        dir + drop any cached wsgi module so the import re-runs against
+        the override.
         """
         import importlib
+        import sys
+
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        monkeypatch.setenv("CONFIG_DIR", str(config_dir))
+        # Force a fresh import — if a previous test (or our own re-run)
+        # left wsgi in sys.modules, ``import_module`` would return the
+        # cached module and never see the CONFIG_DIR override.
+        sys.modules.pop("media_preview_generator.web.wsgi", None)
 
         # Find spec is the cheap pre-check.
         spec = importlib.util.find_spec("media_preview_generator.web.wsgi")

@@ -88,10 +88,18 @@ jobs:
         # Bump `version:` to force a re-fetch (e.g. when Ubuntu upstream
         # ships a newer ffmpeg). Warm runs save ~25s of apt-get update +
         # download.
+        #
+        # libblas3 / liblapack3 are transitive runtime deps of ffmpeg
+        # (ldd /usr/bin/ffmpeg | grep blas confirms). The cache action
+        # only restores the explicitly-listed packages, so leaving them
+        # implicit leaves ffmpeg unable to start ("error while loading
+        # shared libraries: libblas.so.3"), which makes load_config()
+        # raise ConfigValidationError and silently kills the journey
+        # tests that drive _start_job_async → run_processing.
         uses: awalsh128/cache-apt-pkgs-action@v1
         with:
-          packages: ffmpeg mediainfo
-          version: 1
+          packages: ffmpeg mediainfo libblas3 liblapack3
+          version: 2
 
       - name: Install dependencies
         run: pip install -e ".[test]"
@@ -139,6 +147,8 @@ jobs:
           packages: >-
             ffmpeg
             mediainfo
+            libblas3
+            liblapack3
             fonts-liberation
             libasound2t64
             libatk-bridge2.0-0t64
@@ -162,7 +172,7 @@ jobs:
             libxkbcommon0
             libxrandr2
             xvfb
-          version: 2
+          version: 3
 
       - name: Install dependencies
         run: pip install -e ".[test]"
