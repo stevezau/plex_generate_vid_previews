@@ -69,7 +69,7 @@ media_preview_generator/
 - **Configuration**: `settings.json` is the sole source of truth. Env vars are one-time seed values migrated on first start. Infrastructure vars (`CONFIG_DIR`, `WEB_PORT`, `PUID`, `PGID`, `TZ`, `CORS_ORIGINS`) remain active.
 - **GPU config**: Per-GPU in settings (`gpu_config`: enabled, workers, ffmpeg_threads per device).
 - **Error handling**: Custom exceptions + `retry_plex_call()` with backoff for Plex API. `CodecNotSupportedError` for FFmpeg fallback.
-- **Commits**: Follow Conventional Commits (`feat:`, `fix:`, `docs:`, `test:`, `chore:`).
+- **Commits**: Follow Conventional Commits (`feat:`, `fix:`, `docs:`, `test:`, `chore:`). **Before creating any commit, dispatch the `Architecture Review` agent** (`.claude/agents/architecture-review.md`) against the staged diff. Block on HIGH severity findings; discuss MED before committing; LOW is informational. This catches the eight production-bug shapes that have shipped before — bug-blind tests, un-wrapped failure_scope, lazy-init races, vestigial blocking work, comments-vs-code drift.
 - **Docker awareness**: Check `utils.is_docker_environment()` for container-specific behavior.
 
 ## Security

@@ -1,25 +1,27 @@
 name: architecture-review
 
-# Runs an automated code-review agent on every push to dev (and PRs into
-# dev/main). Posts findings as a check / PR comment so regressions of
-# the kinds the human-eyeball audits caught — bug-blind tests
-# (assert_called_once without kwargs), un-wrapped failure_scope, latent
-# concurrency races — get flagged before merge instead of after.
+# OPTIONAL fallback for contributors / forks that don't go through
+# Claude Code locally. Runs the same audit prompt that the
+# ``.claude/agents/architecture-review.md`` skill applies before every
+# commit the maintainer creates via Claude Code.
 #
-# Track record from the May 2026 audit chain:
-#   * Initial audit: 8 findings    (none caught by tests)
-#   * Pass-2:        8 findings    (none caught by tests)
-#   * Arch-review #46: 3 MED + 2 LOW (none caught by tests)
-#   * Final audit:   1 MED + 1 LOW (none caught by tests)
+# THE PRIMARY PATH is the Claude Code skill — it runs as part of the
+# maintainer's existing subscription, no per-push API charge. This
+# workflow exists as a safety net for:
+#   * PRs from contributors not using Claude Code
+#   * Pushes that bypass Claude Code (force-push, direct GitHub edits)
+#   * Forks that want CI-side audits without a subscription
 #
-# Tests caught 0/11 bugs in that chain. Audit agents caught 5/11.
-# Automating audits is a force multiplier — 0 → catches the audit-shape
-# bug class without me/maintainer running them by hand.
+# Workflow no-ops cleanly when ANTHROPIC_API_KEY isn't set, so the
+# default state (no key configured) costs $0 and runs nothing.
 #
-# Required secrets:
-#   ANTHROPIC_API_KEY — Claude API key for the agent. The workflow
-#                       no-ops gracefully when the secret is absent so
-#                       forks aren't broken.
+# Cost expectation when the key IS set: ~$0.05 per push at default
+# Sonnet 4.6 pricing with the 200KB diff cap. Hard spending limits
+# can be set in Anthropic console → Plans & Billing → Spend limit.
+#
+# Required secrets (only when this workflow is desired):
+#   ANTHROPIC_API_KEY — Claude API key. Without it the workflow
+#                       silently skips (no failure, no comments).
 
 on:
   push:
