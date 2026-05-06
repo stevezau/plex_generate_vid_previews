@@ -1,0 +1,38 @@
+interactions:
+- request:
+    body: null
+    headers:
+      Accept:
+      - application/json
+      Accept-Encoding:
+      - gzip, deflate, br
+      Connection:
+      - keep-alive
+      User-Agent:
+      - python-requests/2.33.0
+      X-Emby-Token:
+      - FAKE_EMBY_TOKEN
+    method: GET
+    uri: http://fake-server/System/Info
+  response:
+    body:
+      string: '{"OperatingSystemDisplayName":"","HasPendingRestart":false,"IsShuttingDown":false,"SupportsLibraryMonitor":true,"WebSocketPortNumber":8096,"CompletedInstallations":[],"CanSelfRestart":true,"CanLaunchWebBrowser":false,"ProgramDataPath":"/config/data","WebPath":"/usr/share/jellyfin/web","ItemsByNamePath":"/config/data/metadata","CachePath":"/config/cache","LogPath":"/config/log","InternalMetadataPath":"/config/data/metadata","TranscodingTempPath":"/config/cache/transcodes","CastReceiverApplications":[{"Id":"F007D354","Name":"Stable"},{"Id":"6F511C87","Name":"Unstable"}],"HasUpdateAvailable":false,"EncoderLocation":"System","SystemArchitecture":"X64","LocalAddress":"http://127.0.0.1:8097","ServerName":"FAKE_SERVER_NAME","Version":"10.9.11","OperatingSystem":"","Id":"88914c1f7a9d4956b906e09494961ae2"}'
+    headers:
+      Content-Type:
+      - application/json; charset=utf-8
+      Date:
+      - Wed, 06 May 2026 03:44:31 GMT
+      Server:
+      - Kestrel
+      Transfer-Encoding:
+      - chunked
+      Vary:
+      - Accept-Encoding
+      X-Response-Time-ms:
+      - '12.1145'
+      content-length:
+      - '804'
+    status:
+      code: 200
+      message: OK
+version: 1

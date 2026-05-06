@@ -79,6 +79,28 @@ class TestJellyfinTrickplayRegistrationContract:
         jellyfin_under_test._trigger_item_refresh("MPG_FAKE_ITEM_ID_99999")
 
 
+class TestJellyfinConnectionContract:
+    """Contract pin for ``JellyfinServer.test_connection``."""
+
+    def test_connect_returns_identity_for_test_stack(self, jellyfin_under_test):
+        result = jellyfin_under_test.test_connection()
+        assert result.ok, f"connect failed: {result.message!r}"
+        assert result.server_id, "test_connection must surface server_id from /System/Info"
+
+
+class TestJellyfinListLibrariesContract:
+    """Contract pin for ``JellyfinServer.list_libraries``."""
+
+    def test_lists_test_stack_movies_library(self, jellyfin_under_test):
+        libs = jellyfin_under_test.list_libraries()
+        assert libs, "test_stack must have at least one library"
+        movies = [lib for lib in libs if any(p.startswith("/jf-media/Movies") for p in lib.remote_paths)]
+        assert movies, (
+            f"expected a Movies library at /jf-media/Movies; got {[(lib.id, lib.name, lib.remote_paths) for lib in libs]!r}"
+        )
+        assert movies[0].id
+
+
 class TestJellyfinTriggerPathRefreshContract:
     """Contract pin for ``JellyfinServer._trigger_path_refresh``.
 

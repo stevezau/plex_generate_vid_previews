@@ -115,6 +115,42 @@ class TestEmbyResolveOnePathContract:
         assert item_id is None
 
 
+class TestEmbyConnectionContract:
+    """Contract pin for ``EmbyServer.test_connection``.
+
+    Hits ``GET /System/Info`` and parses ``Id`` / ``ServerName`` /
+    ``Version``. Pre-fix a regression that pointed at the public
+    ``/System/Info/Public`` (no auth) would silently swallow auth
+    failures and report "ok" without the right token. Cassette pins
+    both the URL (the authenticated `/System/Info` variant) and the
+    JSON response shape.
+    """
+
+    def test_connect_returns_identity_for_test_stack(self, emby_under_test):
+        result = emby_under_test.test_connection()
+        assert result.ok, f"connect failed: {result.message!r}"
+        assert result.server_id, "test_connection must surface server_id from /System/Info"
+
+
+class TestEmbyListLibrariesContract:
+    """Contract pin for ``EmbyServer.list_libraries``.
+
+    Walks ``GET /Library/VirtualFolders`` and maps the response to
+    our Library dataclass. A regression that misnames the Locations
+    field, or drops the CollectionType→kind mapping, shows up as
+    "no libraries found" silent failures.
+    """
+
+    def test_lists_test_stack_movies_library(self, emby_under_test):
+        libs = emby_under_test.list_libraries()
+        assert libs, "test_stack must have at least one library"
+        movies = [lib for lib in libs if any(p.startswith("/em-media/Movies") for p in lib.remote_paths)]
+        assert movies, (
+            f"expected a Movies library at /em-media/Movies; got {[(lib.id, lib.name, lib.remote_paths) for lib in libs]!r}"
+        )
+        assert movies[0].id, "library.id must be populated from VirtualFolder ItemId"
+
+
 class TestEmbyTriggerPathRefreshContract:
     """Contract pin for ``EmbyServer._trigger_path_refresh``.
 

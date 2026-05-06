@@ -183,6 +183,49 @@ class TestGetBundleMetadataContract:
         )
 
 
+class TestConnectionContract:
+    """Contract pin for ``PlexServer.test_connection``.
+
+    Probes ``GET /`` and parses the MediaContainer response for
+    machineIdentifier, friendlyName, version. A regression that
+    points at a different endpoint (e.g. ``/identity``, which Plex
+    also serves but with a different shape) would silently lose
+    the version + friendlyName fields. Cassette pins the URL +
+    response shape simultaneously.
+    """
+
+    def test_connect_returns_identity_for_test_stack(self, plex_server_under_test):
+        result = plex_server_under_test.test_connection()
+        assert result.ok, f"connect failed: {result.message!r}"
+        # ``server_id`` (machineIdentifier) is scrubbed to FAKE_PLEX_MID
+        # in committed cassettes; assertion is on PRESENCE not value.
+        assert result.server_id, "test_connection must surface server_id from MediaContainer"
+
+
+class TestListLibrariesContract:
+    """Contract pin for ``PlexServer.list_libraries``.
+
+    Walks ``plex.library.sections`` (plexapi calls
+    ``/library/sections``) and maps the Directory entries to our
+    Library dataclass. A regression that drops the ``key`` or
+    ``locations`` mapping shows up as missing libraries / wrong
+    library ids in the dispatch — exactly the class of bug that
+    causes "this file isn't owned by anyone" silent skips.
+    """
+
+    def test_lists_movies_library_from_test_stack(self, plex_server_under_test):
+        libs = plex_server_under_test.list_libraries()
+        assert libs, "test_stack must have at least one library"
+        # The test stack mounts /media/Movies as a Plex Movies
+        # section. Find it by name OR by the location prefix.
+        movies = [
+            lib for lib in libs if lib.name == "Movies" or any(p.startswith("/media/Movies") for p in lib.remote_paths)
+        ]
+        assert movies, f"expected a Movies library; got {[(lib.id, lib.name, lib.remote_paths) for lib in libs]!r}"
+        assert movies[0].id, "library.id must be populated from Directory.key"
+        assert movies[0].remote_paths, "library.remote_paths must be populated from Location entries"
+
+
 class TestTriggerPathRefreshContract:
     """Contract pin for ``PlexServer._trigger_path_refresh``.
 
