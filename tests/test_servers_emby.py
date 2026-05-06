@@ -516,6 +516,118 @@ class TestResolveRemotePathToItemIdViaExactPath:
             assert req.call_args_list[0].kwargs["params"]["Path"] == "/missing.mkv"
 
 
+class TestFindOwningLibraryId:
+    """Coverage gap closer (mutation #1 sweep) — pre-fix this function
+    had ZERO direct tests. Mutation testing on ``_embyish.py`` showed
+    surviving mutations on the prefix-match boolean (line 463) and
+    the basename-check chain inside the resolver — meaning a
+    regression to the library-scoping logic would have shipped silent.
+
+    The function is the load-bearing fast-path for Pass-0: it returns
+    the ``ParentId`` so the NameStartsWith query gets scoped to one
+    library (~150ms cold) instead of unscoped against every library
+    on the server (~30s cold on a 200K-item index). A bug here =
+    every Emby/Jellyfin reverse-lookup falls back to the slow path.
+    """
+
+    def _emby_with_libs(self, *libs):
+        return EmbyServer(_emby_config(libraries=list(libs)))
+
+    def test_exact_match_returns_library_id(self):
+        emby = self._emby_with_libs(
+            Library(id="lib-tv", name="TV", remote_paths=("/data/TV",), kind="tvshows"),
+        )
+        # rp == loc_norm branch (the exact-equality side of the OR).
+        assert emby._find_owning_library_id("/data/TV") == "lib-tv"
+
+    def test_prefix_match_returns_library_id(self):
+        emby = self._emby_with_libs(
+            Library(id="lib-tv", name="TV", remote_paths=("/data/TV",), kind="tvshows"),
+        )
+        # rp.startswith(loc_norm + "/") branch — the OTHER half of
+        # the OR. Mutation testing showed this branch was not
+        # exercised pre-sweep.
+        assert emby._find_owning_library_id("/data/TV/Show/Season 01/X.mkv") == "lib-tv"
+
+    def test_partial_overlap_does_not_match(self):
+        # Critical contract: ``/data/TV-Archive`` must NOT match
+        # location ``/data/TV`` — startswith would say yes without
+        # the trailing-slash discriminator.
+        emby = self._emby_with_libs(
+            Library(id="lib-tv", name="TV", remote_paths=("/data/TV",), kind="tvshows"),
+        )
+        assert emby._find_owning_library_id("/data/TV-Archive/X.mkv") is None
+
+    def test_first_matching_library_wins_when_paths_overlap(self):
+        # Multi-library setup with overlapping prefixes — first library
+        # in iteration order wins (current contract). If a future
+        # change reverses that order, this test fires loud.
+        emby = self._emby_with_libs(
+            Library(id="lib-tv-narrow", name="TV", remote_paths=("/data/TV/Special",), kind="tvshows"),
+            Library(id="lib-tv-wide", name="TV", remote_paths=("/data/TV",), kind="tvshows"),
+        )
+        # Both libraries match /data/TV/Special/X.mkv via different
+        # rules; first-listed wins.
+        assert emby._find_owning_library_id("/data/TV/Special/X.mkv") == "lib-tv-narrow"
+
+    def test_empty_remote_paths_skipped(self):
+        # ``loc_norm and ...`` short-circuit — if remote_paths is
+        # empty/None, the and-clause stops the prefix check from
+        # matching anything (otherwise startswith("") would match
+        # every path).
+        emby = self._emby_with_libs(
+            Library(id="lib-empty", name="Empty", remote_paths=(), kind="movies"),
+            Library(id="lib-tv", name="TV", remote_paths=("/data/TV",), kind="tvshows"),
+        )
+        # The empty-paths library doesn't claim anything; the TV
+        # library still matches its own location.
+        assert emby._find_owning_library_id("/data/TV/X.mkv") == "lib-tv"
+        # And a path no library claims returns None (NOT lib-empty).
+        assert emby._find_owning_library_id("/orphan/X.mkv") is None
+
+    def test_no_libraries_configured_returns_none(self):
+        # Cold-start contract: when libraries cache is empty, return
+        # None so the caller falls back to the legacy unscoped
+        # search instead of incorrectly short-circuiting.
+        emby = EmbyServer(_emby_config(libraries=[]))
+        assert emby._find_owning_library_id("/data/TV/X.mkv") is None
+
+    def test_empty_path_returns_none(self):
+        emby = self._emby_with_libs(
+            Library(id="lib-tv", name="TV", remote_paths=("/data/TV",), kind="tvshows"),
+        )
+        assert emby._find_owning_library_id("") is None
+
+    def test_normalises_backslashes_and_trailing_slash(self):
+        # Path normalisation: backslashes → forward, trailing slash
+        # stripped. Catches a regression that drops either step and
+        # silently fails to match Windows-style paths or paths with
+        # trailing slashes (which Sonarr/Radarr sometimes send).
+        emby = self._emby_with_libs(
+            Library(id="lib-tv", name="TV", remote_paths=("/data/TV",), kind="tvshows"),
+        )
+        assert emby._find_owning_library_id("/data/TV/Show/X.mkv\\") == "lib-tv"
+        assert emby._find_owning_library_id("/data/TV/Show/X.mkv/") == "lib-tv"
+
+
+class TestEmbyApiClientConfigProperty:
+    """Coverage gap closer — mutation testing showed `return self._config`
+    on EmbyApiClient.config (line 88) survives `return X -> return None`
+    because no test asserts on the property's return value.
+
+    Closing here so a future refactor that breaks the property-vs-attr
+    contract is caught loudly.
+    """
+
+    def test_config_property_returns_underlying_server_config(self):
+        cfg = _emby_config()
+        emby = EmbyServer(cfg)
+        # Identity check: the property must return the SAME ServerConfig
+        # instance, not a copy. Some downstream code (registry rebuilds,
+        # multi-server dispatch) holds the ServerConfig by identity.
+        assert emby.config is cfg
+
+
 class TestExtractTitlePrefix:
     """Unit tests for ``EmbyApiClient._extract_title_prefix``.
 

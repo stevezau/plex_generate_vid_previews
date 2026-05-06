@@ -1,0 +1,146 @@
+name: architecture-review
+
+# Runs an automated code-review agent on every push to dev (and PRs into
+# dev/main). Posts findings as a check / PR comment so regressions of
+# the kinds the human-eyeball audits caught — bug-blind tests
+# (assert_called_once without kwargs), un-wrapped failure_scope, latent
+# concurrency races — get flagged before merge instead of after.
+#
+# Track record from the May 2026 audit chain:
+#   * Initial audit: 8 findings    (none caught by tests)
+#   * Pass-2:        8 findings    (none caught by tests)
+#   * Arch-review #46: 3 MED + 2 LOW (none caught by tests)
+#   * Final audit:   1 MED + 1 LOW (none caught by tests)
+#
+# Tests caught 0/11 bugs in that chain. Audit agents caught 5/11.
+# Automating audits is a force multiplier — 0 → catches the audit-shape
+# bug class without me/maintainer running them by hand.
+#
+# Required secrets:
+#   ANTHROPIC_API_KEY — Claude API key for the agent. The workflow
+#                       no-ops gracefully when the secret is absent so
+#                       forks aren't broken.
+
+on:
+  push:
+    branches: [dev]
+    paths:
+      - 'media_preview_generator/**'
+      - 'tests/**'
+      - 'pyproject.toml'
+  pull_request:
+    branches: [dev, main]
+    paths:
+      - 'media_preview_generator/**'
+      - 'tests/**'
+      - 'pyproject.toml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write   # to comment audit findings on the PR
+
+concurrency:
+  group: arch-review-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  audit:
+    name: Architecture review (Claude agent)
+    runs-on: ubuntu-latest
+    # Skip cleanly when the API key isn't configured (forks, etc.). The
+    # workflow doesn't fail; it just doesn't run the audit.
+    if: ${{ github.repository_owner == 'stevezau' }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          # Need the merge-base for diff context.
+          fetch-depth: 0
+
+      - name: Skip if API key missing
+        id: gate
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "${ANTHROPIC_API_KEY}" ]; then
+            echo "ANTHROPIC_API_KEY not set — skipping architecture review."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compute diff scope
+        if: steps.gate.outputs.skip != 'true'
+        id: diff
+        run: |
+          # PR: diff against the base. Push: diff against the previous
+          # commit on the branch (single-commit-aware via HEAD~1).
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+            if [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+              BASE="HEAD~1"
+            fi
+          fi
+          # Concise list of changed Python files for the agent prompt.
+          CHANGED=$(git diff --name-only "${BASE}" HEAD -- 'media_preview_generator/**.py' 'tests/**.py' || true)
+          {
+            echo "base=${BASE}"
+            echo "changed_files<<EOF"
+            echo "${CHANGED}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python
+        if: steps.gate.outputs.skip != 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Anthropic SDK
+        if: steps.gate.outputs.skip != 'true'
+        run: pip install --quiet "anthropic>=0.40"
+
+      - name: Run audit
+        if: steps.gate.outputs.skip != 'true' && steps.diff.outputs.changed_files != ''
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          BASE_SHA: ${{ steps.diff.outputs.base }}
+          CHANGED_FILES: ${{ steps.diff.outputs.changed_files }}
+        run: python .github/scripts/run_architecture_review.py | tee audit-report.md
+
+      - name: Upload report
+        if: steps.gate.outputs.skip != 'true' && steps.diff.outputs.changed_files != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: architecture-review-report
+          path: audit-report.md
+          if-no-files-found: ignore
+
+      - name: Post PR comment
+        if: >-
+          steps.gate.outputs.skip != 'true'
+          && steps.diff.outputs.changed_files != ''
+          && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            if (!fs.existsSync('audit-report.md')) return;
+            const body = "## Architecture review (Claude agent)\n\n" +
+                         fs.readFileSync('audit-report.md', 'utf8');
+            // Replace any prior bot-authored review comment so PRs
+            // don't accumulate stale audits.
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const existing = await github.rest.issues.listComments({ owner, repo, issue_number });
+            const prior = existing.data.find(c =>
+              c.user.type === 'Bot' && c.body.startsWith("## Architecture review (Claude agent)")
+            );
+            if (prior) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: prior.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
