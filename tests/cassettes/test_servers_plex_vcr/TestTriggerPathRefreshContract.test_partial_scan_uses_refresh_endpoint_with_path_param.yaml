@@ -1,0 +1,79 @@
+interactions:
+- request:
+    body: null
+    headers:
+      Accept:
+      - application/json
+      Accept-Encoding:
+      - gzip, deflate, br
+      Connection:
+      - keep-alive
+      User-Agent:
+      - python-requests/2.33.0
+      X-Plex-Token:
+      - FAKE_PLEX_TOKEN
+    method: GET
+    uri: http://fake-server/library/sections
+  response:
+    body:
+      string: '{"MediaContainer": {"size": 0, "allowSync": false, "title1": "Plex
+        Library", "Directory": []}}'
+    headers:
+      Cache-Control:
+      - no-cache
+      Connection:
+      - Keep-Alive
+      Content-Type:
+      - application/json
+      Date:
+      - Wed, 06 May 2026 03:32:06 GMT
+      Keep-Alive:
+      - timeout=20
+      X-Plex-Content-Compressed-Length:
+      - '335'
+      X-Plex-Content-Original-Length:
+      - '511'
+      X-Plex-Protocol:
+      - '1.0'
+      content-length:
+      - '511'
+    status:
+      code: 200
+      message: OK
+- request:
+    body: null
+    headers:
+      Accept:
+      - '*/*'
+      Accept-Encoding:
+      - gzip, deflate, br
+      Connection:
+      - keep-alive
+      User-Agent:
+      - python-requests/2.33.0
+      X-Plex-Token:
+      - FAKE_PLEX_TOKEN
+    method: GET
+    uri: http://fake-server/library/sections/1/refresh?path=%2Fmedia%2FMovies
+  response:
+    body:
+      string: ''
+    headers:
+      Cache-Control:
+      - no-cache
+      Connection:
+      - Keep-Alive
+      Content-Length:
+      - '0'
+      Content-Type:
+      - text/html
+      Date:
+      - Wed, 06 May 2026 03:32:06 GMT
+      Keep-Alive:
+      - timeout=20
+      X-Plex-Protocol:
+      - '1.0'
+    status:
+      code: 200
+      message: OK
+version: 1

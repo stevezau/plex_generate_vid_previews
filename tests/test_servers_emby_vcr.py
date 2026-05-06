@@ -113,3 +113,26 @@ class TestEmbyResolveOnePathContract:
         """
         item_id = emby_under_test._uncached_resolve_remote_path_to_item_id(_PASS0_NEGATIVE_PATH)
         assert item_id is None
+
+
+class TestEmbyTriggerPathRefreshContract:
+    """Contract pin for ``EmbyServer._trigger_path_refresh``.
+
+    Emby's path-based scan-nudge is ``POST /Library/Media/Updated``
+    with a JSON body
+    ``{"Updates":[{"Path":"…","UpdateType":"Modified"}]}``. Same shape
+    Sonarr/Radarr's own path-update notifier uses.
+
+    A regression that renames the body field (``Path`` → ``path``,
+    ``UpdateType`` → ``update_type``, ``Updates`` → ``items``) would
+    leave Emby silent — endpoint returns 204 No Content regardless of
+    payload validity, so the only safety net is the cassette URL +
+    body shape pin.
+    """
+
+    def test_path_refresh_posts_library_media_updated(self, emby_under_test):
+        emby_under_test._trigger_path_refresh(_HIT_PATH)
+        # No return value to assert on — the cassette interaction IS
+        # the assertion. A future regression that changes the URL or
+        # body shape gets a cassette miss on replay (vcrpy enforces
+        # exact request matching for replay).

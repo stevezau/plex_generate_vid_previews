@@ -70,6 +70,13 @@ def plex_server_under_test():
     return PlexServer(cfg)
 
 
+# Synthetic test movie indexed by ``tests/integration/up.sh``. Path is
+# fixed (not env-driven) so cassette replay doesn't depend on env vars.
+_HIT_LIBRARY_REMOTE_PATH = "/media/Movies"
+_HIT_BASENAME = "Test Movie H264 (2024).mkv"
+_HIT_PATH = f"{_HIT_LIBRARY_REMOTE_PATH}/Test Movie H264 (2024)/{_HIT_BASENAME}"
+
+
 class TestResolveOnePathContract:
     """Contract pins for ``PlexServer._resolve_one_path``.
 
@@ -115,3 +122,86 @@ class TestResolveOnePathContract:
         """
         assert plex_server_under_test._resolve_one_path("") is None
         assert plex_server_under_test._resolve_one_path(None) is None  # type: ignore[arg-type]
+
+    def test_known_path_resolves_to_rating_key(self, plex_server_under_test):
+        """HIT cassette: a synthetic test movie indexed in the test stack
+        resolves to a non-empty ratingKey via ``?type=&file=``.
+
+        Pre-fix, the resolver dropped ``type=`` from the URL and Plex
+        500'd silently → every Plex publish became
+        SKIPPED_NOT_IN_LIBRARY. The mock unit test passed anyway
+        because the mock returned items regardless of URL.
+
+        Cassette pins the EXACT URL Plex accepts AND the response
+        shape (MediaContainer with a Video child carrying ratingKey).
+        Any drift on either side fails this test.
+        """
+        rating_key = plex_server_under_test._resolve_one_path(_HIT_PATH)
+        assert rating_key, (
+            f"HIT cassette must yield a ratingKey for {_HIT_PATH!r} — got {rating_key!r}. "
+            "If this fails on a fresh recording, the test stack's Movies library is "
+            "empty — re-run ./tests/integration/up.sh"
+        )
+
+
+class TestGetBundleMetadataContract:
+    """Contract pin for ``PlexServer.get_bundle_metadata``.
+
+    Production bug history (D31): ``get_bundle_metadata`` was called
+    with the full ``/library/metadata/<id>`` path instead of the bare
+    ratingKey, building ``/library/metadata//library/metadata/<id>/tree``
+    which 404'd. Plex's response was misinterpreted as "not indexed".
+    Every Plex publish from the canonical-path flow returned
+    SKIPPED_NOT_INDEXED for hours of live traffic.
+
+    This cassette pins:
+    - The exact URL we send: ``/library/metadata/<bare>/tree``.
+    - The XML response shape: ``<MediaContainer>`` with ``<Video>``
+      → ``<Media>`` → ``<Part>`` carrying ``hash`` + ``file`` attrs.
+
+    A regression that double-prefixes the URL gets a cassette miss on
+    replay; a regression that drops the hash extraction fails the
+    list-of-tuples assertion.
+    """
+
+    def test_bundle_metadata_returns_hash_and_path_for_known_item(self, plex_server_under_test):
+        # Resolve the test movie's ratingKey first via the same path
+        # the SUT uses; this proves end-to-end the rating-key → bundle
+        # chain is wired correctly.
+        rating_key = plex_server_under_test._resolve_one_path(_HIT_PATH)
+        assert rating_key, "Pre-condition: test stack must have the movie indexed"
+
+        parts = plex_server_under_test.get_bundle_metadata(rating_key)
+        assert parts, (
+            f"HIT cassette must return at least one (hash, path) tuple for ratingKey {rating_key!r}; "
+            f"got {parts!r}. Plex's /tree endpoint must return MediaPart attrs."
+        )
+        bundle_hash, remote_path = parts[0]
+        assert bundle_hash and len(bundle_hash) >= 8, f"bundle hash looks malformed: {bundle_hash!r}"
+        assert remote_path.endswith(_HIT_BASENAME), (
+            f"Expected MediaPart path to end with {_HIT_BASENAME!r}; got {remote_path!r}"
+        )
+
+
+class TestTriggerPathRefreshContract:
+    """Contract pin for ``PlexServer._trigger_path_refresh``.
+
+    Plex's targeted-scan endpoint accepts a folder path within a
+    library section via ``GET /library/sections/{id}/refresh?path=``.
+    A regression that misnames the param (e.g. ``folder=`` or
+    ``directory=``) silently no-ops because Plex returns 200 OK
+    regardless. Cassette pins the recorded URL so a param-rename
+    regression fails on replay.
+    """
+
+    def test_partial_scan_uses_refresh_endpoint_with_path_param(self, plex_server_under_test):
+        # A single _trigger_path_refresh call should fire one POST/GET
+        # against /library/sections/<id>/refresh with the path
+        # query-encoded. Cassette captures the exact request.
+        # We pass the parent dir of the test movie (Plex's scan
+        # endpoint takes a folder, not a file).
+        plex_server_under_test._trigger_path_refresh(f"{_HIT_LIBRARY_REMOTE_PATH}/Test Movie H264 (2024)")
+        # No assertion on return value (helper returns None) — the
+        # cassette interaction itself is the assertion. A future
+        # regression that renames the param mismatches the recorded
+        # URL on replay.

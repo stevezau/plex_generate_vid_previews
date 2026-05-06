@@ -1,6 +1,7 @@
 interactions:
 - request:
-    body: null
+    body: '{"Updates": [{"Path": "/em-media/Movies/Test Movie H264 (2024)/Test Movie
+      H264 (2024).mkv", "UpdateType": "Modified"}]}'
     headers:
       Accept:
       - application/json
@@ -8,18 +9,19 @@ interactions:
       - gzip, deflate, br
       Connection:
       - keep-alive
+      Content-Length:
+      - '119'
+      Content-Type:
+      - application/json
       User-Agent:
       - python-requests/2.33.0
       X-Emby-Token:
       - FAKE_EMBY_TOKEN
-    method: GET
-    uri: http://fake-server/Items?Fields=Path&IncludeItemTypes=Movie%2CEpisode&Limit=1&Path=%2Fem-media%2FMovies%2FTest+Movie+H264+%282024%29%2FTest+Movie+H264+%282024%29.mkv&Recursive=true
+    method: POST
+    uri: http://fake-server/Library/Media/Updated
   response:
     body:
-      string: '{"Items": [{"Name": "Test Movie", "ServerId": "FAKE_SERVER_ID", "Id":
-        "7", "Path": "/em-media/Movies/Test Movie H264 (2024)/Test Movie H264 (2024).mkv",
-        "RunTimeTicks": 300230000, "IsFolder": false, "Type": "Movie", "ImageTags":
-        {}, "BackdropImageTags": [], "MediaType": "Video"}], "TotalRecordCount": 1}'
+      string: ''
     headers:
       Access-Control-Allow-Headers:
       - Accept, Accept-Language, Authorization, Cache-Control, Content-Disposition,
@@ -34,16 +36,10 @@ interactions:
       - '*'
       Access-Control-Allow-Private-Network:
       - 'true'
-      Content-Length:
-      - '300'
-      Content-Type:
-      - application/json; charset=utf-8
       Cross-Origin-Resource-Policy:
       - cross-origin
       Date:
       - Wed, 06 May 2026 03:32:05 GMT
-      Expires:
-      - '-1'
       Private-Network-Access-Id:
       - FAKE_PNA_ID
       Private-Network-Access-Name:
@@ -51,6 +47,6 @@ interactions:
       Server:
       - UPnP/1.0 DLNADOC/1.50
     status:
-      code: 200
-      message: OK
+      code: 204
+      message: No Content
 version: 1

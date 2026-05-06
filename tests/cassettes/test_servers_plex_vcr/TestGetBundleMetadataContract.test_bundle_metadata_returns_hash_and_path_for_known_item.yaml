@@ -323,16 +323,56 @@ interactions:
       X-Plex-Version:
       - 4.17.1
     method: GET
-    uri: http://fake-server/library/sections/1/all?file=MPG_Cassette_Sentinel_DoesNotExist_99999.mkv&type=1
+    uri: http://fake-server/library/sections/1/all?file=Test+Movie+H264+%282024%29.mkv&type=1
   response:
     body:
       string: '<?xml version="1.0" encoding="UTF-8"?>
 
-        <MediaContainer size="0" totalSize="0" offset="0" allowSync="1" art="/:/resources/movie-fanart.jpg"
+        <MediaContainer size="1" totalSize="1" offset="0" allowSync="1" art="/:/resources/movie-fanart.jpg"
         identifier="com.plexapp.plugins.library" librarySectionID="1" librarySectionTitle="Movies"
         librarySectionUUID="448f0d70-308d-40ad-a2f4-b394c42f4c38" mediaTagPrefix="/system/bundle/media/flags/"
         mediaTagVersion="1775731696" thumb="/:/resources/movie.png" title1="Movies"
         title2="All Movies" viewGroup="movie" viewMode="65592">
+
+        <Video ratingKey="1" key="/library/metadata/1" guid="plex://movie/68e62cc50d1f89b18a4e533d"
+        slug="test-movie-g-boaf" type="movie" title="Test Movie: G-BOAF" summary=""
+        year="2025" thumb="/library/metadata/1/thumb/1777346607" art="/library/metadata/1/art/1777346607"
+        duration="30023" originallyAvailableAt="2025-01-01">
+
+        <Media id="1" duration="30023" bitrate="3250" width="1280" height="720" aspectRatio="1.78"
+        audioChannels="1" audioCodec="aac" videoCodec="h264" videoResolution="720"
+        container="mkv" videoFrameRate="NTSC" videoProfile="high" hasVoiceActivity="0">
+
+        <Part id="1" key="/library/parts/1/1777598686/file.mkv" duration="30023" file="/media/Movies/Test
+        Movie H264 (2024)/Test Movie H264 (2024).mkv" size="12213299" container="mkv"
+        indexes="sd" videoProfile="high" />
+
+        </Media>
+
+        <Image alt="Test Movie: G-BOAF" type="coverPoster" url="/library/metadata/1/thumb/1777346607"
+        />
+
+        <Image alt="Test Movie: G-BOAF" type="background" url="/library/metadata/1/art/1777346607"
+        />
+
+        <UltraBlurColors topLeft="49053c" topRight="0404f7" bottomRight="0404f7" bottomLeft="ae0343"
+        />
+
+        <Genre tag="Action" />
+
+        <Country tag="United Kingdom" />
+
+        <Director tag="James P Savage" />
+
+        <Writer tag="James P Savage" />
+
+        <Role tag="Sushma H" />
+
+        <Role tag="Steven Morrison" />
+
+        <Role tag="James P Savage" />
+
+        </Video>
 
         </MediaContainer>
 
@@ -351,15 +391,109 @@ interactions:
       X-Plex-Container-Start:
       - '0'
       X-Plex-Container-Total-Size:
-      - '0'
+      - '1'
       X-Plex-Content-Compressed-Length:
-      - '324'
+      - '918'
       X-Plex-Content-Original-Length:
-      - '483'
+      - '1856'
       X-Plex-Protocol:
       - '1.0'
       content-length:
-      - '483'
+      - '1856'
+    status:
+      code: 200
+      message: OK
+- request:
+    body: null
+    headers:
+      Accept:
+      - '*/*'
+      Accept-Encoding:
+      - gzip, deflate, br
+      Connection:
+      - keep-alive
+      User-Agent:
+      - python-requests/2.33.0
+      X-Plex-Client-Identifier:
+      - 5ebee9d0557f3fa59a5a806e4fa540bc
+      X-Plex-Device:
+      - Linux
+      X-Plex-Device-Name:
+      - PlexGeneratePreviews
+      X-Plex-Features:
+      - external-media
+      X-Plex-Language:
+      - en
+      X-Plex-Platform:
+      - Linux
+      X-Plex-Platform-Version:
+      - 6.17.0-23-generic
+      X-Plex-Product:
+      - PlexAPI
+      X-Plex-Provides:
+      - controller
+      X-Plex-Sync-Version:
+      - '2'
+      X-Plex-Token:
+      - FAKE_PLEX_TOKEN
+      X-Plex-Version:
+      - 4.17.1
+    method: GET
+    uri: http://fake-server/library/metadata/1/tree
+  response:
+    body:
+      string: '<?xml version="1.0" encoding="UTF-8"?>
+
+        <MediaContainer size="1" identifier="com.plexapp.plugins.library" mediaTagPrefix="/system/bundle/media/flags/"
+        mediaTagVersion="1775731696">
+
+        <MetadataItem id="1" title="Test Movie: G-BOAF" guid="plex://movie/68e62cc50d1f89b18a4e533d"
+        parentTitle="" instanceRatingKey="" index="1" originallyAvailableAt="2025-01-01"
+        refreshedAt="1777600880">
+
+        <MediaItem id="1">
+
+        <MediaPart id="1" file="/media/Movies/Test Movie H264 (2024)/Test Movie H264
+        (2024).mkv" size="12213299" openSubtitleHash="6e20a8b5f3b245bb" hash="9f0965f0bd293b803661ba0d9b005c055ce7f683"
+        duration="30023">
+
+        <MediaStream id="1" index="0" type="1" codec="h264" bitDepth="8" chromaLocation="left"
+        chromaSubsampling="4:2:0" codedHeight="720" codedWidth="1280" colorRange="tv"
+        frameRate="30.000" hasScalingMatrix="0" height="720" level="31" profile="high"
+        refFrames="4" requiredBandwidths="2687,2687,2687,2687,2687,2687,2687,2687"
+        scanType="progressive" width="1280" />
+
+        <MediaStream id="2" index="1" type="2" channels="1" codec="aac" requiredBandwidths="110,110,110,110,110,110,110,110"
+        samplingRate="44100" />
+
+        </MediaPart>
+
+        </MediaItem>
+
+        </MetadataItem>
+
+        </MediaContainer>
+
+        '
+    headers:
+      Cache-Control:
+      - no-cache
+      Connection:
+      - Keep-Alive
+      Content-Type:
+      - text/xml;charset=utf-8
+      Date:
+      - Wed, 06 May 2026 03:32:06 GMT
+      Keep-Alive:
+      - timeout=20
+      X-Plex-Content-Compressed-Length:
+      - '654'
+      X-Plex-Content-Original-Length:
+      - '1186'
+      X-Plex-Protocol:
+      - '1.0'
+      content-length:
+      - '1186'
     status:
       code: 200
       message: OK

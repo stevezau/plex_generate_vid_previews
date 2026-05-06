@@ -799,33 +799,105 @@ def _scrub_response_body(response):
     #   mount paths.
     # - <Video>/<Episode>/<Movie> Metadata children embed every
     #   identifying field (title, summary, file path, IMDB tag).
-    xml_substitutions = [
-        # Strip child elements wholesale — keep the opening/closing
-        # tag of MediaContainer for shape, drop everything between.
-        (
-            r"<Directory\b[^>]*>.*?</Directory>",
-            '<Directory title="FAKE" />',
-        ),
-        (r"<Directory\b[^/]*/>", '<Directory title="FAKE" />'),
-        (
-            r"<Video\b[^>]*>.*?</Video>",
-            '<Video title="FAKE" />',
-        ),
-        (r"<Video\b[^/]*/>", '<Video title="FAKE" />'),
-        (
-            r"<Episode\b[^>]*>.*?</Episode>",
-            '<Episode title="FAKE" />',
-        ),
-        (
-            r"<Movie\b[^>]*>.*?</Movie>",
-            '<Movie title="FAKE" />',
-        ),
-        (r'<Location\b[^/]*path="[^"]*"[^/]*/>', '<Location path="/FAKE" />'),
+    #
+    # **Synthetic-data carve-out**: when the response references the
+    # test-stack's synthetic media (paths starting with
+    # ``/em-media/``, ``/jf-media/``, or ``/media/Movies/Test ``), we
+    # KEEP the structural attributes that HIT cassettes need
+    # (``ratingKey``, ``key``, the ``<Media>``/``<Part>`` children
+    # carrying the bundle hash + file path). Otherwise we strip the
+    # whole element to the structural envelope. Same defensive shape
+    # as the JSON ``_all_synthetic`` carve-out for ``Items`` arrays.
+    # Detect synthetic test-stack data by Location/file/path attributes.
+    # The integration containers mount media at:
+    #   Plex: /media/Movies, /media/TV
+    #   Emby: /em-media/Movies, /em-media/TV
+    #   Jellyfin: /jf-media/Movies, /jf-media/TV
+    # The /library/sections response has only ``<Location path="/media/Movies"/>``
+    # (no file= attribute), while item-detail responses have ``<Part file="…">``.
+    # Match either to keep the synthetic carve-out applied across all
+    # request types in the cassette.
+    xml_synthetic = bool(
+        re.search(
+            r'(?:file|path)="(?:/em-media/|/jf-media/|/media/Movies(?:/|")|/media/TV(?:/|")) ?',
+            scrubbed,
+        )
+    )
+
+    # NOTE: synthetic detection MUST run before any of the scrubs
+    # below, because the always-on ``<Location path>`` scrub destroys
+    # the very attribute the detector inspects.
+
+    # Always-on scrubs (PII regardless of synthetic context):
+    always_on = [
         (r'machineIdentifier="[^"]*"', 'machineIdentifier="FAKE_PLEX_MID"'),
         (r'friendlyName="[^"]*"', 'friendlyName="FAKE_PLEX_NAME"'),
     ]
-    for pattern, replacement in xml_substitutions:
+    for pattern, replacement in always_on:
         scrubbed = re.sub(pattern, replacement, scrubbed, flags=re.DOTALL)
+    # ``<Location>`` scrub: defensive collapse on non-synthetic
+    # responses; on synthetic responses keep the structural attribute
+    # since paths like ``/media/Movies`` aren't PII.
+    if not xml_synthetic:
+        scrubbed = re.sub(r"<Location\b[^/]*path=\"[^\"]*\"[^/]*/>", '<Location path="/FAKE" />', scrubbed)
+
+    # Directory scrubbing: structural attrs (``key``, ``type``,
+    # ``size``) are needed for plexapi to enumerate sections — so HIT
+    # cassettes can call ``plex.library.sections()``. PII attrs
+    # (``title``, ``uuid``, ``agent``, ``scanner``, ``language``) get
+    # surgical scrubs. Inner ``<Location>`` elements are scrubbed by
+    # the always_on rule above.
+    #
+    # On non-synthetic responses (defensive fallback when someone
+    # records against a live server), strip Directory wholesale —
+    # title + uuid + scanner combinations can fingerprint a server.
+    if xml_synthetic:
+        # Only strip ``uuid`` (server-fingerprint) — keep ``title``,
+        # ``agent``, ``scanner``, ``language`` because plexapi's
+        # MovieSection parser dereferences those (``.lower()`` on
+        # ``agent``/``scanner``) and a missing attr blows up
+        # ``plex.library.sections()`` with NoneType errors. The
+        # test-stack library titles are generic ("Movies", "TV Shows")
+        # so they aren't PII; agent/scanner are vendor metadata
+        # category strings.
+        scrubbed = re.sub(r'(<Directory\b[^>]*?)\s+uuid="[^"]*"', r"\1", scrubbed, flags=re.DOTALL)
+    else:
+        defensive_dir = [
+            (r"<Directory\b[^>]*>.*?</Directory>", '<Directory title="FAKE" />'),
+            (r"<Directory\b[^/]*/>", '<Directory title="FAKE" />'),
+        ]
+        for pattern, replacement in defensive_dir:
+            scrubbed = re.sub(pattern, replacement, scrubbed, flags=re.DOTALL)
+
+    if not xml_synthetic:
+        # Defensive fallback: response references real (non-test-stack)
+        # paths. Strip <Video>/<Episode>/<Movie> child elements
+        # wholesale — keep the structural envelope, drop everything
+        # else (titles, summaries, file paths, IMDB tags, etc.).
+        defensive = [
+            (r"<Video\b[^>]*>.*?</Video>", '<Video title="FAKE" />'),
+            (r"<Video\b[^/]*/>", '<Video title="FAKE" />'),
+            (r"<Episode\b[^>]*>.*?</Episode>", '<Episode title="FAKE" />'),
+            (r"<Movie\b[^>]*>.*?</Movie>", '<Movie title="FAKE" />'),
+        ]
+        for pattern, replacement in defensive:
+            scrubbed = re.sub(pattern, replacement, scrubbed, flags=re.DOTALL)
+    # Synthetic-path scrub: even when the body is "safe", remove a
+    # handful of attributes that aren't relevant to the test-stack
+    # contract but accumulate noise (last-viewed timestamps, view
+    # counts, audience ratings). Field-level so it doesn't touch
+    # ratingKey / key / Media / Part / file.
+    else:
+        synthetic_attr_scrub = [
+            r'\s+lastViewedAt="[^"]*"',
+            r'\s+viewCount="[^"]*"',
+            r'\s+addedAt="[^"]*"',
+            r'\s+updatedAt="[^"]*"',
+            r'\s+audienceRating="[^"]*"',
+            r'\s+userRating="[^"]*"',
+        ]
+        for pattern in synthetic_attr_scrub:
+            scrubbed = re.sub(pattern, "", scrubbed, flags=re.DOTALL)
 
     response["body"]["string"] = scrubbed.encode("utf-8") if isinstance(raw, bytes) else scrubbed
     return response

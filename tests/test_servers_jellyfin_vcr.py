@@ -22,6 +22,9 @@ from media_preview_generator.servers import JellyfinServer, Library, ServerConfi
 pytestmark = [pytest.mark.vcr]
 
 _MISS_PATH = "/data/Movies/MPG_Cassette_Sentinel_DoesNotExist_99999.mkv"
+# Synthetic test movie indexed by ``tests/integration/up.sh``.
+_HIT_LIBRARY_REMOTE_PATH = "/jf-media/Movies"
+_HIT_PATH = f"{_HIT_LIBRARY_REMOTE_PATH}/Test Movie H264 (2024)/Test Movie H264 (2024).mkv"
 
 
 @pytest.fixture
@@ -74,3 +77,28 @@ class TestJellyfinTrickplayRegistrationContract:
         # Use a fake item_id; plugin returns 404 (no such item) but
         # the cassette captures the URL shape.
         jellyfin_under_test._trigger_item_refresh("MPG_FAKE_ITEM_ID_99999")
+
+
+class TestJellyfinTriggerPathRefreshContract:
+    """Contract pin for ``JellyfinServer._trigger_path_refresh``.
+
+    Jellyfin's path-based scan-nudge is ``POST /Library/Media/Updated``
+    with body
+    ``{"Updates":[{"Path":"…","UpdateType":"Created"}]}``.
+    Note: Jellyfin uses ``"Created"`` while Emby uses ``"Modified"``
+    — this divergence exists because Jellyfin's library monitor
+    semantics treat the path-nudge as a "new file appeared" event.
+    A regression that drops to Emby's ``"Modified"`` value still
+    works (Jellyfin accepts both) but the cassette pins the
+    documented contract.
+
+    A regression that misnames the body field would return 204
+    silently from Jellyfin, leaving the scan unnudged. Cassette is
+    the only safety net.
+    """
+
+    def test_path_refresh_posts_library_media_updated(self, jellyfin_under_test):
+        jellyfin_under_test._trigger_path_refresh(_HIT_PATH)
+        # No return value to assert on — the cassette interaction IS
+        # the assertion. A future regression that changes the URL or
+        # body shape gets a cassette miss on replay.
