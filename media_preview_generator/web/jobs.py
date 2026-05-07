@@ -1163,19 +1163,35 @@ class JobManager:
         return job
 
     def cancel_job(self, job_id: str) -> Job | None:
-        """Cancel a job."""
+        """Cancel a job.
+
+        Leaves the cancellation flag in place whenever there's a live
+        ``run_job`` thread for this id. ``run_job``'s ``finally`` block
+        clears the flag as the thread unwinds — that's the single
+        source of truth for the flag's lifetime. Clearing it here on a
+        PENDING job was a pre-J-pendinglongtail-era shortcut: back
+        when PENDING implied "no thread yet", the clear was free.
+        Now PENDING can also mean "thread running, waiting for the
+        dispatcher to hand us a worker" (see job_runner.py's removal
+        of the premature ``start_job`` call). If we cleared the flag
+        in that case, the orchestrator's ``cancel_check`` lambda would
+        flip back to False mid-loop and the job would finish its
+        enumeration before actually stopping — the exact
+        "cancel-button-does-nothing" UX we're trying to avoid.
+
+        For jobs that truly have no in-flight thread (cancelled before
+        any worker spawned) the stale flag is harmless: IDs are UUIDs
+        so nothing else will ever poll it.
+        """
         cancelled = False
         with self._lock:
             job = self._jobs.get(job_id)
             if job and job.status in (JobStatus.PENDING, JobStatus.RUNNING):
-                was_running = job.status == JobStatus.RUNNING
                 job.status = JobStatus.CANCELLED
                 job.paused = False
                 job.completed_at = datetime.now(timezone.utc).isoformat()
                 self._running_job_ids.discard(job_id)
                 self.clear_pause_flag(job_id)
-                if not was_running:
-                    self.clear_cancellation_flag(job_id)
                 self.clear_active_worker_pool(job_id)
                 self._persist_job(job)
                 self._emit_event("job_cancelled", job.to_dict())

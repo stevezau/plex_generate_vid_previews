@@ -188,16 +188,20 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                         cfg["path_count"] = len(wp)
                     job_manager.update_job_config(job_id, cfg)
 
-            # Transition PENDING -> RUNNING as soon as the worker thread
-            # begins, not after path resolution.  Previously the status
-            # flipped only at dispatch time (via _on_dispatch_start),
-            # which meant jobs with a slow Plex resolution phase (e.g.
-            # Recently Added scanner runs with 100+ paths) looked stuck
-            # in Pending even though they were actively querying Plex.
-            # start_job() is idempotent, so the later _on_dispatch_start
-            # call is a safe no-op.
-            job_manager.start_job(job_id)
-
+            # Job stays PENDING until _on_dispatch_start fires (the
+            # moment the shared dispatcher actually pulls the first
+            # item for this job from the worker pool). Before this
+            # gate existed we flipped to RUNNING as soon as the job
+            # thread woke up, which painted a misleading picture:
+            # during webhook bursts 30+ threads would all show
+            # ``running`` while only the one holding the worker pool
+            # was actually processing.
+            #
+            # To keep the UI informative while still PENDING, push a
+            # user-visible status message — the dashboard reads
+            # ``current_item`` regardless of job status, so this shows
+            # in the progress strip without claiming the job is
+            # actually running yet.
             job_manager.update_progress(
                 job_id,
                 percent=0,
