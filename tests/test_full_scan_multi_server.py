@@ -667,6 +667,74 @@ class TestEnumerationStatusBanner:
             f"missing per-server Querying banner; got {querying_messages!r}"
         )
 
+    def test_querying_banner_is_also_logged_so_it_shows_in_per_job_log(self, tmp_path, caplog):
+        """The banner must reach the per-job log panel, not just the
+        progress bar. Regression from 6901f52: the first version of the
+        banner fix only emitted via ``progress_callback``, so the
+        Querying line updated the progress bar (briefly) but never
+        landed in the per-job log tab — the log just jumped from
+        "Started job ..." to "Multi-server full scan: dispatching N".
+        Users on live job c9253a85 thought the scan was frozen for 60s.
+
+        The ``job_runner`` log_sink captures every ``logger.*`` call
+        whose thread maps to this job_id. Emitting the banner through
+        ``logger.info`` is what makes it show up in the log panel the
+        user is actually watching.
+        """
+        import logging as _std_logging
+
+        from loguru import logger as _loguru_logger
+
+        cfg_a = _server_config("srv-a", ServerType.JELLYFIN)
+        registry_mock = MagicMock()
+        registry_mock.configs.return_value = [cfg_a]
+
+        proc_a = MagicMock()
+        proc_a.list_canonical_paths.return_value = iter([])
+
+        # Bridge loguru → pytest's caplog so we can assert on the
+        # formatted message directly.
+        class _Bridge(_std_logging.Handler):
+            def emit(self, record):
+                pass
+
+        handler_id = _loguru_logger.add(
+            lambda msg: caplog.records.append(
+                _std_logging.LogRecord(
+                    name="loguru",
+                    level=_std_logging.INFO,
+                    pathname="",
+                    lineno=0,
+                    msg=msg.record["message"],
+                    args=(),
+                    exc_info=None,
+                )
+            ),
+            level="INFO",
+        )
+        try:
+            with (
+                patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+                patch("media_preview_generator.servers.ServerRegistry") as mock_registry,
+                patch(
+                    "media_preview_generator.processing.get_processor_for",
+                    return_value=proc_a,
+                ),
+            ):
+                mock_sm.return_value.get.return_value = [
+                    {"id": "srv-a", "type": "jellyfin", "enabled": True},
+                ]
+                mock_registry.from_settings.return_value = registry_mock
+                _run_full_scan_multi_server(_config(), selected_gpus=[], progress_callback=lambda *a: None)
+        finally:
+            _loguru_logger.remove(handler_id)
+
+        logged_messages = [r.msg for r in caplog.records]
+        assert any("Querying Test jellyfin library" in m for m in logged_messages), (
+            f"'Querying … library…' must be logged via logger.info so it reaches the per-job log "
+            f"file (not just the progress_callback stream). Logged messages: {logged_messages!r}"
+        )
+
     def test_dispatch_banner_emitted_with_total_after_enumeration(self, tmp_path):
         from media_preview_generator.jobs.orchestrator import _dispatch_processable_items
 

@@ -665,8 +665,18 @@ class TestJobsAPI:
         finally:
             get_settings_manager().update({"media_servers": []})
 
-    def test_create_job_does_not_infer_for_multi_library_picks(self, client):
-        """Multi-library jobs stay unpinned — dispatcher legitimately fans across servers."""
+    def test_create_job_infers_server_when_all_libraries_from_same_server(self, client):
+        """Multi-library jobs where every library belongs to one server
+        must still get pinned to that server.
+
+        Regression from job c9253a85: user picked three Plex libraries
+        (Movies + Sports + TV Shows, all on the same Plex) expecting
+        "only scan Plex", but because len(library_ids) > 1 the
+        inference was short-circuited, server_id stayed empty, and the
+        multi-server fan-out published BIFs to Emby + Jellyfin too. The
+        pin must fire whenever the library selection resolves to a
+        single server — single-library is just the trivial case.
+        """
         from media_preview_generator.web.settings_manager import get_settings_manager
 
         get_settings_manager().update(
@@ -680,8 +690,69 @@ class TestJobsAPI:
                         "libraries": [
                             {"id": "1", "name": "Movies", "enabled": True},
                             {"id": "2", "name": "TV", "enabled": True},
+                            {"id": "12", "name": "Sports", "enabled": True},
                         ],
-                    }
+                    },
+                    # Second server with DIFFERENT library IDs so a bug
+                    # that accidentally picks "first server in list"
+                    # would still pass the single-server test. This
+                    # server MUST NOT be picked for the Plex-only selection.
+                    {
+                        "id": "emby-other",
+                        "name": "Emby Other",
+                        "type": "emby",
+                        "enabled": True,
+                        "libraries": [{"id": "e1", "name": "Movies", "enabled": True}],
+                    },
+                ]
+            }
+        )
+        try:
+            with patch("media_preview_generator.web.routes.api_jobs._start_job_async") as mock_start:
+                resp = client.post(
+                    "/api/jobs",
+                    headers=_api_headers(),
+                    json={"library_ids": ["1", "2", "12"], "library_name": "3 Libraries"},
+                )
+            assert resp.status_code == 201
+            body = resp.get_json()
+            assert body["server_id"] == "plex-default", (
+                f"All 3 library_ids belong to plex-default; Job.server_id must be pinned to it. "
+                f"Got server_id={body['server_id']!r}."
+            )
+            assert body["server_type"] == "plex"
+            overrides = mock_start.call_args[0][1]
+            assert overrides.get("server_id") == "plex-default", (
+                f"Inferred server_id must propagate into dispatcher overrides so "
+                f"the publish fan-out is scoped to plex-default only — without this, "
+                f"Emby and Jellyfin still receive bundles for every path they own "
+                f"(the user-visible symptom on job c9253a85). "
+                f"Got overrides={overrides!r}."
+            )
+        finally:
+            get_settings_manager().update({"media_servers": []})
+
+    def test_create_job_stays_unpinned_when_libraries_span_servers(self, client):
+        """Mixed-server selection legitimately needs peer-equal fan-out."""
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        get_settings_manager().update(
+            {
+                "media_servers": [
+                    {
+                        "id": "plex-default",
+                        "name": "My Plex",
+                        "type": "plex",
+                        "enabled": True,
+                        "libraries": [{"id": "1", "name": "Movies", "enabled": True}],
+                    },
+                    {
+                        "id": "emby-other",
+                        "name": "My Emby",
+                        "type": "emby",
+                        "enabled": True,
+                        "libraries": [{"id": "e1", "name": "TV", "enabled": True}],
+                    },
                 ]
             }
         )
@@ -690,16 +761,15 @@ class TestJobsAPI:
                 resp = client.post(
                     "/api/jobs",
                     headers=_api_headers(),
-                    json={"library_ids": ["1", "2"], "library_name": "2 Libraries"},
+                    json={"library_ids": ["1", "e1"], "library_name": "Cross-server"},
                 )
             assert resp.status_code == 201
             body = resp.get_json()
-            assert body["server_id"] is None
+            assert body["server_id"] is None, (
+                f"Libraries spanning multiple servers must stay unpinned so the "
+                f"dispatcher can legitimately fan across both. Got server_id={body['server_id']!r}."
+            )
             assert body["server_type"] is None
-            # Audit fix — the third cell of the matrix. Production sets
-            # all three from ``_resolve_server_context``; missing the
-            # ``server_name`` assertion left a pinhole for a regression
-            # that left the stale display name attached.
             assert body["server_name"] is None
         finally:
             get_settings_manager().update({"media_servers": []})

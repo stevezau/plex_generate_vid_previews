@@ -112,6 +112,39 @@ def _infer_server_from_library_id(library_id: str) -> tuple[str | None, str | No
     return None, None, None
 
 
+def _infer_server_from_library_ids(
+    library_ids: list[str],
+) -> tuple[str | None, str | None, str | None]:
+    """Infer a single-server scope from a list of selected library ids.
+
+    If every ``library_id`` in the list maps to the same configured
+    server, return that server's attribution tuple so the caller can
+    pin the dispatch. Returns ``(None, None, None)`` when the list is
+    empty, when any id is unknown, or when the ids span multiple
+    servers (mixed selection → unpinned peer-equal dispatch is the
+    correct fall-back behaviour).
+
+    This is the multi-library generalisation of
+    :func:`_infer_server_from_library_id`. Without it, picking three
+    Plex libraries (e.g. Movies + Sports + TV Shows) leaves
+    ``server_id`` unset, ``server_id_filter`` propagates as ``None``,
+    and the multi-server dispatcher fans out every file to Emby and
+    Jellyfin too — which surprised a user who expected
+    "selected Plex libraries" to mean "only touch Plex". Reported on
+    job c9253a85.
+    """
+    if not library_ids:
+        return None, None, None
+    first = _infer_server_from_library_id(library_ids[0])
+    if not first[0]:
+        return None, None, None
+    for lid in library_ids[1:]:
+        sid, _, _ = _infer_server_from_library_id(lid)
+        if sid != first[0]:
+            return None, None, None
+    return first
+
+
 @api.route("/auth/status")
 def auth_status():
     """Check authentication status and auth method."""
@@ -312,14 +345,21 @@ def create_job():
     priority = data.get("priority", PRIORITY_NORMAL)
     server_id, server_name, server_type = _resolve_server_context(data.get("server_id"))
 
-    # D2 — when the caller didn't pass server_id but did pick exactly one
-    # library, infer the server from that library so the Jobs row gets a
-    # server chip (otherwise every "I just want TV Shows" manual scan
-    # shows up as an unlabelled "All Servers" entry the user can't tell
-    # apart from any other). Multi-library or all-libraries jobs stay
-    # unpinned because the dispatcher legitimately fans across servers.
-    if not server_id and len(library_ids) == 1:
-        server_id, server_name, server_type = _infer_server_from_library_id(library_ids[0])
+    # D2 — when the caller didn't pass server_id but picked libraries
+    # from a single server, infer the server so:
+    #   1. The Jobs row gets a server chip (otherwise every "I just
+    #      want TV Shows" manual scan renders as an unlabelled
+    #      "All Servers" entry a user can't tell apart from any other).
+    #   2. ``server_id_filter`` propagates into the dispatcher at
+    #      line ~362 below, so publishing is scoped to the selected
+    #      server. Without the pin, the multi-server fan-out publishes
+    #      to every server that owns the canonical path (found in the
+    #      wild on job c9253a85: user selected 3 Plex libraries, got
+    #      Emby + Jellyfin bundles too). When library IDs span multiple
+    #      servers the pin stays empty — true peer-equal fan-out is
+    #      the correct behaviour for a cross-server scan.
+    if not server_id and library_ids:
+        server_id, server_name, server_type = _infer_server_from_library_ids(library_ids)
 
     # Job.library_id is a display field — keep it for the single-library case
     # so the existing UI shows the ID, otherwise leave it None and let
