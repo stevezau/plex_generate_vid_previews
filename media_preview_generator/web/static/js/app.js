@@ -666,9 +666,22 @@ async function loadJobs() {
         updateJobQueue();
         renderJobPagination();
 
-        // Update active jobs section (supports multiple running jobs)
-        const runningJobs = jobs.filter(j => j.status === 'running');
-        updateActiveJobs(runningJobs);
+        // Update active jobs section. Include PENDING jobs that have
+        // a current_item message — those are in pre-dispatch work
+        // (querying Plex library, enumerating items, resolving
+        // webhook paths). Without them the Active Jobs panel would
+        // go empty for 30-120s while a large library enumerates,
+        // making the user think the job died. The "Queued — waiting
+        // for active slot" message from the concurrency gate also
+        // qualifies, so queued jobs show here too with their wait
+        // status visible — better than hiding them in the queue row.
+        const activeJobs = jobs.filter(j => {
+            if (j.status === 'running') return true;
+            if (j.status !== 'pending') return false;
+            const msg = (j.progress && j.progress.current_item) || '';
+            return msg.trim().length > 0;
+        });
+        updateActiveJobs(activeJobs);
 
         // Replay any progress events that arrived before the DOM was ready.
         for (const jid of Object.keys(_pendingProgress)) {
@@ -1814,7 +1827,20 @@ function updateActiveJobs(runningJobs) {
         return;
     }
 
-    countBadge.textContent = `${runningJobs.length} running`;
+    // Count running vs pending separately — with pending-with-progress
+    // jobs now included in this list (library enumeration / queued-at-
+    // gate), "N running" alone would lie. Show "N active" when mixed,
+    // "N running" when all actually-running, "N preparing" when all
+    // pending.
+    const runCount = runningJobs.filter(j => j.status === 'running').length;
+    const pendCount = runningJobs.length - runCount;
+    if (pendCount === 0) {
+        countBadge.textContent = `${runCount} running`;
+    } else if (runCount === 0) {
+        countBadge.textContent = `${pendCount} preparing`;
+    } else {
+        countBadge.textContent = `${runCount} running, ${pendCount} preparing`;
+    }
     countBadge.className = 'badge bg-primary pulse';
 
     let html = '';
@@ -2560,11 +2586,28 @@ async function startNewJob() {
         }
 
         selectedLibraryIds = selectedIdsLocal;
-        // Build a display name from the looked-up library names.
+        // Build a display name from the looked-up library names so the
+        // Jobs page shows which libraries were picked, not just a count.
+        // Previously multi-library selections collapsed to "3 Libraries"
+        // with no way to tell them apart — a user running two scans in
+        // a row couldn't distinguish them.
+        const pickedNames = selectedIdsLocal
+            .map(id => (libraries.find(l => l.id === id) || {}).name)
+            .filter(Boolean);
         if (selectedIdsLocal.length === 1) {
-            const lib = libraries.find(l => l.id === selectedIdsLocal[0]);
-            libraryName = lib ? lib.name : 'Selected Library';
+            libraryName = pickedNames[0] || 'Selected Library';
+        } else if (pickedNames.length === selectedIdsLocal.length) {
+            // Full names known — show them. If the joined string gets
+            // long (>60 chars), fall back to a count + first-two preview
+            // so the Jobs row doesn't become a novel.
+            const joined = pickedNames.join(', ');
+            if (joined.length <= 60) {
+                libraryName = joined;
+            } else {
+                libraryName = `${pickedNames.slice(0, 2).join(', ')} + ${pickedNames.length - 2} more`;
+            }
         } else {
+            // Some name lookups missed (race with stale library cache).
             libraryName = `${selectedIdsLocal.length} Libraries`;
         }
     }
