@@ -673,6 +673,133 @@ class TestSqliteJobsBackend:
         assert jm._storage is not None
         assert jm._storage.row_count() == 0
 
+    def test_auto_vacuum_is_incremental_so_db_does_not_grow_monotonically(self, config_dir):
+        """Without auto_vacuum, deleted rows leave freelist pages that never
+        shrink the .db file — a live case in prod showed 4 rows occupying
+        82 MB (20,067 / 20,114 pages free) after a large scan was cleared.
+        INCREMENTAL auto_vacuum lets ``_retention_tick`` reclaim those pages
+        via ``PRAGMA incremental_vacuum`` without a full rewrite.
+        """
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        mode = jm._storage._conn.execute("PRAGMA auto_vacuum").fetchone()[0]
+        assert mode == 2, (
+            f"Expected auto_vacuum=INCREMENTAL (mode 2), got mode {mode}. "
+            "If this regresses, the jobs.db will grow monotonically — after "
+            "a big scan + clear the file will stay bloated forever."
+        )
+
+    def test_existing_bloated_db_gets_vacuumed_on_first_upgrade(self, config_dir, tmp_path):
+        """A jobs.db created without auto_vacuum should be compacted on next
+        JobManager startup (that's what rescues the ~82 MB slack case
+        already sitting on the production container).
+        """
+        import sqlite3
+
+        os.makedirs(config_dir, exist_ok=True)
+        db_path = os.path.join(config_dir, "jobs.db")
+        # Simulate the pre-fix state: auto_vacuum=NONE with a bloated
+        # freelist (lots of deleted rows leaving empty pages).
+        seed = sqlite3.connect(db_path, isolation_level=None)
+        seed.execute("PRAGMA auto_vacuum=NONE")
+        seed.execute("PRAGMA journal_mode=WAL")
+        seed.execute("""
+            CREATE TABLE IF NOT EXISTS jobs (
+                id TEXT PRIMARY KEY, status TEXT NOT NULL,
+                created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT,
+                library_id TEXT, library_name TEXT, server_id TEXT,
+                server_name TEXT, server_type TEXT,
+                priority INTEGER NOT NULL DEFAULT 2,
+                paused INTEGER NOT NULL DEFAULT 0, error TEXT,
+                progress_json TEXT NOT NULL DEFAULT '{}',
+                config_json TEXT NOT NULL DEFAULT '{}',
+                publishers_json TEXT NOT NULL DEFAULT '[]',
+                parent_schedule_id TEXT NOT NULL DEFAULT ''
+            )
+        """)
+        # Create ~500 fat rows, then delete them all. Without VACUUM,
+        # the freelist grows but the file does not shrink.
+        payload = "x" * 50_000
+        for i in range(500):
+            seed.execute(
+                "INSERT INTO jobs (id, status, created_at, publishers_json) VALUES (?,?,?,?)",
+                (f"j{i}", "completed", "2020-01-01T00:00:00+00:00", payload),
+            )
+        seed.execute("DELETE FROM jobs")
+        # Checkpoint the WAL into the main file before closing so the
+        # "bloated_size" comparison is measuring real main-file slack,
+        # not pending WAL pages that'd get reclaimed on any clean shutdown.
+        seed.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        seed.close()
+        bloated_size = os.path.getsize(db_path)
+        assert bloated_size > 1_000_000, f"Test setup failure — bloated DB should be >1 MB, got {bloated_size}"
+
+        # Boot a JobManager: it must detect auto_vacuum=NONE, switch to
+        # INCREMENTAL, and VACUUM to reclaim the slack.
+        jm = JobManager(config_dir=config_dir)
+        try:
+            mode = jm._storage._conn.execute("PRAGMA auto_vacuum").fetchone()[0]
+            assert mode == 2, f"auto_vacuum must be flipped to INCREMENTAL, got {mode}"
+            compacted_size = os.path.getsize(db_path)
+            assert compacted_size < bloated_size // 10, (
+                f"Expected VACUUM to reclaim >90% of {bloated_size:,}b, "
+                f"only got down to {compacted_size:,}b — the on-startup "
+                "VACUUM call isn't running or auto_vacuum flag isn't being applied."
+            )
+        finally:
+            jm._storage.close()
+
+    def test_retention_sweep_reclaims_freelist_pages(self, config_dir):
+        """After ``_enforce_log_retention`` deletes expired jobs, the
+        ``PRAGMA incremental_vacuum`` call must reclaim the freelist
+        pages those deletes produced. Without this the .db file would
+        still grow over time despite auto_vacuum=INCREMENTAL (the flag
+        alone doesn't shrink the file — it only enables cheap
+        reclaim-on-demand).
+        """
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        db_path = os.path.join(config_dir, "jobs.db")
+
+        # Create 50 fat completed jobs, backdate them past retention,
+        # then run the retention tick manually.
+        fat_publishers = [{"server_id": f"s{i}", "counts": {"published": 9999}} for i in range(200)]
+        old_time = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
+        for i in range(50):
+            j = jm.create_job(library_name=f"old-{i}")
+            jm.start_job(j.id)
+            jm.complete_job(j.id)
+            jm._jobs[j.id].completed_at = old_time
+            jm._jobs[j.id].publishers = list(fat_publishers)
+            jm._persist_job(jm._jobs[j.id])
+        jm._storage._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        size_before = os.path.getsize(db_path)
+
+        with patch("media_preview_generator.web.settings_manager.get_settings_manager") as m:
+            m.return_value.get.return_value = 30
+            with jm._lock:
+                jm._enforce_log_retention()
+        jm._storage._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        size_after = os.path.getsize(db_path)
+        try:
+            # Confirm the rows were actually deleted (test sanity check).
+            remaining = jm._storage._conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+            assert remaining == 0, f"Retention should have deleted all 50 expired jobs, {remaining} left"
+
+            # And confirm that the reclaim actually ran — the file must
+            # shrink, not just stay flat (flat = freelist grew but
+            # incremental_vacuum never fired).
+            assert size_after < size_before, (
+                f"Retention sweep did not reclaim freelist pages: "
+                f"before={size_before:,}b after={size_after:,}b. "
+                "Check that PRAGMA incremental_vacuum is running after "
+                "retention deletes (regression: the earlier draft called "
+                "self._conn instead of self._storage._conn and the PRAGMA "
+                "fell into the except-block silently)."
+            )
+        finally:
+            jm._storage.close()
+
     def test_create_job_persists_one_row_not_a_full_file(self, config_dir):
         """The backup helper rewrites whole files; SQLite writes one row.
 
