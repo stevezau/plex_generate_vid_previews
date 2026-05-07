@@ -314,21 +314,10 @@
             <div class="modal-body">
                 <form id="newJobForm">
                     <div class="mb-3">
-                        <label for="jobServerScope" class="form-label">Media Server
-                            <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
-                               data-bs-toggle="tooltip" data-bs-placement="top"
-                               title="Limit this job to one server. Useful when the same library name (e.g. 'Movies') exists on more than one server and you only want to process one of them."></i>
-                        </label>
-                        <select class="form-select" id="jobServerScope" onchange="onJobServerChange()">
-                            <option value="">All servers (show every library)</option>
-                        </select>
-                        <div class="form-text">Pick a single server, or leave on "All servers".</div>
-                    </div>
-                    <div class="mb-3">
                         <label class="form-label">Libraries
                             <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
                                data-bs-toggle="tooltip" data-bs-placement="top"
-                               title="Tick which libraries this job should scan. Untick a library to skip it. Defaults to all libraries enabled in Settings."></i>
+                               title="Tick which libraries this job should scan. Each library shows its server in brackets — pick libraries from one server to scope the job there, or mix across servers for a cross-server scan."></i>
                         </label>
                         <div class="mb-2 d-flex justify-content-between align-items-center">
                             <div class="form-check">
@@ -346,6 +335,12 @@
                         <div id="jobLibraryList" class="ms-3 border-start ps-3" style="max-height: 240px; overflow-y: auto;">
                             <div class="text-muted small">Loading libraries...</div>
                         </div>
+                        <!-- Live scope summary: computed from the current tick state.
+                             When every ticked library lives on one server, this shows
+                             "Scanning → {ServerName} only" so the user can confirm the
+                             implicit pin before submit. Mixed server selection shows
+                             a multi-server fan-out message instead. -->
+                        <div id="jobScopeBadge" class="mt-2 small"></div>
                     </div>
                     <div class="mb-3">
                         <label class="form-label">Processing Mode

@@ -2384,75 +2384,36 @@ function showNotification(title, body, type = 'info') {
 
 // Action Functions
 function showNewJobModal() {
-    // Phase H6: server picker → multi-select libraries grouped by server.
     document.getElementById('jobLibraryAll').checked = true;
     const sortByEl = document.getElementById('jobSortBy');
     if (sortByEl) sortByEl.value = '';
 
-    _populateJobServerPicker();
-    // Render libraries from the current global cache; refreshes on server change.
-    _renderJobLibraryList(libraries, '');
+    // Always show all libraries grouped by server. The per-server scope
+    // is inferred from the tick selection at submit time (api_jobs.py's
+    // _infer_server_from_library_ids), so a separate "Media Server"
+    // picker would be redundant — one click instead of two for the
+    // common case of "tick a few libraries on one server."
+    _renderJobLibraryList(libraries);
+    _updateJobScopeBadge();
 
     const modal = new bootstrap.Modal(document.getElementById('newJobModal'));
     modal.show();
 }
 
-async function _populateJobServerPicker() {
-    const sel = document.getElementById('jobServerScope');
-    if (!sel) return;
-    try {
-        const data = await apiGet('/api/servers');
-        const servers = (data.servers || []).filter(s => s.enabled !== false);
-        sel.innerHTML = '<option value="">All servers (show every library)</option>';
-        servers.forEach(s => {
-            const opt = document.createElement('option');
-            opt.value = s.id;
-            opt.textContent = `${s.name} (${(s.type || '').toUpperCase()})`;
-            sel.appendChild(opt);
-        });
-        sel.value = '';
-    } catch (e) {
-        // Picker is optional — leave the default in place.
-    }
-}
-
-async function onJobServerChange() {
-    const sel = document.getElementById('jobServerScope');
-    if (!sel) return;
-    const serverId = sel.value;
-    try {
-        const url = serverId ? `/api/libraries?server_id=${encodeURIComponent(serverId)}` : '/api/libraries';
-        const data = await apiGet(url);
-        libraries = data.libraries || [];
-        _renderJobLibraryList(libraries, serverId);
-    } catch (e) {
-        showToast('New Job', 'Could not load libraries for the selected server', 'warning');
-    }
-}
-
-function _renderJobLibraryList(libs, filterServerId) {
+function _renderJobLibraryList(libs) {
     const listEl = document.getElementById('jobLibraryList');
     if (!listEl) return;
 
-    // Visual confirmation that the picker actually filtered the list. Reads
-    // the current selection's text directly from the picker so it matches
-    // exactly what the user clicked, including the (PLEX) / (EMBY) suffix.
     const captionEl = document.getElementById('jobLibraryListCaption');
     if (captionEl) {
-        if (filterServerId) {
-            const sel = document.getElementById('jobServerScope');
-            const serverLabel = sel ? sel.options[sel.selectedIndex].textContent : filterServerId;
-            captionEl.innerHTML = `<i class="bi bi-funnel me-1"></i>Filtered to <strong>${escapeHtml(serverLabel)}</strong> &mdash; ${(libs || []).length} librar${(libs || []).length === 1 ? 'y' : 'ies'}`;
-        } else {
-            const distinctServers = new Set();
-            for (const l of libs || []) {
-                if (l && l.server_id) distinctServers.add(l.server_id);
-            }
-            const serverCount = distinctServers.size;
-            captionEl.innerHTML = serverCount > 0
-                ? `<i class="bi bi-collection me-1"></i>Showing all servers &mdash; ${(libs || []).length} libraries across ${serverCount} server${serverCount === 1 ? '' : 's'}`
-                : '';
+        const distinctServers = new Set();
+        for (const l of libs || []) {
+            if (l && l.server_id) distinctServers.add(l.server_id);
         }
+        const serverCount = distinctServers.size;
+        captionEl.innerHTML = serverCount > 0
+            ? `<i class="bi bi-collection me-1"></i>${(libs || []).length} libraries across ${serverCount} server${serverCount === 1 ? '' : 's'}`
+            : '';
     }
     if (!libs || libs.length === 0) {
         if (librariesLoadError) {
@@ -2468,28 +2429,19 @@ function _renderJobLibraryList(libs, filterServerId) {
         return;
     }
 
-    // Group by server when "All servers" is selected — disambiguates the
-    // same-named libraries on Plex+Emby. When pinned to one server, render
-    // a flat list (no point in single-group headers).
-    if (filterServerId) {
-        listEl.innerHTML = libs.map(lib => `
-            <div class="form-check">
-                <input class="form-check-input job-library-checkbox" type="checkbox"
-                       value="${lib.id}" id="jobLib_${lib.id}" disabled>
-                <label class="form-check-label" for="jobLib_${lib.id}">
-                    ${escapeHtml(lib.name)} <span class="text-muted small">(${libraryTypeLabel(lib)})</span>
-                </label>
-            </div>
-        `).join('');
-        return;
-    }
-
-    // Group by server for the "All servers" view.
+    // Group by server so same-named libraries on different servers
+    // (e.g. "Movies" on Plex and "Movies" on Emby) show clearly
+    // distinct under their vendor header.
     const groups = new Map();
     for (const lib of libs) {
         const key = lib.server_id || '__legacy__';
         if (!groups.has(key)) {
-            groups.set(key, { server_name: lib.server_name || '', server_type: lib.server_type || '', libs: [] });
+            groups.set(key, {
+                server_id: lib.server_id || '',
+                server_name: lib.server_name || '',
+                server_type: lib.server_type || '',
+                libs: [],
+            });
         }
         groups.get(key).libs.push(lib);
     }
@@ -2501,7 +2453,9 @@ function _renderJobLibraryList(libs, filterServerId) {
         const rows = grp.libs.map(lib => `
             <div class="form-check ms-2">
                 <input class="form-check-input job-library-checkbox" type="checkbox"
-                       value="${lib.id}" id="jobLib_${lib.id}" disabled>
+                       value="${lib.id}" id="jobLib_${lib.id}"
+                       data-server-id="${escapeHtml(lib.server_id || '')}"
+                       data-server-name="${escapeHtml(lib.server_name || '')}" disabled>
                 <label class="form-check-label" for="jobLib_${lib.id}">
                     ${escapeHtml(lib.name)} <span class="text-muted small">(${libraryTypeLabel(lib)})</span>
                 </label>
@@ -2510,6 +2464,57 @@ function _renderJobLibraryList(libs, filterServerId) {
         sections.push(head + rows);
     }
     listEl.innerHTML = sections.join('');
+
+    // Refresh the scope badge whenever any library tick changes, so the
+    // user always knows which server(s) the submit will target.
+    document.querySelectorAll('.job-library-checkbox').forEach(cb => {
+        cb.addEventListener('change', _updateJobScopeBadge);
+    });
+}
+
+// Compute the computed-scope preview (one server vs. fan-out) from the
+// current tick state. Must match the server-side inference in
+// api_jobs.py::_infer_server_from_library_ids — if one diverges from the
+// other, users will see a badge that doesn't match actual behaviour.
+function _updateJobScopeBadge() {
+    const badge = document.getElementById('jobScopeBadge');
+    if (!badge) return;
+
+    const allCb = document.getElementById('jobLibraryAll');
+    if (allCb && allCb.checked) {
+        badge.innerHTML =
+            '<span class="badge bg-secondary-subtle text-secondary-emphasis border">'
+            + '<i class="bi bi-globe2 me-1"></i>Scanning every enabled library across all servers'
+            + '</span>';
+        return;
+    }
+
+    const ticked = Array.from(document.querySelectorAll('.job-library-checkbox:checked'));
+    if (ticked.length === 0) {
+        badge.innerHTML = '';
+        return;
+    }
+    const serverNames = new Set();
+    let singleServerName = '';
+    for (const cb of ticked) {
+        const sid = cb.dataset.serverId || '';
+        if (!sid) continue;
+        serverNames.add(sid);
+        singleServerName = cb.dataset.serverName || sid;
+    }
+    if (serverNames.size === 1) {
+        badge.innerHTML =
+            '<span class="badge bg-success-subtle text-success-emphasis border">'
+            + `<i class="bi bi-bullseye me-1"></i>Scanning → <strong>${escapeHtml(singleServerName)}</strong> only`
+            + '</span>';
+    } else if (serverNames.size > 1) {
+        badge.innerHTML =
+            '<span class="badge bg-info-subtle text-info-emphasis border">'
+            + `<i class="bi bi-diagram-3 me-1"></i>Scanning → <strong>${serverNames.size} servers</strong> (cross-server fan-out)`
+            + '</span>';
+    } else {
+        badge.innerHTML = '';
+    }
 }
 
 function toggleAllLibraries(checkbox) {
@@ -2520,6 +2525,7 @@ function toggleAllLibraries(checkbox) {
             cb.checked = false;
         }
     });
+    _updateJobScopeBadge();
 }
 
 // Phase H6: Select-all / None affordance for the multi-select picker.
@@ -2533,6 +2539,7 @@ function setAllLibrariesChecked(checked) {
         cb.disabled = false;
         cb.checked = checked;
     });
+    _updateJobScopeBadge();
 }
 
 async function startNewJob() {
@@ -2571,19 +2578,16 @@ async function startNewJob() {
         jobConfig.sort_by = sortBy;
     }
 
-    const serverScope = document.getElementById('jobServerScope');
-    const serverId = serverScope ? serverScope.value : '';
-
-    // Phase H6 Fix-4: send library_ids as the canonical wire shape
-    // (api_jobs.create_job already accepts both array shapes; new code prefers
-    // IDs over name lookups, which avoids the comma-join hack).
+    // No explicit server_id on the wire — api_jobs.create_job runs
+    // _infer_server_from_library_ids(selected_library_ids) and pins
+    // automatically when every tick resolves to one server. Mixed
+    // selection intentionally stays unpinned for cross-server fan-out.
     const jobPayload = {
         library_ids: selectedLibraryIds,
         library_name: libraryName,
         priority: priority,
         config: jobConfig,
     };
-    if (serverId) jobPayload.server_id = serverId;
 
     // Retry once on transient network errors ("Failed to fetch" from
     // server congestion).
