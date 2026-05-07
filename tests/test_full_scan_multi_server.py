@@ -1794,3 +1794,278 @@ class TestRealEndToEndMultiServerFullScan:
         )
         # Frame count from generate_images flowed through to the bundle.
         assert publish_call["frame_count"] == 8
+
+
+class TestFoldPublisherRowsIntoAggregate:
+    """Unit tests for the per-server aggregate helper that backs both
+    the dispatcher's ``_merge_worker_outcome`` and the full-scan
+    ``_dispatch_processable_items``. The dispatcher path was patched to
+    aggregate-then-set in commit 1ecf099; the full-scan path was missed
+    and kept ``append_publishers``-ing per file × server, which on a
+    117k-item library scan grew publishers_json to 11.8 MB and
+    re-encoded + UPSERTed it after every item. This helper is the
+    single source of truth so the next refactor can't drift them apart
+    again.
+    """
+
+    def test_single_row_creates_one_entry_with_count_one(self):
+        from media_preview_generator.jobs.orchestrator import fold_publisher_rows_into_aggregate
+
+        agg: dict[str, dict] = {}
+        fold_publisher_rows_into_aggregate(
+            agg,
+            [{"server_id": "p1", "server_name": "Plex", "server_type": "plex", "status": "published"}],
+        )
+        assert agg == {
+            "p1": {
+                "server_id": "p1",
+                "server_name": "Plex",
+                "server_type": "plex",
+                "counts": {"published": 1},
+            }
+        }
+
+    def test_repeated_status_increments_count(self):
+        """The whole point — many calls don't grow the dict, only the counts."""
+        from media_preview_generator.jobs.orchestrator import fold_publisher_rows_into_aggregate
+
+        agg: dict[str, dict] = {}
+        for _ in range(50):
+            fold_publisher_rows_into_aggregate(
+                agg,
+                [{"server_id": "p1", "server_name": "Plex", "server_type": "plex", "status": "published"}],
+            )
+        assert list(agg.keys()) == ["p1"]
+        assert agg["p1"]["counts"] == {"published": 50}
+
+    def test_mixed_statuses_for_same_server_track_separately(self):
+        from media_preview_generator.jobs.orchestrator import fold_publisher_rows_into_aggregate
+
+        agg: dict[str, dict] = {}
+        rows = [
+            {"server_id": "e1", "server_name": "Emby", "server_type": "emby", "status": "published"},
+            {"server_id": "e1", "server_name": "Emby", "server_type": "emby", "status": "failed"},
+            {"server_id": "e1", "server_name": "Emby", "server_type": "emby", "status": "failed"},
+        ]
+        for row in rows:
+            fold_publisher_rows_into_aggregate(agg, [row])
+        assert agg["e1"]["counts"] == {"published": 1, "failed": 2}
+
+    def test_multi_server_rows_keep_one_entry_per_server(self):
+        from media_preview_generator.jobs.orchestrator import fold_publisher_rows_into_aggregate
+
+        agg: dict[str, dict] = {}
+        fold_publisher_rows_into_aggregate(
+            agg,
+            [
+                {"server_id": "p1", "server_name": "Plex", "server_type": "plex", "status": "published"},
+                {"server_id": "e1", "server_name": "Emby", "server_type": "emby", "status": "published"},
+            ],
+        )
+        fold_publisher_rows_into_aggregate(
+            agg,
+            [
+                {"server_id": "p1", "server_name": "Plex", "server_type": "plex", "status": "published"},
+                {"server_id": "e1", "server_name": "Emby", "server_type": "emby", "status": "failed"},
+            ],
+        )
+        assert set(agg.keys()) == {"p1", "e1"}
+        assert agg["p1"]["counts"] == {"published": 2}
+        assert agg["e1"]["counts"] == {"published": 1, "failed": 1}
+
+    def test_row_with_blank_server_id_is_dropped(self):
+        """Rows missing a server_id can't be attributed and must not
+        create a phantom empty-key entry that pollutes the dashboard."""
+        from media_preview_generator.jobs.orchestrator import fold_publisher_rows_into_aggregate
+
+        agg: dict[str, dict] = {}
+        fold_publisher_rows_into_aggregate(
+            agg,
+            [
+                {"server_id": "", "server_name": "?", "status": "published"},
+                {"server_id": None, "server_name": "?", "status": "published"},
+            ],
+        )
+        assert agg == {}
+
+    def test_late_arriving_name_and_type_fill_in_an_empty_first_row(self):
+        """If the first row for a server has only the id (e.g. before
+        settings_manager has populated names), a later row with the
+        proper name/type should fill those fields in."""
+        from media_preview_generator.jobs.orchestrator import fold_publisher_rows_into_aggregate
+
+        agg: dict[str, dict] = {}
+        fold_publisher_rows_into_aggregate(
+            agg,
+            [{"server_id": "p1", "server_name": "", "server_type": "", "status": "published"}],
+        )
+        fold_publisher_rows_into_aggregate(
+            agg,
+            [{"server_id": "p1", "server_name": "Plex", "server_type": "PLEX", "status": "failed"}],
+        )
+        assert agg["p1"]["server_name"] == "Plex"
+        assert agg["p1"]["server_type"] == "plex", "server_type must be lowercased for badge palette"
+        assert agg["p1"]["counts"] == {"published": 1, "failed": 1}
+
+    def test_missing_status_falls_back_to_unknown(self):
+        from media_preview_generator.jobs.orchestrator import fold_publisher_rows_into_aggregate
+
+        agg: dict[str, dict] = {}
+        fold_publisher_rows_into_aggregate(
+            agg,
+            [{"server_id": "p1", "server_name": "Plex", "server_type": "plex"}],
+        )
+        assert agg["p1"]["counts"] == {"unknown": 1}
+
+
+class TestFullScanUsesSetPublishersNotAppend:
+    """Performance regression — the full-scan path must aggregate
+    per-server (fixed-size) and ``set_publishers`` it, NEVER call
+    ``append_publishers`` per file.
+
+    Live reproducer (job 41d19f28, 117963 items):
+    * ``publishers_json`` reached 11.8 MB and was re-encoded + SQLite
+      UPSERTed after every item.
+    * Sustained throughput dropped from ~30 items/sec (small list)
+      to <8 items/sec (20k+ items in list) — pure O(N²) bookkeeping
+      cost, no FFmpeg or Plex API involvement.
+
+    These tests pin the contract so a future "let me also persist X
+    per-file" change can't quietly bring the regression back.
+    """
+
+    def _items(self, n: int):
+        cfg = _server_config("srv-a", ServerType.JELLYFIN)
+        return [(cfg, ProcessableItem(canonical_path=f"/data/m{i}.mkv", server_id="srv-a")) for i in range(n)]
+
+    def test_dispatch_calls_set_publishers_and_never_append(self, tmp_path):
+        from media_preview_generator.jobs.orchestrator import _dispatch_processable_items
+        from media_preview_generator.processing.multi_server import MultiServerStatus
+
+        # publishers list with a single Jellyfin row per item — what
+        # _publisher_rows_from_result would build for a real dispatch.
+        pub = SimpleNamespace(
+            server_id="srv-a",
+            server_name="Test jellyfin",
+            adapter_name="jellyfin_trickplay",
+            status=SimpleNamespace(value="published"),
+            message="",
+            frame_source="extracted",
+            output_paths=[],
+        )
+        results = [
+            SimpleNamespace(
+                publishers=[pub],
+                canonical_path=f"/data/m{i}.mkv",
+                status=MultiServerStatus.PUBLISHED,
+                message="",
+            )
+            for i in range(5)
+        ]
+
+        fake_jm = MagicMock()
+        # An empty ``settings_manager.get("media_servers")`` is fine —
+        # _publisher_rows_from_result tolerates a missing type lookup.
+        with (
+            patch("media_preview_generator.web.jobs.get_job_manager", return_value=fake_jm),
+            patch(
+                "media_preview_generator.processing.multi_server.process_canonical_path",
+                side_effect=results,
+            ),
+        ):
+            _dispatch_processable_items(
+                items=self._items(5),
+                config=_config(),
+                registry=MagicMock(),
+                selected_gpus=[],
+                label="full scan",
+                job_id="job-perf",
+            )
+
+        # Pin the contract: never call the linear-growth API.
+        assert fake_jm.append_publishers.call_count == 0, (
+            f"append_publishers must not be called on the full-scan path "
+            f"(grows publishers_json O(items × servers)) — got "
+            f"{fake_jm.append_publishers.call_count} call(s)"
+        )
+
+        # And we DO call set_publishers per item — the bounded variant.
+        assert fake_jm.set_publishers.call_count >= 1, "set_publishers was never called"
+
+        # Final payload is a single per-server entry with counts == 5
+        # (NOT a list of 5 per-file rows). This is the fixed-size shape
+        # the Active Jobs / History UI now expects.
+        last_args, _last_kwargs = fake_jm.set_publishers.call_args
+        job_id_arg, payload = last_args
+        assert job_id_arg == "job-perf"
+        assert isinstance(payload, list) and len(payload) == 1, (
+            f"set_publishers payload must collapse to one entry per server — got {payload!r}"
+        )
+        entry = payload[0]
+        assert entry["server_id"] == "srv-a"
+        assert entry["counts"] == {"published": 5}, (
+            f"per-server counts must accumulate across items, got {entry['counts']!r}"
+        )
+
+    def test_payload_size_is_bounded_by_server_count_not_item_count(self, tmp_path):
+        """The killer test: dispatch 50 items, observe that the largest
+        ``set_publishers`` payload is bounded by the number of servers
+        (here 1), not items. If someone reverts to ``append_publishers``
+        or grows the payload per-file again, this fails with the
+        observed payload size."""
+        from media_preview_generator.jobs.orchestrator import _dispatch_processable_items
+        from media_preview_generator.processing.multi_server import MultiServerStatus
+
+        N = 50
+        pub = SimpleNamespace(
+            server_id="srv-a",
+            server_name="Test jellyfin",
+            adapter_name="jellyfin_trickplay",
+            status=SimpleNamespace(value="published"),
+            message="",
+            frame_source="extracted",
+            output_paths=[],
+        )
+        results = [
+            SimpleNamespace(
+                publishers=[pub],
+                canonical_path=f"/data/m{i}.mkv",
+                status=MultiServerStatus.PUBLISHED,
+                message="",
+            )
+            for i in range(N)
+        ]
+
+        observed_payload_lengths: list[int] = []
+
+        def _capture(_job_id, payload):
+            observed_payload_lengths.append(len(payload))
+
+        fake_jm = MagicMock()
+        fake_jm.set_publishers.side_effect = _capture
+
+        with (
+            patch("media_preview_generator.web.jobs.get_job_manager", return_value=fake_jm),
+            patch(
+                "media_preview_generator.processing.multi_server.process_canonical_path",
+                side_effect=results,
+            ),
+        ):
+            _dispatch_processable_items(
+                items=self._items(N),
+                config=_config(),
+                registry=MagicMock(),
+                selected_gpus=[],
+                label="full scan",
+                job_id="job-bounded",
+            )
+
+        # All payloads carry exactly one entry — the single server. With
+        # the old append_publishers path, persisted size grew with item
+        # count and would have hit N entries by the end.
+        assert observed_payload_lengths, "set_publishers was never called"
+        assert max(observed_payload_lengths) == 1, (
+            f"set_publishers payload must stay bounded by server count — "
+            f"observed lengths {observed_payload_lengths!r} (max {max(observed_payload_lengths)}) "
+            f"on a {N}-item dispatch with 1 server"
+        )

@@ -435,27 +435,14 @@ class JobDispatcher:
         # library run blew up the Active Jobs and History sections to
         # hundreds of rows. The per-file × per-server detail still lives
         # in the Files-panel JSONL (record_file_result `servers` field).
+        # Shared helper so the full-scan ThreadPoolExecutor path
+        # (orchestrator._dispatch_processable_items) cannot drift from
+        # this aggregate shape — the original 1ecf099 fix patched only
+        # this method and the full-scan path kept appending per-file.
         if worker.last_publishers:
-            for row in worker.last_publishers:
-                server_id = row.get("server_id") or ""
-                if not server_id:
-                    continue
-                entry = tracker.publishers_aggregate.get(server_id)
-                if entry is None:
-                    entry = {
-                        "server_id": server_id,
-                        "server_name": row.get("server_name") or "",
-                        "server_type": (row.get("server_type") or "").lower(),
-                        "counts": {},
-                    }
-                    tracker.publishers_aggregate[server_id] = entry
-                else:
-                    if not entry.get("server_name") and row.get("server_name"):
-                        entry["server_name"] = row["server_name"]
-                    if not entry.get("server_type") and row.get("server_type"):
-                        entry["server_type"] = row["server_type"].lower()
-                status = row.get("status") or "unknown"
-                entry["counts"][status] = entry["counts"].get(status, 0) + 1
+            from .orchestrator import fold_publisher_rows_into_aggregate
+
+            fold_publisher_rows_into_aggregate(tracker.publishers_aggregate, worker.last_publishers)
             try:
                 from ..web.jobs import get_job_manager
 

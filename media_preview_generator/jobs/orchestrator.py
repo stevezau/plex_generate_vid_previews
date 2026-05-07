@@ -174,6 +174,50 @@ def _publisher_rows_from_result(result, canonical_path: str) -> list[dict]:
     return rows
 
 
+def fold_publisher_rows_into_aggregate(aggregate: dict[str, dict], rows: list[dict]) -> None:
+    """Fold per-task publisher rows into a per-server count aggregate.
+
+    ``aggregate`` is keyed by ``server_id`` and shaped::
+
+        {server_id: {"server_id": ..., "server_name": ...,
+                     "server_type": ..., "counts": {status: count}}}
+
+    Mutates ``aggregate`` in place. Both job-dispatch paths (legacy
+    WorkerPool dispatcher and the multi-server full-scan / webhook
+    ThreadPoolExecutor) feed this so they cannot drift again — commit
+    1ecf099 ("aggregate per-server, not per-file") patched only the
+    dispatcher path. ``_dispatch_processable_items`` was missed and
+    kept ``append_publishers``-ing one row per (file × server), which
+    on a 117k-item full library scan turned into an O(N²) SQLite write
+    storm (publishers_json grew to 11.8 MB and was re-encoded + UPSERTed
+    after every item, dropping throughput from ~30 items/sec early on
+    to <8 items/sec by minute 28).
+    """
+    for row in rows:
+        server_id = row.get("server_id") or ""
+        if not server_id:
+            continue
+        entry = aggregate.get(server_id)
+        if entry is None:
+            entry = {
+                "server_id": server_id,
+                "server_name": row.get("server_name") or "",
+                "server_type": (row.get("server_type") or "").lower(),
+                "counts": {},
+            }
+            aggregate[server_id] = entry
+        else:
+            # Late-arriving name/type wins over an empty one — protects
+            # against the first row for a server having only the id
+            # (e.g. before settings_manager has loaded the display name).
+            if not entry.get("server_name") and row.get("server_name"):
+                entry["server_name"] = row["server_name"]
+            if not entry.get("server_type") and row.get("server_type"):
+                entry["server_type"] = row["server_type"].lower()
+        status = row.get("status") or "unknown"
+        entry["counts"][status] = entry["counts"].get(status, 0) + 1
+
+
 def _log_webhook_owning_servers(config, paths: list[str]) -> None:
     """Log a one-line summary of which configured servers own the webhook paths.
 
@@ -264,6 +308,18 @@ def _enumerate_plex_full_scan_items(
         return
     plex_processor = get_processor_for(ServerType.PLEX)
     library_ids = list(getattr(config, "plex_library_ids", None) or []) or None
+    # Mirror the Emby/Jellyfin multi-server enumerator's "Querying…"
+    # banner (see ``_collect_multi_server_items``). A full Plex library
+    # enumeration on a large TV library can take 30–120s before the
+    # first item is yielded via ``list_canonical_paths``; without this
+    # the progress bar sits at "0/0" with no message and the job looks
+    # frozen — live user report on job 90301a18.
+    if progress_callback is not None:
+        try:
+            _label = plex_cfg.name or plex_cfg.id or plex_cfg.type.value
+            progress_callback(0, 0, f"Querying {_label} library…")
+        except Exception as exc:
+            logger.debug("progress_callback raised during Plex enumeration banner: {}", exc)
     yield from plex_processor.list_canonical_paths(
         plex_cfg,
         library_ids=library_ids,
@@ -819,6 +875,22 @@ def _dispatch_processable_items(
                 _release_concurrency()
 
     completed = 0
+    # Per-server publisher tally for this dispatch. Folded after every
+    # completed item and mirrored onto the Job via the fixed-size
+    # ``set_publishers`` call (one entry per server). Safe to mutate
+    # without a lock because ``pool.map`` results are consumed on a
+    # single thread in the ``for`` loop below — if this ever changes
+    # to ``as_completed`` + ``submit`` from multiple threads, wrap the
+    # fold + set_publishers call in a ``threading.Lock``.
+    # Replaces the original
+    # per-item ``append_publishers`` (one row per file × server) which
+    # made publishers_json grow O(items × servers) — a 117k-item full
+    # library scan re-encoded and SQLite-UPSERTed an 11.8 MB blob after
+    # every item, throttling sustained throughput to <10 items/sec on a
+    # workload that's almost entirely "all fresh" stat() checks. The
+    # legacy dispatcher path was already moved to this shape in commit
+    # 1ecf099; this catches the full-scan path up.
+    publishers_aggregate: dict[str, dict] = {}
     # Index inputs alongside their outcomes so the per-item record can
     # surface the canonical path even when ``result is None`` (the
     # exception-swallowed branch). Without this the Files panel showed
@@ -875,10 +947,17 @@ def _dispatch_processable_items(
                 counts[key] = counts.get(key, 0) + 1
             rows = _publisher_rows_from_result(result, result.canonical_path)
             if job_manager is not None:
+                # Fold this item's per-server outcomes into the running
+                # aggregate, then mirror the bounded summary onto the
+                # Job. Per-file × per-server detail still lands in the
+                # Files-panel JSONL via ``_notify_file_result`` below —
+                # that's the right home for it (append-only, capped
+                # caller-side; see web/jobs.record_file_result).
+                fold_publisher_rows_into_aggregate(publishers_aggregate, rows)
                 try:
-                    job_manager.append_publishers(job_id, rows)
+                    job_manager.set_publishers(job_id, list(publishers_aggregate.values()))
                 except Exception as exc:
-                    logger.debug("Could not append publisher rows for job {}: {}", job_id, exc)
+                    logger.debug("Could not set publisher aggregate for job {}: {}", job_id, exc)
             # Live Files-panel row. The multi-server dispatch path
             # bypasses Worker → _persist (it calls process_canonical_path
             # directly via the ThreadPoolExecutor), so without this hook
