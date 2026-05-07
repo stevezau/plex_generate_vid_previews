@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import json
 import time
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -263,6 +263,84 @@ class TestStartJobAsyncHappyPath:
             f"A non-PENDING value here means the thread-start code is "
             f"flipping status prematurely (regression of the 34-jobs-all-"
             f"claiming-running bug)."
+        )
+
+    def test_multi_server_dispatch_fires_on_dispatch_start_when_items_flow(self, app, tmp_path):
+        """Regression pin: the multi-server full-scan path must call
+        ``on_dispatch_start`` so the job transitions PENDING → RUNNING.
+
+        Live bug (job 91c20505): the webhook / legacy-plex-phase paths
+        call the hook via ``_dispatch_items`` (orchestrator.py ~1956),
+        but the newer multi-server path uses
+        ``_dispatch_processable_items`` which had no hook invocation.
+        Result: a Plex full-scan processed 5071/9993 items while the
+        DB still showed ``status='pending'`` and ``started_at=None``.
+
+        Test strategy: drive ``_dispatch_processable_items`` directly
+        with a synthetic item and an ``on_dispatch_start`` spy, and
+        confirm the spy was called. A unit-shaped test because
+        wrapping it in a full run_processing integration would require
+        mocking three enumeration layers; the direct test pins the
+        single contract that matters — the hook fires when items flow.
+        """
+        from media_preview_generator.jobs.orchestrator import _dispatch_processable_items
+        from media_preview_generator.processing.types import ProcessableItem
+        from media_preview_generator.servers.base import ServerType
+
+        fake_server_cfg = MagicMock()
+        fake_server_cfg.id = "plex-1"
+        fake_server_cfg.type = ServerType.PLEX
+        fake_server_cfg.name = "Plex Main"
+
+        fake_item = ProcessableItem(
+            canonical_path="/fake/Movies/Stub (2020).mkv",
+            server_id="plex-1",
+            item_id_by_server={"plex-1": "42"},
+        )
+
+        def fake_process(canonical_path, config, registry, **kwargs):
+            from media_preview_generator.processing.multi_server import (
+                DispatchResult,
+                PublisherStatus,
+            )
+
+            return DispatchResult(
+                canonical_path=canonical_path,
+                status=PublisherStatus.PUBLISHED,
+                publisher_results=[],
+                frame_count=1,
+            )
+
+        hook_calls: list[None] = []
+
+        def hook():
+            hook_calls.append(None)
+
+        fake_config = MagicMock()
+        fake_config.cpu_threads = 0
+        fake_config.working_tmp_folder = str(tmp_path)
+
+        with (
+            app.app_context(),
+            patch(
+                "media_preview_generator.processing.multi_server.process_canonical_path",
+                side_effect=fake_process,
+            ),
+        ):
+            _dispatch_processable_items(
+                [(fake_server_cfg, fake_item)],
+                config=fake_config,
+                registry=MagicMock(),
+                selected_gpus=[],
+                on_dispatch_start=hook,
+                label="full scan",
+            )
+
+        assert len(hook_calls) == 1, (
+            f"on_dispatch_start must be called exactly once when items flow through the "
+            f"multi-server dispatch path; got {len(hook_calls)} calls. "
+            f"Regression of live bug on job 91c20505 (Plex 'Movies' full-scan showed "
+            f"status=pending with 5071/9993 items processed)."
         )
 
 

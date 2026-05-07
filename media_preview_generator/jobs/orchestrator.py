@@ -344,6 +344,7 @@ def _dispatch_processable_items(
     label: str = "scan",
     server_id_filter: str | None = None,
     worker_callback=None,
+    on_dispatch_start=None,
 ) -> dict:
     """Run a list of ``(server_config, ProcessableItem)`` pairs in parallel.
 
@@ -509,6 +510,17 @@ def _dispatch_processable_items(
         initial_concurrency,
         pool_max_workers,
     )
+    # Fire the "dispatch has really started" hook so the job flips from
+    # PENDING to RUNNING. job_runner's _on_dispatch_start calls
+    # job_manager.start_job(); without this the multi-server full-scan
+    # path leaves the job stuck in PENDING even as items complete.
+    # Matches the equivalent call in ``_dispatch_items`` used by the
+    # webhook / legacy-plex-phase code paths.
+    if on_dispatch_start:
+        try:
+            on_dispatch_start()
+        except Exception as exc:
+            logger.debug("on_dispatch_start raised: {}", exc)
     # Surface "Dispatching N items…" up-front so the progress widget gets
     # a real total + denominator the moment enumeration finishes — without
     # this the bar sits at 0/0 with the stale "Querying…" label until the
@@ -1137,6 +1149,7 @@ def _run_full_scan_multi_server(
     pause_check=None,
     job_id: str | None = None,
     worker_callback=None,
+    on_dispatch_start=None,
 ) -> dict:
     """Multi-server full-library scan via the per-vendor :class:`VendorProcessor`.
 
@@ -1216,6 +1229,7 @@ def _run_full_scan_multi_server(
         label="full scan",
         server_id_filter=server_id_filter,
         worker_callback=worker_callback,
+        on_dispatch_start=on_dispatch_start,
     )
 
 
@@ -1231,6 +1245,7 @@ def _run_recently_added_multi_server(
     pause_check=None,
     job_id: str | None = None,
     worker_callback=None,
+    on_dispatch_start=None,
 ) -> dict:
     """Recently-added scan for any vendor via :class:`VendorProcessor`.
 
@@ -1291,6 +1306,7 @@ def _run_recently_added_multi_server(
         label="recently-added scan",
         server_id_filter=server_id_filter,
         worker_callback=worker_callback,
+        on_dispatch_start=on_dispatch_start,
     )
 
 
@@ -1852,6 +1868,7 @@ def run_processing(
                 pause_check=pause_check,
                 job_id=job_id,
                 worker_callback=worker_callback,
+                on_dispatch_start=on_dispatch_start,
             )
             return {"outcome": outcome_counts}
 
