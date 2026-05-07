@@ -192,6 +192,92 @@ class TestMultiServerFullScan:
         assert counts.get("published", 0) == 1
         assert counts.get("failed", 0) == 1
 
+    def test_empty_publisher_aggregate_statuses_are_counted(self, tmp_path):
+        """Counter reconciliation regression (job deea99db).
+
+        ``MultiServerResult`` can return ``publishers=[]`` for four aggregate
+        statuses that still represent processed items:
+
+        * ``SKIPPED_FILE_NOT_FOUND`` — source missing on disk (retryable)
+        * ``NO_OWNERS`` — no configured library covers the path
+        * ``NO_FRAMES`` — FFmpeg ran but produced 0 frames
+        * ``FAILED`` — frame generation raised before any publisher ran
+
+        The orchestrator used to fold only per-publisher statuses into
+        ``counts``, so these four categories silently dropped out of the
+        totals. A 128k-item scan produced "128007 processed / 128002 in
+        outcome" divergence because 5 items fell through this gap.
+        """
+        from media_preview_generator.processing.multi_server import MultiServerStatus
+
+        cfg = _server_config("srv-a", ServerType.JELLYFIN)
+        registry_mock = MagicMock()
+        registry_mock.configs.return_value = [cfg]
+
+        items = [ProcessableItem(canonical_path=f"/miss-{i}.mkv", server_id="srv-a") for i in range(4)]
+        proc = MagicMock()
+        proc.list_canonical_paths.return_value = iter(items)
+
+        results_in_order = [
+            SimpleNamespace(
+                publishers=[],
+                canonical_path="/miss-0.mkv",
+                status=MultiServerStatus.SKIPPED_FILE_NOT_FOUND,
+                message="source missing",
+            ),
+            SimpleNamespace(
+                publishers=[],
+                canonical_path="/miss-1.mkv",
+                status=MultiServerStatus.NO_OWNERS,
+                message="no owner",
+            ),
+            SimpleNamespace(
+                publishers=[],
+                canonical_path="/miss-2.mkv",
+                status=MultiServerStatus.NO_FRAMES,
+                message="ffmpeg 0 frames",
+            ),
+            SimpleNamespace(
+                publishers=[],
+                canonical_path="/miss-3.mkv",
+                status=MultiServerStatus.FAILED,
+                message="ffmpeg crashed",
+            ),
+        ]
+
+        with (
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+            patch("media_preview_generator.servers.ServerRegistry") as mock_registry,
+            patch("media_preview_generator.processing.get_processor_for", return_value=proc),
+            patch(
+                "media_preview_generator.processing.multi_server.process_canonical_path",
+                side_effect=results_in_order,
+            ),
+        ):
+            mock_sm.return_value.get.return_value = [
+                {"id": "srv-a", "type": "jellyfin", "enabled": True},
+            ]
+            mock_registry.from_settings.return_value = registry_mock
+
+            counts = _run_full_scan_multi_server(_config(), selected_gpus=[])
+
+        total = sum(counts.values())
+        assert total == 4, (
+            f"Every processed item must land in exactly one counter bucket — "
+            f"got {total} in outcome for 4 processed items. counts={counts!r}"
+        )
+        # SKIPPED_FILE_NOT_FOUND keeps its own key so the retry-scheduling
+        # branch in job_runner (get_file_results(job_id, 'skipped_file_not_found'))
+        # can continue to find these paths.
+        assert counts.get("skipped_file_not_found", 0) == 1, counts
+        # NO_FRAMES and the frame-gen-crash FAILED both represent a failed
+        # item; they must roll into `failed` so the end-of-run summary
+        # matches the failures list.
+        assert counts.get("failed", 0) == 2, counts
+        # NO_OWNERS is neither failure nor success; it gets its own bucket
+        # so the summary can distinguish "couldn't publish" from "didn't try".
+        assert counts.get("no_owners", 0) == 1, counts
+
     def test_zero_items_logs_warning_not_info(self, tmp_path):
         """When the scan walks the server but enumerates zero items, the user
         must see a WARN-level message — silent INFO leaves them puzzled why

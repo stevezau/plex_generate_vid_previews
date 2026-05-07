@@ -346,6 +346,135 @@ class TestFileResultCallback:
         )
 
 
+class TestFileResultCallbackConcurrency:
+    """Callback registration must be per-job, not a single process-wide global.
+
+    Production incident: job ``deea99db`` scanned 128007 items; its file-
+    results JSONL only grew for the first 6 seconds (1192 rows), then froze
+    — because a concurrent 5-second job ``bb68e6cc`` started, installed its
+    own callback, and then cleared the shared global on its way out. The
+    long-running job's remaining ~127k items silently no-op'd on the
+    callback for the next 11 minutes. The Files panel was empty for the
+    rest of the run, and get_file_results(job_id, 'skipped_file_not_found')
+    couldn't find the files that needed retry scheduling.
+    """
+
+    def test_callback_routed_to_active_failure_scope(self):
+        """When two jobs register callbacks under different ``failure_scope``
+        blocks, ``_notify_file_result`` must dispatch to the callback
+        associated with the *current* thread's scope — not a single
+        shared global.
+        """
+        from media_preview_generator.processing import (
+            ProcessingResult,
+            _notify_file_result,
+            failure_scope,
+            set_file_result_callback,
+        )
+
+        a_received: list[str] = []
+        b_received: list[str] = []
+
+        with failure_scope("job-a"):
+            set_file_result_callback(lambda f, *_: a_received.append(f), job_id="job-a")
+        with failure_scope("job-b"):
+            set_file_result_callback(lambda f, *_: b_received.append(f), job_id="job-b")
+
+        with failure_scope("job-a"):
+            _notify_file_result("/a1.mkv", ProcessingResult.GENERATED, "", "")
+        with failure_scope("job-b"):
+            _notify_file_result("/b1.mkv", ProcessingResult.GENERATED, "", "")
+        with failure_scope("job-a"):
+            _notify_file_result("/a2.mkv", ProcessingResult.GENERATED, "", "")
+
+        with failure_scope("job-a"):
+            set_file_result_callback(None, job_id="job-a")
+        with failure_scope("job-b"):
+            set_file_result_callback(None, job_id="job-b")
+
+        assert a_received == ["/a1.mkv", "/a2.mkv"]
+        assert b_received == ["/b1.mkv"]
+
+    def test_job_b_completion_does_not_silence_job_a_callback(self):
+        """Regression for the deea99db incident: if job B enters its scope,
+        installs its callback, then clears it on exit, job A's callback
+        must still fire for the remainder of job A's run.
+        """
+        from media_preview_generator.processing import (
+            ProcessingResult,
+            _notify_file_result,
+            failure_scope,
+            set_file_result_callback,
+        )
+
+        a_received: list[str] = []
+        b_received: list[str] = []
+
+        with failure_scope("job-a"):
+            set_file_result_callback(lambda f, *_: a_received.append(f), job_id="job-a")
+            _notify_file_result("/a_before.mkv", ProcessingResult.GENERATED, "", "")
+
+            with failure_scope("job-b"):
+                set_file_result_callback(lambda f, *_: b_received.append(f), job_id="job-b")
+                _notify_file_result("/b_only.mkv", ProcessingResult.GENERATED, "", "")
+                set_file_result_callback(None, job_id="job-b")
+
+            _notify_file_result("/a_after.mkv", ProcessingResult.GENERATED, "", "")
+            set_file_result_callback(None, job_id="job-a")
+
+        assert a_received == ["/a_before.mkv", "/a_after.mkv"], (
+            "Job A's callback was silenced after job B cleared the shared global — this is the "
+            "production deea99db clobber bug. Per-job callback routing must be independent."
+        )
+        assert b_received == ["/b_only.mkv"]
+
+    def test_concurrent_threads_do_not_clobber_callbacks(self):
+        """Two concurrent worker threads in separate ``failure_scope`` blocks
+        must each see their own callback, even when scopes open and close
+        interleaved across threads.
+        """
+        import threading
+
+        from media_preview_generator.processing import (
+            ProcessingResult,
+            _notify_file_result,
+            failure_scope,
+            set_file_result_callback,
+        )
+
+        a_received: list[str] = []
+        b_received: list[str] = []
+
+        with failure_scope("job-a"):
+            set_file_result_callback(lambda f, *_: a_received.append(f), job_id="job-a")
+        with failure_scope("job-b"):
+            set_file_result_callback(lambda f, *_: b_received.append(f), job_id="job-b")
+
+        start = threading.Event()
+
+        def _worker(job_id: str, file_path: str, dest: list):
+            start.wait()
+            with failure_scope(job_id):
+                _notify_file_result(file_path, ProcessingResult.GENERATED, "", "")
+
+        threads = [threading.Thread(target=_worker, args=("job-a", f"/a{i}.mkv", a_received)) for i in range(20)] + [
+            threading.Thread(target=_worker, args=("job-b", f"/b{i}.mkv", b_received)) for i in range(20)
+        ]
+        for t in threads:
+            t.start()
+        start.set()
+        for t in threads:
+            t.join()
+
+        with failure_scope("job-a"):
+            set_file_result_callback(None, job_id="job-a")
+        with failure_scope("job-b"):
+            set_file_result_callback(None, job_id="job-b")
+
+        assert sorted(a_received) == sorted(f"/a{i}.mkv" for i in range(20))
+        assert sorted(b_received) == sorted(f"/b{i}.mkv" for i in range(20))
+
+
 class TestWorkerCallsNotifyFileResult:
     """The Worker.assign_task path must invoke ``_notify_file_result`` for
     every outcome — generated, skipped, failed — so the JSONL persistence

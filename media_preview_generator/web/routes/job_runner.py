@@ -19,6 +19,54 @@ _inflight_jobs: set = set()
 _inflight_lock = threading.Lock()
 
 
+def _classify_job_completion(
+    *,
+    failures: list,
+    outcome: dict | None,
+    is_retry: bool,
+    retry_paths: list,
+    spawned_retry_id: str | None,
+    total_paths: int,
+    resolved_count: int,
+) -> str:
+    """Classify a finished job as ``"error"`` (red badge) or ``"warning"`` (amber).
+
+    Pure function so the classification rule is testable without spinning
+    up the whole ``run_job`` closure.
+
+    Returns:
+        ``"error"`` for hard failures (nothing succeeded, unresolved retry
+        paths, every file missing on disk), or ``"warning"`` for partial
+        failures where at least one item succeeded.
+
+    Rule change (deea99db regression): the classifier used to start with
+    ``bool(failures)`` — any single FFmpeg crash flipped the badge red
+    regardless of how many items succeeded. On a 128k-item scan with one
+    FFmpeg crash and 128000 successes, the badge reported "Failed".
+    We now treat a non-empty ``failures`` list the same as any other
+    partial failure: red only when the all-failed gate (nothing in the
+    success columns) also trips.
+    """
+    outcome = outcome or {}
+    success_total = (
+        outcome.get("generated", 0)
+        + outcome.get("published", 0)
+        + outcome.get("skipped_output_exists", 0)
+        + outcome.get("skipped_bif_exists", 0)
+    )
+    has_any_failure = bool(failures) or outcome.get("failed", 0) > 0
+    all_not_found = (
+        outcome.get("generated", 0) == 0 and outcome.get("skipped_file_not_found", 0) > 0 and not spawned_retry_id
+    )
+    all_items_failed = has_any_failure and success_total == 0
+    nothing_resolved = total_paths > 0 and resolved_count == 0 and not spawned_retry_id
+    retry_exhausted = is_retry and bool(retry_paths) and not spawned_retry_id
+
+    if all_items_failed or all_not_found or nothing_resolved or retry_exhausted:
+        return "error"
+    return "warning"
+
+
 def _format_eta(seconds: float) -> str:
     """Format seconds into a human-readable ETA string.
 
@@ -532,7 +580,14 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                             servers=servers,
                         )
 
-                    set_file_result_callback(_file_result_cb)
+                    # Keyed by job_id so concurrent jobs don't clobber each
+                    # other's callbacks. Without this, a short job starting
+                    # mid-run would overwrite the long-running job's
+                    # callback, and its `finally: set_file_result_callback(None)`
+                    # would silence every subsequent file result on the
+                    # long-running job. Production incident: deea99db's
+                    # JSONL stopped growing after 6 seconds of a ~13min run.
+                    set_file_result_callback(_file_result_cb, job_id=job_id)
 
                     def _on_item_complete(display_name, title, success):
                         outcome = "success" if success else "failed"
@@ -580,7 +635,7 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                         on_dispatch_start=_on_dispatch_start,
                         priority=job.priority,
                     )
-                    set_file_result_callback(None)
+                    set_file_result_callback(None, job_id=job_id)
 
                     # run_processing returns None when it bailed on a
                     # connection / interrupt error (logged with actionable
@@ -938,39 +993,16 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                             else:
                                 error_msg = "; ".join(error_parts)
                             job_manager.add_log(job_id, f"WARNING - {error_msg}")
-                            all_not_found = (
-                                outcome
-                                and outcome.get("generated", 0) == 0
-                                and outcome.get("skipped_file_not_found", 0) > 0
-                                and not spawned_retry_id
+                            classification = _classify_job_completion(
+                                failures=failures,
+                                outcome=outcome,
+                                is_retry=is_retry,
+                                retry_paths=retry_paths,
+                                spawned_retry_id=spawned_retry_id,
+                                total_paths=total_paths,
+                                resolved_count=resolved_count,
                             )
-                            # Every processed item failed (FFmpeg crashed,
-                            # adapter errored, etc.) AND nothing succeeded:
-                            # treat as hard failure (red badge). Partial
-                            # failures (some items succeeded) drop through
-                            # to the warning branch (yellow badge).
-                            #
-                            # "Success" = legacy ``generated`` OR multi-server
-                            # ``published`` / ``skipped_output_exists`` /
-                            # ``skipped_bif_exists``. Without counting the
-                            # multi-server outcomes, partial-success jobs would
-                            # always trip the hard-failure branch.
-                            _ms_published = (
-                                (outcome.get("generated", 0) if outcome else 0)
-                                + (outcome.get("published", 0) if outcome else 0)
-                                + (outcome.get("skipped_output_exists", 0) if outcome else 0)
-                                + (outcome.get("skipped_bif_exists", 0) if outcome else 0)
-                            )
-                            all_items_failed = outcome and outcome.get("failed", 0) > 0 and _ms_published == 0
-                            nothing_resolved = total_paths > 0 and resolved_count == 0 and not spawned_retry_id
-                            is_hard_failure = (
-                                bool(failures)
-                                or (is_retry and retry_paths and not spawned_retry_id)
-                                or all_not_found
-                                or all_items_failed
-                                or nothing_resolved
-                            )
-                            if is_hard_failure:
+                            if classification == "error":
                                 job_manager.complete_job(job_id, error=error_msg)
                             else:
                                 job_manager.complete_job(job_id, warning=error_msg)
@@ -1057,7 +1089,7 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                     logger.debug("Could not release job gate for {}: {}", job_id, gate_err)
                 finally:
                     _slot_held = False
-            set_file_result_callback(None)
+            set_file_result_callback(None, job_id=job_id)
             from ...jobs.worker import unregister_job_thread
 
             unregister_job_thread()

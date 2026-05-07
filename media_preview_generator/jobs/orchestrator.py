@@ -377,7 +377,7 @@ def _dispatch_processable_items(
     from concurrent.futures import ThreadPoolExecutor
 
     from ..processing.generator import _notify_file_result, failure_scope
-    from ..processing.multi_server import process_canonical_path
+    from ..processing.multi_server import MultiServerStatus, process_canonical_path
     from ..servers.base import ServerType
 
     counts = {r.value: 0 for r in ProcessingResult}
@@ -960,6 +960,29 @@ def _dispatch_processable_items(
             for pub in result.publishers or []:
                 key = (pub.status.value if hasattr(pub.status, "value") else str(pub.status)).lower()
                 counts[key] = counts.get(key, 0) + 1
+            # Empty-publisher aggregate statuses (SKIPPED_FILE_NOT_FOUND,
+            # NO_OWNERS, NO_FRAMES, MultiServerStatus.FAILED when frame
+            # generation raised before any publisher ran) still represent
+            # a processed item. Without this fold, the item is counted in
+            # ``completed`` but disappears from the outcome totals — which
+            # is how the deea99db job reported "128007 processed" but
+            # only "128002 in outcome". Mirrors _outcome_for_multi_server_status
+            # so the counter key and the Files-panel outcome string agree.
+            if not (result.publishers or []):
+                aggregate_status = getattr(result, "status", None)
+                if aggregate_status is MultiServerStatus.SKIPPED_FILE_NOT_FOUND:
+                    counts["skipped_file_not_found"] = counts.get("skipped_file_not_found", 0) + 1
+                elif aggregate_status is MultiServerStatus.NO_OWNERS:
+                    counts["no_owners"] = counts.get("no_owners", 0) + 1
+                elif aggregate_status is MultiServerStatus.NO_FRAMES:
+                    # NO_FRAMES already invoked ``record_failure`` inside
+                    # ``generate_images`` — rolling it into ``failed`` here
+                    # keeps the end-of-run "X failed file(s)" list and the
+                    # "N of T item(s) failed" summary aligned. Without this
+                    # they diverge (deea99db: 1-in-list vs 2-in-summary).
+                    counts["failed"] = counts.get("failed", 0) + 1
+                elif aggregate_status is MultiServerStatus.FAILED:
+                    counts["failed"] = counts.get("failed", 0) + 1
             rows = _publisher_rows_from_result(result, result.canonical_path)
             if job_manager is not None:
                 # Fold this item's per-server outcomes into the running

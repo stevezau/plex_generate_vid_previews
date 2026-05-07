@@ -184,24 +184,49 @@ def clear_failures() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Per-file result callback — set by the job runner to capture every outcome
+# Per-file result callback — set by the job runner to capture every outcome.
+#
+# Callbacks are keyed by ``job_id`` so concurrent jobs don't clobber each
+# other. Production incident (job ``deea99db``): this was previously a
+# single module-level global. A concurrent 5-second job installed its
+# callback mid-run, then cleared it on exit, silencing the long-running
+# job's callback for the remaining ~127k items. The Files-panel JSONL
+# stopped growing after 6 seconds and ~99% of the audit trail was lost.
+#
+# Dispatch reads the active ``job_id`` from ``_failure_job_id_var`` — the
+# same ContextVar ``failure_scope`` uses. Every call site of
+# ``_notify_file_result`` already runs inside ``failure_scope(job_id)``
+# (worker.py:_process_item and orchestrator.py:_process_one), so no
+# caller changes were needed.
+#
+# The ``""`` bucket keeps the old scope-less API working for unit tests
+# that exercise ``_notify_file_result`` directly without wrapping in a
+# failure_scope block.
 # ---------------------------------------------------------------------------
 
 _file_result_callback_lock = threading.Lock()
-_file_result_callback = None
+_file_result_callbacks: dict[str, object] = {}
 
 
-def set_file_result_callback(callback) -> None:
-    """Set the per-file result callback (called for each media part outcome).
+def set_file_result_callback(callback, *, job_id: str | None = None) -> None:
+    """Register / clear the per-file result callback for a job.
 
-    The callback signature is: callback(file_path, outcome_str, reason, worker)
+    The callback signature is: ``callback(file_path, outcome_str, reason,
+    worker, servers)``.
 
     Args:
-        callback: Callable or None to clear.
+        callback: Callable to register, or None to clear.
+        job_id: Job identifier the callback belongs to. Defaults to the
+            ``failure_scope`` currently active on this thread; when neither
+            is set, the callback goes into the ``""`` bucket (used by
+            scope-less unit tests of ``_notify_file_result``).
     """
-    global _file_result_callback
+    key = job_id if job_id is not None else (_failure_job_id_var.get() or "")
     with _file_result_callback_lock:
-        _file_result_callback = callback
+        if callback is None:
+            _file_result_callbacks.pop(key, None)
+        else:
+            _file_result_callbacks[key] = callback
 
 
 def _notify_file_result(
@@ -211,7 +236,17 @@ def _notify_file_result(
     worker: str = "",
     servers: list[dict] | None = None,
 ) -> None:
-    """Invoke the file-result callback if one is set.
+    """Invoke the per-job file-result callback for the active scope.
+
+    Looks up the callback for the thread's current ``failure_scope`` job.
+    Scope-less calls (unit tests exercising ``_notify_file_result``
+    directly) read from the ``""`` bucket. Runs nothing when no
+    callback is registered — matches the old no-op.
+
+    Scoped callers never fall back to ``""`` — that fallback would
+    re-introduce the clobber bug (two concurrent jobs both reading one
+    shared slot). Each job must register its own callback with an
+    explicit ``job_id``.
 
     ``servers`` carries per-publisher attribution for this file (one entry
     per (server, adapter) the file fanned out to). The Jobs UI uses it to
@@ -219,8 +254,9 @@ def _notify_file_result(
     dict shape Worker._capture_publishers builds — keys: server_id,
     server_name, server_type, status, message, adapter_name, frame_source.
     """
+    key = _failure_job_id_var.get() or ""
     with _file_result_callback_lock:
-        cb = _file_result_callback
+        cb = _file_result_callbacks.get(key)
     if cb is not None:
         try:
             cb(file_path, outcome.value, reason, worker, servers or [])
