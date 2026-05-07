@@ -103,6 +103,14 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
     def run_job():
         log_handler_id = None
         job_manager = None
+        # Tracks whether this thread holds a JobGate slot. The outer
+        # finally uses this flag to decide whether to call
+        # ``release()``. Release-without-hold would let an extra job
+        # through the cap — the early-exception branches (config load
+        # at line ~214, tmp folder at line ~340, paused at line ~143)
+        # all run BEFORE the gate is acquired, so this flag stays
+        # False for those paths.
+        _slot_held = False
         try:
             import os
 
@@ -450,6 +458,56 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                     job_manager.add_log(job_id, "WARNING - Retry cancelled by user during wait")
                     job_manager.cancel_job(job_id)
                 else:
+                    # --- Concurrency gate ---------------------------------
+                    # Acquire AFTER the retry-backoff wait (lines 392-439)
+                    # so a 60-minute backoff doesn't idle-hold a slot and
+                    # BEFORE run_processing so enumeration/API calls are
+                    # bounded by the user's max_concurrent_jobs setting.
+                    # Cancel-while-waiting is handled by acquire() polling
+                    # cancel_check; returns False so we transition the
+                    # job to CANCELLED without ever consuming a slot.
+                    from ..job_gate import get_job_gate
+
+                    def _on_wait(active: int, cap: int) -> None:
+                        # Fires on every 1s poll tick while waiting.
+                        # Safe to take job_manager._lock here — the gate
+                        # releases its Condition during wait(), and no
+                        # job_manager codepath acquires the gate's lock.
+                        job_manager.update_progress(
+                            job_id,
+                            percent=0,
+                            processed_items=0,
+                            total_items=0,
+                            current_item=f"Queued — waiting for active slot ({active} of {cap} busy)",
+                        )
+
+                    admitted = get_job_gate().acquire(
+                        priority=job.priority,
+                        cancel_check=lambda: job_manager.is_cancellation_requested(job_id),
+                        on_wait=_on_wait,
+                    )
+                    if not admitted:
+                        # User cancelled while the job was waiting for a
+                        # slot. Transition to CANCELLED and exit — the
+                        # outer finally will skip release() because
+                        # _slot_held is still False.
+                        job_manager.add_log(
+                            job_id,
+                            "WARNING - Job cancelled while waiting for active slot",
+                        )
+                        job_manager.cancel_job(job_id)
+                        return
+                    _slot_held = True
+                    # Clear the "Queued —" message the moment we enter
+                    # so the UI shows the regular startup progress as
+                    # soon as the slot is acquired.
+                    job_manager.update_progress(
+                        job_id,
+                        percent=0,
+                        processed_items=0,
+                        total_items=0,
+                        current_item="Starting — loading configuration...",
+                    )
                     clear_failures()
 
                     def _file_result_cb(file_path, outcome_str, reason, worker, servers=None):
@@ -970,6 +1028,23 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
             job_manager.add_log(job_id, f"ERROR - Job failed: {e}")
             job_manager.complete_job(job_id, error=str(e))
         finally:
+            # Release the concurrency slot first so the next waiter can
+            # admit itself as soon as possible — beating the per-thread
+            # log-handler teardown (which can take tens of ms) off the
+            # critical path. Guarded by _slot_held so the early-failure
+            # branches (config load / tmp folder / paused) don't over-
+            # release. Double-release is clamped by the gate's
+            # max(0, _active-1), but the flag lets us avoid noisy
+            # debug logs on the cold path.
+            if _slot_held:
+                try:
+                    from ..job_gate import get_job_gate
+
+                    get_job_gate().release()
+                except Exception as gate_err:
+                    logger.debug("Could not release job gate for {}: {}", job_id, gate_err)
+                finally:
+                    _slot_held = False
             set_file_result_callback(None)
             from ...jobs.worker import unregister_job_thread
 

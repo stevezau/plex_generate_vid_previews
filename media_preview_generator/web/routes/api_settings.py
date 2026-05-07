@@ -305,6 +305,11 @@ def get_settings():
             "webhook_secret": "****" if settings.get("webhook_secret") else "",
             "auto_requeue_on_restart": settings.get("auto_requeue_on_restart", True),
             "requeue_max_age_minutes": settings.get("requeue_max_age_minutes", 720),
+            # Concurrency cap: how many jobs can actively work at once.
+            # Clamped to [1, 10] so a stale/out-of-range value from a
+            # manually-edited settings.json can't starve the queue or
+            # overwhelm media servers on bursts.
+            "max_concurrent_jobs": max(1, min(10, int(settings.get("max_concurrent_jobs", 3) or 3))),
             # D17 — backup retention (count + max-age days). 0 max_age_days
             # disables age-based pruning so existing installs keep behaving
             # exactly as before until the user opts in.
@@ -350,6 +355,7 @@ _SAVE_SETTINGS_ALLOWED_FIELDS = (
     "webhook_secret",
     "auto_requeue_on_restart",
     "requeue_max_age_minutes",
+    "max_concurrent_jobs",
     "frame_reuse",
     "config_backup_keep",
     "config_backup_max_age_days",
@@ -367,6 +373,7 @@ _SAVE_SETTINGS_INT_FIELDS = (
     "webhook_retry_count",
     "webhook_retry_delay",
     "requeue_max_age_minutes",
+    "max_concurrent_jobs",
     "config_backup_keep",
     "config_backup_max_age_days",
 )
@@ -413,6 +420,19 @@ def _validate_and_coerce_settings_updates(data: dict) -> tuple[dict | None, tupl
                 updates[field] = int(updates[field])
             except (TypeError, ValueError):
                 return None, (jsonify({"error": f"{field} must be an integer"}), 400)
+
+    # Clamp concurrency cap to a sane range. Mirrors the GET-side
+    # clamp (line ~307) and the gate's internal clamp (JobGate._cap)
+    # so all three agree. Reject out-of-range values rather than
+    # silently clamping — the user pressing Save should see what they
+    # get, not discover the value moved.
+    if "max_concurrent_jobs" in updates:
+        value = updates["max_concurrent_jobs"]
+        if value < 1 or value > 10:
+            return None, (
+                jsonify({"error": "max_concurrent_jobs must be between 1 and 10"}),
+                400,
+            )
 
     for field in _SAVE_SETTINGS_BOOL_FIELDS:
         if field in updates and not isinstance(updates[field], bool):

@@ -392,6 +392,25 @@
                         How old a job can be to qualify for automatic requeue after restart (5 minutes – 24 hours).
                     </div>
                 </div>
+
+                <hr class="my-4">
+
+                <h6 class="mb-3"><i class="bi bi-layers me-2"></i>Queue Concurrency</h6>
+
+                <div class="mb-0">
+                    <label for="maxConcurrentJobs" class="form-label">
+                        Max concurrent jobs: <strong><span id="maxConcurrentJobsValue">3</span></strong>
+                        <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                           data-bs-toggle="tooltip" data-bs-placement="top"
+                           title="Cap on how many jobs can actively work at once (config load, library enumeration, server API calls, FFmpeg dispatch). Additional jobs queue as Pending and take slots as peers finish. Priority-aware: High-priority jobs jump the queue. Prevents webhook bursts from overwhelming media-server APIs."></i>
+                    </label>
+                    <input type="range" class="form-range" id="maxConcurrentJobs" min="1" max="10" step="1" value="3">
+                    <div class="form-text">
+                        Keep this at 3 for most setups. Lower values (1–2) reduce API pressure on media servers when
+                        many webhook jobs arrive at once. Higher values (5–10) let more scans run in parallel — useful
+                        only if your servers + disks can handle it.
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -537,6 +556,9 @@ document.addEventListener('DOMContentLoaded', function() {
         document.getElementById('requeueMaxAgeGroup').style.opacity = this.checked ? '1' : '0.5';
         document.getElementById('requeueMaxAge').disabled = !this.checked;
     });
+    document.getElementById('maxConcurrentJobs').addEventListener('input', function() {
+        document.getElementById('maxConcurrentJobsValue').textContent = this.value;
+    });
 
     // Auto-save: any stateful control inside #pane-triggers that isn't
     // explicitly skipped kicks a debounced save through saveWebhookSettings.
@@ -582,6 +604,10 @@ async function loadWebhookSettings() {
         document.getElementById('requeueMaxAgeGroup').style.opacity = autoRequeue ? '1' : '0.5';
         document.getElementById('requeueMaxAge').disabled = !autoRequeue;
 
+        const maxConcurrent = Math.min(10, Math.max(1, parseInt(data.max_concurrent_jobs, 10) || 3));
+        document.getElementById('maxConcurrentJobs').value = maxConcurrent;
+        document.getElementById('maxConcurrentJobsValue').textContent = String(maxConcurrent);
+
         try {
             if (window._triggersScrollSpy) window._triggersScrollSpy.refresh();
         } catch (_e) { }
@@ -600,6 +626,10 @@ async function saveWebhookSettings() {
         webhook_retry_delay: parseInt(document.getElementById('webhookRetryDelay').value, 10) || 30,
         auto_requeue_on_restart: document.getElementById('autoRequeueOnRestart').checked,
         requeue_max_age_minutes: parseInt(document.getElementById('requeueMaxAge').value, 10) || 720,
+        max_concurrent_jobs: Math.min(
+            10,
+            Math.max(1, parseInt(document.getElementById('maxConcurrentJobs').value, 10) || 3),
+        ),
     };
 
     const secretVal = document.getElementById('webhookSecret').value;
