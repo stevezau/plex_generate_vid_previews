@@ -204,29 +204,27 @@ class TestStartJobAsyncHappyPath:
             f"Job must reach a terminal state after run_processing returns; got status={final.status.value!r}"
         )
 
-    def test_job_stays_pending_until_dispatch_actually_starts(self, app, tmp_path):
-        """Regression pin: the job worker thread must NOT prematurely
-        flip status to RUNNING at thread-start.
+    def test_job_flips_to_running_when_gate_acquired_not_at_thread_start(self, app, tmp_path):
+        """Status transitions must be truthful:
 
-        Before this pin, every ``_start_job_async`` invocation called
-        ``job_manager.start_job`` as soon as the thread woke up — even
-        though the shared worker pool might already be saturated by
-        another job. Result: during webhook bursts (Sonarr backfills,
-        30+ new files at once) the dashboard showed 30+ jobs all as
-        "running" when in reality only one was processing and the
-        others were queued waiting for the pool. The user-visible
-        symptom was "34 jobs running, 33 stuck at 0/0 processed."
+        - PENDING = queued at the concurrency gate, waiting retry
+          backoff, or blocked by global pause. Job thread may exist
+          but is not doing user-initiated work.
+        - RUNNING = slot acquired. Library enumeration, webhook path
+          resolution, and dispatch all count as "running" because
+          they are real work the user initiated.
 
-        RUNNING status must only transition when the orchestrator
-        fires ``on_dispatch_start``, which happens the moment the
-        dispatcher actually pulls this job's first item from the
-        shared queue. Everything before that (config loading, GPU
-        selection, registry build, library enumeration) stays PENDING.
+        Earlier iterations of this contract flip-flopped: (a) pre-fix
+        eagerly flipped to RUNNING at thread-spawn (30 webhook jobs
+        all claimed running simultaneously); (b) over-correction
+        delayed RUNNING until dispatch-start (a large TV library scan
+        spent 30-120s showing PENDING while actively querying Plex).
 
-        This test patches ``run_processing`` so it never calls the
-        ``on_dispatch_start`` callback — mimicking "thread woke up,
-        but we're still in pre-dispatch setup." The job's status
-        must remain ``pending`` throughout.
+        Current contract: RUNNING fires right after the concurrency
+        gate admits the thread. That's the point where "the job is
+        definitely doing something." Tested here by mocking
+        ``run_processing`` to record status while running — the job
+        must already be RUNNING by then (gate fires first).
         """
         from media_preview_generator.web.jobs import JobStatus, get_job_manager
         from media_preview_generator.web.routes.job_runner import _start_job_async
@@ -234,14 +232,13 @@ class TestStartJobAsyncHappyPath:
         status_snapshots: list[str] = []
 
         def fake_run_processing(config, selected_gpus, **kwargs):
-            # Snapshot the job status AS SEEN during run_processing,
-            # BEFORE any dispatch callback fires. If the SUT
-            # prematurely flipped to RUNNING this will capture it.
+            # Snapshot status as seen AT the moment run_processing is
+            # invoked. By then the gate has admitted us AND
+            # start_job has flipped the status — so we must see
+            # RUNNING here, NOT PENDING.
             jm = get_job_manager()
             for jid in list(jm._jobs.keys()):
                 status_snapshots.append(jm._jobs[jid].status.value)
-            # Never invoke on_dispatch_start — mimic "dispatcher is
-            # busy, we're waiting in the pool queue."
             return {"outcome": {"generated": 0}}
 
         with (
@@ -254,15 +251,19 @@ class TestStartJobAsyncHappyPath:
             job = get_job_manager().create_job(library_name="Movies", config={})
             _start_job_async(job.id, config_overrides=None)
 
-        # During run_processing (and before the (mocked-away) dispatch
-        # start callback), status MUST still be pending — not running.
         assert status_snapshots, "run_processing never ran — test setup broken"
-        assert all(s == JobStatus.PENDING.value for s in status_snapshots), (
-            f"Job must remain PENDING until on_dispatch_start fires. "
+        # Must be RUNNING by the time run_processing is entered (gate
+        # was passed + start_job fired just before). A PENDING value
+        # here means the gate-acquire isn't calling start_job and the
+        # user would see "Pending" during library enumeration —
+        # the exact regression this pins.
+        assert all(s == JobStatus.RUNNING.value for s in status_snapshots), (
+            f"Job must be RUNNING by the time run_processing is entered "
+            f"(gate-acquire transitions PENDING → RUNNING). "
             f"Status snapshots during run_processing: {status_snapshots}. "
-            f"A non-PENDING value here means the thread-start code is "
-            f"flipping status prematurely (regression of the 34-jobs-all-"
-            f"claiming-running bug)."
+            f"A PENDING value here means a large-library scan would sit "
+            f"at 'Pending' for 30-120s while actively querying — the "
+            f"exact UX regression of job 0c5d65af."
         )
 
     def test_multi_server_dispatch_fires_on_dispatch_start_when_items_flow(self, app, tmp_path):

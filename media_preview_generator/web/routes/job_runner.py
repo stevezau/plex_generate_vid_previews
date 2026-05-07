@@ -498,6 +498,18 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                         job_manager.cancel_job(job_id)
                         return
                     _slot_held = True
+                    # Flip to RUNNING the moment the slot is acquired —
+                    # library enumeration / webhook resolution IS
+                    # active work (often 30-120s of real API calls) and
+                    # the user should see that reflected in the status.
+                    # PENDING is now reserved for jobs truly idle
+                    # (queued at the gate, waiting retry backoff, or
+                    # blocked by global pause). _on_dispatch_start is
+                    # still called later when items start flowing, but
+                    # it becomes a no-op after this first transition
+                    # because start_job is idempotent.
+                    job_manager.start_job(job_id)
+                    job_manager.add_log(job_id, "INFO - Job started")
                     # Clear the "Queued —" message the moment we enter
                     # so the UI shows the regular startup progress as
                     # soon as the slot is acquired.

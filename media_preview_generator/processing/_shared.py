@@ -112,11 +112,21 @@ class _MediaServerProcessor:
             if cancel_check is not None and cancel_check():
                 logger.info("Cancellation requested — stopping {} scan.", self.vendor_name)
                 return
+            # Announce the per-library query at INFO so both the app
+            # log and the per-job log panel show user-meaningful
+            # progress. Large TV libraries (10k+ items) take 30-120s
+            # to enumerate; without this the UI appears frozen.
+            logger.info(
+                "Querying library {}/{}: {!r} (this can take a while for large libraries)",
+                lib_index,
+                total_libraries,
+                library.name,
+            )
             if progress_callback is not None:
                 progress_callback(
                     lib_index,
                     total_libraries,
-                    f"{self.vendor_name}: {library.name}",
+                    f"Querying {library.name} ({lib_index}/{total_libraries})…",
                 )
 
             try:
@@ -131,11 +141,23 @@ class _MediaServerProcessor:
                 )
                 continue
 
+            items_yielded = 0
             for media_item in items_iter:
                 if cancel_check is not None and cancel_check():
                     logger.info("Cancellation requested — stopping {} scan.", self.vendor_name)
                     return
-                yield from self._yield_processable_for(media_item, library, server_config)
+                for processable in self._yield_processable_for(media_item, library, server_config):
+                    items_yielded += 1
+                    yield processable
+            # Post-library summary so the log tells a complete story:
+            # "Querying TV Shows…" → "Found 12,458 items in TV Shows".
+            logger.info(
+                "Found {} item(s) in {!r} (library {}/{})",
+                items_yielded,
+                library.name,
+                lib_index,
+                total_libraries,
+            )
 
     def scan_recently_added(  # pragma: no cover - overridden
         self,
