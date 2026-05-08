@@ -70,6 +70,16 @@
 
                 <ul class="nav nav-tabs mb-3" role="tablist">
                     <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#edit-tab-general" type="button">General</button></li>
+                    <li class="nav-item">
+                        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#edit-tab-health" type="button">
+                            <i class="bi bi-clipboard-check me-1"></i>Setup Health
+                            <!-- Inline attention marker (⚠/❗/✓) stamped by runReadinessProbe
+                                 so a red/amber tab shouts for attention even when the user
+                                 lands on General first. Hidden by default; populated after
+                                 the probe resolves. -->
+                            <span class="ms-1 d-none" id="editHealthTabMarker" aria-hidden="true"></span>
+                        </button>
+                    </li>
                     <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#edit-tab-libraries" type="button">Libraries</button></li>
                     <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#edit-tab-paths" type="button">Path mappings</button></li>
                     <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#edit-tab-excludes" type="button">Exclude paths</button></li>
@@ -128,61 +138,6 @@
                                 <i class="bi bi-broadcast me-1"></i>Test Connection
                             </button>
                             <span id="editTestConnectionResult" class="small text-muted"></span>
-                        </div>
-
-                        <!-- Unified "Previews readiness" card (v3) — replaces the
-                             separate Vendor-extraction + Health-check + Plugin
-                             panels. One probe, one fix-and-enable button.
-                             JS populates this via /api/servers/<id>/previews-readiness
-                             on modal open. Per-vendor detail renders inside #editReadinessBody. -->
-                        <div id="editReadinessGroup" class="card bg-body-tertiary mb-3 d-none">
-                            <div class="card-body p-3">
-                                <h6 class="mb-1 d-flex align-items-center gap-2 flex-wrap">
-                                    <i class="bi bi-clipboard-check me-1"></i>Setup Health
-                                    <span id="editReadinessBadge" class="badge ms-1">checking…</span>
-                                    <button type="button" class="btn btn-sm btn-link p-0 ms-1"
-                                            id="editReadinessRecheckBtn"
-                                            data-bs-toggle="tooltip"
-                                            title="Re-probe the server (e.g. after you've changed something in Jellyfin/Emby admin)">
-                                        <i class="bi bi-arrow-clockwise"></i>
-                                    </button>
-                                    <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
-                                       data-bs-toggle="tooltip" data-bs-placement="top"
-                                       title="Every setting this app needs to generate and activate previews on your media server: version compatibility, library settings, server-wide tile geometry, plus (for Jellyfin) the optional Media Preview Bridge plugin. Each row has its own Enable/Disable toggle."></i>
-                                </h6>
-
-                                <!-- Rendered list of checks. Each row is a ✓ / ⚠ / ✗ line. -->
-                                <div id="editReadinessBody" class="d-flex flex-column gap-2 mb-2 small"></div>
-
-                                <!-- Jellyfin-only: plugin install toggle (default ticked).
-                                     Renders inside editReadinessBody when relevant; JS
-                                     injects the checkbox + warning copy when unticked. -->
-                                <div id="editReadinessPluginControls" class="d-none small mb-2">
-                                    <div class="form-check">
-                                        <input type="checkbox" class="form-check-input" id="editReadinessPluginOptIn" checked>
-                                        <label class="form-check-label" for="editReadinessPluginOptIn">
-                                            Install Media Preview Bridge plugin (recommended — instant previews, no races)
-                                            <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
-                                               data-bs-toggle="tooltip" data-bs-placement="top"
-                                               title="With the plugin: previews appear in Jellyfin the moment this app finishes generating them. Without it: Jellyfin picks up our previews on its next scan (usually within seconds), or at worst on the 3 AM scheduled task. Installing requires a Jellyfin restart."></i>
-                                        </label>
-                                    </div>
-                                    <div id="editReadinessPluginOptOutWarning" class="alert alert-warning small mt-2 mb-0 d-none">
-                                        <i class="bi bi-exclamation-triangle me-1"></i>
-                                        Without the plugin, Jellyfin may briefly generate its own previews
-                                        in parallel when new files arrive. This wastes CPU but won't corrupt
-                                        output. Recommended: leave this ticked.
-                                    </div>
-                                </div>
-
-                                <!-- "Fix and enable" — sequences plugin install → library flags → tile geometry. -->
-                                <div id="editReadinessFixControls" class="d-flex align-items-center gap-2 flex-wrap d-none">
-                                    <button type="button" class="btn btn-sm btn-warning" id="editReadinessFixAllBtn">
-                                        <i class="bi bi-magic me-1"></i>Fix and enable
-                                    </button>
-                                    <span id="editReadinessFixResult" class="small text-muted"></span>
-                                </div>
-                            </div>
                         </div>
 
                         <!-- Plex-only: config folder -->
@@ -277,6 +232,69 @@
                                 <input type="hidden" id="editReauthPending" value="">
                             </div>
                         </details>
+                    </div>
+
+                    <!-- Setup Health — dedicated tab so users aren't hunting under
+                         General for the one set of controls that matters when
+                         something's wrong. The tab label carries a per-state
+                         marker (⚠ / ❗) stamped by runReadinessProbe whenever
+                         the probe finds issues, so the tab shouts for attention
+                         even while the user is looking at General first.
+
+                         The card body is the v3 unified readiness card — one
+                         probe, one fix-and-enable button, replacing the
+                         separate Vendor-extraction / Health-check / Plugin
+                         panels that lived here in v2. -->
+                    <div class="tab-pane fade" id="edit-tab-health">
+                        <div id="editReadinessGroup" class="card bg-body-tertiary mb-3 d-none">
+                            <div class="card-body p-3">
+                                <h6 class="mb-1 d-flex align-items-center gap-2 flex-wrap">
+                                    <i class="bi bi-clipboard-check me-1"></i>Setup Health
+                                    <span id="editReadinessBadge" class="badge ms-1">checking…</span>
+                                    <button type="button" class="btn btn-sm btn-link p-0 ms-1"
+                                            id="editReadinessRecheckBtn"
+                                            data-bs-toggle="tooltip"
+                                            title="Re-probe the server (e.g. after you've changed something in Jellyfin/Emby admin)">
+                                        <i class="bi bi-arrow-clockwise"></i>
+                                    </button>
+                                    <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                                       data-bs-toggle="tooltip" data-bs-placement="top"
+                                       title="Every setting this app needs to generate and activate previews on your media server: version compatibility, library settings, server-wide tile geometry, plus (for Jellyfin) the optional Media Preview Bridge plugin. Each row has its own Enable/Disable toggle."></i>
+                                </h6>
+
+                                <!-- Rendered list of checks. Each row is a ✓ / ⚠ / ✗ line. -->
+                                <div id="editReadinessBody" class="d-flex flex-column gap-2 mb-2 small"></div>
+
+                                <!-- Jellyfin-only: plugin install toggle (default ticked).
+                                     Renders inside editReadinessBody when relevant; JS
+                                     injects the checkbox + warning copy when unticked. -->
+                                <div id="editReadinessPluginControls" class="d-none small mb-2">
+                                    <div class="form-check">
+                                        <input type="checkbox" class="form-check-input" id="editReadinessPluginOptIn" checked>
+                                        <label class="form-check-label" for="editReadinessPluginOptIn">
+                                            Install Media Preview Bridge plugin (recommended — instant previews, no races)
+                                            <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                                               data-bs-toggle="tooltip" data-bs-placement="top"
+                                               title="With the plugin: previews appear in Jellyfin the moment this app finishes generating them. Without it: Jellyfin picks up our previews on its next scan (usually within seconds), or at worst on the 3 AM scheduled task. Installing requires a Jellyfin restart."></i>
+                                        </label>
+                                    </div>
+                                    <div id="editReadinessPluginOptOutWarning" class="alert alert-warning small mt-2 mb-0 d-none">
+                                        <i class="bi bi-exclamation-triangle me-1"></i>
+                                        Without the plugin, Jellyfin may briefly generate its own previews
+                                        in parallel when new files arrive. This wastes CPU but won't corrupt
+                                        output. Recommended: leave this ticked.
+                                    </div>
+                                </div>
+
+                                <!-- "Fix and enable" — sequences plugin install → library flags → tile geometry. -->
+                                <div id="editReadinessFixControls" class="d-flex align-items-center gap-2 flex-wrap d-none">
+                                    <button type="button" class="btn btn-sm btn-warning" id="editReadinessFixAllBtn">
+                                        <i class="bi bi-magic me-1"></i>Fix and enable
+                                    </button>
+                                    <span id="editReadinessFixResult" class="small text-muted"></span>
+                                </div>
+                            </div>
+                        </div>
                     </div>
 
                     <!-- Libraries -->

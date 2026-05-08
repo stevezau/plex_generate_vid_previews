@@ -116,15 +116,17 @@
             });
         });
         // Wire readiness glyph click + keyboard activation → open Edit
-        // modal so users can jump straight from a warning glyph to the
-        // fix-it UI without hunting for the Edit button. role="button"
-        // sets the screen-reader expectation that Enter/Space work too.
+        // modal DIRECTLY on the Setup Health tab so a user clicking a
+        // ⚠/❗ lands on the fix-it UI without another navigation click.
+        // role="button" sets the screen-reader expectation that
+        // Enter/Space work too.
         $$('.server-readiness-glyph').forEach((glyph) => {
-            glyph.addEventListener('click', () => openEditModal(glyph.dataset.id));
+            const open = () => openEditModal(glyph.dataset.id, { openTab: 'health' });
+            glyph.addEventListener('click', open);
             glyph.addEventListener('keydown', (e) => {
                 if (e.key === 'Enter' || e.key === ' ') {
                     e.preventDefault();
-                    openEditModal(glyph.dataset.id);
+                    open();
                 }
             });
         });
@@ -1117,9 +1119,13 @@
         }, 2000);
     }
 
-    async function openEditModal(serverId) {
+    async function openEditModal(serverId, { openTab = 'general' } = {}) {
         // Fetch the target server + the full server list (needed for the
         // "Apply to all" buttons so we know who to copy to).
+        //
+        // openTab — which tab to land on. Defaults to 'general' (the
+        // historical behaviour). The /servers card glyph passes 'health'
+        // so a user clicking a ⚠/❗ lands exactly on the fix-it UI.
         const [singleR, listR] = await Promise.all([
             api('GET', `/api/servers/${encodeURIComponent(serverId)}`),
             api('GET', '/api/servers'),
@@ -1183,10 +1189,18 @@
         try {
             document.querySelectorAll('#editServerModal .nav-link').forEach((el) => el.classList.remove('active'));
             document.querySelectorAll('#editServerModal .tab-pane').forEach((el) => el.classList.remove('show', 'active'));
-            const generalTab = document.querySelector('#editServerModal [data-bs-target="#edit-tab-general"]');
-            const generalPane = document.getElementById('edit-tab-general');
-            if (generalTab) generalTab.classList.add('active');
-            if (generalPane) generalPane.classList.add('show', 'active');
+            // Map the openTab key to the DOM ids. Unknown values fall
+            // back to general rather than silently leaving every tab
+            // hidden (the pre-fix symptom would be a blank modal body).
+            const tabMap = {
+                general: 'edit-tab-general',
+                health: 'edit-tab-health',
+            };
+            const paneId = tabMap[openTab] || 'edit-tab-general';
+            const activeTab = document.querySelector(`#editServerModal [data-bs-target="#${paneId}"]`);
+            const activePane = document.getElementById(paneId);
+            if (activeTab) activeTab.classList.add('active');
+            if (activePane) activePane.classList.add('show', 'active');
         } catch (_e) {
             // Best-effort — Bootstrap not available shouldn't break Edit.
         }
@@ -1726,11 +1740,14 @@
                 if (check.ok === false && check.severity === 'recommended') anyRecommended = true;
             }
         }
-        if (anyCritical) return { cls: 'bg-danger', text: 'action needed' };
-        if (anyRecommended) return { cls: 'bg-warning text-dark', text: 'recommendations' };
-        if (pluginInstalled === true) return { cls: 'bg-success', text: 'ready (instant)' };
-        if (pluginInstalled === false) return { cls: 'bg-success', text: 'ready (next scan)' };
-        return { cls: 'bg-success', text: 'ready' };
+        // `tier` is the stable string consumers key off (badge, tab marker, glyph) —
+        // using it avoids substring-matching the Bootstrap class list, which
+        // would break silently if someone ever added `bg-warning-subtle` etc.
+        if (anyCritical) return { tier: 'critical', cls: 'bg-danger', text: 'action needed' };
+        if (anyRecommended) return { tier: 'recommended', cls: 'bg-warning text-dark', text: 'recommendations' };
+        if (pluginInstalled === true) return { tier: 'ok', cls: 'bg-success', text: 'ready (instant)' };
+        if (pluginInstalled === false) return { tier: 'ok', cls: 'bg-success', text: 'ready (next scan)' };
+        return { tier: 'ok', cls: 'bg-success', text: 'ready' };
     }
 
     // Renders the unified previews-readiness card. Walks data.sections[]
@@ -1754,6 +1771,33 @@
         const badgeState = _deriveBadgeState(data);
         badge.className = `badge ms-1 ${badgeState.cls}`;
         badge.textContent = badgeState.text;
+
+        // Tab-label marker — stamp ❗ / ⚠ / ✓ next to "Setup Health"
+        // in the nav bar so the user sees there's something to
+        // address even when they're on a different tab. Cls names
+        // come from _deriveBadgeState so the marker and the badge
+        // can't disagree.
+        const tabMarker = document.getElementById('editHealthTabMarker');
+        if (tabMarker) {
+            // Key off `tier` rather than sniffing the Bootstrap class
+            // string — robust against future class-name additions
+            // (bg-warning-subtle etc).
+            if (badgeState.tier === 'critical') {
+                tabMarker.className = 'ms-1 text-danger';
+                tabMarker.innerHTML = '<i class="bi bi-exclamation-triangle-fill"></i>';
+                tabMarker.title = 'Action needed';
+            } else if (badgeState.tier === 'recommended') {
+                tabMarker.className = 'ms-1 text-warning';
+                tabMarker.innerHTML = '<i class="bi bi-exclamation-circle-fill"></i>';
+                tabMarker.title = 'Recommendations';
+            } else {
+                // Don't clutter the tab with a ✓ when everything is fine;
+                // the absence of a marker IS the all-ok signal.
+                tabMarker.className = 'ms-1 d-none';
+                tabMarker.innerHTML = '';
+                tabMarker.title = '';
+            }
+        }
 
         // Body.
         body.innerHTML = '';
