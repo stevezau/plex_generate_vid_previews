@@ -240,14 +240,14 @@ class TestJellyfinTrickplayAdapterPathLayout:
         paths = adapter.compute_output_paths(bundle, server=None, item_id="x")
         assert str(paths[0]) == "/m/Foo.trickplay/480 - 10x10/0.jpg"
 
-    def test_compute_output_paths_raises_when_item_id_missing(self):
-        """item_id is required for the publish-time write_meta call (the
-        only API-needing field; the path itself is pure-derivable).
-        Missing item_id → ValueError.
-        """
+    def test_compute_output_paths_accepts_missing_item_id(self):
+        """Post-v3 contract: the adapter's tile path is purely derivable
+        from canonical_path — item_id is NOT required. This pins the
+        dispatcher's ability to skip the ~30s Pass-2 lookup for Jellyfin
+        when no plugin is installed."""
         adapter = JellyfinTrickplayAdapter(width=320, frame_interval=10)
-        with pytest.raises(ValueError, match="item_id"):
-            adapter.compute_output_paths(_bundle("/d/x.mkv"), server=None, item_id=None)
+        paths = adapter.compute_output_paths(_bundle("/d/x.mkv"), server=None, item_id=None)
+        assert paths[0].as_posix() == "/d/x.trickplay/320 - 10x10/0.jpg"
 
 
 # ---------------------------------------------------------------------------
