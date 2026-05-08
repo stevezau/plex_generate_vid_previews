@@ -115,15 +115,18 @@
                 }
             });
         });
-        // Generic per-card health-check probe: replaces the
-        // Jellyfin-specific "Fix trickplay" probe with the unified
-        // /health-check endpoint that works for Plex/Emby/Jellyfin.
-        // Renders a clickable "N issue(s)" badge on cards with problems;
-        // clicking opens the Edit modal where the full health-check
-        // panel handles per-issue display + apply.
-        $$('.server-health-pill').forEach((pill) => {
-            probeServerHealthCheck(pill.dataset.id, pill);
-            pill.addEventListener('click', () => openEditModal(pill.dataset.id));
+        // Wire readiness glyph click + keyboard activation → open Edit
+        // modal so users can jump straight from a warning glyph to the
+        // fix-it UI without hunting for the Edit button. role="button"
+        // sets the screen-reader expectation that Enter/Space work too.
+        $$('.server-readiness-glyph').forEach((glyph) => {
+            glyph.addEventListener('click', () => openEditModal(glyph.dataset.id));
+            glyph.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    openEditModal(glyph.dataset.id);
+                }
+            });
         });
         // Quick enable/disable toggle on each card.
         $$('.server-enabled-toggle').forEach((cb) => {
@@ -148,18 +151,29 @@
                 }
             });
         });
-        // Per-card connection probe — sequential to avoid hammering 3+
-        // servers in parallel from the same browser tab. Each probe is
-        // ~200-1500ms so this is fast enough; doing them concurrently
-        // would saturate the single gunicorn worker on a multi-server
-        // install for a few seconds during page load.
+        // Per-card connection + readiness probe — sequential per server
+        // to avoid hammering 3+ servers in parallel from the same
+        // browser tab. Each probe is ~200-1500ms. Connection runs
+        // first and returns its status; when the server is unreachable
+        // we SKIP the readiness probe (the endpoint would error out and
+        // paint a misleading "unknown" glyph when the real problem is
+        // the connection pill below).
         (async () => {
             for (const s of servers) {
                 if (!s.enabled) {
                     updateServerStatusPill(s.id, { ok: null, message: 'Disabled' });
+                    updateServerReadinessGlyph(s.id, null);
                     continue;
                 }
-                await probeServerConnection(s.id);
+                const connOk = await probeServerConnection(s.id);
+                if (connOk) {
+                    await probeServerReadiness(s.id);
+                } else {
+                    // Connection failed — hide the readiness glyph; the
+                    // connection pill already signals the underlying
+                    // problem, no need to double-warn.
+                    updateServerReadinessGlyph(s.id, { unknown: true });
+                }
             }
         })();
     }
@@ -168,12 +182,15 @@
         try {
             const r = await api('POST', `/api/servers/${encodeURIComponent(serverId)}/test-connection`);
             const data = r.data || {};
+            const ok = data.ok === true;
             updateServerStatusPill(serverId, {
-                ok: data.ok === true,
-                message: data.message || (data.ok ? 'Connected' : 'Connection failed'),
+                ok,
+                message: data.message || (ok ? 'Connected' : 'Connection failed'),
             });
+            return ok;
         } catch (e) {
             updateServerStatusPill(serverId, { ok: false, message: String(e) });
+            return false;
         }
     }
 
@@ -197,35 +214,101 @@
         }
     }
 
-    async function probeServerHealthCheck(serverId, pill) {
-        // Generic per-vendor settings audit. Runs once per card render;
-        // surfaces a small clickable "N issue(s)" badge when the server
-        // has misconfigured settings. The full per-issue UI lives inside
-        // the Edit modal — this pill is just the entry point.
-        if (!pill) return;
-        const r = await api('GET', `/api/servers/${encodeURIComponent(serverId)}/health-check`);
-        if (!r.ok || !r.data) {
-            pill.classList.add('d-none');
+    async function probeServerReadiness(serverId) {
+        // Unified Setup Health probe — drives the inline glyph next to
+        // each server name on the card. Same endpoint the Edit modal's
+        // Setup Health section consumes, so the glyph and modal agree
+        // without a second probe. Single source of truth.
+        try {
+            const r = await api('GET', `/api/servers/${encodeURIComponent(serverId)}/previews-readiness`);
+            if (!r.ok || !r.data) {
+                updateServerReadinessGlyph(serverId, { unknown: true });
+                return;
+            }
+            // Roll up sections[] to the worst severity present. Mirrors
+            // the modal's _deriveBadgeState walker — BOTH section-level
+            // (section.ok/severity) AND per-check (check.ok/severity)
+            // are checked so the glyph and the modal badge can never
+            // disagree. Per-check counts drive the tooltip copy; a
+            // section-level-only failure still registers in anyCritical
+            // / anyRecommended even when its checks[] is empty.
+            const sections = r.data.sections || [];
+            let anyCritical = false;
+            let anyRecommended = false;
+            let criticalCount = 0;
+            let recommendedCount = 0;
+            for (const section of sections) {
+                if (section.ok === false) {
+                    if (section.severity === 'critical') anyCritical = true;
+                    else if (section.severity === 'recommended') anyRecommended = true;
+                }
+                for (const check of (section.checks || [])) {
+                    if (check.ok === false && check.severity === 'critical') {
+                        anyCritical = true;
+                        criticalCount += 1;
+                    } else if (check.ok === false && check.severity === 'recommended') {
+                        anyRecommended = true;
+                        recommendedCount += 1;
+                    }
+                }
+            }
+            if (anyCritical) {
+                // criticalCount is the per-check count; a section-level
+                // failure without a matching check row still trips
+                // anyCritical but contributes 0 to the count — fall
+                // back to generic copy in that case so "0 critical
+                // setup issues" never shows up.
+                const tooltip = criticalCount > 0
+                    ? `${criticalCount} critical setup issue${criticalCount === 1 ? '' : 's'} — click to fix`
+                    : 'Critical setup issue — click to fix';
+                updateServerReadinessGlyph(serverId, { state: 'critical', tooltip });
+            } else if (anyRecommended) {
+                const tooltip = recommendedCount > 0
+                    ? `${recommendedCount} recommended improvement${recommendedCount === 1 ? '' : 's'} — click to review`
+                    : 'Recommended improvement available — click to review';
+                updateServerReadinessGlyph(serverId, { state: 'recommended', tooltip });
+            } else {
+                updateServerReadinessGlyph(serverId, {
+                    state: 'ok',
+                    tooltip: 'Setup healthy — click for details',
+                });
+            }
+        } catch (e) {
+            updateServerReadinessGlyph(serverId, { unknown: true });
+        }
+    }
+
+    function updateServerReadinessGlyph(serverId, info) {
+        const glyph = document.getElementById(`server-readiness-${serverId}`);
+        if (!glyph) return;
+        // info === null → card is Disabled; hide the glyph entirely.
+        // Preserve the marker class so any post-render traversal that
+        // looks for .server-readiness-glyph still finds it (e.g. if a
+        // future enable-toggle path re-runs wireup on an existing card).
+        if (info === null) {
+            glyph.className = 'server-readiness-glyph d-none';
             return;
         }
-        const issueCount = r.data.issue_count || 0;
-        if (issueCount === 0) {
-            pill.classList.add('d-none');
+        if (info.unknown) {
+            // Connection failed / probe errored — stay neutral rather
+            // than flashing a red warning. The connection pill below
+            // already shows the underlying problem.
+            glyph.className = 'server-readiness-glyph d-none';
             return;
         }
-        const issues = r.data.issues || [];
-        const criticalCount = issues.filter((i) => i.severity === 'critical').length;
-        if (criticalCount > 0) {
-            pill.className = 'btn btn-sm btn-danger server-health-pill';
-            const verb = criticalCount === 1 ? 'needs' : 'need';
-            pill.title = `${criticalCount} critical setting${criticalCount === 1 ? '' : 's'} ${verb} attention. Click to fix.`;
+        const base = 'server-readiness-glyph ms-2';
+        if (info.state === 'critical') {
+            glyph.className = `${base} text-danger`;
+            glyph.innerHTML = '<i class="bi bi-exclamation-triangle-fill"></i>';
+        } else if (info.state === 'recommended') {
+            glyph.className = `${base} text-warning`;
+            glyph.innerHTML = '<i class="bi bi-exclamation-circle-fill"></i>';
         } else {
-            pill.className = 'btn btn-sm btn-warning server-health-pill';
-            pill.title = `${issueCount} recommended setting${issueCount === 1 ? '' : 's'} could be improved. Click to fix.`;
+            glyph.className = `${base} text-success`;
+            glyph.innerHTML = '<i class="bi bi-check-circle-fill"></i>';
         }
-        pill.dataset.id = serverId;  // re-stamp after className wipe so the click handler still works
-        pill.innerHTML = `<i class="bi bi-clipboard-check me-1"></i>${issueCount} issue${issueCount === 1 ? '' : 's'}`;
-        pill.classList.remove('d-none');
+        glyph.title = info.tooltip || '';
+        glyph.setAttribute('aria-label', info.tooltip || '');
     }
 
     function serverCard(server) {
@@ -242,6 +325,7 @@
         // as the System & Workers card for visual consistency.
         const statusPillId = `server-status-${escapeHtml(server.id)}`;
         const enabledToggleId = `server-enabled-${escapeHtml(server.id)}`;
+        const readinessGlyphId = `server-readiness-${escapeHtml(server.id)}`;
         return `
             <div class="col-md-6 col-lg-4">
                 <div class="card card-interactive h-100">
@@ -249,6 +333,16 @@
                         <h5 class="card-title mb-2 d-flex align-items-center" style="min-width:0;">
                             <span style="white-space:nowrap;">${vendorLogo}</span>
                             <span class="text-truncate">${escapeHtml(server.name)}</span>
+                            <!-- Inline Setup Health glyph next to the server name.
+                                 Populated by probeServerReadiness(). Stays hidden
+                                 (d-none) until the probe completes so it doesn't
+                                 flash-of-wrong-state on slow networks. -->
+                            <span class="server-readiness-glyph d-none"
+                                  id="${readinessGlyphId}"
+                                  data-id="${escapeHtml(server.id)}"
+                                  role="button"
+                                  tabindex="0"
+                                  style="cursor:pointer;"></span>
                         </h5>
                         <div class="text-muted small mb-2 text-truncate" title="${escapeHtml(server.url)}">${escapeHtml(server.url)}</div>
                         <div class="d-flex align-items-center justify-content-between mb-2 gap-2 flex-wrap">
@@ -276,9 +370,6 @@
                                     data-id="${escapeHtml(server.id)}">
                                 <i class="bi bi-arrow-clockwise me-1"></i>Refresh libraries
                             </button>
-<button class="btn btn-sm btn-outline-secondary server-health-pill d-none"
-                                    data-id="${escapeHtml(server.id)}"
-                                    type="button"></button>
                         </div>
                         <button class="btn btn-sm btn-outline-danger delete-server-btn"
                                 data-id="${escapeHtml(server.id)}"
