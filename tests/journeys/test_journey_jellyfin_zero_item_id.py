@@ -681,7 +681,255 @@ class TestTrickplayFixAll:
 
 
 # ============================================================
-# Section F — Perf proof (Pass-2 cost no longer multiplied)
+# Section F — Gap tests for in-session iteration branches
+# ============================================================
+
+
+class TestColdPluginCacheProbe:
+    """_jellyfin_plugin_cached_installed probes the plugin on cache miss.
+
+    Without this, every first dispatch after container restart would
+    miss Mode A even when the plugin IS installed, because the registry
+    builds a fresh JellyfinServer per dispatch and the cache is cold.
+    """
+
+    def test_cold_cache_probes_and_caches_installed(self, tmp_path, mock_config):
+        """Cache=None + plugin Ping returns installed → probe fires +
+        cache gets populated + True returned."""
+        from media_preview_generator.processing.multi_server import (
+            _jellyfin_plugin_cached_installed,
+        )
+
+        mock_config.working_tmp_folder = str(tmp_path / "tmp")
+        # Build a real JellyfinServer with NO cached plugin state.
+        cfg = MagicMock()
+        cfg.url = "http://x"
+        cfg.name = "JellyProbe"
+        cfg.id = "jp-1"
+        cfg.auth = {"method": "api_key", "api_key": "k"}
+        cfg.output = {"width": 320, "frame_interval": 10}
+        cfg.libraries = []
+        server = JellyfinServer(cfg)
+        # Pre-condition: cache is cold.
+        assert getattr(server, "_media_preview_bridge_installed", "SENTINEL") is None
+
+        ping_resp = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={"ok": True, "version": "1.0.2"}),
+            raise_for_status=MagicMock(),
+        )
+        with patch.object(JellyfinServer, "_request", return_value=ping_resp):
+            result = _jellyfin_plugin_cached_installed(server)
+
+        assert result is True
+        # Cache is now warm — the side-effect of check_plugin_installed.
+        assert server._media_preview_bridge_installed is True
+
+    def test_cold_cache_probe_failure_returns_false(self):
+        """If the probe itself raises (transport error, 500), return
+        False and leave the cache cold. The dispatch runs without
+        Mode A; next dispatch re-probes."""
+        from media_preview_generator.processing.multi_server import (
+            _jellyfin_plugin_cached_installed,
+        )
+
+        cfg = MagicMock()
+        cfg.url = "http://x"
+        cfg.name = "JellyProbe"
+        cfg.id = "jp-1"
+        cfg.auth = {"method": "api_key", "api_key": "k"}
+        cfg.output = {"width": 320, "frame_interval": 10}
+        cfg.libraries = []
+        server = JellyfinServer(cfg)
+
+        with patch.object(JellyfinServer, "_request", side_effect=RuntimeError("boom")):
+            result = _jellyfin_plugin_cached_installed(server)
+
+        assert result is False
+
+    def test_cold_cache_plugin_ping_returns_404(self):
+        """Distinct from the exception path: Ping endpoint returns 404
+        (plugin not installed, or plugin version mismatch). Cache gets
+        populated with False so subsequent dispatches short-circuit."""
+        from media_preview_generator.processing.multi_server import (
+            _jellyfin_plugin_cached_installed,
+        )
+
+        cfg = MagicMock()
+        cfg.url = "http://x"
+        cfg.name = "JellyProbe"
+        cfg.id = "jp-1"
+        cfg.auth = {"method": "api_key", "api_key": "k"}
+        cfg.output = {"width": 320, "frame_interval": 10}
+        cfg.libraries = []
+        server = JellyfinServer(cfg)
+
+        ping_resp = MagicMock(
+            status_code=404,
+            json=MagicMock(return_value={}),
+            raise_for_status=MagicMock(),
+        )
+        with patch.object(JellyfinServer, "_request", return_value=ping_resp):
+            result = _jellyfin_plugin_cached_installed(server)
+
+        assert result is False
+        # The check_plugin_installed side effect wrote False to the cache
+        # so a subsequent dispatch skips the probe entirely.
+        assert server._media_preview_bridge_installed is False
+
+    def test_warm_cache_skips_probe(self):
+        """When the cache is already populated, don't pay the HTTP
+        round-trip again — this is the common case (multi-dispatch
+        run within one registry lifetime)."""
+        from media_preview_generator.processing.multi_server import (
+            _jellyfin_plugin_cached_installed,
+        )
+
+        cfg = MagicMock()
+        cfg.url = "http://x"
+        cfg.name = "JellyProbe"
+        cfg.id = "jp-1"
+        cfg.auth = {"method": "api_key", "api_key": "k"}
+        cfg.output = {"width": 320, "frame_interval": 10}
+        cfg.libraries = []
+        server = JellyfinServer(cfg)
+        server._media_preview_bridge_installed = True
+
+        with patch.object(JellyfinServer, "_request") as req:
+            result = _jellyfin_plugin_cached_installed(server)
+
+        assert result is True
+        req.assert_not_called()
+
+
+class TestAtomicPublishRestoreOnMidSwapFailure:
+    """If os.rename succeeds once (final→old) then fails (staging→final),
+    the publish must restore the prior complete tile set so we don't
+    lose a valid publish to a mid-swap error."""
+
+    def test_restore_prior_when_step2_rename_fails(self, tmp_path):
+        frame_dir = tmp_path / "frames"
+        _make_frame_dir(frame_dir, count=5)
+
+        media_dir = tmp_path / "R"
+        media_file = _seed_canonical(media_dir)
+
+        # Seed a prior complete tile set that must survive the failed swap.
+        prior_sheets = media_dir / "Test (2024).trickplay" / "320 - 10x10"
+        prior_sheets.mkdir(parents=True)
+        (prior_sheets / "0.jpg").write_bytes(b"\xff\xd8\xff PRIOR")
+        (prior_sheets / "1.jpg").write_bytes(b"\xff\xd8\xff PRIOR")
+
+        adapter = JellyfinTrickplayAdapter(width=320)
+        bundle = _make_bundle(str(media_file), frame_dir, 5)
+        sheet0 = adapter.compute_output_paths(bundle, MagicMock(), item_id=None)[0]
+
+        # Intercept os.rename: succeed on the FIRST call (final → old),
+        # fail on the SECOND (staging → final). Fallback then restores
+        # old → final and runs the in-place fallback write.
+        import media_preview_generator.output.jellyfin_trickplay as mod
+
+        original_rename = mod.os.rename
+        call_count = {"n": 0}
+
+        def flaky_rename(src, dst):
+            call_count["n"] += 1
+            if call_count["n"] == 2:
+                raise OSError("simulated step-2 failure")
+            return original_rename(src, dst)
+
+        with patch.object(mod.os, "rename", side_effect=flaky_rename):
+            adapter.publish(bundle, [sheet0], item_id=None)
+
+        # Final dir exists (either restored old OR fallback-in-place).
+        final_sheets = media_dir / "Test (2024).trickplay" / "320 - 10x10"
+        assert final_sheets.is_dir(), (
+            "Final trickplay dir missing after mid-swap failure — prior valid tile "
+            "set was lost. Restore path didn't fire."
+        )
+        assert (final_sheets / "0.jpg").is_file()
+        # No orphan .old / .staging sidecars.
+        siblings = {p.name for p in media_dir.iterdir()}
+        assert not any(s.startswith(".Test (2024).trickplay") for s in siblings), (
+            f"Orphan sidecars survived failed swap: {siblings}"
+        )
+
+
+class TestPluginResolvePath404FallsThroughToBase:
+    """When the plugin's ResolvePath endpoint returns 404 or 500, the
+    Jellyfin subclass must fall through to the base-class resolver
+    (Pass 0/1/2). This was observed live during end-to-end testing —
+    the installed plugin had Ping but not ResolvePath on 10.11.0.0.
+
+    Without the fallback, a partial-endpoint plugin would poison every
+    lookup with a 404 and the dispatcher would think the file isn't
+    on the server at all.
+    """
+
+    def test_plugin_404_falls_through_to_base_resolver(self):
+        """Plugin returns 404 on ResolvePath → base class's
+        ``_uncached_resolve_remote_path_to_item_id`` takes over.
+
+        Full request tuples (method, url, kwargs) captured and asserted
+        so a regression that drops ``path=`` from the plugin call — or
+        ``searchTerm=`` from the base call — is visible. Plain URL-
+        substring assertions would have let both regressions through
+        (same shape as the D31 ?type= bug).
+        """
+        cfg = MagicMock()
+        cfg.url = "http://x"
+        cfg.name = "JellyPartialPlugin"
+        cfg.id = "jp-1"
+        cfg.auth = {"method": "api_key", "api_key": "k"}
+        cfg.output = {"width": 320, "frame_interval": 10}
+        cfg.libraries = []
+        cfg.path_mappings = []
+        server = JellyfinServer(cfg)
+
+        captured_calls: list[dict] = []
+
+        def fake_request(method, url, **kwargs):
+            captured_calls.append({"method": method, "url": url, "params": kwargs.get("params") or {}})
+            resp = MagicMock(raise_for_status=MagicMock())
+            if "/MediaPreviewBridge/ResolvePath" in url:
+                resp.status_code = 404
+                resp.json = MagicMock(return_value={})
+                return resp
+            resp.status_code = 200
+            resp.json = MagicMock(return_value={"Items": []})
+            return resp
+
+        with patch.object(JellyfinServer, "_request", side_effect=fake_request):
+            result = server._uncached_resolve_remote_path_to_item_id("/m/Foo.mkv")
+
+        # Plugin was tried first with the RIGHT query param (path=).
+        plugin_call = next(
+            (c for c in captured_calls if "/MediaPreviewBridge/ResolvePath" in c["url"]),
+            None,
+        )
+        assert plugin_call is not None, f"Plugin ResolvePath wasn't attempted. calls={captured_calls}"
+        assert plugin_call["method"] == "GET"
+        assert plugin_call["params"].get("path") == "/m/Foo.mkv", (
+            f"Plugin called without 'path' query param (or wrong value). params={plugin_call['params']}"
+        )
+
+        # Base-class resolver fired after the 404 with the RIGHT search terms.
+        plugin_idx = captured_calls.index(plugin_call)
+        base_calls = [c for c in captured_calls[plugin_idx + 1 :] if "/Items" in c["url"]]
+        assert base_calls, f"Base resolver never ran after plugin 404. calls={captured_calls}"
+        # At least one base call must carry searchTerm. A regression
+        # that silently dropped searchTerm would return every library
+        # item and corrupt the path-tail match downstream.
+        assert any(c["params"].get("searchTerm") for c in base_calls), (
+            f"Base resolver didn't send searchTerm. base_calls={base_calls}"
+        )
+        # None because the base path also couldn't find the file —
+        # expected behaviour when the file isn't indexed yet.
+        assert result is None
+
+
+# ============================================================
+# Section G — Perf proof (Pass-2 cost no longer multiplied)
 # ============================================================
 
 
