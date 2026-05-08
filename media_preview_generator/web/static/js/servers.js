@@ -1069,66 +1069,10 @@
             tcResult.className = 'small text-muted';
             tcResult.textContent = '';
         }
-        // Vendor-specific blurb for the auto-extraction panel. Two-tier:
-        //   • summary  → always-visible one-liner ("why you'd want this")
-        //   • details  → collapsed "What this changes" body (every flag we
-        //                flip + the one-time-pass caveat). Splitting them
-        //                stops the wall-of-text from drowning out the
-        //                action button. Title in the template stays generic
-        //                because all three vendors land on the same advice:
-        //                "stop the server's own preview generation".
-        const veBlurb = document.getElementById('editVendorExtractionBlurb');
-        const veDetails = document.getElementById('editVendorExtractionDetailsBody');
-        if (veBlurb) {
-            const t = (server.type || '').toLowerCase();
-            if (t === 'plex') {
-                veBlurb.innerHTML = `Plex would otherwise re-generate previews itself during library scans. Disable to free up CPU — Plex still uses the BIF files this app publishes.`;
-                if (veDetails) {
-                    veDetails.innerHTML = `Flips Plex's <strong>Generate video preview thumbnails</strong> setting to off on every library. Plex still loads our published BIF when present, so playback scrubbing is unaffected — only Plex's own background generation stops.`;
-                }
-            } else if (t === 'emby') {
-                veBlurb.innerHTML = `Emby would otherwise re-generate chapter images / trickplay itself during library scans. Disable to free up CPU — Emby still loads the preview files this app publishes.`;
-                if (veDetails) {
-                    veDetails.innerHTML = `Turns off Emby's chapter-image and trickplay scan-time extraction on every library. Emby keeps reading our published preview files (BIF / trickplay sheets); only its own background generation stops.`;
-                }
-            } else if (t === 'jellyfin') {
-                veBlurb.innerHTML = `Jellyfin would otherwise re-generate trickplay itself during library scans. Disable to free up CPU — Jellyfin still uses the trickplay files this app publishes.`;
-                if (veDetails) {
-                    veDetails.innerHTML = `Turns off <em>scan-time extraction</em> and turns on <em>save-with-media</em> on every Jellyfin library, so Jellyfin reads the trickplay folder this app writes. The <em>detection</em> flag is intentionally left on — without it Jellyfin <strong>deletes</strong> our published files on the next scan. The daily <em>Refresh Trickplay Images</em> task stays at its default schedule (3 AM) because that's also the path Jellyfin uses to import our published tiles into its database — clearing it would leave the files on disk but invisible to the player. Items not yet processed by this app get a one-time ffmpeg pass at 3 AM until covered.`;
-                }
-            } else {
-                veBlurb.textContent = 'Toggle vendor-side preview extraction.';
-                if (veDetails) veDetails.textContent = '';
-            }
-        }
-        const veResult = document.getElementById('editVendorExtractionResult');
-        if (veResult) { veResult.className = 'small text-muted'; veResult.textContent = ''; }
-
-        // Hide the plugin panel by default; reveal + populate via the
-        // background plugin probe below for Jellyfin servers.
-        const pluginGroup = document.getElementById('editJellyfinPluginGroup');
-        if (pluginGroup) pluginGroup.classList.add('d-none');
-        const pluginResult = document.getElementById('editInstallPluginResult');
-        if (pluginResult) { pluginResult.className = 'small text-muted'; pluginResult.textContent = ''; }
-        const serverType = (server.type || '').toLowerCase();
-        if (serverType === 'jellyfin') {
-            // Background-fire so the modal opens instantly. The probe is
-            // cheap (single GET) and surfaces the badge within ~100ms on
-            // a healthy Jellyfin.
-            api('POST', `/api/servers/${encodeURIComponent(server.id)}/test-connection`).then((r) => {
-                if (r && r.data) updateJellyfinPluginPanel(r.data.plugin);
-            }).catch(() => {});
-        }
-
-        // Health-check probe — generic per-vendor settings audit. Vendors
-        // that haven't implemented check_settings_health yet return an
-        // empty issues list; we just render "all good" in that case.
-        // Fire-and-forget so the modal opens instantly.
-        runHealthCheckProbe(server.id);
-        // Per-library vendor-extraction state probe — picks Disable vs
-        // Re-enable as the single CTA so the panel doesn't render two
-        // buttons when one is a no-op.
-        renderVendorExtractionState(server.id);
+        // Unified "Previews readiness" card — one probe per modal open.
+        // Fire-and-forget so the modal opens instantly; the card renders
+        // itself when the probe returns.
+        runReadinessProbe(server.id, server.type || '');
 
         // D24 — vendor-aware re-auth UI: show ONE block matching the
         // server's type, hide the others, and reset all input state so
@@ -1617,94 +1561,221 @@
         }
     }
 
-    // ─── Server settings health check ──────────────────────────────────
-    // Generic per-vendor settings audit. Probed on Edit Modal open;
-    // renders one row per misconfigured library option with an "Apply
-    // recommended" button. Vendors that don't implement check_settings_health
-    // return an empty issues list; we render "all good" in that case so
-    // the panel doesn't stay greyed-out forever.
-    async function runHealthCheckProbe(serverId) {
-        const group = document.getElementById('editHealthCheckGroup');
-        const badge = document.getElementById('editHealthBadge');
-        const list = document.getElementById('editHealthIssueList');
-        const fixCtl = document.getElementById('editHealthFixControls');
-        const fixCount = document.getElementById('editHealthFixCount');
-        const fixResult = document.getElementById('editHealthFixResult');
-        if (!group || !badge || !list || !fixCtl) return;
+    // ─── Unified "Previews readiness" card (v3) ────────────────────────
+    // Replaces the separate Health-check + Vendor-extraction + Plugin
+    // panels. One probe, one "Fix and enable" button, per-vendor detail.
+    async function runReadinessProbe(serverId, serverType) {
+        const group = document.getElementById('editReadinessGroup');
+        const badge = document.getElementById('editReadinessBadge');
+        const body = document.getElementById('editReadinessBody');
+        const fixCtl = document.getElementById('editReadinessFixControls');
+        const fixResult = document.getElementById('editReadinessFixResult');
+        const pluginCtl = document.getElementById('editReadinessPluginControls');
+        if (!group || !badge || !body || !fixCtl) return;
 
         // Reset state from any prior modal open.
         group.classList.remove('d-none');
-        list.innerHTML = '';
+        body.innerHTML = '';
         fixCtl.classList.add('d-none');
+        if (pluginCtl) pluginCtl.classList.add('d-none');
         if (fixResult) { fixResult.className = 'small text-muted'; fixResult.textContent = ''; }
         badge.className = 'badge ms-1 bg-secondary';
         badge.textContent = 'checking…';
 
-        const r = await api('GET', `/api/servers/${encodeURIComponent(serverId)}/health-check`);
+        const r = await api('GET', `/api/servers/${encodeURIComponent(serverId)}/previews-readiness`);
         if (!r.ok || !r.data) {
             badge.className = 'badge ms-1 bg-warning text-dark';
             badge.textContent = 'unavailable';
-            list.innerHTML = '<div class="small text-muted">Could not reach the server. Check connection and try again.</div>';
+            body.innerHTML = '<div class="small text-muted">Could not reach the server. Check connection and try again.</div>';
             return;
         }
 
-        const issues = r.data.issues || [];
-        const fixableCount = r.data.fixable_count || 0;
+        const data = r.data;
+        const vendor = (data.vendor || serverType || '').toLowerCase();
+        const isJellyfin = vendor === 'jellyfin';
 
-        if (issues.length === 0) {
-            badge.className = 'badge ms-1 bg-success';
-            badge.textContent = 'all good';
-            list.innerHTML = '<div class="small text-success"><i class="bi bi-check-circle me-1"></i>Every preview-relevant setting on this server is already at the recommended value.</div>';
-            return;
+        // Build the row list per vendor.
+        const rows = [];
+
+        if (data.version && data.version.value) {
+            rows.push({
+                ok: data.version.ok !== false,
+                label: `${vendor.charAt(0).toUpperCase() + vendor.slice(1)} ${escapeHtml(data.version.value)}`,
+                reason: data.version.reason || '',
+                fix_kind: data.version.fix_kind,
+            });
         }
 
-        // Bucket by severity for the badge.
-        const criticalCount = issues.filter((i) => i.severity === 'critical').length;
-        if (criticalCount > 0) {
-            badge.className = 'badge ms-1 bg-danger';
-            badge.textContent = `${criticalCount} critical${issues.length > criticalCount ? `, ${issues.length - criticalCount} recommended` : ''}`;
+        if (data.plugin !== undefined) {
+            const pluginInstalled = !!(data.plugin && data.plugin.installed);
+            const pluginVer = data.plugin && data.plugin.version;
+            const modeHint = data.plugin && data.plugin.mode;
+            const modeLabel = modeHint === 'plugin_instant'
+                ? 'Plugin installed — instant activation (Mode A)'
+                : modeHint === 'scan_nudge'
+                    ? 'No plugin — activates on next scan (Mode B)'
+                    : modeHint === 'scan_nudge_pending'
+                        ? 'No plugin — scan trigger flag needs enabling'
+                        : 'Mode unknown';
+            rows.push({
+                ok: true,  // plugin is informational, not a blocker
+                label: `Activation mode: ${modeLabel}`,
+            });
+            rows.push({
+                ok: pluginInstalled,
+                label: pluginInstalled
+                    ? `Media Preview Bridge plugin installed${pluginVer ? ` (v${escapeHtml(pluginVer)})` : ''}`
+                    : 'Media Preview Bridge plugin not installed (optional, recommended for instant activation)',
+            });
+        }
+
+        const libIssues = (data.library_settings && data.library_settings.issues) || [];
+        if (!libIssues.length) {
+            rows.push({ ok: true, label: 'Library settings look good' });
         } else {
-            badge.className = 'badge ms-1 bg-warning text-dark';
-            badge.textContent = `${issues.length} recommended`;
+            const critical = libIssues.filter((i) => i.severity === 'critical').length;
+            const summary = critical > 0
+                ? `${libIssues.length} library setting${libIssues.length > 1 ? 's' : ''} need fixing (${critical} critical)`
+                : `${libIssues.length} optional library setting${libIssues.length > 1 ? 's' : ''} recommended`;
+            rows.push({ ok: false, label: summary, severity: critical > 0 ? 'critical' : 'recommended', issues: libIssues });
         }
 
-        // Render one row per issue.
-        list.innerHTML = '';
-        for (const issue of issues) {
-            const row = document.createElement('div');
-            row.className = 'border rounded p-2 small';
-            const sevClass = issue.severity === 'critical' ? 'bg-danger' : 'bg-warning text-dark';
-            const sevLabel = issue.severity === 'critical' ? 'Critical' : 'Recommended';
-            const lib = issue.library_name ? `<span class="text-muted">${escapeHtml(issue.library_name)}</span> · ` : '';
-            const cur = formatHealthValue(issue.current);
-            const rec = formatHealthValue(issue.recommended);
-            row.innerHTML = `
-                <div class="d-flex align-items-center gap-2 mb-1 flex-wrap">
-                    <span class="badge ${sevClass}" style="font-size:0.65rem;">${sevLabel}</span>
-                    <strong>${escapeHtml(issue.label)}</strong>
-                    <i class="bi bi-info-circle text-muted" data-bs-toggle="tooltip"
-                       title="${escapeAttr(issue.rationale)}"></i>
-                </div>
-                <div class="text-muted">
-                    ${lib}Currently <code>${cur}</code>
-                    <i class="bi bi-arrow-right mx-1"></i>
-                    will be <code>${rec}</code>
-                </div>
-            `;
-            list.appendChild(row);
+        if (data.trickplay_options) {
+            if (data.trickplay_options.ok) {
+                rows.push({ ok: true, label: 'Server trickplay tile geometry matches' });
+            } else {
+                const reason = data.trickplay_options.reason || 'mismatch';
+                rows.push({
+                    ok: false,
+                    label: `Server trickplay options need syncing`,
+                    reason: reason,
+                    severity: 'critical',
+                });
+            }
         }
 
-        // Re-init Bootstrap tooltips on the new ⓘ icons.
-        if (typeof _initBootstrapTooltips === 'function') {
-            _initBootstrapTooltips(list);
-        } else if (window.bootstrap && window.bootstrap.Tooltip) {
-            list.querySelectorAll('[data-bs-toggle="tooltip"]').forEach((el) => new window.bootstrap.Tooltip(el));
+        // Badge state — overall_ok drives it.
+        const overallOk = data.overall_ok !== false;
+        if (overallOk) {
+            badge.className = 'badge ms-1 bg-success';
+            badge.textContent = isJellyfin && data.plugin && data.plugin.installed
+                ? 'ready (plugin — instant)'
+                : 'ready';
+        } else {
+            const anyCritical = rows.some((r) => r.severity === 'critical' || (r.issues && r.issues.some((i) => i.severity === 'critical')));
+            badge.className = 'badge ms-1 ' + (anyCritical ? 'bg-danger' : 'bg-warning text-dark');
+            badge.textContent = anyCritical ? 'action needed' : 'recommendations';
         }
 
-        if (fixableCount > 0) {
+        // Render rows.
+        body.innerHTML = '';
+        for (const row of rows) {
+            const el = document.createElement('div');
+            el.className = 'd-flex align-items-start gap-2';
+            const icon = row.ok
+                ? '<i class="bi bi-check-circle-fill text-success mt-1"></i>'
+                : (row.severity === 'critical'
+                    ? '<i class="bi bi-x-circle-fill text-danger mt-1"></i>'
+                    : '<i class="bi bi-exclamation-triangle-fill text-warning mt-1"></i>');
+            let detail = '';
+            if (row.issues && row.issues.length) {
+                const items = row.issues.slice(0, 5).map((i) => {
+                    const lib = i.library_name ? `<em>${escapeHtml(i.library_name)}</em>: ` : '';
+                    const cur = formatHealthValue(i.current);
+                    const rec = formatHealthValue(i.recommended);
+                    return `<li>${lib}<strong>${escapeHtml(i.label)}</strong> — currently <code>${cur}</code> → <code>${rec}</code></li>`;
+                }).join('');
+                const more = row.issues.length > 5 ? `<li class="text-muted">…and ${row.issues.length - 5} more</li>` : '';
+                detail = `<ul class="mb-0 ps-3 small">${items}${more}</ul>`;
+            } else if (row.reason) {
+                detail = `<div class="small text-muted">${escapeHtml(row.reason)}</div>`;
+            }
+            el.innerHTML = `${icon}<div class="flex-grow-1">${row.label}${detail}</div>`;
+            body.appendChild(el);
+        }
+
+        // Plugin opt-in checkbox — Jellyfin only, shown when plugin isn't installed.
+        if (isJellyfin && pluginCtl && !(data.plugin && data.plugin.installed)) {
+            pluginCtl.classList.remove('d-none');
+        }
+
+        // "Fix and enable" button — shown when anything is fixable.
+        const anyFixable = rows.some((r) => !r.ok && (r.severity === 'critical' || r.issues || r.fix_kind));
+        if (!overallOk && anyFixable) {
             fixCtl.classList.remove('d-none');
-            if (fixCount) fixCount.textContent = String(fixableCount);
         }
+
+        // Re-init Bootstrap tooltips on any new ⓘ icons.
+        if (typeof _initBootstrapTooltips === 'function') {
+            _initBootstrapTooltips(body);
+        } else if (window.bootstrap && window.bootstrap.Tooltip) {
+            body.querySelectorAll('[data-bs-toggle="tooltip"]').forEach((el) => new window.bootstrap.Tooltip(el));
+        }
+    }
+
+    async function runReadinessFixAll(serverId, serverType) {
+        const fixCtl = document.getElementById('editReadinessFixControls');
+        const fixBtn = document.getElementById('editReadinessFixAllBtn');
+        const fixResult = document.getElementById('editReadinessFixResult');
+        if (!fixCtl || !fixBtn) return;
+
+        const vendor = (serverType || '').toLowerCase();
+        const pluginOptIn = document.getElementById('editReadinessPluginOptIn');
+        const installPlugin = pluginOptIn ? !!pluginOptIn.checked : true;
+
+        const original = fixBtn.innerHTML;
+        fixBtn.disabled = true;
+        fixBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Fixing…';
+        if (fixResult) { fixResult.className = 'small text-muted'; fixResult.textContent = ''; }
+
+        try {
+            let r;
+            if (vendor === 'jellyfin') {
+                r = await api('POST', `/api/servers/${encodeURIComponent(serverId)}/trickplay-fix-all`, {
+                    install_plugin: installPlugin,
+                });
+            } else {
+                // Emby + Plex: the only fixable things are the
+                // vendor-extraction toggles. Drive those via the
+                // existing endpoints.
+                r = await api('POST', `/api/servers/${encodeURIComponent(serverId)}/health-check/apply`, {});
+            }
+            if (!r.ok || !r.data) {
+                if (fixResult) {
+                    fixResult.className = 'small text-danger';
+                    fixResult.textContent = `Failed: HTTP ${r.status}`;
+                }
+                return;
+            }
+            const allOk = !!r.data.ok;
+            if (fixResult) {
+                if (allOk) {
+                    fixResult.className = 'small text-success';
+                    fixResult.textContent = '✓ Everything set. Re-probing…';
+                } else {
+                    fixResult.className = 'small text-warning';
+                    fixResult.textContent = `Some steps failed: ${escapeHtml(r.data.error || 'see logs')}`;
+                }
+            }
+            // Re-probe so the panel reflects the new state. A plugin
+            // install restarts Jellyfin — give it time before re-probing.
+            if (vendor === 'jellyfin' && installPlugin) {
+                setTimeout(() => runReadinessProbe(serverId, serverType), 5000);
+            } else {
+                runReadinessProbe(serverId, serverType);
+            }
+        } finally {
+            fixBtn.disabled = false;
+            fixBtn.innerHTML = original;
+        }
+    }
+
+    // Legacy health-check probe kept for back-compat; new Edit modal
+    // flow uses runReadinessProbe instead.
+    async function runHealthCheckProbe(serverId) {
+        // Deprecated — no-op. Left in place so external callers (if any)
+        // don't raise ReferenceError.
+        void serverId;
     }
 
     function formatHealthValue(v) {
@@ -1914,26 +1985,27 @@
         if (refreshBtn) refreshBtn.addEventListener('click', (ev) => refreshLibrariesFromModal(ev.currentTarget));
         const testConnBtn = document.getElementById('editTestConnectionBtn');
         if (testConnBtn) testConnBtn.addEventListener('click', testEditConnection);
-        const disableVendorBtn = document.getElementById('editDisableVendorExtractionBtn');
-        if (disableVendorBtn) disableVendorBtn.addEventListener('click', () => setVendorExtraction(false));
-        const enableVendorBtn = document.getElementById('editEnableVendorExtractionBtn');
-        if (enableVendorBtn) enableVendorBtn.addEventListener('click', () => setVendorExtraction(true));
-        const installPluginBtn = document.getElementById('editInstallPluginBtn');
-        if (installPluginBtn) installPluginBtn.addEventListener('click', installJellyfinPlugin);
-        const copyPluginUrlBtn = document.getElementById('editCopyPluginRepoUrlBtn');
-        if (copyPluginUrlBtn) copyPluginUrlBtn.addEventListener('click', copyPluginRepoUrl);
-
-        // Health-check panel (per-server settings audit + one-click apply).
-        const healthFixBtn = document.getElementById('editHealthFixAllBtn');
-        if (healthFixBtn) healthFixBtn.addEventListener('click', () => {
+        // Unified "Previews readiness" card (v3).
+        const readinessFixBtn = document.getElementById('editReadinessFixAllBtn');
+        if (readinessFixBtn) readinessFixBtn.addEventListener('click', () => {
             const id = (_editState && _editState.server && _editState.server.id) || '';
-            if (id) applyHealthFixes(id);
+            const type = (_editState && _editState.server && _editState.server.type) || '';
+            if (id) runReadinessFixAll(id, type);
         });
-        const healthRecheckBtn = document.getElementById('editHealthRecheckBtn');
-        if (healthRecheckBtn) healthRecheckBtn.addEventListener('click', () => {
+        const readinessRecheckBtn = document.getElementById('editReadinessRecheckBtn');
+        if (readinessRecheckBtn) readinessRecheckBtn.addEventListener('click', () => {
             const id = (_editState && _editState.server && _editState.server.id) || '';
-            if (id) runHealthCheckProbe(id);
+            const type = (_editState && _editState.server && _editState.server.type) || '';
+            if (id) runReadinessProbe(id, type);
         });
+        // Plugin opt-out warning — show when the user unticks the checkbox.
+        const pluginOptIn = document.getElementById('editReadinessPluginOptIn');
+        const pluginOptOutWarning = document.getElementById('editReadinessPluginOptOutWarning');
+        if (pluginOptIn && pluginOptOutWarning) {
+            pluginOptIn.addEventListener('change', () => {
+                pluginOptOutWarning.classList.toggle('d-none', pluginOptIn.checked);
+            });
+        }
 
         // D24 — vendor-aware re-auth wiring inside the Edit modal.
         document.querySelectorAll('input[name="editReauthJfMethod"]').forEach((r) =>

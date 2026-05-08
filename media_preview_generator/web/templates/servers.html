@@ -130,129 +130,58 @@
                             <span id="editTestConnectionResult" class="small text-muted"></span>
                         </div>
 
-                        <!-- Stop the media server from generating previews itself.
-                             Title + body copy are vendor-specific and set in JS
-                             (openEditModal → editVendorExtractionBlurb). -->
-                        <div class="card bg-body-tertiary mb-3">
-                            <div class="card-body p-3">
-                                <h6 class="mb-1">
-                                    <i class="bi bi-cpu me-2"></i>Stop this server from generating previews itself
-                                    <span class="badge bg-success ms-1">Recommended</span>
-                                </h6>
-                                <p class="small text-muted mb-2" id="editVendorExtractionBlurb">
-                                    Without this, your media server will burn CPU re-creating thumbnails
-                                    that this app already published.
-                                </p>
-                                <div class="d-flex align-items-center gap-2 flex-wrap">
-                                    <!-- Both buttons start hidden; renderVendorExtractionState
-                                         on modal open shows exactly one based on the live state
-                                         (Disable when libraries are still extracting; Re-enable
-                                         once they're all stopped). -->
-                                    <button type="button" class="btn btn-sm btn-warning d-none" id="editDisableVendorExtractionBtn">
-                                        <i class="bi bi-stop-circle me-1"></i>Disable on this server
-                                    </button>
-                                    <button type="button" class="btn btn-sm btn-outline-secondary d-none" id="editEnableVendorExtractionBtn">
-                                        Re-enable
-                                    </button>
-                                    <span id="editVendorExtractionState" class="small text-muted">Checking…</span>
-                                    <span id="editVendorExtractionResult" class="small text-muted"></span>
-                                </div>
-                                <details class="mt-2" id="editVendorExtractionDetails">
-                                    <summary class="small text-muted">What this changes</summary>
-                                    <div class="small text-muted mt-2" id="editVendorExtractionDetailsBody">
-                                        <!-- Vendor-specific detail copy injected by JS. -->
-                                    </div>
-                                </details>
-                            </div>
-                        </div>
-
-                        <!-- Server settings audit: per-library health check
-                             of preview-relevant flags. Populated by JS via
-                             /api/servers/<id>/health-check on modal open;
-                             empty issue list → renders "all good" pill;
-                             non-empty → renders per-issue rows + "Fix all"
-                             button that posts to .../health-check/apply.
-                             Hidden until the first probe completes so we
-                             don't flash an empty card. -->
-                        <div id="editHealthCheckGroup" class="card bg-body-tertiary mb-3 d-none">
+                        <!-- Unified "Previews readiness" card (v3) — replaces the
+                             separate Vendor-extraction + Health-check + Plugin
+                             panels. One probe, one fix-and-enable button.
+                             JS populates this via /api/servers/<id>/previews-readiness
+                             on modal open. Per-vendor detail renders inside #editReadinessBody. -->
+                        <div id="editReadinessGroup" class="card bg-body-tertiary mb-3 d-none">
                             <div class="card-body p-3">
                                 <h6 class="mb-1 d-flex align-items-center gap-2 flex-wrap">
-                                    <i class="bi bi-clipboard-check me-1"></i>Server health check
-                                    <span id="editHealthBadge" class="badge ms-1">checking…</span>
+                                    <i class="bi bi-clipboard-check me-1"></i>Previews readiness
+                                    <span id="editReadinessBadge" class="badge ms-1">checking…</span>
                                     <button type="button" class="btn btn-sm btn-link p-0 ms-1"
-                                            id="editHealthRecheckBtn"
+                                            id="editReadinessRecheckBtn"
                                             data-bs-toggle="tooltip"
-                                            title="Re-probe the server (e.g. after you've changed something in the server's own admin UI)">
+                                            title="Re-probe the server (e.g. after you've changed something in Jellyfin/Emby admin)">
                                         <i class="bi bi-arrow-clockwise"></i>
                                     </button>
+                                    <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                                       data-bs-toggle="tooltip" data-bs-placement="top"
+                                       title="Checks everything this app needs to generate and activate previews on your media server: version compatibility, library settings, server-wide tile geometry, and (for Jellyfin) the optional Media Preview Bridge plugin."></i>
                                 </h6>
-                                <p class="small text-muted mb-2" id="editHealthBlurb">
-                                    Scans the server's library settings for anything that would stop this app's
-                                    previews from showing up.
-                                </p>
 
-                                <!-- Per-issue rows render here. Empty when issue_count=0. -->
-                                <div id="editHealthIssueList" class="d-flex flex-column gap-2 mb-2"></div>
+                                <!-- Rendered list of checks. Each row is a ✓ / ⚠ / ✗ line. -->
+                                <div id="editReadinessBody" class="d-flex flex-column gap-2 mb-2 small"></div>
 
-                                <!-- Fix-all controls. Hidden when nothing fixable. -->
-                                <div id="editHealthFixControls" class="d-flex align-items-center gap-2 flex-wrap d-none">
-                                    <button type="button" class="btn btn-sm btn-warning" id="editHealthFixAllBtn">
-                                        <i class="bi bi-magic me-1"></i>Apply recommended (<span id="editHealthFixCount">0</span>)
-                                    </button>
-                                    <span id="editHealthFixResult" class="small text-muted"></span>
-                                </div>
-                            </div>
-                        </div>
-
-                        <!-- Jellyfin-only: Media Preview Bridge plugin
-                             status + one-click install. Hidden for Plex /
-                             Emby; populated when test-connection returns
-                             a `plugin` block with `installed=false`. -->
-                        <div id="editJellyfinPluginGroup" class="card bg-body-tertiary mb-3 d-none">
-                            <div class="card-body p-3">
-                                <h6 class="mb-1">
-                                    <i class="bi bi-puzzle me-2"></i>Instant trickplay (optional plugin)
-                                    <span id="editJellyfinPluginBadge" class="badge ms-1">checking…</span>
-                                </h6>
-                                <p class="small text-muted mb-2">
-                                    Two ways to get scrubbing previews into Jellyfin once this app
-                                    publishes them — pick one:
-                                </p>
-                                <ul class="small text-muted mb-2 ps-3" style="line-height:1.5;">
-                                    <li>
-                                        <strong>With the Media Preview Bridge plugin (recommended):</strong>
-                                        previews appear in Jellyfin the moment this app finishes
-                                        generating them. One-click install below.
-                                    </li>
-                                    <li>
-                                        <strong>Without the plugin:</strong>
-                                        previews show up on Jellyfin's next nightly trickplay sweep
-                                        (default 3 AM). They still work — just delayed.
-                                    </li>
-                                </ul>
-                                <div class="d-flex align-items-center gap-2 flex-wrap">
-                                    <button type="button" class="btn btn-sm btn-warning" id="editInstallPluginBtn">
-                                        <i class="bi bi-download me-1"></i>Install plugin in Jellyfin
-                                    </button>
-                                    <span id="editInstallPluginResult" class="small text-muted"></span>
-                                </div>
-                                <details class="mt-2">
-                                    <summary class="small text-muted">Install the plugin manually</summary>
-                                    <p class="small text-muted mt-2 mb-1">
-                                        In Jellyfin admin: <strong>Dashboard → Plugins → Repositories → +</strong>, then paste:
-                                    </p>
-                                    <div class="input-group input-group-sm">
-                                        <input type="text" class="form-control font-monospace" readonly
-                                               id="editJellyfinPluginRepoUrl"
-                                               value="https://stevezau.github.io/media_preview_generator/jellyfin-plugin/manifest.json">
-                                        <button type="button" class="btn btn-outline-secondary" id="editCopyPluginRepoUrlBtn">
-                                            <i class="bi bi-clipboard"></i>
-                                        </button>
+                                <!-- Jellyfin-only: plugin install toggle (default ticked).
+                                     Renders inside editReadinessBody when relevant; JS
+                                     injects the checkbox + warning copy when unticked. -->
+                                <div id="editReadinessPluginControls" class="d-none small mb-2">
+                                    <div class="form-check">
+                                        <input type="checkbox" class="form-check-input" id="editReadinessPluginOptIn" checked>
+                                        <label class="form-check-label" for="editReadinessPluginOptIn">
+                                            Install Media Preview Bridge plugin (recommended — instant previews, no races)
+                                            <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
+                                               data-bs-toggle="tooltip" data-bs-placement="top"
+                                               title="With the plugin: previews appear in Jellyfin the moment this app finishes generating them. Without it: Jellyfin picks up our previews on its next scan (usually within seconds), or at worst on the 3 AM scheduled task. Installing requires a Jellyfin restart."></i>
+                                        </label>
                                     </div>
-                                    <p class="small text-muted mt-1 mb-0">
-                                        Then Catalogue → install <strong>Media Preview Bridge</strong> → restart Jellyfin.
-                                    </p>
-                                </details>
+                                    <div id="editReadinessPluginOptOutWarning" class="alert alert-warning small mt-2 mb-0 d-none">
+                                        <i class="bi bi-exclamation-triangle me-1"></i>
+                                        Without the plugin, Jellyfin may briefly generate its own previews
+                                        in parallel when new files arrive. This wastes CPU but won't corrupt
+                                        output. Recommended: leave this ticked.
+                                    </div>
+                                </div>
+
+                                <!-- "Fix and enable" — sequences plugin install → library flags → tile geometry. -->
+                                <div id="editReadinessFixControls" class="d-flex align-items-center gap-2 flex-wrap d-none">
+                                    <button type="button" class="btn btn-sm btn-warning" id="editReadinessFixAllBtn">
+                                        <i class="bi bi-magic me-1"></i>Fix and enable
+                                    </button>
+                                    <span id="editReadinessFixResult" class="small text-muted"></span>
+                                </div>
                             </div>
                         </div>
 
