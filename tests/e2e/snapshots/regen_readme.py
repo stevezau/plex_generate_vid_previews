@@ -8,11 +8,10 @@ Boots the app in a temp config dir that has been pre-seeded with
 fake Plex / Jellyfin / Emby servers (see ``readme_fixture.py``) and a
 handful of plausible job rows, then drives Playwright to capture:
 
-    /               -> home.png
-    /servers        -> servers.png
-    /servers + edit -> servers-edit.png  (Jellyfin card, Edit button)
-    /settings       -> settings.png
-    /automation     -> automation.png    (Triggers tab default)
+    /               -> home.png        (full page)
+    /servers        -> servers.png     (full page)
+    /settings       -> settings.png    (Processing Options card only)
+    /automation     -> automation.png  (Triggers tab default)
 
 All captures are dark-mode + desktop-only — this script targets the
 README exclusively. For the visual-regression matrix (light + dark ×
@@ -59,10 +58,13 @@ from readme_fixture import FAKE_HOST, FAKE_SERVERS, seed_jobs, write_settings  #
 
 PLACEHOLDER_ORIGIN = f"https://{FAKE_HOST}:8080"
 
+# Full-page captures. Settings is handled separately below because we
+# crop to the Processing Options card rather than capturing the whole
+# page (the full Settings page is ~4000px tall and unsuitable for a
+# README gallery tile).
 SURFACES: list[tuple[str, str]] = [
     ("/", "home"),
     ("/servers", "servers"),
-    ("/settings", "settings"),
     ("/automation", "automation"),
 ]
 
@@ -222,32 +224,31 @@ def _capture_surface(page: Page, app_url: str, path: str, out_path: Path) -> Non
     print(f"[regen_readme] wrote {out_path.name}", file=sys.stderr)
 
 
-def _capture_servers_edit(page: Page, app_url: str, out_path: Path) -> None:
-    """Open the Servers page, click Edit on the Jellyfin card, capture.
+def _capture_settings_processing(page: Page, app_url: str, out_path: Path) -> None:
+    """Navigate to /settings and clip to the Processing Options card.
 
-    Uses a taller viewport (1280×1100) so the full edit modal fits
-    without the Cancel/Save row being clipped by the bottom of the
-    window. full_page=True doesn't fix the clip on its own because the
-    modal's body is height-capped and scrolls inside — so growing the
-    viewport is the simplest fix.
+    The full Settings page is ~4000px tall (Processing / Logging / Auth /
+    Backups / About) and dwarfs the other README tiles. Clipping to the
+    ``#section-processing`` element (the GPU + CPU workers + thumbnail
+    + HDR + smart-caching card) yields a tile that sits comfortably next
+    to the Dashboard / Servers / Automation shots.
+
+    Uses Playwright's element-level screenshot instead of CSS crop so
+    the resulting PNG is exactly the card's bounding box — no empty
+    gutters, no guess-the-viewport math.
     """
-    page.set_viewport_size({"width": 1280, "height": 1100})
-    page.goto(f"{app_url}/servers", wait_until="domcontentloaded", timeout=15_000)
-    page.wait_for_timeout(1200)
-
-    # Click the Edit button on the Jellyfin card. Matches servers.js:
-    # ``$$('.edit-server-btn').forEach(btn => ... dataset.id)``.
-    jellyfin_id = "jellyfin-home"
-    selector = f'.edit-server-btn[data-id="{jellyfin_id}"]'
-    page.wait_for_selector(selector, state="visible", timeout=10_000)
-    page.click(selector)
-
-    # Wait for the modal. The template uses id=editServerModal.
-    page.wait_for_selector("#editServerModal.show", state="visible", timeout=5_000)
-    page.wait_for_timeout(1000)
-    page.screenshot(path=str(out_path), full_page=True)
-    # Restore the default viewport for any later captures that might run.
-    page.set_viewport_size({"width": 1280, "height": 720})
+    page.goto(f"{app_url}/settings", wait_until="domcontentloaded", timeout=15_000)
+    # Wait for the GPU detection spinner to be replaced by real GPU
+    # rows, otherwise the card captures mid-spin and the PNG is
+    # non-deterministic across runs.
+    page.wait_for_selector("#gpuDetecting", state="hidden", timeout=10_000)
+    page.wait_for_function("() => document.getElementById('gpuConfigList').children.length > 0", timeout=5_000)
+    el = page.locator("#section-processing")
+    el.scroll_into_view_if_needed()
+    page.wait_for_timeout(500)
+    # animations='disabled' pauses any still-running CSS transitions
+    # (badge pulses, collapse chevrons) so the clip is a clean still.
+    el.screenshot(path=str(out_path), animations="disabled")
     print(f"[regen_readme] wrote {out_path.name}", file=sys.stderr)
 
 
@@ -294,7 +295,7 @@ def regenerate(out_dir: Path) -> int:
                 for path, name in SURFACES:
                     _capture_surface(page, app_url, path, out_dir / f"{name}.png")
 
-                _capture_servers_edit(page, app_url, out_dir / "servers-edit.png")
+                _capture_settings_processing(page, app_url, out_dir / "settings.png")
 
                 ctx.close()
             finally:

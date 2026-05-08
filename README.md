@@ -81,15 +81,24 @@ Generates video preview thumbnails for **Plex, Emby, and Jellyfin**. These are t
 
 ## Screenshots
 
-| Dashboard | Servers |
-|:---------:|:-------:|
-| [![Dashboard showing connected Plex / Jellyfin / Emby servers, GPU workers, and job statistics](docs/images/home.png)](docs/images/home.png) | [![Servers page with one card per Plex / Jellyfin / Emby server, each showing connection status and library count](docs/images/servers.png)](docs/images/servers.png) |
+<div align="center">
 
-| Edit Server (Jellyfin) | Settings | Automation |
-|:----------------------:|:--------:|:----------:|
-| [![Edit Server modal for a Jellyfin server, showing the plain-English Stop-vendor-extraction and Instant-trickplay-plugin cards](docs/images/servers-edit.png)](docs/images/servers-edit.png) | [![Settings page with per-GPU configuration for an NVIDIA TITAN RTX and Intel UHD 770](docs/images/settings.png)](docs/images/settings.png) | [![Automation page Triggers tab listing trigger sources for Sonarr / Radarr / Tdarr / per-vendor manual imports](docs/images/automation.png)](docs/images/automation.png) |
+<table>
+  <tr>
+    <td><a href="docs/images/home.png"><img src="docs/images/home.png" alt="Dashboard showing connected Plex / Jellyfin / Emby servers, GPU workers, and job statistics" width="380"></a></td>
+    <td><a href="docs/images/servers.png"><img src="docs/images/servers.png" alt="Servers page with one card per Plex / Jellyfin / Emby server, each showing connection status and library count" width="380"></a></td>
+    <td><a href="docs/images/settings.png"><img src="docs/images/settings.png" alt="Settings — Processing Options card with per-GPU configuration for an NVIDIA TITAN RTX and Intel UHD 770, CPU workers, and thumbnail quality" width="380"></a></td>
+    <td><a href="docs/images/automation.png"><img src="docs/images/automation.png" alt="Automation page Triggers tab listing trigger sources for Sonarr / Radarr / Tdarr / per-vendor manual imports" width="380"></a></td>
+  </tr>
+  <tr>
+    <td align="center"><em>Dashboard</em></td>
+    <td align="center"><em>Servers</em></td>
+    <td align="center"><em>Settings</em></td>
+    <td align="center"><em>Automation</em></td>
+  </tr>
+</table>
 
-*Web UI: dashboard, multi-server management, per-server edit, processing settings, and trigger configuration.*
+</div>
 
 ---
 

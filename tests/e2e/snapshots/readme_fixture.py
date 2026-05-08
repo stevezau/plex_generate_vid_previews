@@ -258,31 +258,6 @@ def seed_jobs(config_dir: str | Path) -> int:
             )
         )
 
-        # 1 failed with a representative (non-leaky) error.
-        failed_created = now - timedelta(hours=20)
-        rows.append(
-            Job(
-                id=str(uuid.uuid4()),
-                status=JobStatus.FAILED,
-                created_at=_iso(failed_created),
-                started_at=_iso(failed_created + timedelta(seconds=5)),
-                completed_at=_iso(failed_created + timedelta(minutes=2)),
-                library_id="lib-f",
-                library_name="Movies",
-                server_id="plex-home",
-                server_name="Home Plex",
-                server_type="plex",
-                progress=JobProgress(
-                    percent=48.0,
-                    total_items=842,
-                    processed_items=403,
-                    outcome={"created": 401, "skipped": 1, "failed": 1},
-                ),
-                error="FFmpeg exited with status 1 on 1 file (see job log for details).",
-                config={"trigger": "manual", "path_count": 842},
-            )
-        )
-
         for row in rows:
             storage.upsert(row)
 
