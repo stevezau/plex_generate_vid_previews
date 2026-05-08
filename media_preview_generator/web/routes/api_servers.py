@@ -1160,6 +1160,18 @@ def get_server_health_check(server_id: str):
     if live is None:
         return jsonify({"error": "could not instantiate server client"}), 500
 
+    # Warm the plugin cache BEFORE check_settings_health on Jellyfin.
+    # Fresh JellyfinServer instance → cold cache → _recommended_settings
+    # defaults to "plugin absent" → recommends scan-extraction=True →
+    # sees current state False (Mode A) → falsely reports 2 issues.
+    # Symptom: server-card health pill shows "2 issues" when the Edit
+    # modal shows all-green. Same bug class as /health-check/apply.
+    if cfg.type is ServerType.JELLYFIN and hasattr(live, "check_plugin_installed"):
+        try:
+            live.check_plugin_installed()
+        except Exception as exc:
+            logger.debug("Plugin cache warm on health-check failed for {!r}: {}", cfg.name, exc)
+
     try:
         issues = live.check_settings_health()
     except Exception as exc:
