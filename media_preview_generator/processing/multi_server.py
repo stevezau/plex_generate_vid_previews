@@ -279,32 +279,70 @@ def _resolve_item_id_for(server: MediaServer, canonical_path: str, hint: str | N
     return result
 
 
+def _jellyfin_plugin_cached_installed(server: MediaServer) -> bool:
+    """Return True when the Media Preview Bridge plugin is installed on ``server``.
+
+    Cached on the :class:`JellyfinServer` instance under
+    ``_media_preview_bridge_installed`` so dispatch decisions don't pay
+    the HTTP round-trip per call. Populated opportunistically by
+    ``test_connection`` (see routes/api_servers.py) and refreshed by
+    ``install_plugin`` on success.
+
+    Falsy default — when we haven't probed yet, assume "no plugin" and
+    skip the expensive lookup. Worst case the very first webhook after
+    container start skips Mode A fast-path until the cache warms via
+    a test-connection click; that's a one-time trade-off in return for
+    never paying a 30s Pass-2 on dispatch when the plugin is missing.
+    """
+    cached = getattr(server, "_media_preview_bridge_installed", None)
+    return bool(cached)
+
+
 def _make_item_id_resolver(canonical_path: str, phase_callback=None):
-    """Per-dispatch memoising wrapper around ``_resolve_item_id_for``.
+    """Per-dispatch memoising resolver with per-vendor lookup policy.
 
-    ``process_canonical_path`` calls ``_resolve_item_id_for`` from up to
-    five sub-phases (freshness short-circuit, regenerate-cleanup,
-    BIF-reuse probe, publish loop, not-fresh re-build). Each call to a
-    Jellyfin server with no item-id hint can burn ~30s on the Pass 2
-    enumeration when the file isn't in the library — multiplying that
-    by 3-5 sub-phases turns a logically instantaneous "skip, output
-    already exists" into a 60-90s wait (job 54b9ed8b).
+    Lookup policy depends on what each vendor's adapter actually needs
+    and how much the lookup costs:
 
-    Cache is local to a single dispatch (fresh dict per call to
-    ``process_canonical_path``) so a stale negative result can never
-    leak across files or jobs — within one dispatch the answer cannot
-    change.
+    * **Plex** — bundle-hash path REQUIRES an item id. Always look up
+      (call is fast: Plex's ``/library/metadata/…`` search is O(log N)).
+    * **Emby** — sidecar BIF is filename-derived; the adapter never
+      needs an id. ``trigger_refresh`` gracefully falls back to the
+      path-based ``/Library/Media/Updated`` endpoint when id is None.
+      Skip the lookup unconditionally when no hint is supplied —
+      Sonarr/Radarr never provide Emby ids in practice.
+    * **Jellyfin** — tile layout is filename-derived. Lookup is only
+      worthwhile when the Media Preview Bridge plugin is installed
+      (then it's ~200ms via the plugin's ``/ResolvePath`` and unlocks
+      instant activation via ``SaveTrickplayInfo``). Without the
+      plugin the lookup costs ~30s cold (Pass-2 enumeration) and buys
+      nothing — the same path-based scan nudge fires either way.
+
+    Result is cached per-dispatch so the (still-slow-for-Plex-misses)
+    lookup doesn't re-burn across sub-phases.
     """
     cache: dict[str, str | None] = {}
 
     def resolve(server: MediaServer, hint: str | None) -> str | None:
         if server.id in cache:
             return cache[server.id]
+        if hint:
+            cache[server.id] = hint
+            return hint
+
+        # Per-vendor lookup policy. See docstring.
+        if server.type is ServerType.EMBY:
+            cache[server.id] = None
+            return None
+        if server.type is ServerType.JELLYFIN and not _jellyfin_plugin_cached_installed(server):
+            cache[server.id] = None
+            return None
+
         # Stamp the worker UI just before the (potentially slow) lookup
-        # — Jellyfin's Pass-2 enumeration cold-burns ~30s, and without
-        # this the worker card sits on a generic "Working…" the whole
-        # time, indistinguishable from a hung thread.
-        if phase_callback and not hint:
+        # — Plex misses can still burn seconds, and without this the
+        # worker card sits on a generic "Working…" the whole time,
+        # indistinguishable from a hung thread.
+        if phase_callback:
             try:
                 phase_callback(f"Resolving item id on {server.name}…")
             except Exception:
@@ -354,6 +392,15 @@ def _try_reuse_existing_bif(
         FFmpeg extraction.
     """
     for server, adapter, item_id_hint in publishers:
+        # Only publishers that actually emit a ``.bif`` path can supply a
+        # BIF to reuse. That's Plex (bundle-hash BIF) and Emby (sidecar
+        # BIF). Jellyfin emits tile sheets, not BIFs — its
+        # compute_output_paths returns a ``.jpg`` sheet path that the
+        # ``endswith(".bif")`` check below would reject anyway. Skip
+        # here explicitly to avoid burning a (potentially expensive)
+        # item-id lookup on a publisher that can't contribute.
+        if isinstance(adapter, JellyfinTrickplayAdapter):
+            continue
         try:
             item_id = resolve_item_id(server, item_id_hint)
             paths = adapter.compute_output_paths(probe_bundle_factory(), server, item_id)

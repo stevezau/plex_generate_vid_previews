@@ -648,14 +648,14 @@ class TestCrossServerBifReuse:
 
 
 class TestPartialFailureIsolation:
-    def test_jellyfin_missing_item_id_does_not_block_emby(self, mock_config_for_processing, tmp_path):
-        # When Jellyfin's reverse-lookup can't resolve the canonical path
-        # to an item_id (file not in its library yet), the dispatcher
-        # short-circuits that publisher to SKIPPED_NOT_IN_LIBRARY and
-        # the sibling Emby publisher proceeds normally. Previously this
-        # branch was reported as FAILED with a "publish-time bookkeeping"
-        # ValueError — see the dedicated SKIPPED_NOT_IN_LIBRARY tests in
-        # TestNotInLibraryRoutesToSkip below for the user-visible message.
+    def test_jellyfin_missing_item_id_still_publishes(self, mock_config_for_processing, tmp_path):
+        # Post-adapter-flip (needs_server_metadata=False): the Jellyfin
+        # adapter writes tiles purely from canonical_path, no item_id
+        # required. Both publishers succeed on the same dispatch even
+        # though neither vendor is reachable (trigger_refresh failures
+        # are non-fatal). This pins the "Sonarr webhook gave us no id,
+        # still works" path — the 100% common case in practice since
+        # Sonarr/Radarr never send Jellyfin item ids.
         media_dir = tmp_path / "data" / "movies" / "Test"
         media_file = _seed_canonical_file(media_dir)
         media_root = str(tmp_path / "data" / "movies")
@@ -688,17 +688,13 @@ class TestPartialFailureIsolation:
                 canonical_path=str(media_file),
                 registry=registry,
                 config=mock_config_for_processing,
-                # No Jellyfin item id supplied -> compute_output_paths
-                # would have raised; now short-circuited to SKIPPED.
-                # Suppress the retry timer so a 30s-later retry doesn't
-                # fire after pytest tears down loguru sinks.
                 schedule_retry_on_not_indexed=False,
             )
 
-        assert result.status is MultiServerStatus.PUBLISHED  # at least one succeeded
+        assert result.status is MultiServerStatus.PUBLISHED
         statuses = {p.server_id: p.status for p in result.publishers}
         assert statuses["emby-1"] is PublisherStatus.PUBLISHED
-        assert statuses["jelly-1"] is PublisherStatus.SKIPPED_NOT_IN_LIBRARY
+        assert statuses["jelly-1"] is PublisherStatus.PUBLISHED
 
 
 class TestNotYetIndexedRoutesToSkip:
@@ -813,9 +809,21 @@ class TestNotInLibraryRoutesToSkip:
     publish attempt was reported as a hard failure.
     """
 
-    def test_jellyfin_returns_skipped_not_in_library_when_item_id_unresolvable(
-        self, mock_config_for_processing, tmp_path
-    ):
+    def test_jellyfin_publishes_without_item_id_lookup(self, mock_config_for_processing, tmp_path):
+        """Post-adapter-flip contract: Jellyfin publishes successfully
+        with ``item_id=None`` (the 100% common case — Sonarr/Radarr
+        never send Jellyfin item ids). The dispatcher MUST NOT call
+        ``resolve_remote_path_to_item_id`` in this path because without
+        the Media Preview Bridge plugin that lookup costs 30s cold
+        (Pass-2 enumeration) and Mode B activation doesn't need the id.
+
+        This replaces the old "returns SKIPPED_NOT_IN_LIBRARY when
+        item_id unresolvable" contract — with the adapter flip, that
+        branch is dead code for Jellyfin.
+        """
+        from media_preview_generator.servers._embyish import EmbyApiClient
+        from media_preview_generator.servers.jellyfin import JellyfinServer
+
         media_dir = tmp_path / "data" / "movies"
         media_file = _seed_canonical_file(media_dir)
 
@@ -837,27 +845,17 @@ class TestNotInLibraryRoutesToSkip:
             ],
         )
 
-        # Stub the reverse-lookup to return None — emulates "Jellyfin's
-        # library doesn't contain this exact file" (e.g. user has the
-        # canonical release on /data_16tb2 but Jellyfin only indexed
-        # the version on /data_16tb).
-        from media_preview_generator.servers._embyish import EmbyApiClient
-
-        # Track scan-nudge calls so we assert the publisher requested
-        # a Jellyfin /Library/Refresh on the not-in-library branch.
-        from media_preview_generator.servers.jellyfin import JellyfinServer
-
-        scan_nudges: list[tuple[str | None, str | None]] = []
+        refresh_calls: list[tuple[str | None, str | None]] = []
 
         def fake_trigger_refresh(self, *, item_id, remote_path):
-            scan_nudges.append((item_id, remote_path))
+            refresh_calls.append((item_id, remote_path))
 
         def fake_generate_images(video_file, output_folder, *args, **kwargs):
             _populate_frames(output_folder, count=3)
             return (True, 3, "h264", 1.0, 30.0, None)
 
         with (
-            patch.object(EmbyApiClient, "resolve_remote_path_to_item_id", return_value=None),
+            patch.object(EmbyApiClient, "resolve_remote_path_to_item_id") as lookup_mock,
             patch.object(JellyfinServer, "trigger_refresh", autospec=True, side_effect=fake_trigger_refresh),
             patch(
                 "media_preview_generator.processing.multi_server.generate_images",
@@ -868,32 +866,23 @@ class TestNotInLibraryRoutesToSkip:
                 canonical_path=str(media_file),
                 registry=registry,
                 config=mock_config_for_processing,
-                # Don't schedule a real retry timer — pytest tears down
-                # loguru sinks after the test, and a 30s-later retry
-                # firing after teardown floods CI with
-                # "ValueError: I/O operation on closed file".
                 schedule_retry_on_not_indexed=False,
             )
 
-        # The publisher row is SKIPPED_NOT_IN_LIBRARY, NOT FAILED. This is
-        # the bug the user hit on job b350d2ac — every Jellyfin publish for
-        # a file Jellyfin didn't index was logged as failed=1 with a
-        # cryptic "publish-time bookkeeping" message.
+        # Jellyfin published without needing an item_id lookup.
         assert len(result.publishers) == 1
-        assert result.publishers[0].status is PublisherStatus.SKIPPED_NOT_IN_LIBRARY
-        assert "library" in result.publishers[0].message.lower()
-        # No mention of "publish-time bookkeeping" or "ValueError" — the
-        # whole point of this branch is a clean user-facing message.
-        assert "bookkeeping" not in result.publishers[0].message.lower()
-        # Aggregate status collapses into SKIPPED_NOT_INDEXED so the file
-        # outcome chip and the per-server pill match (the worker maps both
-        # to the same Worker.outcome bucket — see D13).
-        assert result.status is MultiServerStatus.SKIPPED_NOT_INDEXED
-        # Scan was nudged for the not-in-library publisher so the next
-        # retry has a fighting chance of finding the item.
-        assert scan_nudges, "trigger_refresh was never called for not-in-library publisher"
-        assert scan_nudges[0][0] is None  # item_id=None → fallback /Library/Refresh path
-        assert scan_nudges[0][1] == str(media_file)
+        assert result.publishers[0].status is PublisherStatus.PUBLISHED
+        assert result.status is MultiServerStatus.PUBLISHED
+
+        # Critical dispatcher-change assertion: the expensive Pass-2
+        # reverse-lookup was NEVER called. Prior code paid ~30s cold
+        # for every Jellyfin dispatch — now zero when no plugin.
+        lookup_mock.assert_not_called()
+
+        # Refresh nudge still fired (path-based since no item_id).
+        assert refresh_calls, "trigger_refresh was never called post-publish"
+        assert refresh_calls[0][0] is None  # no item_id → path-based nudge
+        assert refresh_calls[0][1] == str(media_file)
 
     def test_plex_returns_skipped_not_in_library_when_item_id_unresolvable(self, mock_config_for_processing, tmp_path):
         """TEST_AUDIT P0.3 matrix completion — Plex bundle adapter.
@@ -1067,17 +1056,14 @@ class TestPartialSuccessRetryIdempotency:
     def test_retry_does_not_regenerate_already_published_emby_when_jellyfin_still_skipping(
         self, mock_config_for_processing, tmp_path
     ):
-        """Two-server fan-out where Emby publishes successfully on the
-        first call and Jellyfin returns SKIPPED_NOT_IN_LIBRARY (the
-        adapter needs an item id but ``resolve_remote_path_to_item_id``
-        couldn't find one). A second invocation simulates the retry-
-        queue callback firing on the same canonical path: Emby's
-        sidecar is now on disk + .meta is fresh, so Emby short-circuits
-        with SKIPPED_OUTPUT_EXISTS. Jellyfin keeps trying.
+        """Post-adapter-flip: both Emby and Jellyfin publish on first call
+        (neither needs item_id). On the retry, every publisher's output
+        is on disk + .meta is fresh, so every one short-circuits with
+        SKIPPED_OUTPUT_EXISTS.
 
         Headline assertion: ``generate_images`` is called exactly ONCE
         across both invocations. A regression that re-runs FFmpeg for
-        Emby on the retry would push call_count to 2.
+        an already-published publisher on the retry would push call_count to 2.
         """
         media_dir = tmp_path / "data" / "movies" / "PartialRetry (2024)"
         media_file = _seed_canonical_file(media_dir)
@@ -1104,20 +1090,11 @@ class TestPartialSuccessRetryIdempotency:
             _populate_frames(output_folder, count=4)
             return (True, 4, "h264", 1.0, 30.0, None)
 
-        # Force Jellyfin's reverse-lookup to return None on every call so
-        # it stays in the SKIPPED_NOT_IN_LIBRARY state across both
-        # invocations. Emby's adapter doesn't need an item id for the
-        # sidecar, so it publishes on first call and short-circuits on
-        # second.
         with (
             patch(
                 "media_preview_generator.processing.multi_server.generate_images",
                 side_effect=fake_generate_images,
             ) as gen,
-            patch(
-                "media_preview_generator.servers.jellyfin.JellyfinServer.resolve_remote_path_to_item_id",
-                return_value=None,
-            ),
             patch(
                 "media_preview_generator.servers.jellyfin.JellyfinServer.trigger_refresh",
                 return_value=None,
@@ -1138,39 +1115,32 @@ class TestPartialSuccessRetryIdempotency:
                 retry_attempt=1,
             )
 
-        # First call: Emby publishes, Jellyfin reports SKIPPED_NOT_IN_LIBRARY.
+        # First call: both publishers succeed.
         first_statuses = {p.server_id: p.status for p in first.publishers}
         assert first_statuses["emby-1"] is PublisherStatus.PUBLISHED, first_statuses
-        assert first_statuses["jelly-1"] is PublisherStatus.SKIPPED_NOT_IN_LIBRARY, first_statuses
+        assert first_statuses["jelly-1"] is PublisherStatus.PUBLISHED, first_statuses
 
-        # Second call (the retry): Emby's output is now on disk + fresh,
-        # so the per-publisher skip_if_exists short-circuit kicks in.
-        # Jellyfin still can't resolve an item id, so it keeps reporting
-        # not-in-library — that's what triggers another retry round in
-        # production.
+        # Second call (the retry): both outputs exist + fresh.
         second_statuses = {p.server_id: p.status for p in second.publishers}
         assert second_statuses["emby-1"] is PublisherStatus.SKIPPED_OUTPUT_EXISTS, (
-            f"Emby's already-published BIF must short-circuit on retry (output exists, "
-            f"source unchanged) — got {second_statuses['emby-1']}. A regression here would "
-            "burn FFmpeg every retry round for the publisher that already succeeded."
+            f"Emby's already-published BIF must short-circuit on retry — got {second_statuses['emby-1']}."
         )
-        assert second_statuses["jelly-1"] is PublisherStatus.SKIPPED_NOT_IN_LIBRARY, second_statuses
+        assert second_statuses["jelly-1"] is PublisherStatus.SKIPPED_OUTPUT_EXISTS, (
+            f"Jellyfin's already-published tiles must short-circuit on retry — got {second_statuses['jelly-1']}."
+        )
 
-        # The headline contract: FFmpeg ran exactly once across both
-        # invocations. The retry inherits Emby's output and pays nothing
-        # for the re-check.
+        # Headline: FFmpeg ran exactly once across both invocations.
         assert gen.call_count == 1, (
             f"FFmpeg ran {gen.call_count} times across first publish + retry; "
-            "the retry must reuse Emby's already-published BIF, not re-extract."
+            "the retry must reuse already-published output, not re-extract."
         )
-        # Frame-source provenance on the retry confirms the cheap path
-        # was taken — "output_existed" rather than "extracted". Look up
-        # by server_id since publisher order isn't stable across calls.
-        emby_second = next(p for p in second.publishers if p.server_id == "emby-1")
-        assert emby_second.frame_source == "output_existed", (
-            f"Retry's Emby publisher reported frame_source={emby_second.frame_source!r}; "
-            "must be 'output_existed' so the Jobs UI badge correctly says 'Already Existed'."
-        )
+        # Frame-source provenance on the retry confirms the cheap path.
+        for server_id in ("emby-1", "jelly-1"):
+            retry_pub = next(p for p in second.publishers if p.server_id == server_id)
+            assert retry_pub.frame_source == "output_existed", (
+                f"Retry's {server_id} publisher reported frame_source={retry_pub.frame_source!r}; "
+                "must be 'output_existed' so the Jobs UI badge says 'Already Existed'."
+            )
 
 
 class TestPublisherFailureModes:
