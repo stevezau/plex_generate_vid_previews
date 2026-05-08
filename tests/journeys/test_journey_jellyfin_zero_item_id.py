@@ -627,6 +627,80 @@ class TestTrickplayFixAll:
         assert step_names.index("install_plugin") < step_names.index("apply_recommended_settings")
         assert step_names.index("apply_recommended_settings") < step_names.index("sync_trickplay_options")
 
+    def test_fix_all_warms_plugin_cache_before_applying_settings(self, jellyfin_server_stub):
+        """Regression: fix-all was calling apply_recommended_settings with
+        a cold plugin cache, which made _recommended_settings() default to
+        Mode B (scan-extraction True) and flip ExtractTrickplayImagesDuringLibraryScan
+        to True on every library — breaking the user's Mode A setup.
+
+        Live-observed bug: fix-all on a plugin-installed server with
+        install_plugin=False corrupted all libraries' scan-extraction flag.
+
+        Fix: always probe plugin Ping at the start of fix_all so the
+        cache is warm before apply_recommended_settings reads it.
+        """
+        posted_library_options: list[dict] = []
+
+        def fake_request(method, url, **kwargs):
+            resp = MagicMock(status_code=200, raise_for_status=MagicMock())
+            if "/MediaPreviewBridge/Ping" in url:
+                resp.status_code = 200
+                resp.json = MagicMock(return_value={"ok": True, "version": "1.0.2"})
+            elif "/Library/VirtualFolders/LibraryOptions" in url and method == "POST":
+                posted_library_options.append(kwargs.get("json_body") or {})
+            elif "/Library/VirtualFolders" in url:
+                # SaveTrickplayWithMedia wrong — must be fixed. Scan-extraction
+                # is correctly OFF (Mode A). Fix-all must NOT flip it ON.
+                resp.json = MagicMock(
+                    return_value=[
+                        {
+                            "Name": "Movies",
+                            "ItemId": "1",
+                            "LibraryOptions": {
+                                "EnableTrickplayImageExtraction": True,
+                                "SaveTrickplayWithMedia": False,  # needs fix
+                                "ExtractTrickplayImagesDuringLibraryScan": False,  # correct Mode A
+                                "EnableRealtimeMonitor": True,
+                            },
+                        }
+                    ]
+                )
+            elif url.rstrip("/").endswith("/System/Configuration"):
+                if method == "GET":
+                    resp.json = MagicMock(
+                        return_value={
+                            "TrickplayOptions": {
+                                "TileWidth": 10,
+                                "TileHeight": 10,
+                                "WidthResolutions": [320],
+                                "Interval": 10000,
+                            }
+                        }
+                    )
+            return resp
+
+        # Pre-condition: plugin cache cold (fresh JellyfinServer instance).
+        jellyfin_server_stub._media_preview_bridge_installed = None
+
+        with patch.object(JellyfinServer, "_request", side_effect=fake_request):
+            result = jellyfin_server_stub.trickplay_fix_all(install_plugin=False)
+
+        assert result["ok"] is True
+        # Cache MUST be warm now — proves the probe ran.
+        assert jellyfin_server_stub._media_preview_bridge_installed is True
+
+        # Critical: the POSTed library options MUST NOT flip scan-extraction
+        # to True. Before the fix this would be True (cold cache →
+        # recommended Mode B → flip).
+        assert len(posted_library_options) == 1, f"Expected 1 library POST, got {len(posted_library_options)}"
+        sent_opts = posted_library_options[0]["LibraryOptions"]
+        assert sent_opts["SaveTrickplayWithMedia"] is True, "SaveTrickplayWithMedia should be fixed"
+        assert sent_opts["ExtractTrickplayImagesDuringLibraryScan"] is False, (
+            f"ExtractTrickplayImagesDuringLibraryScan must stay False when plugin is installed "
+            f"(Mode A). Got True — fix-all regressed and corrupted user's Mode A setup. "
+            f"full options={sent_opts}"
+        )
+
     def test_merges_trickplay_options_preserves_extras(self, jellyfin_server_stub):
         """sync_trickplay_options must fetch-merge-POST — admin fields
         like EnableHwAcceleration, Qscale, ProcessThreads survive.

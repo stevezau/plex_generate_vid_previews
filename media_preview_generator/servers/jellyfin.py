@@ -968,8 +968,16 @@ class JellyfinServer(EmbyApiClient):
                 if not result["error"]:
                     result["error"] = detail
 
+        # ALWAYS probe the plugin first so the per-instance cache is
+        # warm before apply_recommended_settings reads it. Without
+        # this, a fresh JellyfinServer instance (every HTTP request
+        # spawns one) sees cache=None and defaults to Mode B
+        # recommendations — which is WRONG for a plugin-installed
+        # setup. Probing here costs ~200ms and unblocks the correct
+        # Mode A settings flips below.
+        plugin_state = self.check_plugin_installed()
+
         if install_plugin:
-            plugin_state = self.check_plugin_installed()
             if plugin_state.get("installed"):
                 _record("install_plugin", True, "already installed")
             else:
