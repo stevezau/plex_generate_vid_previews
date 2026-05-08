@@ -75,10 +75,15 @@ jobs:
           set -euo pipefail
           ZIP="media-preview-bridge_${{ steps.ver.outputs.version }}.zip"
           (cd bin/Release/net9.0 && zip -j "../../../$ZIP" Jellyfin.Plugin.MediaPreviewBridge.dll)
-          SHA=$(sha256sum "$ZIP" | awk '{print toupper($1)}')
+          # Jellyfin's InstallationManager verifies the download with MD5
+          # (MediaBrowser.Controller/Plugins/InstallationManager.cs uses
+          # MD5.HashData()) — publishing SHA-256 here fails every install
+          # with "The checksum of the received data doesn't match".
+          # The Jellyfin official plugin repo also uses MD5 (32 hex chars).
+          CHECKSUM=$(md5sum "$ZIP" | awk '{print toupper($1)}')
           echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
-          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
-          echo "$ZIP → $SHA"
+          echo "sha=$CHECKSUM" >> "$GITHUB_OUTPUT"
+          echo "$ZIP → MD5 $CHECKSUM"
 
       - name: Create / update GitHub release
         uses: softprops/action-gh-release@v2
@@ -196,5 +201,5 @@ jobs:
             echo "- Release: https://github.com/${{ github.repository }}/releases/tag/plugin-v${{ needs.build-release.outputs.version }}"
             echo "- Manifest: https://stevezau.github.io/media_preview_generator/jellyfin-plugin/manifest.json"
             echo "- Pages URL: ${{ steps.deploy.outputs.page_url }}"
-            echo "- SHA-256: \`${{ needs.build-release.outputs.sha }}\`"
+            echo "- MD5: \`${{ needs.build-release.outputs.sha }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
