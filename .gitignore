@@ -39,6 +39,7 @@ coverage.xml
 .coverage
 .coverage.*
 .pytest_cache/
+.ruff_cache/
 .tox/
 test_env/
 tmp_migration_test/
