@@ -1230,6 +1230,19 @@ def apply_server_health_fixes(server_id: str):
     if flags is not None and not isinstance(flags, list):
         return jsonify({"error": "flags must be a list of strings"}), 400
 
+    # Warm the plugin cache BEFORE apply_recommended_settings on a
+    # fresh JellyfinServer instance. Without this, the cache defaults
+    # to "plugin absent" → recommends scan-extraction=True (Mode B) →
+    # the apply call compares current state to the WRONG target and
+    # either no-ops (when plugin is installed and scan-ext is correctly
+    # False) or corrupts the Mode A setup. Same bug class as the one
+    # fixed in trickplay_fix_all.
+    if cfg.type is ServerType.JELLYFIN and hasattr(live, "check_plugin_installed"):
+        try:
+            live.check_plugin_installed()
+        except Exception as exc:
+            logger.debug("Plugin cache warm on apply failed for {!r}: {}", cfg.name, exc)
+
     try:
         results = live.apply_recommended_settings(flags=flags)
     except Exception as exc:

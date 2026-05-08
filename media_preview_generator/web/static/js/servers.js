@@ -1561,9 +1561,19 @@
         }
     }
 
-    // ─── Unified "Previews readiness" card (v3) ────────────────────────
-    // Replaces the separate Health-check + Vendor-extraction + Plugin
-    // panels. One probe, one "Fix and enable" button, per-vendor detail.
+    // ─── Unified "Previews readiness" card ─────────────────────────────
+    // Section-based renderer — replaces the flat row list with three
+    // labelled sections and inline per-issue CTAs:
+    //
+    //   STATUS           ─ version + activation mode row + inline
+    //                      [Install plugin] button when plugin absent.
+    //   LIBRARY SETTINGS ─ per-issue [Fix this] buttons + a global
+    //                      [Fix all library settings] shortcut.
+    //   SERVER OPTIONS   ─ Jellyfin TrickplayOptions row + [Sync
+    //                      options] button when geometry mismatches.
+    //
+    // The "Fix and enable everything" button at the bottom is still
+    // there for users who want one-click triage.
     async function runReadinessProbe(serverId, serverType) {
         const group = document.getElementById('editReadinessGroup');
         const badge = document.getElementById('editReadinessBadge');
@@ -1590,126 +1600,372 @@
             return;
         }
 
-        const data = r.data;
+        renderReadiness(serverId, serverType, r.data);
+    }
+
+    // Badge derivation — 4 states:
+    //   green "ready (instant)"   — plugin installed, everything ok
+    //   green "ready (next scan)" — no plugin but Mode B valid (scan-nudge)
+    //   amber "recommendations"   — non-critical issues only
+    //   red   "action needed"     — any critical issue present
+    //
+    // Split from the render path so a regression-test can pin it later
+    // without running the full DOM rendering.
+    function _deriveBadgeState(data) {
+        const vendor = (data.vendor || '').toLowerCase();
+        const isJellyfin = vendor === 'jellyfin';
+        const pluginInstalled = !!(data.plugin && data.plugin.installed);
+        const libIssues = (data.library_settings && data.library_settings.issues) || [];
+        const anyCritical = libIssues.some((i) => i.severity === 'critical')
+            || (data.trickplay_options && data.trickplay_options.ok === false);
+        if (anyCritical) {
+            return { cls: 'bg-danger', text: 'action needed' };
+        }
+        const anyRecommended = libIssues.some((i) => i.severity !== 'critical');
+        if (anyRecommended) {
+            return { cls: 'bg-warning text-dark', text: 'recommendations' };
+        }
+        if (isJellyfin) {
+            return pluginInstalled
+                ? { cls: 'bg-success', text: 'ready (instant)' }
+                : { cls: 'bg-success', text: 'ready (next scan)' };
+        }
+        return { cls: 'bg-success', text: 'ready' };
+    }
+
+    function renderReadiness(serverId, serverType, data) {
+        const badge = document.getElementById('editReadinessBadge');
+        const body = document.getElementById('editReadinessBody');
+        const fixCtl = document.getElementById('editReadinessFixControls');
+        const pluginCtl = document.getElementById('editReadinessPluginControls');
+        if (!badge || !body || !fixCtl) return;
+
         const vendor = (data.vendor || serverType || '').toLowerCase();
         const isJellyfin = vendor === 'jellyfin';
-
-        // Build the row list per vendor.
-        const rows = [];
-
-        if (data.version && data.version.value) {
-            rows.push({
-                ok: data.version.ok !== false,
-                label: `${vendor.charAt(0).toUpperCase() + vendor.slice(1)} ${escapeHtml(data.version.value)}`,
-                reason: data.version.reason || '',
-                fix_kind: data.version.fix_kind,
-            });
-        }
-
-        if (data.plugin !== undefined) {
-            const pluginInstalled = !!(data.plugin && data.plugin.installed);
-            const pluginVer = data.plugin && data.plugin.version;
-            const modeHint = data.plugin && data.plugin.mode;
-            const modeLabel = modeHint === 'plugin_instant'
-                ? 'Plugin installed — instant activation (Mode A)'
-                : modeHint === 'scan_nudge'
-                    ? 'No plugin — activates on next scan (Mode B)'
-                    : modeHint === 'scan_nudge_pending'
-                        ? 'No plugin — scan trigger flag needs enabling'
-                        : 'Mode unknown';
-            rows.push({
-                ok: true,  // plugin is informational, not a blocker
-                label: `Activation mode: ${modeLabel}`,
-            });
-            rows.push({
-                ok: pluginInstalled,
-                label: pluginInstalled
-                    ? `Media Preview Bridge plugin installed${pluginVer ? ` (v${escapeHtml(pluginVer)})` : ''}`
-                    : 'Media Preview Bridge plugin not installed (optional, recommended for instant activation)',
-            });
-        }
-
+        const pluginInstalled = !!(data.plugin && data.plugin.installed);
+        const pluginVer = data.plugin && data.plugin.version;
+        const modeHint = data.plugin && data.plugin.mode;
         const libIssues = (data.library_settings && data.library_settings.issues) || [];
-        if (!libIssues.length) {
-            rows.push({ ok: true, label: 'Library settings look good' });
-        } else {
-            const critical = libIssues.filter((i) => i.severity === 'critical').length;
-            const summary = critical > 0
-                ? `${libIssues.length} library setting${libIssues.length > 1 ? 's' : ''} need fixing (${critical} critical)`
-                : `${libIssues.length} optional library setting${libIssues.length > 1 ? 's' : ''} recommended`;
-            rows.push({ ok: false, label: summary, severity: critical > 0 ? 'critical' : 'recommended', issues: libIssues });
-        }
+        const anyCriticalIssue = libIssues.some((i) => i.severity === 'critical');
+        const tpMismatch = data.trickplay_options && data.trickplay_options.ok === false;
 
-        if (data.trickplay_options) {
-            if (data.trickplay_options.ok) {
-                rows.push({ ok: true, label: 'Server trickplay tile geometry matches' });
-            } else {
-                const reason = data.trickplay_options.reason || 'mismatch';
-                rows.push({
-                    ok: false,
-                    label: `Server trickplay options need syncing`,
-                    reason: reason,
-                    severity: 'critical',
-                });
-            }
-        }
+        // Badge.
+        const badgeState = _deriveBadgeState(data);
+        badge.className = `badge ms-1 ${badgeState.cls}`;
+        badge.textContent = badgeState.text;
 
-        // Badge state — overall_ok drives it.
-        const overallOk = data.overall_ok !== false;
-        if (overallOk) {
-            badge.className = 'badge ms-1 bg-success';
-            badge.textContent = isJellyfin && data.plugin && data.plugin.installed
-                ? 'ready (plugin — instant)'
-                : 'ready';
-        } else {
-            const anyCritical = rows.some((r) => r.severity === 'critical' || (r.issues && r.issues.some((i) => i.severity === 'critical')));
-            badge.className = 'badge ms-1 ' + (anyCritical ? 'bg-danger' : 'bg-warning text-dark');
-            badge.textContent = anyCritical ? 'action needed' : 'recommendations';
-        }
-
-        // Render rows.
+        // Render three sections into the body.
         body.innerHTML = '';
-        for (const row of rows) {
-            const el = document.createElement('div');
-            el.className = 'd-flex align-items-start gap-2';
-            const icon = row.ok
-                ? '<i class="bi bi-check-circle-fill text-success mt-1"></i>'
-                : (row.severity === 'critical'
-                    ? '<i class="bi bi-x-circle-fill text-danger mt-1"></i>'
-                    : '<i class="bi bi-exclamation-triangle-fill text-warning mt-1"></i>');
-            let detail = '';
-            if (row.issues && row.issues.length) {
-                const items = row.issues.slice(0, 5).map((i) => {
-                    const lib = i.library_name ? `<em>${escapeHtml(i.library_name)}</em>: ` : '';
-                    const cur = formatHealthValue(i.current);
-                    const rec = formatHealthValue(i.recommended);
-                    return `<li>${lib}<strong>${escapeHtml(i.label)}</strong> — currently <code>${cur}</code> → <code>${rec}</code></li>`;
-                }).join('');
-                const more = row.issues.length > 5 ? `<li class="text-muted">…and ${row.issues.length - 5} more</li>` : '';
-                detail = `<ul class="mb-0 ps-3 small">${items}${more}</ul>`;
-            } else if (row.reason) {
-                detail = `<div class="small text-muted">${escapeHtml(row.reason)}</div>`;
+
+        // ── Section: STATUS ──
+        const statusSec = _makeSection('Status');
+        if (data.version && data.version.value) {
+            const versionOk = data.version.ok !== false;
+            statusSec.appendChild(_makeRow({
+                ok: versionOk,
+                label: `${vendor.charAt(0).toUpperCase() + vendor.slice(1)} ${escapeHtml(data.version.value)}`,
+                reason: data.version.reason,
+            }));
+        }
+        if (isJellyfin && data.plugin !== undefined) {
+            // Activation-mode row with inline [Install plugin] button
+            // when the plugin is absent. Mode B is a VALID state, so
+            // the row is marked OK (green check) — the only thing the
+            // user gives up without the plugin is latency (seconds
+            // instead of ms).
+            const modeText = modeHint === 'plugin_instant'
+                ? `Activation: <strong>Instant</strong> (plugin installed${pluginVer ? ` v${escapeHtml(pluginVer)}` : ''})`
+                : modeHint === 'scan_nudge'
+                    ? 'Activation: <strong>Next scan</strong> (no plugin — works fine, just slower than instant)'
+                    : modeHint === 'scan_nudge_pending'
+                        ? 'Activation: <strong>Pending scan trigger</strong> (fix library settings below)'
+                        : 'Activation mode: unknown';
+            const modeOk = modeHint === 'plugin_instant' || modeHint === 'scan_nudge';
+            const modeRow = _makeRow({ ok: modeOk, label: modeText, htmlLabel: true });
+            if (!pluginInstalled) {
+                const installBtn = document.createElement('button');
+                installBtn.type = 'button';
+                installBtn.className = 'btn btn-sm btn-primary mt-1';
+                installBtn.innerHTML = '<i class="bi bi-download me-1"></i>Install Media Preview Bridge plugin';
+                installBtn.title = 'Adds the repo, installs the plugin, restarts Jellyfin (~30s). Unlocks instant activation.';
+                installBtn.addEventListener('click', () => installPluginAction(serverId, serverType, installBtn));
+                const btnWrap = document.createElement('div');
+                btnWrap.className = 'mt-1';
+                btnWrap.appendChild(installBtn);
+                const explain = document.createElement('div');
+                explain.className = 'small text-muted mt-1';
+                explain.textContent = 'Optional — previews still work without it, they just take seconds to appear on Jellyfin\'s next scan instead of appearing instantly after this app publishes them.';
+                btnWrap.appendChild(explain);
+                modeRow.querySelector('.flex-grow-1').appendChild(btnWrap);
             }
-            el.innerHTML = `${icon}<div class="flex-grow-1">${row.label}${detail}</div>`;
-            body.appendChild(el);
+            statusSec.appendChild(modeRow);
+        }
+        body.appendChild(statusSec);
+
+        // ── Section: LIBRARY SETTINGS ──
+        const libSec = _makeSection('Library settings');
+        if (!libIssues.length) {
+            libSec.appendChild(_makeRow({ ok: true, label: 'All libraries configured correctly' }));
+        } else {
+            const summary = anyCriticalIssue
+                ? `${libIssues.length} ${libIssues.length === 1 ? 'library setting needs' : 'library settings need'} fixing`
+                : `${libIssues.length} optional ${libIssues.length === 1 ? 'recommendation' : 'recommendations'}`;
+            libSec.appendChild(_makeRow({
+                ok: false,
+                severity: anyCriticalIssue ? 'critical' : 'recommended',
+                label: summary,
+            }));
+            for (const issue of libIssues) {
+                const issueRow = document.createElement('div');
+                issueRow.className = 'd-flex align-items-start gap-2 ms-4 small';
+                const sev = issue.severity === 'critical' ? 'danger' : 'warning';
+                const sevLabel = issue.severity === 'critical' ? 'critical' : 'optional';
+                const lib = issue.library_name
+                    ? `<em>${escapeHtml(issue.library_name)}</em>: `
+                    : '';
+                const cur = formatHealthValue(issue.current);
+                const rec = formatHealthValue(issue.recommended);
+                const rationale = issue.rationale
+                    ? ` <i class="bi bi-info-circle text-muted ms-1" data-bs-toggle="tooltip" title="${escapeAttr(issue.rationale)}"></i>`
+                    : '';
+                const fixBtn = document.createElement('button');
+                fixBtn.type = 'button';
+                fixBtn.className = `btn btn-sm btn-outline-${sev} mt-1`;
+                fixBtn.innerHTML = '<i class="bi bi-wrench me-1"></i>Fix this';
+                fixBtn.addEventListener('click', () => fixLibraryIssueAction(serverId, serverType, issue, fixBtn));
+                issueRow.innerHTML = `
+                    <i class="bi bi-dot text-${sev}"></i>
+                    <div class="flex-grow-1">
+                        ${lib}<strong>${escapeHtml(issue.label)}</strong>
+                        <span class="badge bg-${sev} bg-opacity-75 ms-1" style="font-size:0.65rem;">${sevLabel}</span>
+                        ${rationale}
+                        <div class="text-muted">Currently <code>${cur}</code> → will be <code>${rec}</code></div>
+                    </div>
+                `;
+                issueRow.querySelector('.flex-grow-1').appendChild(fixBtn);
+                libSec.appendChild(issueRow);
+            }
+            // Global shortcut: [Fix all library settings] — useful when
+            // every issue is similar (common: 2 libraries with the same
+            // flag wrong).
+            const fixAllLibBtn = document.createElement('button');
+            fixAllLibBtn.type = 'button';
+            fixAllLibBtn.className = `btn btn-sm btn-outline-${anyCriticalIssue ? 'danger' : 'warning'} ms-4 mt-1`;
+            fixAllLibBtn.innerHTML = `<i class="bi bi-magic me-1"></i>Fix all library settings (${libIssues.length})`;
+            fixAllLibBtn.addEventListener('click', () => fixAllLibrarySettingsAction(serverId, serverType, fixAllLibBtn));
+            libSec.appendChild(fixAllLibBtn);
+        }
+        body.appendChild(libSec);
+
+        // ── Section: SERVER TRICKPLAY OPTIONS (Jellyfin only) ──
+        if (data.trickplay_options) {
+            const tpSec = _makeSection('Server trickplay options');
+            if (data.trickplay_options.ok) {
+                tpSec.appendChild(_makeRow({
+                    ok: true,
+                    label: 'Tile geometry matches what this app writes',
+                }));
+            } else {
+                const tpRow = _makeRow({
+                    ok: false,
+                    severity: 'critical',
+                    label: 'Server options don\'t match our adapter',
+                    reason: data.trickplay_options.reason || 'mismatch',
+                });
+                const syncBtn = document.createElement('button');
+                syncBtn.type = 'button';
+                syncBtn.className = 'btn btn-sm btn-outline-danger mt-1';
+                syncBtn.innerHTML = '<i class="bi bi-arrow-repeat me-1"></i>Sync server options';
+                syncBtn.title = 'Writes our tile geometry (TileWidth/TileHeight/Interval) back to Jellyfin\'s TrickplayOptions. Preserves admin-customised fields.';
+                syncBtn.addEventListener('click', () => syncTrickplayOptionsAction(serverId, serverType, syncBtn));
+                tpRow.querySelector('.flex-grow-1').appendChild(syncBtn);
+                tpSec.appendChild(tpRow);
+            }
+            body.appendChild(tpSec);
         }
 
-        // Plugin opt-in checkbox — Jellyfin only, shown when plugin isn't installed.
-        if (isJellyfin && pluginCtl && !(data.plugin && data.plugin.installed)) {
-            pluginCtl.classList.remove('d-none');
-        }
-
-        // "Fix and enable" button — shown when anything is fixable.
-        const anyFixable = rows.some((r) => !r.ok && (r.severity === 'critical' || r.issues || r.fix_kind));
-        if (!overallOk && anyFixable) {
+        // Keep the one-click "Fix and enable everything" button for
+        // users who want it, but hide it when nothing's fixable.
+        const anyFixable = anyCriticalIssue
+            || libIssues.length > 0
+            || tpMismatch
+            || (isJellyfin && !pluginInstalled);
+        if (anyFixable) {
             fixCtl.classList.remove('d-none');
+        } else {
+            fixCtl.classList.add('d-none');
         }
+
+        // Hide the old plugin opt-in checkbox now that the install button
+        // is inline. Kept in HTML for back-compat but never shown.
+        if (pluginCtl) pluginCtl.classList.add('d-none');
 
         // Re-init Bootstrap tooltips on any new ⓘ icons.
         if (typeof _initBootstrapTooltips === 'function') {
             _initBootstrapTooltips(body);
         } else if (window.bootstrap && window.bootstrap.Tooltip) {
             body.querySelectorAll('[data-bs-toggle="tooltip"]').forEach((el) => new window.bootstrap.Tooltip(el));
+        }
+    }
+
+    function _makeSection(title) {
+        const sec = document.createElement('div');
+        sec.className = 'mb-3';
+        const heading = document.createElement('div');
+        heading.className = 'text-muted small text-uppercase fw-bold mb-1';
+        heading.style.letterSpacing = '0.5px';
+        heading.textContent = title;
+        sec.appendChild(heading);
+        return sec;
+    }
+
+    function _makeRow({ ok, severity, label, reason, htmlLabel }) {
+        const row = document.createElement('div');
+        row.className = 'd-flex align-items-start gap-2 mb-1';
+        const icon = ok
+            ? '<i class="bi bi-check-circle-fill text-success mt-1"></i>'
+            : (severity === 'critical'
+                ? '<i class="bi bi-x-circle-fill text-danger mt-1"></i>'
+                : '<i class="bi bi-exclamation-triangle-fill text-warning mt-1"></i>');
+        const renderedLabel = htmlLabel ? label : escapeHtml(label);
+        const detail = reason
+            ? `<div class="small text-muted">${escapeHtml(reason)}</div>`
+            : '';
+        row.innerHTML = `${icon}<div class="flex-grow-1">${renderedLabel}${detail}</div>`;
+        return row;
+    }
+
+    // Poll /previews-readiness until ``predicate(data)`` holds, or we
+    // hit ``deadlineMs``. Used after install/fix actions to reflect the
+    // post-action state without racing Jellyfin's ~15-30s restart.
+    async function reprobeUntilConverged(serverId, serverType, predicate, { deadlineMs = 60_000, intervalMs = 3_000 } = {}) {
+        const start = Date.now();
+        while (Date.now() - start < deadlineMs) {
+            try {
+                const r = await api('GET', `/api/servers/${encodeURIComponent(serverId)}/previews-readiness`);
+                if (r.ok && r.data && predicate(r.data)) {
+                    renderReadiness(serverId, serverType, r.data);
+                    return r.data;
+                }
+            } catch (_) {
+                // Jellyfin restarting — keep polling.
+            }
+            await new Promise((res) => setTimeout(res, intervalMs));
+        }
+        // Deadline hit — render the best-effort current state so the
+        // user sees WHY we stopped waiting (e.g. badge flips to
+        // "action needed" if install failed).
+        await runReadinessProbe(serverId, serverType);
+        return null;
+    }
+
+    // ── Action handlers for inline CTAs ──
+
+    async function installPluginAction(serverId, serverType, btn) {
+        const original = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Installing — restarting Jellyfin…';
+        try {
+            const r = await api('POST', `/api/servers/${encodeURIComponent(serverId)}/install-plugin`, {});
+            const data = r.data || {};
+            if (!data.ok) {
+                showToast('Plugin install failed', data.error || `HTTP ${r.status}`, 'danger');
+                btn.disabled = false;
+                btn.innerHTML = original;
+                return;
+            }
+            // Jellyfin is restarting — poll until plugin.installed=true.
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Waiting for Jellyfin restart…';
+            const converged = await reprobeUntilConverged(
+                serverId,
+                serverType,
+                (d) => d.plugin && d.plugin.installed === true,
+                { deadlineMs: 90_000, intervalMs: 3_000 },
+            );
+            if (converged) {
+                showToast('Plugin installed', 'Media Preview Bridge is active — instant activation enabled.', 'success');
+            } else {
+                showToast('Plugin install timed out', 'Jellyfin is taking longer than 90s to restart. Click the refresh icon on the readiness card to re-check.', 'warning');
+            }
+        } catch (e) {
+            showToast('Plugin install error', String(e), 'danger');
+            btn.disabled = false;
+            btn.innerHTML = original;
+        }
+    }
+
+    async function fixLibraryIssueAction(serverId, serverType, issue, btn) {
+        const original = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Fixing…';
+        try {
+            const r = await api('POST', `/api/servers/${encodeURIComponent(serverId)}/health-check/apply`, {
+                flags: [issue.flag],
+            });
+            const data = r.data || {};
+            if (!data.ok && data.results === undefined) {
+                showToast('Fix failed', data.error || `HTTP ${r.status}`, 'danger');
+                btn.disabled = false;
+                btn.innerHTML = original;
+                return;
+            }
+            // Re-probe (flag flips are immediate; no restart delay).
+            await runReadinessProbe(serverId, serverType);
+            showToast('Setting applied', `${issue.library_name || 'Library'}: ${issue.label} is now on the recommended value.`, 'success');
+        } catch (e) {
+            showToast('Fix error', String(e), 'danger');
+            btn.disabled = false;
+            btn.innerHTML = original;
+        }
+    }
+
+    async function fixAllLibrarySettingsAction(serverId, serverType, btn) {
+        const original = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Applying…';
+        try {
+            const r = await api('POST', `/api/servers/${encodeURIComponent(serverId)}/health-check/apply`, {});
+            const data = r.data || {};
+            if (!data.ok && data.results === undefined) {
+                showToast('Apply failed', data.error || `HTTP ${r.status}`, 'danger');
+                btn.disabled = false;
+                btn.innerHTML = original;
+                return;
+            }
+            await runReadinessProbe(serverId, serverType);
+            const ok = Object.values(data.results || {}).filter((v) => v === 'ok').length;
+            showToast('Library settings applied', `${ok} setting${ok === 1 ? '' : 's'} updated.`, 'success');
+        } catch (e) {
+            showToast('Apply error', String(e), 'danger');
+            btn.disabled = false;
+            btn.innerHTML = original;
+        }
+    }
+
+    async function syncTrickplayOptionsAction(serverId, serverType, btn) {
+        const original = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Syncing…';
+        try {
+            // /trickplay-fix-all with install_plugin=false runs the library
+            // step (no-op if settings are correct) AND the geometry sync.
+            // If only geometry is wrong, nothing else mutates.
+            const r = await api('POST', `/api/servers/${encodeURIComponent(serverId)}/trickplay-fix-all`, {
+                install_plugin: false,
+            });
+            const data = r.data || {};
+            if (!data.ok) {
+                showToast('Sync failed', data.error || `HTTP ${r.status}`, 'danger');
+                btn.disabled = false;
+                btn.innerHTML = original;
+                return;
+            }
+            await runReadinessProbe(serverId, serverType);
+            showToast('Server options synced', 'Jellyfin trickplay geometry now matches what this app writes.', 'success');
+        } catch (e) {
+            showToast('Sync error', String(e), 'danger');
+            btn.disabled = false;
+            btn.innerHTML = original;
         }
     }
 
@@ -1720,8 +1976,19 @@
         if (!fixCtl || !fixBtn) return;
 
         const vendor = (serverType || '').toLowerCase();
+        const isJellyfin = vendor === 'jellyfin';
+
+        // Figure out whether we actually need to install the plugin.
+        // Default: install if Jellyfin AND plugin currently absent per
+        // the last-rendered readiness. Legacy checkbox from the old
+        // collapse-block is honoured if someone has it ticked.
         const pluginOptIn = document.getElementById('editReadinessPluginOptIn');
-        const installPlugin = pluginOptIn ? !!pluginOptIn.checked : true;
+        // If the checkbox exists and user explicitly unchecked it,
+        // respect that. Otherwise default based on current state.
+        let installPlugin = true;
+        if (pluginOptIn && pluginOptIn.dataset.userTouched === 'true') {
+            installPlugin = !!pluginOptIn.checked;
+        }
 
         const original = fixBtn.innerHTML;
         fixBtn.disabled = true;
@@ -1730,7 +1997,7 @@
 
         try {
             let r;
-            if (vendor === 'jellyfin') {
+            if (isJellyfin) {
                 r = await api('POST', `/api/servers/${encodeURIComponent(serverId)}/trickplay-fix-all`, {
                     install_plugin: installPlugin,
                 });
@@ -1751,18 +2018,27 @@
             if (fixResult) {
                 if (allOk) {
                     fixResult.className = 'small text-success';
-                    fixResult.textContent = '✓ Everything set. Re-probing…';
+                    fixResult.textContent = installPlugin && isJellyfin
+                        ? '✓ Fix applied. Waiting for Jellyfin restart…'
+                        : '✓ Fix applied. Re-probing…';
                 } else {
                     fixResult.className = 'small text-warning';
                     fixResult.textContent = `Some steps failed: ${escapeHtml(r.data.error || 'see logs')}`;
                 }
             }
-            // Re-probe so the panel reflects the new state. A plugin
-            // install restarts Jellyfin — give it time before re-probing.
-            if (vendor === 'jellyfin' && installPlugin) {
-                setTimeout(() => runReadinessProbe(serverId, serverType), 5000);
+            // Re-probe with convergence polling. If we requested a plugin
+            // install, wait until plugin.installed=true (Jellyfin takes
+            // 15-30s to restart). Otherwise just reflect the current
+            // state immediately.
+            if (isJellyfin && installPlugin) {
+                await reprobeUntilConverged(
+                    serverId,
+                    serverType,
+                    (d) => d.plugin && d.plugin.installed === true,
+                    { deadlineMs: 90_000, intervalMs: 3_000 },
+                );
             } else {
-                runReadinessProbe(serverId, serverType);
+                await runReadinessProbe(serverId, serverType);
             }
         } finally {
             fixBtn.disabled = false;
