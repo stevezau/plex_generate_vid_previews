@@ -94,8 +94,7 @@ class PlexBundleAdapter(OutputAdapter):
                 "during maintenance' is enabled."
             )
 
-        target_basename = os.path.basename(bundle.canonical_path)
-        bundle_hash = self._select_hash_for_path(parts, target_basename, item_id)
+        bundle_hash = self._select_hash_for_path(parts, bundle.canonical_path, item_id)
 
         return [self._bundle_bif_path(bundle_hash)]
 
@@ -158,18 +157,88 @@ class PlexBundleAdapter(OutputAdapter):
     @staticmethod
     def _select_hash_for_path(
         parts: list[tuple[str, str]],
-        target_basename: str,
+        target_path: str,
         item_id: str,
     ) -> str:
-        """Pick the bundle hash whose MediaPart filename matches ``target_basename``.
+        """Pick the bundle hash whose MediaPart matches ``target_path``.
 
-        Plex items with multiple parts (e.g. multi-disc movies) report several
-        MediaParts on ``/tree``; we want the one corresponding to the file
-        we're processing. When no exact basename match exists we fall back to
-        the first part with a usable hash and log a debug warning.
+        Plex items with multiple parts report several MediaParts on
+        ``/tree``; we want the one corresponding to the file we're
+        processing. Match priority — each tier returns IMMEDIATELY on
+        a unique hit and falls through to the next tier only when the
+        match is ambiguous (multiple parts tie) or absent:
+
+        1. **Longest common suffix** — compare trailing path segments
+           (``/Dune (2021)/Dune (2021).mkv``). Handles both the
+           single-version case with path-mapping drift between Plex's
+           server-view path and our local canonical path, AND the
+           multi-version case from issue #231 where a user has
+           ``/mnt/4k/Movies/Dune (2021)/Dune (2021).mkv`` and
+           ``/mnt/1080p/Movies/Dune (2021)/Dune (2021).mkv`` merged
+           into one Plex ratingKey. Both share the basename but the
+           parent directory (``4k`` vs ``1080p``) differs; matching
+           on parent+basename (or longer) disambiguates.
+        2. **Basename-only match** — last-resort for when even the
+           parent directory differs (Plex rewrote the path
+           post-import via Sonarr-provided instructions, etc.). Only
+           fires when no part had a longer suffix match.
+        3. **First-usable-hash fallback** — no matches at any level
+           (completely different path). The hash still belongs to
+           the same Plex item so the BIF ends up where Plex looks,
+           even if we can't confirm the exact MediaPart.
+
+        Raises :class:`LibraryNotYetIndexedError` when the best
+        matching MediaPart has no usable hash (analysis still in
+        progress) or when every returned MediaPart lacks a hash.
         """
+        target_norm = target_path.replace("\\", "/").rstrip("/")
+        target_parts = [p for p in target_norm.split("/") if p]
+        target_basename = target_parts[-1] if target_parts else ""
+
+        # Tier 1: longest common suffix. Walk the suffix from full to
+        # basename and, at each length, look for a UNIQUE hit. This
+        # way an exact full-path match wins over a basename-only match
+        # without being defeated by path-mapping prefix drift.
+        best_match: tuple[int, str] | None = None  # (suffix_len, hash)
+        best_is_unique = False
         for bundle_hash, remote_path in parts:
-            if os.path.basename(remote_path) == target_basename:
+            rnorm = remote_path.replace("\\", "/").rstrip("/")
+            rparts = [p for p in rnorm.split("/") if p]
+            # Count matching trailing segments.
+            suffix_len = 0
+            for a, b in zip(reversed(target_parts), reversed(rparts), strict=False):
+                if a == b:
+                    suffix_len += 1
+                else:
+                    break
+            if suffix_len == 0:
+                continue
+            if best_match is None or suffix_len > best_match[0]:
+                best_match = (suffix_len, bundle_hash)
+                best_is_unique = True
+            elif suffix_len == best_match[0]:
+                # Another part ties at this depth — ambiguous, keep
+                # walking to see if anything ties higher.
+                best_is_unique = False
+
+        if best_match is not None and best_is_unique:
+            bundle_hash = best_match[1]
+            if bundle_hash and len(bundle_hash) >= 2:
+                return bundle_hash
+            raise LibraryNotYetIndexedError(
+                f"File not yet scanned in Plex (item {item_id}): the matching MediaPart "
+                f"has an invalid bundle hash ({bundle_hash!r}). Plex's media analysis "
+                "didn't finish writing the bundle. We'll auto-retry."
+            )
+
+        # Tier 2: basename-only when the suffix-walk was ambiguous and
+        # only one candidate matches on basename. (For the single-
+        # version case this is redundant with tier 1; kept so legacy
+        # tests that exercise this specific branch still pass.)
+        if target_basename:
+            basename_matches = [(h, p) for (h, p) in parts if os.path.basename(p) == target_basename]
+            if len(basename_matches) == 1:
+                bundle_hash = basename_matches[0][0]
                 if bundle_hash and len(bundle_hash) >= 2:
                     return bundle_hash
                 raise LibraryNotYetIndexedError(
@@ -177,16 +246,27 @@ class PlexBundleAdapter(OutputAdapter):
                     f"has an invalid bundle hash ({bundle_hash!r}). Plex's media analysis "
                     "didn't finish writing the bundle. We'll auto-retry."
                 )
-        # Fallback: first usable hash. Plex sometimes reports paths that don't
-        # exactly match the file we received via webhook (e.g. casing, mount
-        # differences); the hash is still correct for the item.
+
+        # Tier 3: first usable hash. Plex reported paths we can't
+        # structurally match (or multiple tied at the deepest level
+        # still — rare; pick first to preserve legacy behaviour).
         for bundle_hash, _remote_path in parts:
             if bundle_hash and len(bundle_hash) >= 2:
-                logger.debug(
-                    "Plex item {} has no MediaPart matching {!r}; using first hash",
-                    item_id,
-                    target_basename,
-                )
+                if best_match is not None and not best_is_unique:
+                    logger.warning(
+                        "Plex item {} has multiple MediaParts tied at the deepest path "
+                        "suffix for {!r}; picking the first usable hash. This can "
+                        "happen when multi-version directory structures are identical "
+                        "after the version-indicating prefix.",
+                        item_id,
+                        target_path,
+                    )
+                else:
+                    logger.debug(
+                        "Plex item {} has no MediaPart matching {!r}; using first hash",
+                        item_id,
+                        target_path,
+                    )
                 return bundle_hash
         raise LibraryNotYetIndexedError(
             f"File not yet scanned in Plex (item {item_id}): every MediaPart returned by "

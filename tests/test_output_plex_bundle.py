@@ -110,6 +110,97 @@ class TestComputeOutputPaths:
         # Should pick the second part's hash, not the first.
         assert paths[0] == Path("/cfg/Media/localhost/b/bbbbbbbbb.bundle/Contents/Indexes/index-sd.bif")
 
+    def test_plex_multi_version_same_basename_picks_matching_path(self, tmp_path, mock_config):
+        """Issue #231: user has 4K + 1080p of the same movie in two
+        separate directories. Plex merges them into one ratingKey with
+        two MediaParts — identical basenames, different paths.
+
+        The selector MUST match on the FULL canonical path, not basename,
+        or the 4K file's BIF ends up at the 1080p bundle hash (and vice
+        versa). Symptom: Plex's PhotoTranscoder rejects the served BIF
+        frames as "we don't trust what we cached" because the preview
+        dimensions / aspect ratio / frame count don't match the version
+        Plex is trying to play.
+
+        Currently this test FAILS against the basename-matching selector
+        — both parts match on basename ``Dune (2021).mkv`` so first wins,
+        which is wrong when the webhook fired for the second path.
+        """
+        adapter = PlexBundleAdapter(plex_config_folder="/cfg", frame_interval=10)
+        server = PlexServer(mock_config)
+        _wire_plex_query(
+            server,
+            parts=[
+                ("aaaaaaaaaa", "/mnt/4k/Movies/Dune (2021)/Dune (2021).mkv"),
+                ("bbbbbbbbbb", "/mnt/1080p/Movies/Dune (2021)/Dune (2021).mkv"),
+            ],
+        )
+
+        # Dispatching the 1080p file — must pick the 1080p hash (b...).
+        paths = adapter.compute_output_paths(
+            _make_bundle("/mnt/1080p/Movies/Dune (2021)/Dune (2021).mkv", tmp_path),
+            server,
+            item_id="99",
+        )
+
+        assert "bbbbbbbbb.bundle" in str(paths[0]), (
+            f"Multi-version selector picked the wrong MediaPart — got {paths[0]}. "
+            "With identical basenames across 4K and 1080p versions, the selector "
+            "must match on the full canonical path, not just basename. "
+            "Symptom in production: Plex rejects the BIF with 'we don't trust what we cached'."
+        )
+
+    def test_single_version_with_path_mapping_drift_still_matches(self, tmp_path, mock_config):
+        """The common case: one file, Plex reports its server-view path
+        (e.g. ``/data/Dune.mkv``) while our canonical is the local-view
+        path (``/mnt/media/Dune.mkv``). Same basename, different parent
+        prefix. Selector must still match on the shared trailing
+        segments and return the single hash. Regression guard for the
+        v3 longest-common-suffix selector."""
+        adapter = PlexBundleAdapter(plex_config_folder="/cfg", frame_interval=10)
+        server = PlexServer(mock_config)
+        _wire_plex_query(
+            server,
+            parts=[("cccccccccc", "/data/Movies/Dune (2021)/Dune (2021).mkv")],
+        )
+
+        paths = adapter.compute_output_paths(
+            _make_bundle("/mnt/media/Movies/Dune (2021)/Dune (2021).mkv", tmp_path),
+            server,
+            item_id="77",
+        )
+        # Bundle path layout is /<h[0]>/<h[1:]>.bundle/… — so "cccccccccc"
+        # splits to /c/ccccccccc.bundle (9 c's after the first char).
+        assert "/c/ccccccccc.bundle" in str(paths[0]), f"got {paths[0]}"
+
+    def test_plex_multi_version_picks_correct_for_both_versions(self, tmp_path, mock_config):
+        """Matrix completion for the multi-version fix: dispatching the
+        4K file picks the 4K hash; dispatching the 1080p file picks the
+        1080p hash. Without both cells, a regression that always
+        returned the SECOND hash would pass the first test."""
+        adapter = PlexBundleAdapter(plex_config_folder="/cfg", frame_interval=10)
+        server = PlexServer(mock_config)
+        parts = [
+            ("aaaaaaaaaa", "/mnt/4k/Movies/Dune (2021)/Dune (2021).mkv"),
+            ("bbbbbbbbbb", "/mnt/1080p/Movies/Dune (2021)/Dune (2021).mkv"),
+        ]
+
+        _wire_plex_query(server, parts=parts)
+        paths_4k = adapter.compute_output_paths(
+            _make_bundle("/mnt/4k/Movies/Dune (2021)/Dune (2021).mkv", tmp_path),
+            server,
+            item_id="99",
+        )
+        assert "aaaaaaaaa.bundle" in str(paths_4k[0]), f"4K picked wrong: {paths_4k[0]}"
+
+        _wire_plex_query(server, parts=parts)
+        paths_1080 = adapter.compute_output_paths(
+            _make_bundle("/mnt/1080p/Movies/Dune (2021)/Dune (2021).mkv", tmp_path),
+            server,
+            item_id="99",
+        )
+        assert "bbbbbbbbb.bundle" in str(paths_1080[0]), f"1080p picked wrong: {paths_1080[0]}"
+
     def test_falls_back_to_first_hash_when_no_basename_match(self, tmp_path, mock_config):
         adapter = PlexBundleAdapter(plex_config_folder="/cfg", frame_interval=10)
         server = PlexServer(mock_config)
