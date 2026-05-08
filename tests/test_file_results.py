@@ -827,6 +827,7 @@ class TestFileResultsAPI:
         job = jm.create_job(library_name="API Test")
         jm.record_file_result(job.id, "/media/a.mkv", "generated", "", "GPU 1")
         jm.record_file_result(job.id, "/media/b.mkv", "failed", "exit 1", "CPU 1")
+        jm.set_job_outcome(job.id, {"generated": 1, "failed": 1})
 
         resp = client.get(f"/api/jobs/{job.id}/files", headers=self._headers())
         assert resp.status_code == 200
@@ -834,8 +835,14 @@ class TestFileResultsAPI:
         assert data["count"] == 2
         assert data["total"] == 2
         assert len(data["files"]) == 2
-        assert data["summary"]["generated"] == 1
-        assert data["summary"]["failed"] == 1
+        # D35 — endpoint stopped shipping the capped `summary` dict; the
+        # top-of-modal Servers block is the source of truth for per-outcome
+        # counts (uncapped, from job.publishers). The API now surfaces the
+        # real processed total + a truncation flag so pagination can render
+        # "N files in list (M items processed)" on big scans.
+        assert "summary" not in data
+        assert data["processed_total"] == 2
+        assert data["list_truncated"] is False
 
     def test_file_results_outcome_filter(self, client):
         from media_preview_generator.web.jobs import get_job_manager
@@ -845,15 +852,48 @@ class TestFileResultsAPI:
         jm.record_file_result(job.id, "/media/a.mkv", "generated")
         jm.record_file_result(job.id, "/media/b.mkv", "failed", "exit 1")
         jm.record_file_result(job.id, "/media/c.mkv", "failed", "exit 2")
+        jm.set_job_outcome(job.id, {"generated": 1, "failed": 2})
 
         resp = client.get(f"/api/jobs/{job.id}/files?outcome=failed", headers=self._headers())
         data = resp.get_json()
         assert data["count"] == 2
         assert data["total"] == 3
         assert all(f["outcome"] == "failed" for f in data["files"])
-        # Summary must still contain ALL outcome counts for badge rendering
-        assert data["summary"]["generated"] == 1
-        assert data["summary"]["failed"] == 2
+        assert "summary" not in data
+        # processed_total survives the outcome filter — it reflects the
+        # whole job, not the currently-visible page.
+        assert data["processed_total"] == 3
+        assert data["list_truncated"] is False
+
+    def test_file_results_reports_truncation_when_marker_present(self, client, monkeypatch):
+        """When the JSONL hits the per-job cap the endpoint flags it and
+        reports the real processed total from job.progress.outcome, so the
+        UI can render "Showing 1–N of N files in list (M items processed —
+        list truncated for performance)" instead of misleading "of N".
+        """
+        from media_preview_generator.web.jobs import JobManager, get_job_manager
+
+        jm = get_job_manager()
+        # Shrink the cap to exercise the truncation path fast. The sentinel
+        # marker is written exactly once on the 4th call; the 5th is dropped.
+        monkeypatch.setattr(JobManager, "_FILE_RESULTS_PER_JOB_CAP", 3)
+        job = jm.create_job(library_name="Truncated Test")
+        for i in range(5):
+            jm.record_file_result(job.id, f"/media/{i}.mkv", "generated")
+        # Real aggregate counter stays correct past the file-list cap —
+        # this is what processed_total should surface.
+        jm.set_job_outcome(job.id, {"generated": 117_981})
+
+        resp = client.get(f"/api/jobs/{job.id}/files", headers=self._headers())
+        assert resp.status_code == 200
+        data = resp.get_json()
+        # 3 generated rows + 1 truncation marker = 4 rows in the JSONL.
+        assert data["total"] == 4
+        assert data["list_truncated"] is True
+        assert data["processed_total"] == 117_981
+        # Sanity: processed scope must exceed the (capped) list length, or
+        # the wording "list truncated for performance" would be a lie.
+        assert data["processed_total"] > data["total"]
 
     def test_file_results_search_filter(self, client):
         from media_preview_generator.web.jobs import get_job_manager

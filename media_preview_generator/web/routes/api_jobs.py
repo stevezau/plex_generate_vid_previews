@@ -811,10 +811,14 @@ def get_job_file_results(job_id):
 
     all_results = job_manager.get_file_results(job_id)
 
-    summary: dict = {}
-    for r in all_results:
-        key = r.get("outcome", "unknown")
-        summary[key] = summary.get(key, 0) + 1
+    # The per-job JSONL is soft-capped at _FILE_RESULTS_PER_JOB_CAP entries
+    # (see JobManager.record_file_result). Past that, a one-shot "truncated"
+    # marker row is written and later items are dropped from the list — but
+    # aggregate counters on job.progress.outcome keep counting. The UI needs
+    # both numbers to render "Showing 1–100 of 5,000 files in list (117,981
+    # items processed — list truncated for performance)" on huge scans.
+    list_truncated = any(r.get("outcome") == "truncated" for r in all_results)
+    processed_total = sum((job.progress.outcome or {}).values()) if job.progress else 0
 
     filtered = all_results
     if outcome_filter:
@@ -833,10 +837,11 @@ def get_job_file_results(job_id):
         {
             "job_id": job_id,
             "files": page_slice,
-            "summary": summary,
             "count": len(page_slice),
             "filtered_count": filtered_count,
             "total": len(all_results),
+            "processed_total": processed_total,
+            "list_truncated": list_truncated,
             "page": page,
             "per_page": per_page,
             "total_pages": total_pages,

@@ -1409,8 +1409,7 @@ function _serverBadge(item) {
 
 // D14 — single source of truth for status chip label + color, shared
 // across every UI surface that renders an outcome:
-//   * file-outcome chips in the Files panel  (job_modal.js → STATUS_META)
-//   * file-outcome summary buttons           (job_modal.js → STATUS_META)
+//   * file-outcome cell badges per row       (job_modal.js → renderFileResultsTable)
 //   * per-server aggregate badges            (this file → _renderPublishersBlock)
 //   * per-server pills inside file rows      (job_modal.js → _renderFileServerPills)
 //

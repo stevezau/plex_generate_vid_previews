@@ -9,8 +9,8 @@
 //     loadAllLogs, colorizeLogLine, filterLogs, clearLogSearch, copyLogs,
 //     downloadLogs, plus a 5-second polling interval for running jobs.
 //   * Files tab (Per-File Results): onFilesTabActivated, refreshFileResults,
-//     renderFileResultsSummary, renderFileResultsTable, renderFilePagination,
-//     the page navigation helpers, and the outcome-filter toggles.
+//     renderFileResultsTable, renderFilePagination, the page navigation
+//     helpers, and the outcome-filter dropdown handler.
 //
 // Kept together rather than as two files because the two tabs share the
 // same modal lifecycle (showLogsModal resets the Files tab state, and
@@ -56,12 +56,14 @@ function showLogsModal(jobId) {
     _fileResultsActiveFilter = '';
     _fileResultsLoaded = false;
     _filePage = 1;
-    _fileSummary = {};
-    document.getElementById('fileResultsSummary').innerHTML = '';
+    _fileProcessedTotal = 0;
+    _fileListTruncated = false;
     document.getElementById('fileResultsBody').innerHTML =
         '<tr><td colspan="4" class="text-muted text-center">Click to load file results</td></tr>';
     document.getElementById('fileResultsCount').textContent = '';
     document.getElementById('fileResultsSearch').value = '';
+    var _ofSel = document.getElementById('fileOutcomeFilter');
+    if (_ofSel) _ofSel.value = '';
     var pFooter = document.getElementById('filePaginationFooter');
     if (pFooter) pFooter.classList.add('d-none');
 
@@ -443,13 +445,20 @@ var _filePerPage = parseInt(localStorage.getItem('filePerPage'), 10) || 100;
 var _fileTotalPages = 1;
 var _fileFilteredCount = 0;
 var _fileTotal = 0;
-var _fileSummary = {};
+// D35 — JSONL file-list is capped at 5k rows; processed_total is the real
+// run scope from job.progress.outcome, surfaced so the truncated pagination
+// wording can render "Showing 1–100 of 5,000 files in list (117,981 items
+// processed — list truncated for performance)". list_truncated is the
+// authoritative signal from the backend (presence of the "truncated"
+// sentinel row in the JSONL).
+var _fileProcessedTotal = 0;
+var _fileListTruncated = false;
 var _fileSearchDebounce = null;
 
 // D14 — every status chip reads from the unified STATUS_META map in
-// app.js so file-outcome chips, summary buttons, per-server pills, and
-// aggregate badges all render the same label + color for the same
-// status. Update STATUS_META, not this shim.
+// app.js so per-row file-outcome badges, per-server pills, and aggregate
+// badges all render the same label + color for the same status. Update
+// STATUS_META, not this shim.
 function _fileOutcomeMeta(key) {
     var m = (typeof window !== 'undefined' && window._statusMeta)
         ? window._statusMeta(key)
@@ -478,43 +487,15 @@ async function refreshFileResults() {
         _fileTotalPages = data.total_pages || 1;
         _fileFilteredCount = data.filtered_count || 0;
         _fileTotal = data.total || 0;
-        _fileSummary = data.summary || {};
+        _fileProcessedTotal = data.processed_total || 0;
+        _fileListTruncated = !!data.list_truncated;
 
-        renderFileResultsSummary(_fileSummary, _fileTotal);
         renderFileResultsTable(data.files || []);
         renderFilePagination();
     } catch (e) {
         document.getElementById('fileResultsBody').innerHTML =
             '<tr><td colspan="4" class="text-muted text-center">Could not load file results</td></tr>';
     }
-}
-
-function renderFileResultsSummary(summary, total) {
-    var container = document.getElementById('fileResultsSummary');
-    if (!summary || Object.keys(summary).length === 0) {
-        container.innerHTML = '<span class="text-muted">No file results recorded for this job</span>';
-        return;
-    }
-    var html = '';
-
-    var ordered = [
-        'generated', 'skipped_bif_exists', 'skipped_not_indexed', 'failed',
-        'skipped_file_not_found', 'skipped_excluded',
-        'skipped_invalid_hash', 'no_media_parts',
-        'unresolved_plex'
-    ];
-    for (var i = 0; i < ordered.length; i++) {
-        var key = ordered[i];
-        var count = summary[key];
-        if (!count) continue;
-        var meta = _fileOutcomeMeta(key);
-        var btnClass = (_fileResultsActiveFilter === key)
-            ? meta.badge.replace('bg-', 'btn-outline-').replace(' text-dark', '').replace(' border', '')
-            : meta.badge.replace('bg-', 'btn-').replace(' text-dark', '').replace(' border', '');
-        html += '<button class="btn btn-sm ' + btnClass + '" onclick="toggleFileOutcomeFilter(\'' + key + '\')">'
-            + meta.label + ': ' + count + '</button>';
-    }
-    container.innerHTML = html;
 }
 
 function renderFileResultsTable(files) {
@@ -532,7 +513,8 @@ function renderFileResultsTable(files) {
     var start = (_filePage - 1) * _filePerPage + 1;
     var end = start + files.length - 1;
     var label = 'Showing ' + start + '\u2013' + end + ' of ' + _fileFilteredCount.toLocaleString();
-    if (_fileFilteredCount !== _fileTotal) label += ' (' + _fileTotal.toLocaleString() + ' total)';
+    if (_fileFilteredCount !== _fileTotal) label += ' (' + _fileTotal.toLocaleString() + ' in list)';
+    if (_fileListTruncated) label += ' \u2014 ' + _fileProcessedTotal.toLocaleString() + ' items processed';
     countEl.textContent = label;
 
     var html = '';
@@ -645,7 +627,12 @@ function renderFilePagination() {
 
     var start = (_filePage - 1) * _filePerPage + 1;
     var end = Math.min(_filePage * _filePerPage, _fileFilteredCount);
-    info.textContent = 'Showing ' + start + '\u2013' + end + ' of ' + _fileFilteredCount;
+    var base = 'Showing ' + start + '\u2013' + end + ' of ' + _fileFilteredCount.toLocaleString();
+    if (_fileListTruncated) {
+        base += ' files in list (' + _fileProcessedTotal.toLocaleString()
+             +  ' items processed \u2014 list truncated for performance)';
+    }
+    info.textContent = base;
 
     var pagesHtml = '';
     pagesHtml += '<li class="page-item ' + (_filePage <= 1 ? 'disabled' : '') + '">'
@@ -693,8 +680,8 @@ function changeFilePerPage(value) {
     refreshFileResults();
 }
 
-function toggleFileOutcomeFilter(outcome) {
-    _fileResultsActiveFilter = (_fileResultsActiveFilter === outcome) ? '' : outcome;
+function onFileOutcomeFilterChanged(select) {
+    _fileResultsActiveFilter = select.value || '';
     _filePage = 1;
     refreshFileResults();
 }
