@@ -1181,6 +1181,153 @@ class TestEmbySettingsHealth:
         assert flags == {"ExtractChapterImagesDuringLibraryScan"}
 
 
+class TestEmbyApplyFlagValues:
+    """apply_flag_values: explicit per-flag value setting."""
+
+    def test_flips_flag_to_explicit_false(self, emby):
+        """Users can DISABLE flags via the Previews readiness card's
+        per-check disable toggle — apply_flag_values must forward
+        value=False verbatim."""
+        current = {
+            "ExtractTrickplayImagesDuringLibraryScan": True,
+            "ExtractChapterImagesDuringLibraryScan": True,
+            "EnableRealtimeMonitor": True,
+        }
+        get_resp = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value=[{"Name": "Movies", "ItemId": "m", "LibraryOptions": current}]),
+            raise_for_status=MagicMock(),
+        )
+        post_resp = MagicMock(status_code=204, raise_for_status=MagicMock())
+
+        def fake_request(method, url, **kwargs):
+            return get_resp if method == "GET" else post_resp
+
+        with patch.object(EmbyServer, "_request", side_effect=fake_request) as req:
+            targets = [{"flag": "EnableRealtimeMonitor", "value": False, "library_ids": None}]
+            results = emby.apply_flag_values(targets)
+
+        assert results == {"m:EnableRealtimeMonitor": "ok"}
+        post_call = next(c for c in req.call_args_list if c.args[0] == "POST")
+        assert post_call.kwargs["json_body"]["LibraryOptions"]["EnableRealtimeMonitor"] is False
+
+    def test_empty_targets_returns_empty(self, emby):
+        assert emby.apply_flag_values([]) == {}
+
+
+class TestEmbyPreviewsReadiness:
+    """Unified previews_readiness envelope for Emby."""
+
+    def test_unified_envelope_shape(self, emby):
+        good_options = {
+            "ExtractTrickplayImagesDuringLibraryScan": False,
+            "ExtractChapterImagesDuringLibraryScan": False,
+            "EnableRealtimeMonitor": True,
+        }
+
+        def fake_request(method, url, **kwargs):
+            if url == "/System/Info":
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value={"Version": "4.8.0.0"}),
+                    raise_for_status=MagicMock(),
+                )
+            if url == "/Library/VirtualFolders":
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value=[{"Name": "Movies", "ItemId": "m", "LibraryOptions": good_options}]),
+                    raise_for_status=MagicMock(),
+                )
+            raise AssertionError(f"unexpected {method} {url}")
+
+        with patch.object(EmbyServer, "_request", side_effect=fake_request):
+            payload = emby.previews_readiness()
+
+        assert payload["vendor"] == "emby"
+        # Emby has no plugin, no server trickplay geometry — those sections MUST NOT appear.
+        section_ids = [s["id"] for s in payload["sections"]]
+        assert "plugin" not in section_ids
+        assert "server_options" not in section_ids
+        # Must emit connection, version, library_settings, vendor_extraction.
+        for required in ("connection", "version", "library_settings", "vendor_extraction"):
+            assert required in section_ids
+
+        # Emby is always overall_ok when reachable — library issues are advisory.
+        assert payload["overall_ok"] is True
+
+    def test_misset_flags_emit_actionable_rows(self, emby):
+        """Matrix coverage: walk the ok=False branch. When a library has
+        a flag mis-set, `library_section_ok` must be False and the
+        row's `actions.enable.args` must carry {flag, value: True,
+        library_ids: [that_lib_id]} — so the UI toggle dispatches to
+        the right library, not a wildcard server-wide flip.
+
+        Regression would be: row emits no actions, or emits wildcard
+        library_ids=null, silently flipping every library when the
+        user meant just one."""
+        # Emby has EnableRealtimeMonitor recommended=True.
+        # Sim: Movies has it on, TV has it off.
+        folders = [
+            {
+                "Name": "Movies",
+                "ItemId": "m",
+                "LibraryOptions": {
+                    "ExtractTrickplayImagesDuringLibraryScan": False,
+                    "ExtractChapterImagesDuringLibraryScan": False,
+                    "EnableRealtimeMonitor": True,
+                },
+            },
+            {
+                "Name": "TV",
+                "ItemId": "t",
+                "LibraryOptions": {
+                    "ExtractTrickplayImagesDuringLibraryScan": False,
+                    "ExtractChapterImagesDuringLibraryScan": False,
+                    "EnableRealtimeMonitor": False,  # mis-set
+                },
+            },
+        ]
+
+        def fake_request(method, url, **kwargs):
+            if url == "/System/Info":
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value={"Version": "4.8.0.0"}),
+                    raise_for_status=MagicMock(),
+                )
+            if url == "/Library/VirtualFolders":
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value=folders),
+                    raise_for_status=MagicMock(),
+                )
+            raise AssertionError(f"unexpected {method} {url}")
+
+        with patch.object(EmbyServer, "_request", side_effect=fake_request):
+            payload = emby.previews_readiness()
+
+        library_section = next(s for s in payload["sections"] if s["id"] == "library_settings")
+        # Section rolls up to NOT-ok because at least one row is mis-set.
+        assert library_section["ok"] is False
+
+        # Find the mis-set row and assert its action shape.
+        bad_row = next(
+            c
+            for c in library_section["checks"]
+            if c["meta"].get("flag") == "EnableRealtimeMonitor" and c["meta"].get("library_id") == "t"
+        )
+        assert bad_row["ok"] is False
+        enable = bad_row["actions"]["enable"]
+        # The exact contract the dispatcher relies on — if this drifts,
+        # the toggle either does nothing or touches wrong libraries.
+        assert enable["action"] == "apply_flag"
+        assert enable["args"] == {
+            "flag": "EnableRealtimeMonitor",
+            "value": True,
+            "library_ids": ["t"],
+        }
+
+
 class TestEmbyApplyRecommended:
     def test_writes_only_misset_flags(self, emby):
         bad = {

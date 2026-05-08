@@ -1015,3 +1015,462 @@ class TestOutputStatus:
             headers=auth_headers,
         )
         assert response.status_code == 400
+
+
+class TestUninstallPlugin:
+    """POST /uninstall-plugin — mirrors /install-plugin for the reverse flow."""
+
+    def _seed_jelly(self):
+        _seed_media_servers(
+            [
+                {
+                    "id": "jelly-1",
+                    "type": "jellyfin",
+                    "name": "Jelly",
+                    "enabled": True,
+                    "url": "http://jellyfin:8096",
+                    "auth": {"method": "api_key", "api_key": "k"},
+                }
+            ]
+        )
+
+    def test_non_jellyfin_rejected(self, client, auth_headers):
+        """Uninstall only works on Jellyfin. Plex/Emby must 400."""
+        _seed_media_servers(
+            [
+                {
+                    "id": "emby-1",
+                    "type": "emby",
+                    "name": "Emby",
+                    "enabled": True,
+                    "url": "http://emby:8096",
+                    "auth": {"method": "api_key", "api_key": "k"},
+                }
+            ]
+        )
+        response = client.post(
+            "/api/servers/emby-1/uninstall-plugin",
+            headers=auth_headers,
+        )
+        assert response.status_code == 400
+        body = response.get_json()
+        assert body["ok"] is False
+        assert "jellyfin" in body["error"].lower()
+
+    def test_server_not_found_returns_404(self, client, auth_headers):
+        response = client.post(
+            "/api/servers/missing/uninstall-plugin",
+            headers=auth_headers,
+        )
+        assert response.status_code == 404
+
+    def test_forwards_result_to_caller(self, client, auth_headers, monkeypatch):
+        """The route must return what uninstall_plugin returned verbatim
+        so the UI's step-list progress component works."""
+        from media_preview_generator.servers.jellyfin import JellyfinServer
+
+        self._seed_jelly()
+        monkeypatch.setattr(
+            JellyfinServer,
+            "uninstall_plugin",
+            lambda self: {
+                "ok": True,
+                "steps": [
+                    {"step": "uninstall_package", "ok": True, "detail": "removed"},
+                    {"step": "restart", "ok": True, "detail": "restart requested"},
+                ],
+                "error": "",
+            },
+        )
+        response = client.post(
+            "/api/servers/jelly-1/uninstall-plugin",
+            headers=auth_headers,
+        )
+        assert response.status_code == 200
+        body = response.get_json()
+        assert body["ok"] is True
+        assert len(body["steps"]) == 2
+        assert body["steps"][0]["step"] == "uninstall_package"
+
+
+class TestHealthCheckApplySetSchema:
+    """/health-check/apply accepts both legacy 'flags' and new 'set' body shapes."""
+
+    def _seed_jelly(self):
+        _seed_media_servers(
+            [
+                {
+                    "id": "jelly-1",
+                    "type": "jellyfin",
+                    "name": "Jelly",
+                    "enabled": True,
+                    "url": "http://jellyfin:8096",
+                    "auth": {"method": "api_key", "api_key": "k"},
+                }
+            ]
+        )
+
+    def test_set_schema_forwards_explicit_values(self, client, auth_headers, monkeypatch):
+        """The 'set' body must delegate to apply_flag_values with the
+        parsed targets VERBATIM — asserting kwargs, not just call count,
+        so a future bug that strips/rewrites targets would break the test.
+
+        Per .claude/rules/testing.md: "if removing a parameter from the
+        SUT wouldn't break the test, the test isn't covering that
+        parameter." This test asserts the exact targets list."""
+        from media_preview_generator.servers.jellyfin import JellyfinServer
+
+        self._seed_jelly()
+        captured = {}
+
+        def fake_apply_flag_values(self, targets):
+            captured["targets"] = targets
+            return {"m:EnableRealtimeMonitor": "ok"}
+
+        monkeypatch.setattr(JellyfinServer, "apply_flag_values", fake_apply_flag_values)
+        # Silence the plugin-cache warm probe.
+        monkeypatch.setattr(JellyfinServer, "check_plugin_installed", lambda self: {"installed": True})
+
+        response = client.post(
+            "/api/servers/jelly-1/health-check/apply",
+            headers=auth_headers,
+            json={"set": [{"flag": "EnableRealtimeMonitor", "value": False, "library_ids": ["m"]}]},
+        )
+        assert response.status_code == 200
+        assert response.get_json()["ok"] is True
+
+        # The SUT's contract: targets forwarded unchanged.
+        assert captured["targets"] == [{"flag": "EnableRealtimeMonitor", "value": False, "library_ids": ["m"]}]
+
+    def test_destructive_disable_without_phrase_is_rejected_400(self, client, auth_headers, monkeypatch):
+        """CRITICAL guardrail: EnableTrickplayImageExtraction=false deletes
+        published .trickplay/ tiles on Jellyfin's next refresh. The UI
+        modal requires typing 'disable trickplay' before POSTing — but
+        the UI is UX gloss. A curl/bookmarklet/XHR replay that skips
+        the modal MUST still carry the phrase or the route 400s.
+
+        This test asserts: POSTing the destructive (flag, value) WITHOUT
+        a confirm key gets rejected and apply_flag_values is NOT called.
+        Removing the server-side guardrail would let this test pass
+        ONLY if we forget to patch apply_flag_values — so we patch it
+        with a side_effect=AssertionError to prove the route blocks
+        BEFORE the adapter ever sees the request."""
+        from media_preview_generator.servers.jellyfin import JellyfinServer
+
+        self._seed_jelly()
+
+        def _should_not_be_called(self, targets):
+            raise AssertionError("apply_flag_values was called — destructive guardrail regressed")
+
+        monkeypatch.setattr(JellyfinServer, "apply_flag_values", _should_not_be_called)
+        monkeypatch.setattr(JellyfinServer, "check_plugin_installed", lambda self: {"installed": True})
+
+        response = client.post(
+            "/api/servers/jelly-1/health-check/apply",
+            headers=auth_headers,
+            json={
+                "set": [{"flag": "EnableTrickplayImageExtraction", "value": False, "library_ids": ["m"]}],
+                # NO confirm key — must 400.
+            },
+        )
+        assert response.status_code == 400, response.get_json()
+        body = response.get_json()
+        assert "destructive" in body["error"].lower() or "typed confirmation" in body["error"].lower()
+
+    def test_destructive_disable_with_wrong_phrase_is_rejected(self, client, auth_headers, monkeypatch):
+        """Wrong phrase in confirm must also 400 — full parity with the
+        UI's type-to-confirm: 'disable' ≠ 'disable trickplay'."""
+        from media_preview_generator.servers.jellyfin import JellyfinServer
+
+        self._seed_jelly()
+        monkeypatch.setattr(
+            JellyfinServer,
+            "apply_flag_values",
+            lambda self, targets: (_ for _ in ()).throw(AssertionError("should not be called")),
+        )
+        monkeypatch.setattr(JellyfinServer, "check_plugin_installed", lambda self: {"installed": True})
+
+        response = client.post(
+            "/api/servers/jelly-1/health-check/apply",
+            headers=auth_headers,
+            json={
+                "set": [{"flag": "EnableTrickplayImageExtraction", "value": False, "library_ids": ["m"]}],
+                "confirm": {"EnableTrickplayImageExtraction": "wrong phrase"},
+            },
+        )
+        assert response.status_code == 400
+
+    def test_destructive_disable_with_correct_phrase_proceeds(self, client, auth_headers, monkeypatch):
+        """When the phrase matches exactly, the request proceeds to
+        apply_flag_values and returns 200. This is the happy path —
+        ensures the guardrail hasn't become a blanket reject."""
+        from media_preview_generator.servers.jellyfin import JellyfinServer
+
+        self._seed_jelly()
+        captured = {}
+
+        def fake_apply(self, targets):
+            captured["targets"] = targets
+            return {"m:EnableTrickplayImageExtraction": "ok"}
+
+        monkeypatch.setattr(JellyfinServer, "apply_flag_values", fake_apply)
+        monkeypatch.setattr(JellyfinServer, "check_plugin_installed", lambda self: {"installed": True})
+
+        response = client.post(
+            "/api/servers/jelly-1/health-check/apply",
+            headers=auth_headers,
+            json={
+                "set": [{"flag": "EnableTrickplayImageExtraction", "value": False, "library_ids": ["m"]}],
+                "confirm": {"EnableTrickplayImageExtraction": "disable trickplay"},
+            },
+        )
+        assert response.status_code == 200
+        assert response.get_json()["ok"] is True
+        assert captured["targets"] == [{"flag": "EnableTrickplayImageExtraction", "value": False, "library_ids": ["m"]}]
+
+    def test_non_destructive_flag_does_not_require_confirm(self, client, auth_headers, monkeypatch):
+        """Flipping EnableRealtimeMonitor off is non-destructive — the
+        guardrail should let it through with no confirm key. Proves
+        the guardrail is scoped to destructive flags only."""
+        from media_preview_generator.servers.jellyfin import JellyfinServer
+
+        self._seed_jelly()
+        captured = {}
+
+        def fake_apply(self, targets):
+            captured["targets"] = targets
+            return {"m:EnableRealtimeMonitor": "ok"}
+
+        monkeypatch.setattr(JellyfinServer, "apply_flag_values", fake_apply)
+        monkeypatch.setattr(JellyfinServer, "check_plugin_installed", lambda self: {"installed": True})
+
+        response = client.post(
+            "/api/servers/jelly-1/health-check/apply",
+            headers=auth_headers,
+            json={"set": [{"flag": "EnableRealtimeMonitor", "value": False, "library_ids": ["m"]}]},
+        )
+        assert response.status_code == 200
+
+    def test_set_schema_validates_each_row(self, client, auth_headers):
+        """Malformed 'set' rows must 400 — empty flag, missing value, bad library_ids."""
+        self._seed_jelly()
+
+        # Empty flag.
+        resp = client.post(
+            "/api/servers/jelly-1/health-check/apply",
+            headers=auth_headers,
+            json={"set": [{"flag": "", "value": True}]},
+        )
+        assert resp.status_code == 400
+
+        # Missing value key.
+        resp = client.post(
+            "/api/servers/jelly-1/health-check/apply",
+            headers=auth_headers,
+            json={"set": [{"flag": "X"}]},
+        )
+        assert resp.status_code == 400
+
+        # Bad library_ids type.
+        resp = client.post(
+            "/api/servers/jelly-1/health-check/apply",
+            headers=auth_headers,
+            json={"set": [{"flag": "X", "value": True, "library_ids": "not-a-list"}]},
+        )
+        assert resp.status_code == 400
+
+    def test_legacy_flags_schema_still_works(self, client, auth_headers, monkeypatch):
+        """Existing callers that post {'flags': [...]} MUST keep working —
+        'flags' delegates to apply_recommended_settings, not apply_flag_values."""
+        from media_preview_generator.servers.jellyfin import JellyfinServer
+
+        self._seed_jelly()
+        captured = {}
+
+        def fake_apply_recommended(self, flags=None):
+            captured["flags"] = flags
+            return {"m:EnableRealtimeMonitor": "ok"}
+
+        def fake_apply_flag_values(self, targets):
+            raise AssertionError("legacy 'flags' schema must NOT dispatch to apply_flag_values")
+
+        monkeypatch.setattr(JellyfinServer, "apply_recommended_settings", fake_apply_recommended)
+        monkeypatch.setattr(JellyfinServer, "apply_flag_values", fake_apply_flag_values)
+        monkeypatch.setattr(JellyfinServer, "check_plugin_installed", lambda self: {"installed": True})
+
+        response = client.post(
+            "/api/servers/jelly-1/health-check/apply",
+            headers=auth_headers,
+            json={"flags": ["EnableRealtimeMonitor"]},
+        )
+        assert response.status_code == 200
+        assert captured["flags"] == ["EnableRealtimeMonitor"]
+
+    def test_empty_body_still_fixes_everything(self, client, auth_headers, monkeypatch):
+        """Legacy 'fix all' — empty body delegates to apply_recommended_settings(flags=None)."""
+        from media_preview_generator.servers.jellyfin import JellyfinServer
+
+        self._seed_jelly()
+        captured = {}
+
+        def fake_apply_recommended(self, flags=None):
+            captured["flags"] = flags
+            return {}
+
+        monkeypatch.setattr(JellyfinServer, "apply_recommended_settings", fake_apply_recommended)
+        monkeypatch.setattr(JellyfinServer, "check_plugin_installed", lambda self: {"installed": True})
+
+        response = client.post(
+            "/api/servers/jelly-1/health-check/apply",
+            headers=auth_headers,
+            json={},
+        )
+        assert response.status_code == 200
+        # apply_recommended_settings got flags=None (fix every issue).
+        assert captured["flags"] is None
+
+
+class TestPreviewsReadinessRoute:
+    """Unified /previews-readiness must delegate to live.previews_readiness()
+    for every vendor and return the envelope as-is."""
+
+    @pytest.mark.parametrize(
+        ("vendor_type", "server_cls_path"),
+        [
+            ("plex", "media_preview_generator.servers.plex.PlexServer"),
+            ("emby", "media_preview_generator.servers.emby.EmbyServer"),
+            ("jellyfin", "media_preview_generator.servers.jellyfin.JellyfinServer"),
+        ],
+    )
+    def test_shape_matches_across_vendors(self, client, auth_headers, monkeypatch, vendor_type, server_cls_path):
+        """Matrix test (per .claude/rules/testing.md):
+        every vendor's readiness payload flows through the route unchanged.
+        A regression where /previews-readiness silently dropped 'sections'
+        or repackaged the envelope would get caught here."""
+        import importlib
+
+        module_name, cls_name = server_cls_path.rsplit(".", 1)
+        cls = getattr(importlib.import_module(module_name), cls_name)
+
+        auth = {"token": "t"} if vendor_type == "plex" else {"method": "api_key", "api_key": "k"}
+        _seed_media_servers(
+            [
+                {
+                    "id": f"{vendor_type}-1",
+                    "type": vendor_type,
+                    "name": vendor_type.capitalize(),
+                    "enabled": True,
+                    "url": f"http://{vendor_type}:8096",
+                    "auth": auth,
+                    "output": {"plex_config_folder": "/cfg"} if vendor_type == "plex" else {},
+                }
+            ]
+        )
+
+        expected = {
+            "vendor": vendor_type,
+            "overall_ok": True,
+            "sections": [
+                {
+                    "id": "connection",
+                    "title": "Connection",
+                    "docs_anchor": "connection",
+                    "ok": True,
+                    "severity": "critical",
+                    "checks": [],
+                }
+            ],
+        }
+        monkeypatch.setattr(cls, "previews_readiness", lambda self: expected)
+        # Silence any vendor-specific cache-warm probes.
+        if hasattr(cls, "check_plugin_installed"):
+            monkeypatch.setattr(cls, "check_plugin_installed", lambda self: {"installed": False})
+
+        response = client.get(
+            f"/api/servers/{vendor_type}-1/previews-readiness",
+            headers=auth_headers,
+        )
+        assert response.status_code == 200, response.get_json()
+        body = response.get_json()
+        # Route forwards the vendor envelope verbatim.
+        assert body == expected
+
+    def test_jellyfin_previews_readiness_self_warms_plugin_cache(self):
+        """Contract test: JellyfinServer.previews_readiness() MUST probe
+        check_plugin_installed() as its FIRST step so fresh instances
+        see the correct plugin state before downstream checks
+        (library recommendations) read the cache.
+
+        The route deliberately does NOT warm the cache itself — it
+        relies on this self-warm. If this property regresses (e.g.
+        someone moves the plugin probe later, or drops it), fresh
+        instances default to plugin-absent recommendations. Same bug
+        class as D34.
+
+        Verifies at the adapter level (not the route) so the check is
+        location-independent: any caller of previews_readiness gets
+        the warm for free."""
+        from unittest.mock import MagicMock
+
+        from media_preview_generator.servers import ServerConfig, ServerType
+        from media_preview_generator.servers.jellyfin import JellyfinServer
+
+        cfg = ServerConfig(
+            id="j",
+            type=ServerType.JELLYFIN,
+            name="J",
+            enabled=True,
+            url="http://jf:8096",
+            auth={"method": "api_key", "api_key": "k"},
+        )
+        jelly = JellyfinServer(cfg)
+
+        call_order: list[str] = []
+
+        def fake_check_plugin():
+            call_order.append("check_plugin_installed")
+            return {"installed": True, "version": "10.11.0.2", "error": ""}
+
+        def fake_request(method, url, **kwargs):
+            call_order.append(f"{method} {url}")
+            if url == "/System/Info":
+                return MagicMock(
+                    status_code=200, json=MagicMock(return_value={"Version": "10.11.8"}), raise_for_status=MagicMock()
+                )
+            if url == "/System/Configuration":
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(
+                        return_value={
+                            "TrickplayOptions": {
+                                "TileWidth": 10,
+                                "TileHeight": 10,
+                                "Interval": 10000,
+                                "WidthResolutions": [320],
+                            }
+                        }
+                    ),
+                    raise_for_status=MagicMock(),
+                )
+            if url == "/Library/VirtualFolders":
+                return MagicMock(status_code=200, json=MagicMock(return_value=[]), raise_for_status=MagicMock())
+            raise AssertionError(f"unexpected {method} {url}")
+
+        import unittest.mock
+
+        with (
+            unittest.mock.patch.object(jelly, "check_plugin_installed", side_effect=fake_check_plugin),
+            unittest.mock.patch.object(JellyfinServer, "_request", side_effect=fake_request),
+        ):
+            jelly.previews_readiness()
+
+        # The self-warm MUST be the first thing that happens — before
+        # any /System/Info, /System/Configuration, or
+        # /Library/VirtualFolders probe. Removing it or reordering it
+        # would break the cache-consistency property callers depend on.
+        assert call_order[0] == "check_plugin_installed", (
+            "previews_readiness() must call check_plugin_installed() FIRST to "
+            "warm the per-instance cache — fresh instances depend on this or "
+            "library recommendations default to plugin-absent (wrong in Mode A). "
+            f"Got call order: {call_order[:5]}"
+        )

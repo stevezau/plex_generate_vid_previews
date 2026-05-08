@@ -1603,36 +1603,53 @@
         renderReadiness(serverId, serverType, r.data);
     }
 
-    // Badge derivation — 4 states:
-    //   green "ready (instant)"   — plugin installed, everything ok
-    //   green "ready (next scan)" — no plugin but Mode B valid (scan-nudge)
+    // Badge derivation — 5 possible labels driven by the unified envelope:
+    //   red   "action needed"     — any critical section failing
     //   amber "recommendations"   — non-critical issues only
-    //   red   "action needed"     — any critical issue present
+    //   green "ready (instant)"   — Jellyfin + plugin installed
+    //   green "ready (next scan)" — Jellyfin without plugin (Mode B is valid)
+    //   green "ready"             — everything ok, no plugin concept (Plex/Emby)
     //
-    // Split from the render path so a regression-test can pin it later
-    // without running the full DOM rendering.
+    // Walks sections[] and rolls up severity. Drives the sub-label
+    // off the plugin section's current state — no vendor branching
+    // needed in the call site.
     function _deriveBadgeState(data) {
-        const vendor = (data.vendor || '').toLowerCase();
-        const isJellyfin = vendor === 'jellyfin';
-        const pluginInstalled = !!(data.plugin && data.plugin.installed);
-        const libIssues = (data.library_settings && data.library_settings.issues) || [];
-        const anyCritical = libIssues.some((i) => i.severity === 'critical')
-            || (data.trickplay_options && data.trickplay_options.ok === false);
-        if (anyCritical) {
-            return { cls: 'bg-danger', text: 'action needed' };
+        const sections = data.sections || [];
+        let anyCritical = false;
+        let anyRecommended = false;
+        let pluginInstalled = null;
+        for (const section of sections) {
+            if (section.ok === false && section.severity === 'critical') {
+                anyCritical = true;
+            }
+            if (section.ok === false && section.severity === 'recommended') {
+                anyRecommended = true;
+            }
+            if (section.id === 'plugin' && section.checks && section.checks.length) {
+                // Plugin section carries the installed bit in the first row's
+                // ``current`` value ("installed"/"not installed"/version).
+                pluginInstalled = section.checks[0].current !== 'not installed';
+            }
+            for (const check of section.checks || []) {
+                if (check.ok === false && check.severity === 'critical') anyCritical = true;
+                if (check.ok === false && check.severity === 'recommended') anyRecommended = true;
+            }
         }
-        const anyRecommended = libIssues.some((i) => i.severity !== 'critical');
-        if (anyRecommended) {
-            return { cls: 'bg-warning text-dark', text: 'recommendations' };
-        }
-        if (isJellyfin) {
-            return pluginInstalled
-                ? { cls: 'bg-success', text: 'ready (instant)' }
-                : { cls: 'bg-success', text: 'ready (next scan)' };
-        }
+        if (anyCritical) return { cls: 'bg-danger', text: 'action needed' };
+        if (anyRecommended) return { cls: 'bg-warning text-dark', text: 'recommendations' };
+        if (pluginInstalled === true) return { cls: 'bg-success', text: 'ready (instant)' };
+        if (pluginInstalled === false) return { cls: 'bg-success', text: 'ready (next scan)' };
         return { cls: 'bg-success', text: 'ready' };
     }
 
+    // Renders the unified previews-readiness card. Walks data.sections[]
+    // and for each check row emits: icon + label + ⓘ tooltip (with a
+    // docs anchor link) + enable/disable toggles (data-driven from
+    // check.actions). Toggles carrying a non-null confirm blob route
+    // through the #readinessConfirmModal.
+    //
+    // No vendor branching in this function — everything is driven by
+    // what the server emitted. Vendors control section set + copy.
     function renderReadiness(serverId, serverType, data) {
         const badge = document.getElementById('editReadinessBadge');
         const body = document.getElementById('editReadinessBody');
@@ -1640,164 +1657,42 @@
         const pluginCtl = document.getElementById('editReadinessPluginControls');
         if (!badge || !body || !fixCtl) return;
 
-        const vendor = (data.vendor || serverType || '').toLowerCase();
-        const isJellyfin = vendor === 'jellyfin';
-        const pluginInstalled = !!(data.plugin && data.plugin.installed);
-        const pluginVer = data.plugin && data.plugin.version;
-        const modeHint = data.plugin && data.plugin.mode;
-        const libIssues = (data.library_settings && data.library_settings.issues) || [];
-        const anyCriticalIssue = libIssues.some((i) => i.severity === 'critical');
-        const tpMismatch = data.trickplay_options && data.trickplay_options.ok === false;
+        const sections = data.sections || [];
 
         // Badge.
         const badgeState = _deriveBadgeState(data);
         badge.className = `badge ms-1 ${badgeState.cls}`;
         badge.textContent = badgeState.text;
 
-        // Render three sections into the body.
+        // Body.
         body.innerHTML = '';
-
-        // ── Section: STATUS ──
-        const statusSec = _makeSection('Status');
-        if (data.version && data.version.value) {
-            const versionOk = data.version.ok !== false;
-            statusSec.appendChild(_makeRow({
-                ok: versionOk,
-                label: `${vendor.charAt(0).toUpperCase() + vendor.slice(1)} ${escapeHtml(data.version.value)}`,
-                reason: data.version.reason,
-            }));
-        }
-        if (isJellyfin && data.plugin !== undefined) {
-            // Activation-mode row with inline [Install plugin] button
-            // when the plugin is absent. Mode B is a VALID state, so
-            // the row is marked OK (green check) — the only thing the
-            // user gives up without the plugin is latency (seconds
-            // instead of ms).
-            const modeText = modeHint === 'plugin_instant'
-                ? `Activation: <strong>Instant</strong> (plugin installed${pluginVer ? ` v${escapeHtml(pluginVer)}` : ''})`
-                : modeHint === 'scan_nudge'
-                    ? 'Activation: <strong>Next scan</strong> (no plugin — works fine, just slower than instant)'
-                    : modeHint === 'scan_nudge_pending'
-                        ? 'Activation: <strong>Pending scan trigger</strong> (fix library settings below)'
-                        : 'Activation mode: unknown';
-            const modeOk = modeHint === 'plugin_instant' || modeHint === 'scan_nudge';
-            const modeRow = _makeRow({ ok: modeOk, label: modeText, htmlLabel: true });
-            if (!pluginInstalled) {
-                const installBtn = document.createElement('button');
-                installBtn.type = 'button';
-                installBtn.className = 'btn btn-sm btn-primary mt-1';
-                installBtn.innerHTML = '<i class="bi bi-download me-1"></i>Install Media Preview Bridge plugin';
-                installBtn.title = 'Adds the repo, installs the plugin, restarts Jellyfin (~30s). Unlocks instant activation.';
-                installBtn.addEventListener('click', () => installPluginAction(serverId, serverType, installBtn));
-                const btnWrap = document.createElement('div');
-                btnWrap.className = 'mt-1';
-                btnWrap.appendChild(installBtn);
-                const explain = document.createElement('div');
-                explain.className = 'small text-muted mt-1';
-                explain.textContent = 'Optional — previews still work without it, they just take seconds to appear on Jellyfin\'s next scan instead of appearing instantly after this app publishes them.';
-                btnWrap.appendChild(explain);
-                modeRow.querySelector('.flex-grow-1').appendChild(btnWrap);
-            }
-            statusSec.appendChild(modeRow);
-        }
-        body.appendChild(statusSec);
-
-        // ── Section: LIBRARY SETTINGS ──
-        const libSec = _makeSection('Library settings');
-        if (!libIssues.length) {
-            libSec.appendChild(_makeRow({ ok: true, label: 'All libraries configured correctly' }));
-        } else {
-            const summary = anyCriticalIssue
-                ? `${libIssues.length} ${libIssues.length === 1 ? 'library setting needs' : 'library settings need'} fixing`
-                : `${libIssues.length} optional ${libIssues.length === 1 ? 'recommendation' : 'recommendations'}`;
-            libSec.appendChild(_makeRow({
-                ok: false,
-                severity: anyCriticalIssue ? 'critical' : 'recommended',
-                label: summary,
-            }));
-            for (const issue of libIssues) {
-                const issueRow = document.createElement('div');
-                issueRow.className = 'd-flex align-items-start gap-2 ms-4 small';
-                const sev = issue.severity === 'critical' ? 'danger' : 'warning';
-                const sevLabel = issue.severity === 'critical' ? 'critical' : 'optional';
-                const lib = issue.library_name
-                    ? `<em>${escapeHtml(issue.library_name)}</em>: `
-                    : '';
-                const cur = formatHealthValue(issue.current);
-                const rec = formatHealthValue(issue.recommended);
-                const rationale = issue.rationale
-                    ? ` <i class="bi bi-info-circle text-muted ms-1" data-bs-toggle="tooltip" title="${escapeAttr(issue.rationale)}"></i>`
-                    : '';
-                const fixBtn = document.createElement('button');
-                fixBtn.type = 'button';
-                fixBtn.className = `btn btn-sm btn-outline-${sev} mt-1`;
-                fixBtn.innerHTML = '<i class="bi bi-wrench me-1"></i>Fix this';
-                fixBtn.addEventListener('click', () => fixLibraryIssueAction(serverId, serverType, issue, fixBtn));
-                issueRow.innerHTML = `
-                    <i class="bi bi-dot text-${sev}"></i>
-                    <div class="flex-grow-1">
-                        ${lib}<strong>${escapeHtml(issue.label)}</strong>
-                        <span class="badge bg-${sev} bg-opacity-75 ms-1" style="font-size:0.65rem;">${sevLabel}</span>
-                        ${rationale}
-                        <div class="text-muted">Currently <code>${cur}</code> → will be <code>${rec}</code></div>
-                    </div>
-                `;
-                issueRow.querySelector('.flex-grow-1').appendChild(fixBtn);
-                libSec.appendChild(issueRow);
-            }
-            // Global shortcut: [Fix all library settings] — useful when
-            // every issue is similar (common: 2 libraries with the same
-            // flag wrong).
-            const fixAllLibBtn = document.createElement('button');
-            fixAllLibBtn.type = 'button';
-            fixAllLibBtn.className = `btn btn-sm btn-outline-${anyCriticalIssue ? 'danger' : 'warning'} ms-4 mt-1`;
-            fixAllLibBtn.innerHTML = `<i class="bi bi-magic me-1"></i>Fix all library settings (${libIssues.length})`;
-            fixAllLibBtn.addEventListener('click', () => fixAllLibrarySettingsAction(serverId, serverType, fixAllLibBtn));
-            libSec.appendChild(fixAllLibBtn);
-        }
-        body.appendChild(libSec);
-
-        // ── Section: SERVER TRICKPLAY OPTIONS (Jellyfin only) ──
-        if (data.trickplay_options) {
-            const tpSec = _makeSection('Server trickplay options');
-            if (data.trickplay_options.ok) {
-                tpSec.appendChild(_makeRow({
-                    ok: true,
-                    label: 'Tile geometry matches what this app writes',
-                }));
+        for (const section of sections) {
+            const sec = _makeSection(section.title || section.id, section.docs_anchor);
+            const checks = section.checks || [];
+            if (checks.length === 0) {
+                sec.appendChild(_makeRow({ ok: section.ok !== false, label: 'OK' }));
             } else {
-                const tpRow = _makeRow({
-                    ok: false,
-                    severity: 'critical',
-                    label: 'Server options don\'t match our adapter',
-                    reason: data.trickplay_options.reason || 'mismatch',
-                });
-                const syncBtn = document.createElement('button');
-                syncBtn.type = 'button';
-                syncBtn.className = 'btn btn-sm btn-outline-danger mt-1';
-                syncBtn.innerHTML = '<i class="bi bi-arrow-repeat me-1"></i>Sync server options';
-                syncBtn.title = 'Writes our tile geometry (TileWidth/TileHeight/Interval) back to Jellyfin\'s TrickplayOptions. Preserves admin-customised fields.';
-                syncBtn.addEventListener('click', () => syncTrickplayOptionsAction(serverId, serverType, syncBtn));
-                tpRow.querySelector('.flex-grow-1').appendChild(syncBtn);
-                tpSec.appendChild(tpRow);
+                for (const check of checks) {
+                    sec.appendChild(_renderCheckRow(serverId, serverType, check));
+                }
             }
-            body.appendChild(tpSec);
+            body.appendChild(sec);
         }
 
-        // Keep the one-click "Fix and enable everything" button for
-        // users who want it, but hide it when nothing's fixable.
-        const anyFixable = anyCriticalIssue
-            || libIssues.length > 0
-            || tpMismatch
-            || (isJellyfin && !pluginInstalled);
+        // "Fix and enable" one-click button — still useful for users
+        // who want everything flipped at once. Show whenever ANY check
+        // in any section is ok=false (i.e. something could be fixed).
+        const anyFixable = sections.some((s) =>
+            s.ok === false || (s.checks || []).some((c) => c.ok === false)
+        );
         if (anyFixable) {
             fixCtl.classList.remove('d-none');
         } else {
             fixCtl.classList.add('d-none');
         }
 
-        // Hide the old plugin opt-in checkbox now that the install button
-        // is inline. Kept in HTML for back-compat but never shown.
+        // Hide the legacy plugin opt-in checkbox — install happens
+        // inline via the per-check toggle now.
         if (pluginCtl) pluginCtl.classList.add('d-none');
 
         // Re-init Bootstrap tooltips on any new ⓘ icons.
@@ -1808,13 +1703,258 @@
         }
     }
 
-    function _makeSection(title) {
+    // Render one check row. Emits: status icon + label + ⓘ tooltip
+    // (anchored to docs page) + severity badge + inline [Enable] /
+    // [Disable] toggles built from check.actions. Missing actions =
+    // hide that toggle.
+    function _renderCheckRow(serverId, serverType, check) {
+        const row = document.createElement('div');
+        row.className = 'd-flex align-items-start gap-2 mb-1 small';
+
+        const ok = check.ok !== false;
+        const sev = check.severity || 'info';
+        let icon;
+        if (ok) {
+            icon = '<i class="bi bi-check-circle-fill text-success mt-1"></i>';
+        } else if (sev === 'critical') {
+            icon = '<i class="bi bi-x-circle-fill text-danger mt-1"></i>';
+        } else {
+            icon = '<i class="bi bi-exclamation-triangle-fill text-warning mt-1"></i>';
+        }
+
+        const anchor = check.docs_anchor
+            ? `/docs/guides/previews-readiness.html#${encodeURIComponent(check.docs_anchor)}`
+            : '';
+        const tooltip = check.tooltip || '';
+        const infoIcon = tooltip
+            ? `<a href="${escapeAttr(anchor)}" target="_blank" rel="noopener" class="text-muted ms-1" `
+                + `data-bs-toggle="tooltip" title="${escapeAttr(tooltip)}">`
+                + `<i class="bi bi-info-circle"></i></a>`
+            : '';
+
+        const currentStr = check.current === null || check.current === undefined
+            ? ''
+            : `<div class="text-muted">Currently <code>${formatHealthValue(check.current)}</code></div>`;
+
+        const reasonStr = check.reason
+            ? `<div class="text-muted">${escapeHtml(check.reason)}</div>`
+            : '';
+
+        const labelHtml = escapeHtml(check.label || check.id || '');
+        row.innerHTML = `${icon}<div class="flex-grow-1">${labelHtml}${infoIcon}${reasonStr}${currentStr}</div>`;
+
+        // Per-check toggle buttons.
+        const actions = check.actions || {};
+        const btnWrap = document.createElement('div');
+        btnWrap.className = 'd-flex gap-1 flex-wrap';
+        if (actions.enable) {
+            const btn = _makeActionButton('btn-outline-success', 'bi-toggle-on', 'Enable', check, 'enable');
+            btn.addEventListener('click', () => _runCheckAction(serverId, serverType, check, 'enable', btn));
+            btnWrap.appendChild(btn);
+        }
+        if (actions.disable) {
+            const btn = _makeActionButton('btn-outline-danger', 'bi-toggle-off', 'Disable', check, 'disable');
+            btn.addEventListener('click', () => _runCheckAction(serverId, serverType, check, 'disable', btn));
+            btnWrap.appendChild(btn);
+        }
+        if (btnWrap.children.length > 0) {
+            row.querySelector('.flex-grow-1').appendChild(btnWrap);
+        }
+        return row;
+    }
+
+    function _makeActionButton(colorCls, iconCls, text, check, direction) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = `btn btn-sm ${colorCls} mt-1`;
+        btn.innerHTML = `<i class="bi ${iconCls} me-1"></i>${text}`;
+        btn.title = `${text} ${check.label || check.id || ''}`;
+        btn.dataset.direction = direction;
+        return btn;
+    }
+
+    // Action dispatcher — driven by check.actions[direction].action.
+    // Opens the confirm modal first if action.confirm is non-null;
+    // otherwise fires the request immediately. Re-probes after every
+    // action completes.
+    async function _runCheckAction(serverId, serverType, check, direction, btn) {
+        const action = (check.actions || {})[direction];
+        if (!action) return;
+        const confirm = action.confirm;
+
+        const proceed = async () => {
+            const original = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Applying…';
+            try {
+                const response = await _dispatchCheckAction(serverId, action);
+                if (!response.ok) {
+                    showToast('Action failed', response.error || `HTTP ${response.status}`, 'danger');
+                    btn.disabled = false;
+                    btn.innerHTML = original;
+                    return;
+                }
+                // Re-probe — use convergence polling if the action
+                // triggered a Jellyfin restart (install/uninstall).
+                if (action.action === 'install_plugin' || action.action === 'uninstall_plugin') {
+                    const expected = action.action === 'install_plugin';
+                    await reprobeUntilConverged(
+                        serverId,
+                        serverType,
+                        (d) => _pluginInstalledFromEnvelope(d) === expected,
+                        { deadlineMs: 90_000, intervalMs: 3_000 },
+                    );
+                } else {
+                    await runReadinessProbe(serverId, serverType);
+                }
+                showToast('Applied', `${check.label || 'Setting'} updated.`, 'success');
+            } catch (e) {
+                showToast('Action error', String(e), 'danger');
+                btn.disabled = false;
+                btn.innerHTML = original;
+            }
+        };
+
+        if (confirm) {
+            _openConfirmModal(confirm, proceed);
+        } else {
+            proceed();
+        }
+    }
+
+    // Map an action envelope to the endpoint it drives. Pure data →
+    // URL translation; every check's behaviour is determined by what
+    // the server emitted in check.actions.
+    async function _dispatchCheckAction(serverId, action) {
+        const encoded = encodeURIComponent(serverId);
+        const args = action.args || {};
+        switch (action.action) {
+            case 'apply_flag': {
+                // New schema: {"set": [{flag, value, library_ids}]}.
+                const row = {
+                    flag: args.flag,
+                    value: args.value,
+                    library_ids: args.library_ids || null,
+                };
+                // Server-side destructive guardrail: if this flip is
+                // destructive (confirm.kind='type'), include the phrase
+                // in the body so the route's authoriser passes. Without
+                // this the route 400s with "requires typed confirmation".
+                const body = { set: [row] };
+                if (action.confirm && action.confirm.kind === 'type' && action.confirm.phrase) {
+                    body.confirm = { [args.flag]: action.confirm.phrase };
+                }
+                const r = await api('POST', `/api/servers/${encoded}/health-check/apply`, body);
+                return { ok: !!(r.data && r.data.ok !== false) && r.ok, error: r.data && r.data.error, status: r.status };
+            }
+            case 'install_plugin': {
+                const r = await api('POST', `/api/servers/${encoded}/install-plugin`, {});
+                return { ok: !!(r.data && r.data.ok) && r.ok, error: r.data && r.data.error, status: r.status };
+            }
+            case 'uninstall_plugin': {
+                const r = await api('POST', `/api/servers/${encoded}/uninstall-plugin`, {});
+                return { ok: !!(r.data && r.data.ok) && r.ok, error: r.data && r.data.error, status: r.status };
+            }
+            case 'sync_trickplay_options': {
+                const r = await api('POST', `/api/servers/${encoded}/trickplay-fix-all`, { install_plugin: false });
+                return { ok: !!(r.data && r.data.ok) && r.ok, error: r.data && r.data.error, status: r.status };
+            }
+            case 'set_vendor_extraction': {
+                const r = await api('POST', `/api/servers/${encoded}/vendor-extraction`, {
+                    scan_extraction: !!args.scan_extraction,
+                });
+                return { ok: !!(r.data && r.data.ok) && r.ok, error: r.data && r.data.error, status: r.status };
+            }
+            default:
+                return { ok: false, error: `Unknown action: ${action.action}`, status: 0 };
+        }
+    }
+
+    // Open the destructive-toggle confirm modal. `confirm` is the
+    // server-supplied blob: {kind: 'button'|'type', phrase, body}.
+    // For kind='type', the submit button stays disabled until the
+    // user types the exact phrase — defence in depth alongside the
+    // backend guardrails.
+    function _openConfirmModal(confirm, onConfirm) {
+        const modalEl = document.getElementById('readinessConfirmModal');
+        if (!modalEl || !window.bootstrap || !window.bootstrap.Modal) {
+            // No modal wiring — fall back to native confirm dialog so
+            // destructive actions still require explicit acknowledgement.
+            if (window.confirm(confirm.body || 'Are you sure?')) onConfirm();
+            return;
+        }
+        const titleEl = document.getElementById('readinessConfirmTitle');
+        const bodyEl = document.getElementById('readinessConfirmBody');
+        const typeWrap = document.getElementById('readinessConfirmTypeWrap');
+        const phraseEl = document.getElementById('readinessConfirmPhrase');
+        const inputEl = document.getElementById('readinessConfirmInput');
+        const submitBtn = document.getElementById('readinessConfirmSubmit');
+
+        if (titleEl) titleEl.textContent = 'Confirm action';
+        if (bodyEl) bodyEl.textContent = confirm.body || '';
+        const kind = confirm.kind || 'button';
+        const phrase = confirm.phrase || '';
+
+        // Dispose any prior submit handler by cloning the button
+        // BEFORE binding any references — otherwise the input-handler
+        // captures the node that's about to be detached and can't
+        // toggle the live button in the DOM.
+        const newSubmit = submitBtn.cloneNode(true);
+        submitBtn.parentNode.replaceChild(newSubmit, submitBtn);
+
+        if (kind === 'type' && phrase) {
+            if (typeWrap) typeWrap.classList.remove('d-none');
+            if (phraseEl) phraseEl.textContent = phrase;
+            if (inputEl) inputEl.value = '';
+            newSubmit.disabled = true;
+            if (inputEl) {
+                inputEl.oninput = () => {
+                    newSubmit.disabled = inputEl.value !== phrase;
+                };
+            }
+        } else {
+            if (typeWrap) typeWrap.classList.add('d-none');
+            newSubmit.disabled = false;
+        }
+
+        newSubmit.addEventListener('click', () => {
+            window.bootstrap.Modal.getInstance(modalEl).hide();
+            onConfirm();
+        });
+
+        const modal = window.bootstrap.Modal.getOrCreateInstance(modalEl);
+        modal.show();
+    }
+
+    // Read plugin-installed bit from a unified envelope. Used by
+    // reprobeUntilConverged for install/uninstall actions.
+    function _pluginInstalledFromEnvelope(data) {
+        const sections = (data && data.sections) || [];
+        const plugin = sections.find((s) => s.id === 'plugin');
+        if (!plugin || !plugin.checks || !plugin.checks.length) return null;
+        return plugin.checks[0].current !== 'not installed';
+    }
+
+    function _makeSection(title, docsAnchor) {
         const sec = document.createElement('div');
         sec.className = 'mb-3';
         const heading = document.createElement('div');
-        heading.className = 'text-muted small text-uppercase fw-bold mb-1';
+        heading.className = 'text-muted small text-uppercase fw-bold mb-1 d-flex align-items-center gap-1';
         heading.style.letterSpacing = '0.5px';
-        heading.textContent = title;
+        const label = document.createElement('span');
+        label.textContent = title;
+        heading.appendChild(label);
+        if (docsAnchor) {
+            const link = document.createElement('a');
+            link.href = `/docs/guides/previews-readiness.html#${encodeURIComponent(docsAnchor)}`;
+            link.target = '_blank';
+            link.rel = 'noopener';
+            link.className = 'text-muted';
+            link.setAttribute('data-bs-toggle', 'tooltip');
+            link.title = 'Open docs for this section';
+            link.innerHTML = '<i class="bi bi-info-circle" style="font-size:0.8rem;"></i>';
+            heading.appendChild(link);
+        }
         sec.appendChild(heading);
         return sec;
     }
@@ -1857,116 +1997,6 @@
         // "action needed" if install failed).
         await runReadinessProbe(serverId, serverType);
         return null;
-    }
-
-    // ── Action handlers for inline CTAs ──
-
-    async function installPluginAction(serverId, serverType, btn) {
-        const original = btn.innerHTML;
-        btn.disabled = true;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Installing — restarting Jellyfin…';
-        try {
-            const r = await api('POST', `/api/servers/${encodeURIComponent(serverId)}/install-plugin`, {});
-            const data = r.data || {};
-            if (!data.ok) {
-                showToast('Plugin install failed', data.error || `HTTP ${r.status}`, 'danger');
-                btn.disabled = false;
-                btn.innerHTML = original;
-                return;
-            }
-            // Jellyfin is restarting — poll until plugin.installed=true.
-            btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Waiting for Jellyfin restart…';
-            const converged = await reprobeUntilConverged(
-                serverId,
-                serverType,
-                (d) => d.plugin && d.plugin.installed === true,
-                { deadlineMs: 90_000, intervalMs: 3_000 },
-            );
-            if (converged) {
-                showToast('Plugin installed', 'Media Preview Bridge is active — instant activation enabled.', 'success');
-            } else {
-                showToast('Plugin install timed out', 'Jellyfin is taking longer than 90s to restart. Click the refresh icon on the readiness card to re-check.', 'warning');
-            }
-        } catch (e) {
-            showToast('Plugin install error', String(e), 'danger');
-            btn.disabled = false;
-            btn.innerHTML = original;
-        }
-    }
-
-    async function fixLibraryIssueAction(serverId, serverType, issue, btn) {
-        const original = btn.innerHTML;
-        btn.disabled = true;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Fixing…';
-        try {
-            const r = await api('POST', `/api/servers/${encodeURIComponent(serverId)}/health-check/apply`, {
-                flags: [issue.flag],
-            });
-            const data = r.data || {};
-            if (!data.ok && data.results === undefined) {
-                showToast('Fix failed', data.error || `HTTP ${r.status}`, 'danger');
-                btn.disabled = false;
-                btn.innerHTML = original;
-                return;
-            }
-            // Re-probe (flag flips are immediate; no restart delay).
-            await runReadinessProbe(serverId, serverType);
-            showToast('Setting applied', `${issue.library_name || 'Library'}: ${issue.label} is now on the recommended value.`, 'success');
-        } catch (e) {
-            showToast('Fix error', String(e), 'danger');
-            btn.disabled = false;
-            btn.innerHTML = original;
-        }
-    }
-
-    async function fixAllLibrarySettingsAction(serverId, serverType, btn) {
-        const original = btn.innerHTML;
-        btn.disabled = true;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Applying…';
-        try {
-            const r = await api('POST', `/api/servers/${encodeURIComponent(serverId)}/health-check/apply`, {});
-            const data = r.data || {};
-            if (!data.ok && data.results === undefined) {
-                showToast('Apply failed', data.error || `HTTP ${r.status}`, 'danger');
-                btn.disabled = false;
-                btn.innerHTML = original;
-                return;
-            }
-            await runReadinessProbe(serverId, serverType);
-            const ok = Object.values(data.results || {}).filter((v) => v === 'ok').length;
-            showToast('Library settings applied', `${ok} setting${ok === 1 ? '' : 's'} updated.`, 'success');
-        } catch (e) {
-            showToast('Apply error', String(e), 'danger');
-            btn.disabled = false;
-            btn.innerHTML = original;
-        }
-    }
-
-    async function syncTrickplayOptionsAction(serverId, serverType, btn) {
-        const original = btn.innerHTML;
-        btn.disabled = true;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Syncing…';
-        try {
-            // /trickplay-fix-all with install_plugin=false runs the library
-            // step (no-op if settings are correct) AND the geometry sync.
-            // If only geometry is wrong, nothing else mutates.
-            const r = await api('POST', `/api/servers/${encodeURIComponent(serverId)}/trickplay-fix-all`, {
-                install_plugin: false,
-            });
-            const data = r.data || {};
-            if (!data.ok) {
-                showToast('Sync failed', data.error || `HTTP ${r.status}`, 'danger');
-                btn.disabled = false;
-                btn.innerHTML = original;
-                return;
-            }
-            await runReadinessProbe(serverId, serverType);
-            showToast('Server options synced', 'Jellyfin trickplay geometry now matches what this app writes.', 'success');
-        } catch (e) {
-            showToast('Sync error', String(e), 'danger');
-            btn.disabled = false;
-            btn.innerHTML = original;
-        }
     }
 
     async function runReadinessFixAll(serverId, serverType) {
@@ -2034,7 +2064,7 @@
                 await reprobeUntilConverged(
                     serverId,
                     serverType,
-                    (d) => d.plugin && d.plugin.installed === true,
+                    (d) => _pluginInstalledFromEnvelope(d) === true,
                     { deadlineMs: 90_000, intervalMs: 3_000 },
                 );
             } else {

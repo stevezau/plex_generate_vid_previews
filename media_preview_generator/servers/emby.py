@@ -15,7 +15,7 @@ from typing import Any
 from loguru import logger
 
 from ._embyish import EmbyApiClient
-from .base import HealthCheckIssue, ServerType, WebhookEvent
+from .base import FlagTarget, HealthCheckIssue, ServerType, WebhookEvent
 
 
 class EmbyServer(EmbyApiClient):
@@ -323,23 +323,156 @@ class EmbyServer(EmbyApiClient):
                 )
         return issues
 
+    # Per-flag UX metadata — check_id, docs_anchor, tooltip one-liner.
+    # All Emby flag toggles are non-destructive (sidecars aren't
+    # deleted by any flag flip), so no disable_confirm payloads needed.
+    _FLAG_METADATA: dict[str, dict[str, Any]] = {
+        "ExtractTrickplayImagesDuringLibraryScan": {
+            "check_id": "scan_extraction",
+            "docs_anchor": "scan-extraction",
+            "tooltip": (
+                "Emby 4.8+ scan-time trickplay generation. With this app handling previews, this flag is wasted CPU."
+            ),
+        },
+        "ExtractChapterImagesDuringLibraryScan": {
+            "check_id": "chapter_extraction",
+            "docs_anchor": "chapter-extraction",
+            "tooltip": (
+                "Older Emby's chapter-image preview pipeline. Disabling it "
+                "avoids duplicate work when this app owns trickplay."
+            ),
+        },
+        "EnableRealtimeMonitor": {
+            "check_id": "realtime_monitor",
+            "docs_anchor": "realtime-monitor",
+            "tooltip": (
+                "Emby's filesystem watcher. Off means new Sonarr/Radarr files wait for a manual scan or webhook nudge."
+            ),
+        },
+    }
+
+    def _flag_actions(self, flag: str, current: bool) -> dict[str, Any]:
+        """Build ``actions`` blob — only expose the toggle that changes state."""
+        actions: dict[str, Any] = {}
+        if not current:
+            actions["enable"] = {
+                "action": "apply_flag",
+                "args": {"flag": flag, "value": True},
+                "confirm": None,
+            }
+        if current:
+            actions["disable"] = {
+                "action": "apply_flag",
+                "args": {"flag": flag, "value": False},
+                "confirm": None,
+            }
+        return actions
+
+    def apply_flag_values(self, targets: list[FlagTarget]) -> dict[str, str]:
+        """Set each ``(flag, value)`` pair explicitly across libraries.
+
+        Same wholesale-replace pattern as
+        :meth:`apply_recommended_settings` but accepts explicit values
+        so users can flip flags AWAY from the recommended state.
+        Older-Emby libraries that don't expose ``ExtractTrickplayImagesDuringLibraryScan``
+        skip that flag silently (it can't be mis-set if it's not present).
+        """
+        if not targets:
+            return {}
+
+        try:
+            response = self._request("GET", "/Library/VirtualFolders")
+            response.raise_for_status()
+            folders = response.json()
+        except Exception as exc:
+            return {"_global": f"failed to fetch libraries: {exc}"}
+
+        if not isinstance(folders, list):
+            return {"_global": "unexpected VirtualFolders response shape"}
+
+        per_flag: dict[str, list[FlagTarget]] = {}
+        for target in targets:
+            flag = str(target.get("flag") or "")
+            if not flag:
+                continue
+            per_flag.setdefault(flag, []).append(target)
+
+        results: dict[str, str] = {}
+        for raw in folders:
+            if not isinstance(raw, dict):
+                continue
+            lib_id = str(raw.get("ItemId") or raw.get("Id") or raw.get("Name") or "")
+            options = dict(raw.get("LibraryOptions") or {})
+
+            changed: list[str] = []
+            for flag, target_rows in per_flag.items():
+                # Older Emby: skip 4.8+ trickplay flag when the library
+                # can't hold it.
+                if flag == "ExtractTrickplayImagesDuringLibraryScan" and flag not in options:
+                    continue
+                chosen: FlagTarget | None = None
+                for row in target_rows:
+                    lib_ids = row.get("library_ids")
+                    if lib_ids is None:
+                        if chosen is None:
+                            chosen = row
+                    elif lib_id in lib_ids:
+                        chosen = row
+                        break
+                if chosen is None:
+                    continue
+                want = chosen.get("value")
+                if isinstance(want, str):
+                    want = want.lower() in ("true", "1", "yes", "on")
+                if bool(options.get(flag, False)) == bool(want):
+                    continue
+                options[flag] = bool(want)
+                changed.append(flag)
+
+            if not changed:
+                continue
+
+            try:
+                update = self._request(
+                    "POST",
+                    "/Library/VirtualFolders/LibraryOptions",
+                    json_body={"Id": lib_id, "LibraryOptions": options},
+                )
+                update.raise_for_status()
+                for flag in changed:
+                    results[f"{lib_id}:{flag}"] = "ok"
+            except Exception as exc:
+                logger.warning(
+                    "Could not update Emby library {} settings on server {!r}: {}",
+                    lib_id,
+                    self.name,
+                    exc,
+                )
+                for flag in changed:
+                    results[f"{lib_id}:{flag}"] = f"error: {exc}"
+
+        return results
+
     def previews_readiness(self) -> dict[str, Any]:
-        """One-call readiness probe for the Emby "Previews readiness" card.
+        """Unified readiness payload for the Previews readiness card.
+
+        Returns the envelope documented on
+        :meth:`MediaServer.previews_readiness`. Emby sections:
+        ``connection``, ``version``, ``library_settings``,
+        ``vendor_extraction``. Emby has no plugin architecture and no
+        server-wide trickplay geometry knob, so those sections are
+        absent.
 
         Emby's sidecar auto-discovery works purely by filename
-        convention (``<basename>-<width>-<interval>.bif``) — no
-        library flag gates the READ path, only generation. So the
-        readiness card on Emby is always "ok": every issue is
-        advisory (wasted-CPU warnings), nothing ever blocks preview
-        playback.
-
-        Returns a dict shaped the same as
-        :meth:`JellyfinServer.trickplay_readiness` so the UI can
-        render a unified card per vendor.
+        convention — every library-flag issue is advisory (wasted-CPU
+        warning) and nothing blocks preview playback, so
+        ``overall_ok`` is always True.
         """
-        # Version probe — tolerate failure, report unknown rather than error.
+        sections: list[dict[str, Any]] = []
+
         version_value = ""
-        version_ok = True
+        connection_ok = True
+        connection_reason = ""
         try:
             response = self._request("GET", "/System/Info")
             response.raise_for_status()
@@ -347,42 +480,172 @@ class EmbyServer(EmbyApiClient):
             version_value = str(data.get("Version") or "")
         except Exception as exc:
             logger.debug("Version probe failed for {!r}: {}", self.name, exc)
+            connection_ok = False
+            connection_reason = f"Could not read /System/Info: {exc}"
 
-        library_issues = self.check_settings_health()
+        sections.append(
+            {
+                "id": "connection",
+                "title": "Connection",
+                "docs_anchor": "connection",
+                "ok": connection_ok,
+                "severity": "critical",
+                "checks": [
+                    {
+                        "id": "reachable",
+                        "label": "Emby reachable",
+                        "docs_anchor": "connection",
+                        "tooltip": "We can reach Emby and it returned /System/Info.",
+                        "ok": connection_ok,
+                        "severity": "critical",
+                        "current": "reachable" if connection_ok else "unreachable",
+                        "recommended": "reachable",
+                        "actions": {},
+                        "reason": connection_reason,
+                        "meta": {},
+                    }
+                ],
+            }
+        )
+
+        sections.append(
+            {
+                "id": "version",
+                "title": "Server version",
+                "docs_anchor": "version",
+                "ok": True,
+                "severity": "info",
+                "checks": [
+                    {
+                        "id": "server_version",
+                        "label": f"Emby {version_value}" if version_value else "Emby version",
+                        "docs_anchor": "version",
+                        "tooltip": "Any recent Emby release supports sidecar BIF auto-discovery.",
+                        "ok": True,
+                        "severity": "info",
+                        "current": version_value or "unknown",
+                        "recommended": None,
+                        "actions": {},
+                        "reason": None,
+                        "meta": {},
+                    }
+                ],
+            }
+        )
+
+        # --- Library settings — per-library per-flag rows ------------
+        library_checks: list[dict[str, Any]] = []
+        library_section_ok = True
+        try:
+            response = self._request("GET", "/Library/VirtualFolders")
+            response.raise_for_status()
+            folders = response.json()
+        except Exception as exc:
+            logger.debug("Library flags probe failed for {!r}: {}", self.name, exc)
+            folders = []
+
+        if isinstance(folders, list):
+            for raw in folders:
+                if not isinstance(raw, dict):
+                    continue
+                lib_id = str(raw.get("ItemId") or raw.get("Id") or raw.get("Name") or "")
+                lib_name = str(raw.get("Name") or "")
+                options = raw.get("LibraryOptions") or {}
+                for flag, label, recommended, severity, rationale in self._RECOMMENDED_SETTINGS:
+                    if flag == "ExtractTrickplayImagesDuringLibraryScan" and flag not in options:
+                        continue
+                    current = bool(options.get(flag, False))
+                    row_ok = current == recommended
+                    if not row_ok:
+                        library_section_ok = False
+                    meta = self._FLAG_METADATA.get(flag, {})
+                    actions = self._flag_actions(flag, current)
+                    for key in ("enable", "disable"):
+                        if key in actions:
+                            actions[key]["args"] = {
+                                **actions[key]["args"],
+                                "library_ids": [lib_id] if lib_id else None,
+                            }
+                    library_checks.append(
+                        {
+                            "id": f"{meta.get('check_id', flag)}:{lib_id}",
+                            "label": f"{lib_name or 'library'} — {label}",
+                            "docs_anchor": meta.get("docs_anchor", "library-settings"),
+                            "tooltip": meta.get("tooltip", rationale),
+                            "ok": row_ok,
+                            "severity": severity,
+                            "current": current,
+                            "recommended": recommended,
+                            "actions": actions,
+                            "reason": None if row_ok else rationale,
+                            "meta": {"flag": flag, "library_id": lib_id, "library_name": lib_name},
+                        }
+                    )
+
+        sections.append(
+            {
+                "id": "library_settings",
+                "title": "Library settings",
+                "docs_anchor": "library-settings",
+                "ok": library_section_ok,
+                "severity": "recommended" if not library_section_ok else "info",
+                "checks": library_checks,
+            }
+        )
+
+        # --- Vendor-side extraction ---------------------------------
+        try:
+            extraction_status = self.get_vendor_extraction_status()
+        except Exception as exc:
+            logger.debug("Vendor-extraction status probe failed for {!r}: {}", self.name, exc)
+            extraction_status = {"extracting_count": 0, "stopped_count": 0, "skipped_count": 0, "total": 0}
+        stopped = extraction_status.get("stopped_count", 0)
+        extracting = extraction_status.get("extracting_count", 0)
+        vendor_current = f"stopped on {stopped}/{stopped + extracting}" if (stopped + extracting) else "unknown"
+        sections.append(
+            {
+                "id": "vendor_extraction",
+                "title": "Vendor-side preview generation",
+                "docs_anchor": "vendor-extraction",
+                "ok": True,
+                "severity": "info",
+                "checks": [
+                    {
+                        "id": "vendor_extraction_state",
+                        "label": "Emby scan-time extraction",
+                        "docs_anchor": "vendor-extraction",
+                        "tooltip": (
+                            "With this app handling previews, Emby's scan-time "
+                            "extraction is wasted CPU. You can safely leave it off."
+                        ),
+                        "ok": True,
+                        "severity": "info",
+                        "current": vendor_current,
+                        "recommended": "stopped",
+                        "actions": {
+                            "disable": {
+                                "action": "set_vendor_extraction",
+                                "args": {"scan_extraction": False},
+                                "confirm": None,
+                            },
+                            "enable": {
+                                "action": "set_vendor_extraction",
+                                "args": {"scan_extraction": True},
+                                "confirm": None,
+                            },
+                        },
+                        "reason": None,
+                        "meta": extraction_status,
+                    }
+                ],
+            }
+        )
 
         return {
-            "version": {
-                "ok": version_ok,
-                "value": version_value,
-                "fix_kind": None,
-                "reason": "",
-            },
-            "path_refresh": {
-                "ok": True,  # Emby has native path-based /Library/Media/Updated
-                "endpoint": "/Library/Media/Updated",
-            },
-            "library_settings": {
-                "ok": not library_issues,
-                "issues": [
-                    {
-                        "library_id": i.library_id,
-                        "library_name": i.library_name,
-                        "flag": i.flag,
-                        "label": i.label,
-                        "current": i.current,
-                        "recommended": i.recommended,
-                        # Emby issues are always 'recommended' (CPU savers).
-                        # The sidecar READ path works regardless — nothing
-                        # in this list blocks preview playback.
-                        "severity": i.severity,
-                        "rationale": i.rationale,
-                    }
-                    for i in library_issues
-                ],
-            },
-            # Emby is always "ok" — library_settings issues are all
-            # advisory, never blocking.
-            "overall_ok": True,
+            "vendor": "emby",
+            # Emby library-flag issues are advisory, never blocking.
+            "overall_ok": connection_ok,
+            "sections": sections,
         }
 
     def apply_recommended_settings(self, flags: list[str] | None = None) -> dict[str, str]:

@@ -10,9 +10,25 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, TypedDict
 
 from loguru import logger
+
+
+class FlagTarget(TypedDict, total=False):
+    """Single per-flag explicit-value target for :meth:`MediaServer.apply_flag_values`.
+
+    The new ``/health-check/apply`` schema (``{"set": [FlagTarget, ...]}``)
+    passes these verbatim to the adapter so users can flip a flag AWAY from
+    its recommended value — e.g. turn ``EnableRealtimeMonitor`` off when
+    they explicitly don't want filesystem monitoring. Legacy
+    :meth:`apply_recommended_settings` only flips TOWARD recommendations;
+    this type carries explicit booleans so either direction works.
+    """
+
+    flag: str
+    value: Any
+    library_ids: list[str] | None
 
 
 class ServerType(str, Enum):
@@ -428,6 +444,103 @@ class MediaServer(ABC):
         """
         del flags  # unused in base; override
         return {}
+
+    @classmethod
+    def destructive_confirm_phrase(cls, flag: str, value: Any) -> str | None:
+        """Return the typed-phrase required to set ``flag`` to ``value``, or None.
+
+        Vendors override to declare which (flag, value) pairs are
+        destructive and need a typed acknowledgement before
+        :meth:`apply_flag_values` accepts them. Route handlers call
+        this for every ``set`` row; when non-None, the request body
+        MUST carry a matching ``confirm: {<flag>: <phrase>}`` entry or
+        the request is rejected. This is the server-side enforcement
+        of the UI's type-to-confirm modal — UI is UX gloss; this
+        map is the security boundary.
+
+        Default: no flags require typed confirmation. Plex / Emby
+        flag flips are reversible and don't need it; only Jellyfin's
+        destructive prune flag does.
+        """
+        del flag, value
+        return None
+
+    def apply_flag_values(self, targets: list[FlagTarget]) -> dict[str, str]:
+        """Set each ``(flag, value)`` pair to its explicit value across libraries.
+
+        The per-check toggle UX needs BOTH directions — a user can turn a
+        flag off as well as on. :meth:`apply_recommended_settings` only
+        flips toward the recommended value; this method carries explicit
+        booleans in each ``FlagTarget`` so disabling is a first-class
+        operation with the same envelope.
+
+        Args:
+            targets: List of ``{flag, value, library_ids}`` rows. Omitting
+                ``library_ids`` (or passing ``None``) means "every library
+                this vendor supports for that flag"; server-wide flags
+                (e.g. Plex prefs) ignore ``library_ids`` entirely.
+
+        Returns:
+            Same ``{"<library_id>:<flag>": "ok"|"error: ..."}`` shape as
+            :meth:`apply_recommended_settings` so the UI can render a
+            per-row outcome identically. Server-wide flags key under
+            ``":<flag>"`` (empty library_id segment).
+        """
+        del targets  # unused in base; override
+        raise NotImplementedError(f"{type(self).__name__} does not support apply_flag_values")
+
+    def previews_readiness(self) -> dict[str, Any]:
+        """Unified readiness-probe payload for the "Previews readiness" card.
+
+        Returns a single envelope the UI walks to render the unified
+        readiness card:
+
+        .. code-block:: python
+
+            {
+              "vendor": "plex" | "emby" | "jellyfin",
+              "overall_ok": bool,
+              "sections": [
+                {
+                  "id": str,            # e.g. "connection", "library_settings"
+                  "title": str,
+                  "docs_anchor": str,   # fragment for the docs link
+                  "ok": bool,
+                  "severity": "critical" | "recommended" | "info",
+                  "checks": [
+                    {
+                      "id": str,           # stable; drives toggle args + anchor
+                      "label": str,
+                      "docs_anchor": str,
+                      "tooltip": str,      # one-liner for the ⓘ hover
+                      "ok": bool,
+                      "severity": str,
+                      "current": Any,
+                      "recommended": Any,  # None for read-only checks
+                      "actions": {         # absent key = hide that toggle
+                        "enable":  {"action": str, "args": dict, "confirm": ... | None},
+                        "disable": {"action": str, "args": dict, "confirm": ... | None},
+                      },
+                      "reason": str | None,
+                      "meta": dict,
+                    },
+                    ...
+                  ]
+                },
+                ...
+              ]
+            }
+
+        ``confirm`` is ``None`` for safe toggles; for destructive cases
+        it's ``{"kind": "button"|"type", "phrase": str, "body": str}``
+        so the frontend's confirm modal is driven by data, not by
+        frontend heuristics. Subclasses emit the sections relevant to
+        their vendor.
+
+        Default raises ``NotImplementedError``. Concrete subclasses
+        override.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not implement previews_readiness")
 
 
 @dataclass

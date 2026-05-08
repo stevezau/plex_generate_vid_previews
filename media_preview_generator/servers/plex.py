@@ -21,6 +21,7 @@ from loguru import logger
 
 from .base import (
     ConnectionResult,
+    FlagTarget,
     HealthCheckIssue,
     Library,
     MediaItem,
@@ -618,6 +619,393 @@ class PlexServer(MediaServer):
                 results[f":{pref_id}"] = f"error: {exc}"
 
         return results
+
+    # Per-flag UX metadata — check_id, docs_anchor, tooltip one-liner.
+    # All Plex pref toggles are non-destructive (no data is deleted by
+    # flipping these flags), so no disable_confirm payloads needed.
+    _PLEX_FLAG_METADATA: dict[str, dict[str, Any]] = {
+        "FSEventLibraryUpdatesEnabled": {
+            "check_id": "fsevent_updates",
+            "docs_anchor": "fsevent-updates",
+            "tooltip": (
+                "Plex's filesystem watcher. Off = Plex never notices new files "
+                "unless this app nudges a scan or the periodic timer fires."
+            ),
+        },
+        "FSEventLibraryPartialScanEnabled": {
+            "check_id": "fsevent_partial",
+            "docs_anchor": "fsevent-partial",
+            "tooltip": (
+                "When on, Plex only re-scans the directory that changed; off = "
+                "a full library scan every time a single file is added."
+            ),
+        },
+        "ScheduledLibraryUpdatesEnabled": {
+            "check_id": "scheduled_scan",
+            "docs_anchor": "scheduled-scan",
+            "tooltip": (
+                "Periodic scan safety net. Catches files missed by the real-time "
+                "watcher (network mounts, container restarts)."
+            ),
+        },
+    }
+
+    def _plex_flag_actions(self, flag: str, current: Any) -> dict[str, Any]:
+        """Build the ``actions`` blob for a Plex pref row."""
+        actions: dict[str, Any] = {}
+        # Plex prefs return bool values; normalise for comparison.
+        current_bool = bool(current) if not isinstance(current, str) else current.lower() == "true"
+        if not current_bool:
+            actions["enable"] = {
+                "action": "apply_flag",
+                "args": {"flag": flag, "value": True},
+                "confirm": None,
+            }
+        if current_bool:
+            actions["disable"] = {
+                "action": "apply_flag",
+                "args": {"flag": flag, "value": False},
+                "confirm": None,
+            }
+        return actions
+
+    def apply_flag_values(self, targets: list[FlagTarget]) -> dict[str, str]:
+        """Set each ``(flag, value)`` pair explicitly on Plex's server-wide prefs.
+
+        Plex's preference update endpoint accepts a single PUT
+        ``/:/prefs?<id>=<value>`` per change — there's no batch form. We
+        issue one PUT per ``FlagTarget`` (``library_ids`` is ignored for
+        Plex prefs since they're server-wide) and aggregate outcomes
+        keyed ``":<flag>"``.
+        """
+        if not targets:
+            return {}
+
+        url = (self._config.plex_url or "").rstrip("/")
+        token = self._config.plex_token or ""
+        verify_ssl = bool(getattr(self._config, "plex_verify_ssl", True))
+        timeout = int(getattr(self._config, "plex_timeout", 10) or 10)
+        if not url or not token:
+            return {"_global": "Plex URL and token required"}
+
+        if not verify_ssl:
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+        results: dict[str, str] = {}
+        for target in targets:
+            pref_id = str(target.get("flag") or "")
+            if not pref_id:
+                continue
+            want = target.get("value")
+            if isinstance(want, bool):
+                value_str = "true" if want else "false"
+            elif isinstance(want, str):
+                value_str = want.lower() if want.lower() in ("true", "false") else str(want)
+            else:
+                value_str = str(want)
+            try:
+                put = requests.put(
+                    f"{url}/:/prefs",
+                    params={pref_id: value_str},
+                    headers={"X-Plex-Token": token},
+                    timeout=timeout,
+                    verify=verify_ssl,
+                )
+                put.raise_for_status()
+                results[f":{pref_id}"] = "ok"
+            except Exception as exc:
+                logger.warning(
+                    "Could not update Plex preference {} on server {!r}: {}",
+                    pref_id,
+                    self.name,
+                    exc,
+                )
+                results[f":{pref_id}"] = f"error: {exc}"
+        return results
+
+    def previews_readiness(self) -> dict[str, Any]:
+        """Unified readiness payload for the Previews readiness card.
+
+        Returns the envelope documented on
+        :meth:`MediaServer.previews_readiness`. Plex sections:
+        ``connection``, ``version``, ``library_settings`` (FSEvent
+        prefs — server-wide), ``server_config_folder`` (writable
+        probe), ``vendor_extraction``, ``path_mappings``.
+
+        Plex has no plugin architecture and no trickplay geometry knob;
+        most "checks" are server-wide prefs or filesystem state.
+        """
+        import os as _os
+
+        sections: list[dict[str, Any]] = []
+
+        # --- Connection + version probe ------------------------------
+        connection_result = self.test_connection()
+        sections.append(
+            {
+                "id": "connection",
+                "title": "Connection",
+                "docs_anchor": "connection",
+                "ok": connection_result.ok,
+                "severity": "critical",
+                "checks": [
+                    {
+                        "id": "reachable",
+                        "label": "Plex reachable",
+                        "docs_anchor": "connection",
+                        "tooltip": "We can reach Plex and it returned a machine identifier.",
+                        "ok": connection_result.ok,
+                        "severity": "critical",
+                        "current": "reachable" if connection_result.ok else "unreachable",
+                        "recommended": "reachable",
+                        "actions": {},
+                        "reason": "" if connection_result.ok else connection_result.message,
+                        "meta": {},
+                    }
+                ],
+            }
+        )
+
+        sections.append(
+            {
+                "id": "version",
+                "title": "Server version",
+                "docs_anchor": "version",
+                "ok": True,
+                "severity": "info",
+                "checks": [
+                    {
+                        "id": "server_version",
+                        "label": f"Plex {connection_result.version}" if connection_result.version else "Plex version",
+                        "docs_anchor": "version",
+                        "tooltip": "Any recent Plex release supports BIF bundle previews.",
+                        "ok": True,
+                        "severity": "info",
+                        "current": connection_result.version or "unknown",
+                        "recommended": None,
+                        "actions": {},
+                        "reason": None,
+                        "meta": {},
+                    }
+                ],
+            }
+        )
+
+        # --- Library settings (server-wide FSEvent prefs) -----------
+        library_checks: list[dict[str, Any]] = []
+        library_section_ok = True
+        library_severity = "info"
+
+        url = (self._config.plex_url or "").rstrip("/")
+        token = self._config.plex_token or ""
+        verify_ssl = bool(getattr(self._config, "plex_verify_ssl", True))
+        timeout = int(getattr(self._config, "plex_timeout", 10) or 10)
+        current_by_id: dict[str, Any] = {}
+        if url and token:
+            if not verify_ssl:
+                urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            try:
+                response = requests.get(
+                    f"{url}/:/prefs",
+                    headers={"X-Plex-Token": token, "Accept": "application/json"},
+                    timeout=timeout,
+                    verify=verify_ssl,
+                )
+                response.raise_for_status()
+                settings = response.json().get("MediaContainer", {}).get("Setting", [])
+                current_by_id = {str(s.get("id") or ""): s.get("value") for s in settings if isinstance(s, dict)}
+            except Exception as exc:
+                logger.debug("Plex prefs probe failed for {!r}: {}", self.name, exc)
+
+        for pref_id, label, recommended, severity, rationale in self._PLEX_RECOMMENDED_PREFS:
+            current = current_by_id.get(pref_id)
+            row_ok = current == recommended
+            if not row_ok:
+                library_section_ok = False
+                if severity == "critical":
+                    library_severity = "critical"
+                elif library_severity != "critical":
+                    library_severity = "recommended"
+            meta = self._PLEX_FLAG_METADATA.get(pref_id, {})
+            library_checks.append(
+                {
+                    "id": meta.get("check_id", pref_id),
+                    "label": label,
+                    "docs_anchor": meta.get("docs_anchor", "library-settings"),
+                    "tooltip": meta.get("tooltip", rationale),
+                    "ok": row_ok,
+                    "severity": severity,
+                    "current": current,
+                    "recommended": recommended,
+                    "actions": self._plex_flag_actions(pref_id, current),
+                    "reason": None if row_ok else rationale,
+                    "meta": {"flag": pref_id},
+                }
+            )
+
+        sections.append(
+            {
+                "id": "library_settings",
+                "title": "Library settings",
+                "docs_anchor": "library-settings",
+                "ok": library_section_ok,
+                "severity": library_severity,
+                "checks": library_checks,
+            }
+        )
+
+        # --- Plex config folder (filesystem writability) ------------
+        # IMPORTANT: pure read-only probe. os.access only — never
+        # open(), tempfile, or chmod. The user's Plex config folder
+        # might contain hundreds of GB of bundles; we must NEVER risk
+        # a stray write that misbehaves.
+        plex_config_folder = str(getattr(self._config, "plex_config_folder", "") or "").strip()
+        folder_ok = True
+        folder_current = "unset"
+        folder_reason: str | None = None
+        if plex_config_folder:
+            exists = _os.path.isdir(plex_config_folder)
+            writable = exists and _os.access(plex_config_folder, _os.W_OK)
+            if not exists:
+                folder_ok = False
+                folder_current = "missing"
+                folder_reason = f"{plex_config_folder!r} does not exist on this container. Verify the mount is correct."
+            elif not writable:
+                folder_ok = False
+                folder_current = "read-only"
+                folder_reason = (
+                    f"{plex_config_folder!r} is not writable by this process. "
+                    "Check Docker mount (not :ro) and PUID/PGID permissions."
+                )
+            else:
+                folder_current = "writable"
+        else:
+            folder_ok = False
+            folder_reason = "Plex config folder is not configured."
+        sections.append(
+            {
+                "id": "plex_config_folder",
+                "title": "Plex config folder",
+                "docs_anchor": "plex-config-folder",
+                "ok": folder_ok,
+                "severity": "critical" if not folder_ok else "info",
+                "checks": [
+                    {
+                        "id": "config_folder_writable",
+                        "label": "Plex config folder is writable",
+                        "docs_anchor": "plex-config-folder",
+                        "tooltip": (
+                            "BIF bundles land under this folder. If it's missing, "
+                            "read-only, or mis-mounted, no previews can be published."
+                        ),
+                        "ok": folder_ok,
+                        "severity": "critical" if not folder_ok else "info",
+                        "current": folder_current,
+                        "recommended": "writable",
+                        "actions": {},
+                        "reason": folder_reason,
+                        "meta": {"path": plex_config_folder},
+                    }
+                ],
+            }
+        )
+
+        # --- Vendor-side extraction ---------------------------------
+        try:
+            extraction_status = self.get_vendor_extraction_status()
+        except Exception as exc:
+            logger.debug("Vendor-extraction status probe failed for {!r}: {}", self.name, exc)
+            extraction_status = {"extracting_count": 0, "stopped_count": 0, "skipped_count": 0, "total": 0}
+        stopped = extraction_status.get("stopped_count", 0)
+        extracting = extraction_status.get("extracting_count", 0)
+        vendor_current = f"stopped on {stopped}/{stopped + extracting}" if (stopped + extracting) else "unknown"
+        sections.append(
+            {
+                "id": "vendor_extraction",
+                "title": "Vendor-side preview generation",
+                "docs_anchor": "vendor-extraction",
+                "ok": True,
+                "severity": "info",
+                "checks": [
+                    {
+                        "id": "vendor_extraction_state",
+                        "label": "Plex's own BIF generation",
+                        "docs_anchor": "vendor-extraction",
+                        "tooltip": (
+                            "With this app handling BIFs, Plex's own BIF generation "
+                            "is wasted CPU. You can safely leave it off."
+                        ),
+                        "ok": True,
+                        "severity": "info",
+                        "current": vendor_current,
+                        "recommended": "stopped",
+                        "actions": {
+                            "disable": {
+                                "action": "set_vendor_extraction",
+                                "args": {"scan_extraction": False},
+                                "confirm": None,
+                            },
+                            "enable": {
+                                "action": "set_vendor_extraction",
+                                "args": {"scan_extraction": True},
+                                "confirm": None,
+                            },
+                        },
+                        "reason": None,
+                        "meta": extraction_status,
+                    }
+                ],
+            }
+        )
+
+        # --- Path mappings (read-only diagnostic row) ---------------
+        mapping_rows = list(getattr(self._config, "path_mappings", None) or [])
+        broken: list[str] = []
+        for row in mapping_rows:
+            if not isinstance(row, dict):
+                continue
+            local_prefix = str(row.get("local_prefix") or "").strip()
+            if local_prefix and not _os.path.isdir(local_prefix):
+                broken.append(local_prefix)
+        mappings_ok = not broken
+        sections.append(
+            {
+                "id": "path_mappings",
+                "title": "Path mappings",
+                "docs_anchor": "path-mappings",
+                "ok": mappings_ok,
+                "severity": "recommended" if not mappings_ok else "info",
+                "checks": [
+                    {
+                        "id": "path_mappings_valid",
+                        "label": f"{len(mapping_rows)} path mapping{'s' if len(mapping_rows) != 1 else ''} configured",
+                        "docs_anchor": "path-mappings",
+                        "tooltip": (
+                            "Path mappings translate Plex's server-view paths into "
+                            "container-local paths. Any broken local_prefix blocks publishing."
+                        ),
+                        "ok": mappings_ok,
+                        "severity": "recommended" if not mappings_ok else "info",
+                        "current": len(mapping_rows) - len(broken),
+                        "recommended": len(mapping_rows),
+                        "actions": {},
+                        "reason": (
+                            f"{len(broken)} local_prefix path(s) missing on this container: " + ", ".join(broken)
+                        )
+                        if broken
+                        else None,
+                        "meta": {"broken": broken},
+                    }
+                ],
+            }
+        )
+
+        overall_ok = connection_result.ok and library_section_ok and folder_ok and mappings_ok
+        return {
+            "vendor": "plex",
+            "overall_ok": overall_ok,
+            "sections": sections,
+        }
 
     def list_items(self, library_id: str) -> Iterator[MediaItem]:
         """Yield :class:`MediaItem` objects for a single library by id.

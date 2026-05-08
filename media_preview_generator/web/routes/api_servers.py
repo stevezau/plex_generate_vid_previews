@@ -851,23 +851,60 @@ def install_jellyfin_plugin(server_id: str):
     return jsonify(result)
 
 
+@api.route("/servers/<server_id>/uninstall-plugin", methods=["POST"])
+@setup_or_auth_required
+def uninstall_jellyfin_plugin(server_id: str):
+    """One-click uninstall Media Preview Bridge plugin on a saved Jellyfin server.
+
+    Drives the "Uninstall plugin" toggle on the Previews readiness
+    card (visible when the plugin is currently installed). Removes
+    the package via ``DELETE /Packages/{GUID}`` and restarts Jellyfin.
+    Repo URL is left in place for possible re-install.
+
+    Same response shape as ``/install-plugin``:
+    ``{steps, ok, error}`` so the UI can render the step-list progress
+    component identically.
+    """
+    raw_servers = _get_media_servers()
+    target = next((s for s in raw_servers if isinstance(s, dict) and s.get("id") == server_id), None)
+    if target is None:
+        return jsonify({"ok": False, "error": f"server {server_id!r} not found"}), 404
+
+    try:
+        cfg = server_config_from_dict(target)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"invalid server config: {exc}"}), 400
+
+    if cfg.type is not ServerType.JELLYFIN:
+        return jsonify({"ok": False, "error": "plugin uninstall is Jellyfin-only"}), 400
+
+    live = _instantiate_for_probe(cfg)
+    if live is None or not hasattr(live, "uninstall_plugin"):
+        return jsonify({"ok": False, "error": "this Jellyfin client doesn't support plugin uninstall"}), 400
+
+    try:
+        result = live.uninstall_plugin()
+    except Exception as exc:
+        logger.warning("Plugin uninstall on {!r} raised: {}", cfg.name or cfg.id, exc)
+        return jsonify({"ok": False, "error": str(exc)}), 200
+
+    return jsonify(result)
+
+
 @api.route("/servers/<server_id>/previews-readiness", methods=["GET"])
 @setup_or_auth_required
 def previews_readiness(server_id: str):
-    """One-call readiness probe for the "Previews readiness" card.
+    """Unified previews-readiness probe for all server vendors.
 
-    Aggregates per-vendor readiness into one stoplight payload. Drives
-    the unified card on the Edit-Server modal that replaces the
-    separate Plugin / Health / Vendor-extraction panels.
+    Delegates to ``live.previews_readiness()`` which every vendor
+    adapter implements (Plex / Emby / Jellyfin) returning the same
+    envelope shape — ``{vendor, overall_ok, sections: [...]}``. The
+    frontend walks sections to render the card without any vendor
+    branching.
 
-    * Jellyfin: see :meth:`JellyfinServer.trickplay_readiness` —
-      includes version, plugin, library settings, server-wide
-      TrickplayOptions geometry.
-    * Emby: see :meth:`EmbyServer.previews_readiness` — simpler;
-      overall always ok (sidecar auto-discovery works regardless of
-      library flags, but we still surface CPU-saver recommendations).
-    * Plex: returns a minimal "always ok" structure. The existing
-      scanner-thumbnail panel stays unchanged for Plex in this rollout.
+    See :meth:`MediaServer.previews_readiness` for the envelope
+    contract; see the ``previews_readiness`` docstring in each
+    vendor for the section set it emits.
     """
     raw_servers = _get_media_servers()
     target = next((s for s in raw_servers if isinstance(s, dict) and s.get("id") == server_id), None)
@@ -883,23 +920,26 @@ def previews_readiness(server_id: str):
     if live is None:
         return jsonify({"ok": False, "error": "could not instantiate server client"}), 400
 
+    # NOTE: JellyfinServer.previews_readiness() self-warms the plugin
+    # cache as its first step — no route-level warm needed here. See
+    # /health-check and /health-check/apply below for paths where the
+    # adapter doesn't self-warm (check_settings_health /
+    # apply_recommended_settings / apply_flag_values).
+
     try:
-        if cfg.type is ServerType.JELLYFIN and hasattr(live, "trickplay_readiness"):
-            return jsonify({"vendor": "jellyfin", **live.trickplay_readiness()})
-        if cfg.type is ServerType.EMBY and hasattr(live, "previews_readiness"):
-            return jsonify({"vendor": "emby", **live.previews_readiness()})
-        # Plex (and any future vendor without a readiness probe) —
-        # return a minimal shape so the UI still renders something.
+        payload = live.previews_readiness()
+    except NotImplementedError:
         return jsonify(
             {
-                "vendor": cfg.type.value,
-                "overall_ok": True,
-                "library_settings": {"ok": True, "issues": []},
+                "ok": False,
+                "error": f"vendor {cfg.type.value!r} does not support readiness probe yet",
             }
-        )
+        ), 400
     except Exception as exc:
         logger.warning("Readiness probe on {!r} raised: {}", cfg.name or cfg.id, exc)
         return jsonify({"ok": False, "error": str(exc)}), 200
+
+    return jsonify(payload)
 
 
 @api.route("/servers/<server_id>/trickplay-readiness", methods=["GET"])
@@ -1210,18 +1250,20 @@ def get_server_health_check(server_id: str):
 @api.route("/servers/<server_id>/health-check/apply", methods=["POST"])
 @setup_or_auth_required
 def apply_server_health_fixes(server_id: str):
-    """Apply recommended settings to one or more flags.
+    """Apply settings to one or more flags.
 
-    Body (optional): ``{"flags": ["EnableRealtimeMonitor", ...]}`` to
-    restrict the fix to specific flags. Absent body = "fix every issue
-    currently surfaced". Returns:
+    Accepts three body shapes (all backwards-compatible):
 
-    .. code-block:: json
+    * ``{}`` — legacy: fix every issue at its recommended value.
+    * ``{"flags": ["EnableRealtimeMonitor", ...]}`` — legacy: restrict
+      to specific flags; still uses the recommended value per flag.
+    * ``{"set": [{"flag": "...", "value": true|false,
+                  "library_ids": [...] | null}]}`` — NEW: set each
+      flag to the explicit value. Supports flipping a flag AWAY from
+      its recommended state (per-check disable toggles on the
+      Previews readiness card).
 
-        {
-          "ok": true|false,
-          "results": {"<lib_id>:<flag>": "ok"|"<error>", ...}
-        }
+    Returns ``{"ok": bool, "results": {"<lib_id>:<flag>": "ok"|...}}``.
     """
     raw_servers = _get_media_servers()
     target = next((s for s in raw_servers if isinstance(s, dict) and s.get("id") == server_id), None)
@@ -1238,17 +1280,22 @@ def apply_server_health_fixes(server_id: str):
         return jsonify({"error": "could not instantiate server client"}), 500
 
     body = request.get_json(silent=True) or {}
-    flags = body.get("flags") if isinstance(body, dict) else None
+    if not isinstance(body, dict):
+        return jsonify({"error": "request body must be a JSON object"}), 400
+
+    set_rows = body.get("set")
+    flags = body.get("flags")
+
+    if set_rows is not None and not isinstance(set_rows, list):
+        return jsonify({"error": "set must be a list of {flag, value, library_ids?} objects"}), 400
     if flags is not None and not isinstance(flags, list):
         return jsonify({"error": "flags must be a list of strings"}), 400
 
-    # Warm the plugin cache BEFORE apply_recommended_settings on a
-    # fresh JellyfinServer instance. Without this, the cache defaults
-    # to "plugin absent" → recommends scan-extraction=True (Mode B) →
-    # the apply call compares current state to the WRONG target and
-    # either no-ops (when plugin is installed and scan-ext is correctly
-    # False) or corrupts the Mode A setup. Same bug class as the one
-    # fixed in trickplay_fix_all.
+    # Warm the plugin cache BEFORE apply on Jellyfin. Fresh
+    # JellyfinServer instance → cold cache → recommendations default
+    # to "plugin absent" → wrong apply target. Same bug class across
+    # all three Jellyfin health paths (readiness, health-check,
+    # health-check/apply).
     if cfg.type is ServerType.JELLYFIN and hasattr(live, "check_plugin_installed"):
         try:
             live.check_plugin_installed()
@@ -1256,7 +1303,62 @@ def apply_server_health_fixes(server_id: str):
             logger.debug("Plugin cache warm on apply failed for {!r}: {}", cfg.name, exc)
 
     try:
-        results = live.apply_recommended_settings(flags=flags)
+        if set_rows is not None:
+            # NEW explicit-value schema. Validate each row carries a
+            # non-empty flag name and an explicit value — protects
+            # apply_flag_values from malformed input.
+            normalised: list[dict[str, Any]] = []
+            for idx, row in enumerate(set_rows):
+                if not isinstance(row, dict):
+                    return jsonify({"error": f"set[{idx}] must be an object"}), 400
+                flag = str(row.get("flag") or "").strip()
+                if not flag:
+                    return jsonify({"error": f"set[{idx}] requires a non-empty 'flag'"}), 400
+                if "value" not in row:
+                    return jsonify({"error": f"set[{idx}] requires an explicit 'value'"}), 400
+                lib_ids = row.get("library_ids")
+                if lib_ids is not None and not isinstance(lib_ids, list):
+                    return jsonify({"error": f"set[{idx}].library_ids must be a list or null"}), 400
+                normalised.append({"flag": flag, "value": row["value"], "library_ids": lib_ids})
+            # Server-side enforcement of the destructive-toggle
+            # typed-confirm guardrail. The UI modal is UX gloss — a
+            # curl/bookmarklet/XHR replay that skips it MUST still
+            # carry the phrase in the body or this route 400s. See
+            # MediaServer.destructive_confirm_phrase for the contract.
+            confirm_map = body.get("confirm") or {}
+            if not isinstance(confirm_map, dict):
+                return jsonify({"error": "confirm must be an object keyed by flag name"}), 400
+            for row in normalised:
+                required = live.destructive_confirm_phrase(row["flag"], row["value"])
+                if required is not None:
+                    supplied = str(confirm_map.get(row["flag"]) or "").strip()
+                    if supplied != required:
+                        logger.warning(
+                            "Destructive apply rejected on {!r}: flag={!r} value={!r} requires confirm={!r}, got={!r}",
+                            cfg.name or cfg.id,
+                            row["flag"],
+                            row["value"],
+                            required,
+                            supplied or "<missing>",
+                        )
+                        return jsonify(
+                            {
+                                "error": (
+                                    f"flag {row['flag']!r} → {row['value']!r} is "
+                                    "destructive and requires an explicit typed confirmation. "
+                                    f'Include {{"confirm": {{{row["flag"]!r}: <phrase>}}}} '
+                                    "in the request body. See /api/servers/<id>/previews-readiness "
+                                    "for the required phrase (in actions.disable.confirm.phrase)."
+                                )
+                            }
+                        ), 400
+            if not hasattr(live, "apply_flag_values"):
+                return jsonify({"error": f"vendor {cfg.type.value!r} doesn't support explicit flag values yet"}), 400
+            results = live.apply_flag_values(normalised)
+        else:
+            results = live.apply_recommended_settings(flags=flags)
+    except NotImplementedError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
     except Exception as exc:
         logger.warning(
             "Health-check apply failed for server {!r}: {}: {}",
@@ -1266,8 +1368,6 @@ def apply_server_health_fixes(server_id: str):
         )
         return jsonify({"ok": False, "error": str(exc)}), 502
 
-    # Empty results = nothing needed fixing → success (not ok=False).
-    # Non-empty + every entry "ok" = success. Anything else = partial.
     all_ok = all(v == "ok" for v in results.values()) if results else True
     return jsonify({"ok": all_ok, "results": results})
 

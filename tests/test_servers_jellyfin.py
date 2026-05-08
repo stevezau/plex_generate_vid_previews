@@ -891,6 +891,343 @@ class TestApplyRecommendedSettings:
         assert sent_options["ExtractTrickplayImagesDuringLibraryScan"] is True
 
 
+class TestUninstallPlugin:
+    """uninstall_plugin: DELETE /Packages/{guid} + restart Jellyfin.
+
+    404 on the DELETE is treated as success (already-gone is the
+    desired end state). Restart failure leaves ``ok=True`` because
+    the package was removed — it just won't unload visibly until
+    next manual restart.
+    """
+
+    def test_happy_path_deletes_then_restarts(self, jelly):
+        responses: dict[tuple[str, str], MagicMock] = {
+            ("DELETE", f"/Packages/{JellyfinServer.PLUGIN_GUID}"): MagicMock(
+                status_code=204, raise_for_status=MagicMock()
+            ),
+            ("POST", "/System/Restart"): MagicMock(status_code=204, raise_for_status=MagicMock()),
+        }
+
+        def fake_request(method, url, **kwargs):
+            return responses[(method, url)]
+
+        with patch.object(JellyfinServer, "_request", side_effect=fake_request) as req:
+            result = jelly.uninstall_plugin()
+
+        assert result["ok"] is True
+        steps = {s["step"] for s in result["steps"]}
+        assert steps == {"uninstall_package", "restart"}
+        # Both endpoints were hit, in order.
+        assert req.call_args_list[0].args == ("DELETE", f"/Packages/{JellyfinServer.PLUGIN_GUID}")
+        assert req.call_args_list[1].args == ("POST", "/System/Restart")
+
+    def test_treats_404_as_success(self, jelly):
+        """Uninstalling a plugin that's already gone is the desired end state —
+        no error, restart still fires, ok=True. If this regresses, users
+        will see "uninstall failed" on a redundant click."""
+        responses: dict[tuple[str, str], MagicMock] = {
+            ("DELETE", f"/Packages/{JellyfinServer.PLUGIN_GUID}"): MagicMock(
+                status_code=404, raise_for_status=MagicMock()
+            ),
+            ("POST", "/System/Restart"): MagicMock(status_code=204, raise_for_status=MagicMock()),
+        }
+
+        def fake_request(method, url, **kwargs):
+            return responses[(method, url)]
+
+        with patch.object(JellyfinServer, "_request", side_effect=fake_request):
+            result = jelly.uninstall_plugin()
+
+        assert result["ok"] is True
+        uninstall_step = next(s for s in result["steps"] if s["step"] == "uninstall_package")
+        assert uninstall_step["ok"] is True
+        assert "already" in uninstall_step["detail"].lower()
+
+    def test_restart_failure_still_reports_package_removed(self, jelly):
+        """Plugin removed but the restart call errored — treat as success
+        (ok=True) because the package IS gone, it just won't unload
+        visibly until the user restarts Jellyfin themselves. This matches
+        install_plugin's symmetrical behaviour."""
+
+        def fake_request(method, url, **kwargs):
+            if method == "DELETE":
+                return MagicMock(status_code=204, raise_for_status=MagicMock())
+            if method == "POST":
+                raise RuntimeError("restart endpoint unavailable")
+            raise AssertionError(f"unexpected {method} {url}")
+
+        with patch.object(JellyfinServer, "_request", side_effect=fake_request):
+            result = jelly.uninstall_plugin()
+
+        assert result["ok"] is True
+        assert "restart failed" in result["error"]
+
+
+class TestApplyFlagValues:
+    """apply_flag_values sets flags to explicit values across libraries.
+
+    Symmetric with apply_recommended_settings but accepts explicit
+    booleans so disable-toggles on the Previews readiness card work.
+    """
+
+    def test_flips_flag_away_from_recommended(self, jelly):
+        """Users need to DISABLE flags too — not just flip them to recommended.
+        apply_flag_values must accept value=False and forward that."""
+        current_options = {
+            "EnableTrickplayImageExtraction": True,
+            "SaveTrickplayWithMedia": True,
+            "ExtractTrickplayImagesDuringLibraryScan": False,
+            "EnableRealtimeMonitor": True,
+        }
+        get_response = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value=[{"Name": "Movies", "ItemId": "m", "LibraryOptions": current_options}]),
+            raise_for_status=MagicMock(),
+        )
+        post_response = MagicMock(status_code=204, raise_for_status=MagicMock())
+
+        def fake_request(method, url, **kwargs):
+            return get_response if method == "GET" else post_response
+
+        targets = [{"flag": "EnableRealtimeMonitor", "value": False, "library_ids": None}]
+        with patch.object(JellyfinServer, "_request", side_effect=fake_request) as req:
+            results = jelly.apply_flag_values(targets)
+
+        assert results == {"m:EnableRealtimeMonitor": "ok"}
+        post_call = next(c for c in req.call_args_list if c.args[0] == "POST")
+        sent_options = post_call.kwargs["json_body"]["LibraryOptions"]
+        # Explicitly flipped to False — this is the whole point of apply_flag_values.
+        assert sent_options["EnableRealtimeMonitor"] is False
+        # Other flags preserved (wholesale replace contract).
+        assert sent_options["EnableTrickplayImageExtraction"] is True
+
+    def test_scopes_to_specific_library(self, jelly):
+        """library_ids=[id] restricts the update to exactly that library."""
+        opts = {"EnableRealtimeMonitor": True}
+        get_response = MagicMock(
+            status_code=200,
+            json=MagicMock(
+                return_value=[
+                    {"Name": "Movies", "ItemId": "m", "LibraryOptions": opts},
+                    {"Name": "TV", "ItemId": "t", "LibraryOptions": opts},
+                ]
+            ),
+            raise_for_status=MagicMock(),
+        )
+        post_response = MagicMock(status_code=204, raise_for_status=MagicMock())
+
+        def fake_request(method, url, **kwargs):
+            return get_response if method == "GET" else post_response
+
+        targets = [{"flag": "EnableRealtimeMonitor", "value": False, "library_ids": ["m"]}]
+        with patch.object(JellyfinServer, "_request", side_effect=fake_request) as req:
+            results = jelly.apply_flag_values(targets)
+
+        # Only Movies got touched.
+        assert results == {"m:EnableRealtimeMonitor": "ok"}
+        post_calls = [c for c in req.call_args_list if c.args[0] == "POST"]
+        assert len(post_calls) == 1
+        assert post_calls[0].kwargs["json_body"]["Id"] == "m"
+
+    def test_no_ops_when_flag_already_at_requested_value(self, jelly):
+        """Same-value short-circuit — avoids spurious POSTs."""
+        opts = {"EnableRealtimeMonitor": False}
+        get_response = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value=[{"Name": "Movies", "ItemId": "m", "LibraryOptions": opts}]),
+            raise_for_status=MagicMock(),
+        )
+
+        def fake_request(method, url, **kwargs):
+            if method == "GET":
+                return get_response
+            raise AssertionError("POST should NOT be called when state matches")
+
+        with patch.object(JellyfinServer, "_request", side_effect=fake_request):
+            targets = [{"flag": "EnableRealtimeMonitor", "value": False, "library_ids": None}]
+            results = jelly.apply_flag_values(targets)
+        assert results == {}
+
+    def test_empty_targets_returns_empty(self, jelly):
+        assert jelly.apply_flag_values([]) == {}
+
+
+class TestPreviewsReadinessJellyfin:
+    """Unified previews_readiness envelope — shape, overall_ok derivation,
+    and per-check ``actions`` metadata (esp. destructive ``confirm``)."""
+
+    def _wire_healthy(self, jelly):
+        """Wire a fully healthy Jellyfin response — plugin installed,
+        all flags correct, TrickplayOptions matches adapter geometry."""
+        jelly._media_preview_bridge_installed = True
+        good_options = {
+            "EnableTrickplayImageExtraction": True,
+            "SaveTrickplayWithMedia": True,
+            "ExtractTrickplayImagesDuringLibraryScan": False,
+            "EnableRealtimeMonitor": True,
+        }
+        good_trickplay = {
+            "TileWidth": 10,
+            "TileHeight": 10,
+            "Interval": 10000,
+            "WidthResolutions": [320],
+        }
+
+        def fake_request(method, url, **kwargs):
+            if url == "/MediaPreviewBridge/Ping":
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value={"ok": True, "version": "10.11.0.2"}),
+                )
+            if url == "/System/Info":
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value={"Version": "10.11.8"}),
+                    raise_for_status=MagicMock(),
+                )
+            if url == "/System/Configuration":
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value={"TrickplayOptions": good_trickplay}),
+                    raise_for_status=MagicMock(),
+                )
+            if url == "/Library/VirtualFolders":
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value=[{"Name": "Movies", "ItemId": "m", "LibraryOptions": good_options}]),
+                    raise_for_status=MagicMock(),
+                )
+            raise AssertionError(f"unexpected {method} {url}")
+
+        return fake_request
+
+    def test_unified_envelope_shape(self, jelly):
+        with patch.object(JellyfinServer, "_request", side_effect=self._wire_healthy(jelly)):
+            payload = jelly.previews_readiness()
+
+        assert payload["vendor"] == "jellyfin"
+        assert payload["overall_ok"] is True
+        section_ids = [s["id"] for s in payload["sections"]]
+        # Jellyfin emits: connection, version, plugin, library_settings,
+        # server_options, vendor_extraction.
+        assert "connection" in section_ids
+        assert "version" in section_ids
+        assert "plugin" in section_ids
+        assert "library_settings" in section_ids
+        assert "server_options" in section_ids
+        assert "vendor_extraction" in section_ids
+
+        # Every check has the canonical keys the frontend walks.
+        for section in payload["sections"]:
+            assert "id" in section
+            assert "title" in section
+            assert "docs_anchor" in section
+            assert "ok" in section
+            assert "checks" in section
+            for check in section["checks"]:
+                assert "id" in check
+                assert "label" in check
+                assert "tooltip" in check
+                assert "ok" in check
+                assert "severity" in check
+                assert "actions" in check
+
+    def test_destructive_flags_carry_confirm_payload(self, jelly):
+        """EnableTrickplayImageExtraction=false deletes published tiles.
+        The disable action MUST carry a type-confirm blob with the exact
+        phrase 'disable trickplay'. Removing the confirm from the code
+        would let a click-through footgun into production."""
+        jelly._media_preview_bridge_installed = True
+        # Library with EnableTrickplayImageExtraction currently TRUE
+        # (so the disable toggle renders).
+        bad_options = {
+            "EnableTrickplayImageExtraction": True,
+            "SaveTrickplayWithMedia": True,
+            "ExtractTrickplayImagesDuringLibraryScan": False,
+            "EnableRealtimeMonitor": True,
+        }
+        good_trickplay = {
+            "TileWidth": 10,
+            "TileHeight": 10,
+            "Interval": 10000,
+            "WidthResolutions": [320],
+        }
+
+        def fake_request(method, url, **kwargs):
+            if url == "/MediaPreviewBridge/Ping":
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value={"ok": True, "version": "10.11.0.2"}),
+                )
+            if url == "/System/Info":
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value={"Version": "10.11.8"}),
+                    raise_for_status=MagicMock(),
+                )
+            if url == "/System/Configuration":
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value={"TrickplayOptions": good_trickplay}),
+                    raise_for_status=MagicMock(),
+                )
+            if url == "/Library/VirtualFolders":
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value=[{"Name": "Movies", "ItemId": "m", "LibraryOptions": bad_options}]),
+                    raise_for_status=MagicMock(),
+                )
+            raise AssertionError(f"unexpected {method} {url}")
+
+        with patch.object(JellyfinServer, "_request", side_effect=fake_request):
+            payload = jelly.previews_readiness()
+
+        library_section = next(s for s in payload["sections"] if s["id"] == "library_settings")
+        # Find the EnableTrickplayImageExtraction row.
+        enable_tp_row = next(
+            c for c in library_section["checks"] if c["meta"].get("flag") == "EnableTrickplayImageExtraction"
+        )
+        disable_action = enable_tp_row["actions"]["disable"]
+        confirm = disable_action["confirm"]
+        assert confirm is not None, (
+            "disabling EnableTrickplayImageExtraction is DATA-DESTRUCTIVE "
+            "(Jellyfin deletes published tiles) — MUST carry a confirm payload"
+        )
+        assert confirm["kind"] == "type"
+        assert confirm["phrase"] == "disable trickplay"
+        # Body must cite the deletion so users understand the risk.
+        assert "DELETE" in confirm["body"] or "delete" in confirm["body"].lower()
+
+    def test_plugin_uninstall_carries_confirm_payload(self, jelly):
+        """The 'Uninstall plugin' toggle needs a confirm — not type-to-confirm
+        (not data-destructive), but a button confirm so an accidental
+        click doesn't restart Jellyfin unexpectedly."""
+        with patch.object(JellyfinServer, "_request", side_effect=self._wire_healthy(jelly)):
+            payload = jelly.previews_readiness()
+
+        plugin_section = next(s for s in payload["sections"] if s["id"] == "plugin")
+        row = plugin_section["checks"][0]
+        disable = row["actions"]["disable"]
+        assert disable["action"] == "uninstall_plugin"
+        assert disable["confirm"] is not None
+        assert disable["confirm"]["kind"] == "button"
+
+    def test_legacy_trickplay_readiness_alias_still_works(self, jelly):
+        """External tools that pin /trickplay-readiness must keep working.
+        The alias must still return the legacy shape (plugin.mode,
+        trickplay_options, library_settings.issues, etc.)."""
+        with patch.object(JellyfinServer, "_request", side_effect=self._wire_healthy(jelly)):
+            payload = jelly.trickplay_readiness()
+
+        # Legacy shape: top-level version/plugin/library_settings/trickplay_options.
+        assert "version" in payload
+        assert "plugin" in payload
+        assert payload["plugin"]["mode"] == "plugin_instant"
+        assert "library_settings" in payload
+        assert "trickplay_options" in payload
+        assert payload["overall_ok"] is True
+
+
 class TestRegistryWiring:
     def test_registry_can_construct_jellyfin_server(self):
         """Audit fix — was instantiation-only smoke. Now also asserts

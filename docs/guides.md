@@ -12,6 +12,7 @@ Guides for the web interface, automation and webhooks, HDR handling, and trouble
 ## Contents
 
 - [Web Interface](#web-interface)
+- [Previews readiness (per-check toggles & explanations)](guides/previews-readiness.md)
 - [Webhook Integration](#webhook-integration)
 - [Auto-trigger from Plex (no Sonarr/Radarr)](#auto-trigger-from-plex-no-sonarrradarr)
 - [HDR & Dolby Vision](#hdr--dolby-vision)

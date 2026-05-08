@@ -29,7 +29,7 @@ import requests
 from loguru import logger
 
 from ._embyish import EmbyApiClient
-from .base import HealthCheckIssue, ServerType, WebhookEvent
+from .base import FlagTarget, HealthCheckIssue, ServerType, WebhookEvent
 
 # Floor on how often a single Jellyfin server may receive a full
 # /Library/Refresh nudge. Without it, a webhook burst (e.g. Sonarr
@@ -464,6 +464,79 @@ class JellyfinServer(EmbyApiClient):
         # server is mid-restart and returning 503.
         return result
 
+    def uninstall_plugin(self) -> dict[str, Any]:
+        """Reverse of :meth:`install_plugin`: delete the package, restart Jellyfin.
+
+        Used by the "Uninstall plugin" row on the Previews readiness
+        card. Falls the server back from Mode A (instant activation) to
+        Mode B (scan-nudge / 3 AM task adoption) — published tiles stay
+        on disk and are re-discovered via the normal trickplay import
+        path after Jellyfin restarts, so the change isn't data-destructive.
+
+        Steps, all best-effort with structured errors so the UI can
+        surface progress:
+
+        1. ``DELETE /Packages/{PLUGIN_GUID}`` — remove the installed
+           package. **404 is treated as success** — "already not
+           installed" is the desired end state.
+        2. ``POST /System/Restart`` — Jellyfin unloads plugins on
+           startup, so a restart is required for the uninstall to take
+           effect visibly.
+
+        Repo URL is deliberately LEFT in place. Users may want to
+        re-install later without re-adding the manifest, and leaving
+        the repo entry does nothing harmful on its own (Jellyfin only
+        downloads plugins when explicitly asked).
+
+        Caller should poll :meth:`check_plugin_installed` after this
+        returns to know when the restart finished (Jellyfin restarts
+        asynchronously; takes ~10–30s on a typical install).
+        """
+        result: dict[str, Any] = {"steps": [], "ok": False, "error": ""}
+
+        def _record(step: str, ok: bool, detail: str = "") -> None:
+            result["steps"].append({"step": step, "ok": ok, "detail": detail})
+
+        try:
+            response = self._request("DELETE", f"/Packages/{self.PLUGIN_GUID}")
+        except Exception as exc:
+            result["error"] = f"could not send uninstall request: {exc}"
+            _record("uninstall_package", False, str(exc))
+            return result
+
+        if response.status_code in (200, 204):
+            _record("uninstall_package", True, "removed")
+        elif response.status_code == 404:
+            # Already gone — this is the desired end state, treat as success.
+            _record("uninstall_package", True, "already not installed")
+        else:
+            detail = f"HTTP {response.status_code}"
+            try:
+                body = (response.text or "")[:200]
+                if body:
+                    detail = f"{detail}: {body}"
+            except Exception:
+                pass
+            result["error"] = f"uninstall failed: {detail}"
+            _record("uninstall_package", False, detail)
+            return result
+
+        try:
+            self._request("POST", "/System/Restart").raise_for_status()
+            _record("restart", True, "restart requested — wait ~30s then poll plugin status")
+        except Exception as exc:
+            # Restart is the only step that fails benignly — plugin is
+            # removed, just won't unload until next manual restart.
+            _record("restart", False, str(exc))
+            result["error"] = f"plugin removed but restart failed: {exc}"
+            result["ok"] = True  # uninstall succeeded even if restart didn't
+            return result
+
+        result["ok"] = True
+        # Caller polls check_plugin_installed() after the restart
+        # finishes — same pattern as install_plugin.
+        return result
+
     # ------------------------------------------------------------------
     # Per-library settings health check
     # ------------------------------------------------------------------
@@ -608,6 +681,258 @@ class JellyfinServer(EmbyApiClient):
                     )
                 )
         return issues
+
+    # ------------------------------------------------------------------
+    # UX metadata for per-check toggles + tooltips
+    # ------------------------------------------------------------------
+    #
+    # The Previews readiness card's per-row ⓘ tooltips + docs anchors
+    # + enable/disable confirm dialogs are all driven by this table.
+    # Keeping the metadata next to the flag definition means the API
+    # payload, the tooltip, the doc anchor and the destructive-confirm
+    # blob can never drift apart.
+
+    # Destructive-confirm payloads. Each is rendered into the frontend's
+    # confirm modal verbatim — phrase + body come from the server so
+    # unit tests can verify the right copy ships without scraping the JS.
+    # The (flag, False)→phrase map below is also consulted by the
+    # `/health-check/apply` route to enforce the type-to-confirm guard
+    # SERVER-SIDE — the UI modal is UX gloss, not a security boundary,
+    # so a curl/bookmarklet/XHR replay that skips the modal still has
+    # to carry the required phrase in the body or the route returns 400.
+    _CONFIRM_ENABLE_TRICKPLAY_OFF: dict[str, str] = {
+        "kind": "type",
+        "phrase": "disable trickplay",
+        "body": (
+            "Jellyfin will DELETE the published .trickplay/ directory on its "
+            "next library refresh — every preview tile this app has generated "
+            "will be gone. You will need to re-run the generator to restore "
+            "them. Type the phrase below to confirm."
+        ),
+    }
+    _CONFIRM_SAVE_TRICKPLAY_OFF: dict[str, str] = {
+        "kind": "button",
+        "phrase": "",
+        "body": (
+            "Jellyfin will stop looking for previews next to your media files. "
+            "Published tiles will stay on disk but become invisible to Jellyfin "
+            "until this is re-enabled."
+        ),
+    }
+    _CONFIRM_SCAN_EXTRACTION_OFF: dict[str, str] = {
+        "kind": "button",
+        "phrase": "",
+        "body": (
+            "Without this AND without the Media Preview Bridge plugin, Jellyfin "
+            "only adopts our previews at 3 AM (its daily scheduled task). "
+            "Newly added files will have no scrubbing preview until that runs."
+        ),
+    }
+    _CONFIRM_UNINSTALL_PLUGIN: dict[str, str] = {
+        "kind": "button",
+        "phrase": "",
+        "body": (
+            "Removes the Media Preview Bridge plugin and restarts Jellyfin. "
+            "Previews fall back to next-scan (Mode B) activation — already "
+            "published tiles stay on disk and are re-discovered on the next "
+            "library scan or Jellyfin's daily 3 AM task."
+        ),
+    }
+
+    # Per-flag metadata — check_id, docs_anchor, tooltip one-liner, and
+    # (when non-null) the disable-confirm payload.
+    _FLAG_METADATA: dict[str, dict[str, Any]] = {
+        "EnableTrickplayImageExtraction": {
+            "check_id": "enable_trickplay",
+            "docs_anchor": "enable-trickplay",
+            "tooltip": (
+                "Jellyfin's master trickplay gate. Off makes Jellyfin delete "
+                "this app's published tiles on the next refresh."
+            ),
+            "disable_confirm": _CONFIRM_ENABLE_TRICKPLAY_OFF,
+        },
+        "SaveTrickplayWithMedia": {
+            "check_id": "save_trickplay_with_media",
+            "docs_anchor": "save-trickplay-with-media",
+            "tooltip": (
+                "Tells Jellyfin to look for previews next to the media file "
+                "(where this app writes them) instead of in its own cache."
+            ),
+            "disable_confirm": _CONFIRM_SAVE_TRICKPLAY_OFF,
+        },
+        "ExtractTrickplayImagesDuringLibraryScan": {
+            "check_id": "scan_extraction",
+            "docs_anchor": "scan-extraction",
+            "tooltip": (
+                "When the plugin is absent, this must be ON so Jellyfin adopts "
+                "our tiles during library scans. With the plugin, it's optional."
+            ),
+            # Destructive without plugin (breaks Mode B); harmless with plugin.
+            # We rely on the caller's plugin_installed state to pick which
+            # confirm payload applies — done in _flag_actions below.
+            "disable_confirm_no_plugin": _CONFIRM_SCAN_EXTRACTION_OFF,
+        },
+        "EnableRealtimeMonitor": {
+            "check_id": "realtime_monitor",
+            "docs_anchor": "realtime-monitor",
+            "tooltip": (
+                "Jellyfin's filesystem watcher. Off means new Sonarr/Radarr "
+                "files wait for a manual scan or webhook nudge to be noticed."
+            ),
+        },
+    }
+
+    @classmethod
+    def destructive_confirm_phrase(cls, flag: str, value: Any) -> str | None:
+        """Return the typed-phrase required to set ``flag`` to ``value``, or None.
+
+        Used by :meth:`_flag_actions` (to emit the confirm payload for
+        the UI) AND by the ``/health-check/apply`` route (to enforce
+        the same guardrail server-side — a curl/bookmarklet that skips
+        the confirm modal still has to carry the phrase in the body or
+        the request 400s). The UI modal is UX gloss; this map is the
+        single source of truth for "which flag flips need a typed ack".
+
+        Currently only ``EnableTrickplayImageExtraction -> False`` is
+        guarded this way because it's the one data-destructive case in
+        the Jellyfin surface (other disable paths are reversible).
+        """
+        if flag == "EnableTrickplayImageExtraction" and value is False:
+            return cls._CONFIRM_ENABLE_TRICKPLAY_OFF["phrase"]
+        return None
+
+    def _flag_actions(self, flag: str, current: bool, plugin_installed: bool) -> dict[str, Any]:
+        """Build the ``actions`` blob for a flag row.
+
+        Each action is ``{"action": "apply_flag", "args": {...}, "confirm": ...}``
+        — rendered into the server payload verbatim so the UI's dispatcher
+        is data-driven (no frontend heuristics for which toggles are safe).
+
+        Destructive cases carry a ``confirm`` blob; safe ones carry ``None``.
+        Action IDs and keys mirror what ``_FLAG_METADATA`` declared; the
+        plugin-state-dependent confirm for ``ExtractTrickplayImagesDuringLibraryScan``
+        is resolved here (destructive only when plugin absent).
+        """
+        meta = self._FLAG_METADATA.get(flag, {})
+        disable_confirm = meta.get("disable_confirm")
+        if flag == "ExtractTrickplayImagesDuringLibraryScan" and not plugin_installed:
+            disable_confirm = meta.get("disable_confirm_no_plugin")
+
+        actions: dict[str, Any] = {}
+        # Only expose the action that would CHANGE state — offering an
+        # "enable" toggle on an already-enabled flag is UX noise.
+        if not current:
+            actions["enable"] = {
+                "action": "apply_flag",
+                "args": {"flag": flag, "value": True},
+                "confirm": None,
+            }
+        if current:
+            actions["disable"] = {
+                "action": "apply_flag",
+                "args": {"flag": flag, "value": False},
+                "confirm": disable_confirm,
+            }
+        return actions
+
+    def apply_flag_values(self, targets: list[FlagTarget]) -> dict[str, str]:
+        """Set each ``(flag, value)`` pair to its explicit value across libraries.
+
+        Jellyfin's ``/Library/VirtualFolders/LibraryOptions`` is a
+        wholesale replace — we POST the full existing ``LibraryOptions``
+        dict back with just the targeted flags rewritten. Fields we
+        omit revert to their defaults (same pattern as
+        :meth:`apply_recommended_settings`).
+
+        Args:
+            targets: List of ``{flag, value, library_ids}`` rows. When
+                ``library_ids`` is ``None`` or missing, the flag is
+                applied to every library; otherwise only the listed
+                ids are touched.
+
+        Returns:
+            Dict keyed ``"<library_id>:<flag>"`` so the UI can render a
+            per-row outcome.
+        """
+        if not targets:
+            return {}
+
+        try:
+            response = self._request("GET", "/Library/VirtualFolders")
+            response.raise_for_status()
+            folders = response.json()
+        except Exception as exc:
+            return {"_global": f"failed to fetch libraries: {exc}"}
+
+        if not isinstance(folders, list):
+            return {"_global": "unexpected VirtualFolders response shape"}
+
+        # Index targets by flag for quick per-library application. Each
+        # (flag, library_id) pair maps to exactly one desired value;
+        # later entries overwrite earlier ones for the same (flag,
+        # lib_id) key.
+        per_flag: dict[str, list[FlagTarget]] = {}
+        for target in targets:
+            flag = str(target.get("flag") or "")
+            if not flag:
+                continue
+            per_flag.setdefault(flag, []).append(target)
+
+        results: dict[str, str] = {}
+        for raw in folders:
+            if not isinstance(raw, dict):
+                continue
+            lib_id = str(raw.get("ItemId") or raw.get("Id") or raw.get("Name") or "")
+            options = dict(raw.get("LibraryOptions") or {})
+
+            changed: list[str] = []
+            for flag, target_rows in per_flag.items():
+                # Pick the most-specific matching row for this lib:
+                # an entry with matching library_ids wins over a
+                # wildcard (library_ids=None) entry.
+                chosen: FlagTarget | None = None
+                for row in target_rows:
+                    lib_ids = row.get("library_ids")
+                    if lib_ids is None:
+                        if chosen is None:
+                            chosen = row
+                    elif lib_id in lib_ids:
+                        chosen = row
+                        break
+                if chosen is None:
+                    continue
+                want = chosen.get("value")
+                # Normalise booleans so "true"/"True" etc. compare right.
+                if isinstance(want, str):
+                    want = want.lower() in ("true", "1", "yes", "on")
+                if bool(options.get(flag, False)) == bool(want):
+                    continue
+                options[flag] = bool(want)
+                changed.append(flag)
+
+            if not changed:
+                continue
+
+            try:
+                update = self._request(
+                    "POST",
+                    "/Library/VirtualFolders/LibraryOptions",
+                    json_body={"Id": lib_id, "LibraryOptions": options},
+                )
+                update.raise_for_status()
+                for flag in changed:
+                    results[f"{lib_id}:{flag}"] = "ok"
+            except Exception as exc:
+                logger.warning(
+                    "Could not update Jellyfin library {} settings on server {!r}: {}",
+                    lib_id,
+                    self.name,
+                    exc,
+                )
+                for flag in changed:
+                    results[f"{lib_id}:{flag}"] = f"error: {exc}"
+
+        return results
 
     def apply_recommended_settings(self, flags: list[str] | None = None) -> dict[str, str]:
         """Flip every mis-set flag to its recommended value across all libraries.
@@ -850,32 +1175,321 @@ class JellyfinServer(EmbyApiClient):
                 break
         return tuple(parts)
 
-    def trickplay_readiness(self) -> dict[str, Any]:
-        """One-call readiness probe for the Edit-Server modal.
+    def previews_readiness(self) -> dict[str, Any]:
+        """Unified readiness payload for the Previews readiness card.
 
-        Aggregates four independent checks:
+        Walks the four independent probes (connection implicit, version,
+        plugin, per-library flags, server-wide TrickplayOptions) and
+        emits them as ``sections`` the frontend renders in order. Each
+        check carries explicit enable/disable ``actions`` blobs so the
+        UI toggles are data-driven.
 
-        1. **Version** — Jellyfin 10.10+ is required for the
-           ``SaveTrickplayWithMedia`` code path. Older versions look in
-           ``<config>/data/trickplay/`` where we never write.
-        2. **Plugin** — Media Preview Bridge presence. Informational for
-           users who opt out; drives Mode A vs Mode B settings
-           recommendations.
-        3. **Per-library settings** — uses the plugin-aware
-           ``_recommended_settings``. With plugin → recommend scan-extraction
-           OFF. Without plugin → recommend scan-extraction ON (needed for
-           adoption trigger).
-        4. **Server-wide TrickplayOptions** — tile geometry MUST match our
-           adapter or clients render broken previews silently.
-
-        Returns a dict the UI card renders as a stoplight panel. Each
-        section carries ``ok`` + an optional ``fix_kind`` string the UI
-        maps to a button action.
+        Returns the envelope documented on
+        :meth:`MediaServer.previews_readiness`. Key sections Jellyfin
+        emits: ``connection`` (implicit — via version probe), ``version``,
+        ``plugin``, ``library_settings``, ``server_options``,
+        ``vendor_extraction``, ``path_mappings``.
         """
         # Probe plugin first — all downstream checks depend on its state.
         plugin = self.check_plugin_installed()
+        plugin_installed = bool(plugin.get("installed"))
 
-        # Version — requires a /System/Info call; tolerate failure.
+        sections: list[dict[str, Any]] = []
+
+        # --- Connection + version (combined into one section) ---------
+        version_value = ""
+        version_ok = True
+        version_reason = ""
+        connection_ok = True
+        connection_reason = ""
+        try:
+            response = self._request("GET", "/System/Info")
+            response.raise_for_status()
+            data = response.json() or {}
+            version_value = str(data.get("Version") or "") or ""
+            parsed = self._parse_version_tuple(version_value)
+            if parsed and parsed < (10, 10):
+                version_ok = False
+                version_reason = (
+                    f"Jellyfin {version_value} is pre-10.10 — SaveTrickplayWithMedia "
+                    "isn't supported. Upgrade to 10.10+ for native adoption."
+                )
+        except Exception as exc:
+            logger.debug("Version probe failed for {!r}: {}", self.name, exc)
+            connection_ok = False
+            connection_reason = f"Could not read /System/Info: {exc}"
+
+        sections.append(
+            {
+                "id": "connection",
+                "title": "Connection",
+                "docs_anchor": "connection",
+                "ok": connection_ok,
+                "severity": "critical",
+                "checks": [
+                    {
+                        "id": "reachable",
+                        "label": "Jellyfin reachable",
+                        "docs_anchor": "connection",
+                        "tooltip": "We can reach Jellyfin and it returned /System/Info.",
+                        "ok": connection_ok,
+                        "severity": "critical",
+                        "current": "reachable" if connection_ok else "unreachable",
+                        "recommended": "reachable",
+                        "actions": {},
+                        "reason": connection_reason,
+                        "meta": {},
+                    }
+                ],
+            }
+        )
+
+        sections.append(
+            {
+                "id": "version",
+                "title": "Server version",
+                "docs_anchor": "version",
+                "ok": version_ok,
+                "severity": "critical",
+                "checks": [
+                    {
+                        "id": "server_version",
+                        "label": f"Jellyfin {version_value}" if version_value else "Jellyfin version",
+                        "docs_anchor": "version",
+                        "tooltip": (
+                            "Jellyfin 10.10+ is required for the SaveTrickplayWithMedia code path this app depends on."
+                        ),
+                        "ok": version_ok,
+                        "severity": "critical",
+                        "current": version_value or "unknown",
+                        "recommended": "10.10+",
+                        "actions": {},
+                        "reason": version_reason,
+                        "meta": {},
+                    }
+                ],
+            }
+        )
+
+        # --- Plugin section ------------------------------------------
+        plugin_mode = "Instant (Mode A)" if plugin_installed else "Next scan (Mode B)"
+        if plugin_installed:
+            plugin_actions = {
+                "disable": {
+                    "action": "uninstall_plugin",
+                    "args": {},
+                    "confirm": self._CONFIRM_UNINSTALL_PLUGIN,
+                }
+            }
+        else:
+            plugin_actions = {
+                "enable": {
+                    "action": "install_plugin",
+                    "args": {},
+                    "confirm": None,
+                }
+            }
+        sections.append(
+            {
+                "id": "plugin",
+                "title": "Media Preview Bridge plugin",
+                "docs_anchor": "plugin",
+                "ok": True,  # plugin absence is a Mode B choice, not a failure
+                "severity": "info",
+                "checks": [
+                    {
+                        "id": "plugin_installed",
+                        "label": plugin_mode,
+                        "docs_anchor": "plugin",
+                        "tooltip": (
+                            "The plugin makes new previews appear instantly. "
+                            "Without it Jellyfin adopts them on its next scan."
+                        ),
+                        "ok": True,
+                        "severity": "info",
+                        "current": (plugin.get("version") or "installed") if plugin_installed else "not installed",
+                        "recommended": "installed (optional)",
+                        "actions": plugin_actions,
+                        "reason": plugin.get("error") or "",
+                        "meta": {"version": plugin.get("version") or ""},
+                    }
+                ],
+            }
+        )
+
+        # --- Library settings — per-library per-flag rows ------------
+        recommended = self._recommended_settings()
+        library_checks: list[dict[str, Any]] = []
+        try:
+            response = self._request("GET", "/Library/VirtualFolders")
+            response.raise_for_status()
+            folders = response.json()
+        except Exception as exc:
+            logger.debug("Library flags probe failed for {!r}: {}", self.name, exc)
+            folders = []
+
+        library_section_ok = True
+        library_severity = "info"
+        if isinstance(folders, list):
+            for raw in folders:
+                if not isinstance(raw, dict):
+                    continue
+                lib_id = str(raw.get("ItemId") or raw.get("Id") or raw.get("Name") or "")
+                lib_name = str(raw.get("Name") or "")
+                options = raw.get("LibraryOptions") or {}
+                for flag, label, want, severity, rationale in recommended:
+                    current = bool(options.get(flag, False))
+                    row_ok = current == want
+                    if not row_ok:
+                        library_section_ok = False
+                        if severity == "critical":
+                            library_severity = "critical"
+                        elif library_severity != "critical":
+                            library_severity = "recommended"
+                    meta = self._FLAG_METADATA.get(flag, {})
+                    actions = self._flag_actions(flag, current, plugin_installed)
+                    # Scope actions to THIS library rather than the wildcard
+                    # so a broken flag on one library doesn't surprise users
+                    # with a server-wide flip.
+                    for key in ("enable", "disable"):
+                        if key in actions:
+                            actions[key]["args"] = {
+                                **actions[key]["args"],
+                                "library_ids": [lib_id] if lib_id else None,
+                            }
+                    library_checks.append(
+                        {
+                            "id": f"{meta.get('check_id', flag)}:{lib_id}",
+                            "label": f"{lib_name or 'library'} — {label}",
+                            "docs_anchor": meta.get("docs_anchor", "library-settings"),
+                            "tooltip": meta.get("tooltip", rationale),
+                            "ok": row_ok,
+                            "severity": severity,
+                            "current": current,
+                            "recommended": want,
+                            "actions": actions,
+                            "reason": None if row_ok else rationale,
+                            "meta": {"flag": flag, "library_id": lib_id, "library_name": lib_name},
+                        }
+                    )
+
+        sections.append(
+            {
+                "id": "library_settings",
+                "title": "Library settings",
+                "docs_anchor": "library-settings",
+                "ok": library_section_ok,
+                "severity": library_severity,
+                "checks": library_checks,
+            }
+        )
+
+        # --- Server-wide TrickplayOptions geometry -------------------
+        options_check = self._check_trickplay_options()
+        server_ok = bool(options_check.get("ok"))
+        server_actions: dict[str, Any] = {}
+        if not server_ok:
+            server_actions["enable"] = {
+                "action": "sync_trickplay_options",
+                "args": {},
+                "confirm": None,
+            }
+        sections.append(
+            {
+                "id": "server_options",
+                "title": "Server trickplay options",
+                "docs_anchor": "trickplay-options",
+                "ok": server_ok,
+                "severity": "critical" if not server_ok else "info",
+                "checks": [
+                    {
+                        "id": "trickplay_geometry",
+                        "label": "Tile geometry matches adapter",
+                        "docs_anchor": "trickplay-options",
+                        "tooltip": (
+                            "If server TrickplayOptions (tile size / interval / width) "
+                            "don't match what this app writes, Jellyfin's scrubber pulls "
+                            "the wrong pixel range per tile."
+                        ),
+                        "ok": server_ok,
+                        "severity": "critical" if not server_ok else "info",
+                        "current": options_check.get("server"),
+                        "recommended": options_check.get("ours"),
+                        "actions": server_actions,
+                        "reason": options_check.get("reason") or None,
+                        "meta": {},
+                    }
+                ],
+            }
+        )
+
+        # --- Vendor-side extraction (advisory for Jellyfin) ----------
+        try:
+            extraction_status = self.get_vendor_extraction_status()
+        except Exception as exc:
+            logger.debug("Vendor-extraction status probe failed for {!r}: {}", self.name, exc)
+            extraction_status = {"extracting_count": 0, "stopped_count": 0, "skipped_count": 0, "total": 0}
+        stopped = extraction_status.get("stopped_count", 0)
+        extracting = extraction_status.get("extracting_count", 0)
+        vendor_current = f"stopped on {stopped}/{stopped + extracting}" if (stopped + extracting) else "unknown"
+        sections.append(
+            {
+                "id": "vendor_extraction",
+                "title": "Vendor-side preview generation",
+                "docs_anchor": "vendor-extraction",
+                # Advisory only — Jellyfin re-enabling its own extraction is
+                # wasteful (dup work) but never breaks playback.
+                "ok": True,
+                "severity": "info",
+                "checks": [
+                    {
+                        "id": "vendor_extraction_state",
+                        "label": "Jellyfin scan-time extraction",
+                        "docs_anchor": "vendor-extraction",
+                        "tooltip": (
+                            "With this app handling previews, Jellyfin's scan-time "
+                            "extraction is wasted CPU. You can safely leave it off."
+                        ),
+                        "ok": True,
+                        "severity": "info",
+                        "current": vendor_current,
+                        "recommended": "stopped",
+                        "actions": {
+                            "disable": {
+                                "action": "set_vendor_extraction",
+                                "args": {"scan_extraction": False},
+                                "confirm": None,
+                            },
+                            "enable": {
+                                "action": "set_vendor_extraction",
+                                "args": {"scan_extraction": True},
+                                "confirm": None,
+                            },
+                        },
+                        "reason": None,
+                        "meta": extraction_status,
+                    }
+                ],
+            }
+        )
+
+        overall_ok = connection_ok and version_ok and library_section_ok and server_ok
+        return {
+            "vendor": "jellyfin",
+            "overall_ok": overall_ok,
+            "sections": sections,
+        }
+
+    def trickplay_readiness(self) -> dict[str, Any]:
+        """Legacy alias for :meth:`previews_readiness` returning the legacy shape.
+
+        The legacy endpoint (``/trickplay-readiness``) and any external
+        caller that reads fields like ``plugin.mode`` or
+        ``trickplay_options`` keeps working: this method builds that
+        legacy dict from the same probes the unified path uses.
+        """
+        plugin = self.check_plugin_installed()
+
         version_value = ""
         version_ok = True
         version_fix_kind: str | None = None
@@ -898,14 +1512,11 @@ class JellyfinServer(EmbyApiClient):
             version_reason = f"Could not read /System/Info: {exc}"
 
         library_issues = self.check_settings_health()
-
         options_check = self._check_trickplay_options()
 
-        # Mode hint string — drives the "Activation mode" row on the UI card.
         if plugin.get("installed"):
             mode = "plugin_instant"
         elif any(i.flag == "ExtractTrickplayImagesDuringLibraryScan" and not i.current for i in library_issues):
-            # User hasn't fixed scan-ext yet — Mode B won't activate until they do.
             mode = "scan_nudge_pending"
         else:
             mode = "scan_nudge"

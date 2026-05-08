@@ -497,6 +497,38 @@
     </div>
 </div>
 
+<!-- Readiness-card destructive-toggle confirm modal. Driven by the
+     server-side ``confirm`` payload on check actions — `kind` decides
+     whether plain confirm or type-to-confirm is required. -->
+<div class="modal fade" id="readinessConfirmModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">
+                    <i class="bi bi-exclamation-triangle-fill text-warning me-2"></i>
+                    <span id="readinessConfirmTitle">Confirm action</span>
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p id="readinessConfirmBody" class="mb-3"></p>
+                <div id="readinessConfirmTypeWrap" class="d-none">
+                    <label class="form-label small">
+                        To confirm, type <code id="readinessConfirmPhrase"></code>:
+                    </label>
+                    <input type="text" class="form-control" id="readinessConfirmInput" autocomplete="off">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-danger" id="readinessConfirmSubmit" disabled>
+                    Confirm
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <script src="{{ url_for('static', filename='js/plex-auth.js') }}"></script>
 <script src="{{ url_for('static', filename='js/plex_webhook_panel.js') }}"></script>
 <script src="{{ url_for('static', filename='js/servers.js') }}"></script>

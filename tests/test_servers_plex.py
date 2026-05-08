@@ -990,3 +990,169 @@ class TestPlexApplyRecommended:
         assert set(results.keys()) == {":FSEventLibraryUpdatesEnabled"}
         assert put.call_count == 1
         assert list(put.call_args.kwargs["params"].keys()) == ["FSEventLibraryUpdatesEnabled"]
+
+
+class TestPlexApplyFlagValues:
+    """apply_flag_values: explicit per-flag value setting for Plex prefs."""
+
+    def test_flips_flag_to_explicit_false(self, plex_wrapper):
+        """Disable toggle on the Previews readiness card must flip to False
+        literal — not just 'toward recommended'."""
+        with patch("media_preview_generator.servers.plex.requests.put") as put:
+            put.return_value = MagicMock(raise_for_status=MagicMock())
+            targets = [{"flag": "FSEventLibraryUpdatesEnabled", "value": False, "library_ids": None}]
+            results = plex_wrapper.apply_flag_values(targets)
+
+        assert results == {":FSEventLibraryUpdatesEnabled": "ok"}
+        assert put.call_count == 1
+        # PUT carries the explicit "false" — not "true" (recommended).
+        assert put.call_args.kwargs["params"] == {"FSEventLibraryUpdatesEnabled": "false"}
+
+    def test_empty_targets_returns_empty(self, plex_wrapper):
+        assert plex_wrapper.apply_flag_values([]) == {}
+
+
+class TestPlexPreviewsReadiness:
+    """Plex's new unified previews_readiness envelope."""
+
+    def _prefs_response(self, **values):
+        settings = [{"id": k, "value": v} for k, v in values.items()]
+        return MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={"MediaContainer": {"Setting": settings}}),
+            raise_for_status=MagicMock(),
+        )
+
+    def test_unified_envelope_shape(self, plex_wrapper, tmp_path):
+        """Payload must carry vendor/overall_ok/sections[]; sections
+        include connection, version, library_settings (FSEvent prefs),
+        plex_config_folder, vendor_extraction, path_mappings."""
+        # Point config folder at a writable tmp_path so the folder probe
+        # returns ok.
+        plex_wrapper._config.plex_config_folder = str(tmp_path)
+
+        with (
+            patch.object(PlexServer, "test_connection") as tc,
+            patch("media_preview_generator.servers.plex.requests.get") as prefs_get,
+            patch.object(PlexServer, "get_vendor_extraction_status") as vs,
+        ):
+            tc.return_value = ConnectionResult(
+                ok=True, server_id="m", server_name="Plex", version="1.40.0.0", message="Connected"
+            )
+            prefs_get.return_value = self._prefs_response(
+                FSEventLibraryUpdatesEnabled=True,
+                FSEventLibraryPartialScanEnabled=True,
+                ScheduledLibraryUpdatesEnabled=True,
+            )
+            vs.return_value = {"extracting_count": 0, "stopped_count": 2, "skipped_count": 0, "total": 2}
+
+            payload = plex_wrapper.previews_readiness()
+
+        assert payload["vendor"] == "plex"
+        section_ids = [s["id"] for s in payload["sections"]]
+        # Plex-specific sections must appear.
+        for required in (
+            "connection",
+            "version",
+            "library_settings",
+            "plex_config_folder",
+            "vendor_extraction",
+            "path_mappings",
+        ):
+            assert required in section_ids, f"missing {required}"
+        # Plex-only sections that shouldn't appear (no plugin, no geometry).
+        assert "plugin" not in section_ids
+        assert "server_options" not in section_ids
+        # Healthy wiring → overall_ok.
+        assert payload["overall_ok"] is True
+
+    def test_plex_config_folder_probe_never_writes(self, plex_wrapper, tmp_path):
+        """CRITICAL: the plex_config_folder readiness probe MUST be
+        read-only. Writing into the user's Plex bundles folder is a
+        catastrophic side-effect we don't want. Regressions here
+        would quietly start creating temp files under the user's
+        Media/localhost/ tree."""
+        plex_wrapper._config.plex_config_folder = str(tmp_path)
+
+        # Patch every filesystem WRITE primitive to error — if the
+        # probe tries to use any of them, the test fails.
+        with (
+            patch("builtins.open", side_effect=AssertionError("probe must not open files")),
+            patch("os.makedirs", side_effect=AssertionError("probe must not create dirs")),
+            patch("tempfile.TemporaryFile", side_effect=AssertionError("probe must not use tempfile")),
+            patch("tempfile.NamedTemporaryFile", side_effect=AssertionError("probe must not use NamedTemporaryFile")),
+            patch("tempfile.mkstemp", side_effect=AssertionError("probe must not use mkstemp")),
+            patch("os.chmod", side_effect=AssertionError("probe must not chmod")),
+            patch.object(PlexServer, "test_connection") as tc,
+            patch("media_preview_generator.servers.plex.requests.get") as prefs_get,
+            patch.object(PlexServer, "get_vendor_extraction_status") as vs,
+        ):
+            tc.return_value = ConnectionResult(ok=True, message="Connected")
+            prefs_get.return_value = self._prefs_response()
+            vs.return_value = {"extracting_count": 0, "stopped_count": 0, "skipped_count": 0, "total": 0}
+
+            payload = plex_wrapper.previews_readiness()
+
+        # Probe should have succeeded using os.access only.
+        folder_section = next(s for s in payload["sections"] if s["id"] == "plex_config_folder")
+        assert folder_section["ok"] is True
+
+    def test_plex_config_folder_reports_missing(self, plex_wrapper):
+        """Folder that doesn't exist → ok=False + a clear reason."""
+        plex_wrapper._config.plex_config_folder = "/nonexistent/path/that/is/not/there"
+
+        with (
+            patch.object(PlexServer, "test_connection") as tc,
+            patch("media_preview_generator.servers.plex.requests.get") as prefs_get,
+            patch.object(PlexServer, "get_vendor_extraction_status") as vs,
+        ):
+            tc.return_value = ConnectionResult(ok=True, message="Connected")
+            prefs_get.return_value = self._prefs_response()
+            vs.return_value = {"extracting_count": 0, "stopped_count": 0, "skipped_count": 0, "total": 0}
+
+            payload = plex_wrapper.previews_readiness()
+
+        folder_section = next(s for s in payload["sections"] if s["id"] == "plex_config_folder")
+        assert folder_section["ok"] is False
+        row = folder_section["checks"][0]
+        assert "does not exist" in (row["reason"] or "")
+        assert payload["overall_ok"] is False
+
+    def test_misset_prefs_emit_actionable_rows(self, plex_wrapper, tmp_path):
+        """Matrix coverage: walk the ok=False branch. When an FSEvent
+        pref is mis-set, the row's `actions.enable.args` must carry
+        `{flag, value: True}` — no library_ids (server-wide).
+
+        Regression would be: row emits no actions at all, or emits a
+        library_ids key (Plex prefs are server-wide, not per-library)."""
+        plex_wrapper._config.plex_config_folder = str(tmp_path)
+
+        with (
+            patch.object(PlexServer, "test_connection") as tc,
+            patch("media_preview_generator.servers.plex.requests.get") as prefs_get,
+            patch.object(PlexServer, "get_vendor_extraction_status") as vs,
+        ):
+            tc.return_value = ConnectionResult(ok=True, message="Connected")
+            # FSEventLibraryUpdatesEnabled mis-set — should surface as a row with an enable action.
+            prefs_get.return_value = self._prefs_response(
+                FSEventLibraryUpdatesEnabled=False,
+                FSEventLibraryPartialScanEnabled=True,
+                ScheduledLibraryUpdatesEnabled=True,
+            )
+            vs.return_value = {"extracting_count": 0, "stopped_count": 0, "skipped_count": 0, "total": 0}
+
+            payload = plex_wrapper.previews_readiness()
+
+        library_section = next(s for s in payload["sections"] if s["id"] == "library_settings")
+        assert library_section["ok"] is False
+        # The section severity should reflect the critical pref.
+        assert library_section["severity"] == "critical"
+
+        bad_row = next(c for c in library_section["checks"] if c["meta"].get("flag") == "FSEventLibraryUpdatesEnabled")
+        assert bad_row["ok"] is False
+        enable = bad_row["actions"]["enable"]
+        assert enable["action"] == "apply_flag"
+        # Plex prefs are server-wide — no library_ids in args.
+        assert enable["args"] == {"flag": "FSEventLibraryUpdatesEnabled", "value": True}
+        # Critical row → overall_ok must be False.
+        assert payload["overall_ok"] is False
