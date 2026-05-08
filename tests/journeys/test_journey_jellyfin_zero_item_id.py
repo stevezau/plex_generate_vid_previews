@@ -438,7 +438,12 @@ class TestTrickplayReadiness:
     """The unified readiness payload drives the UI card."""
 
     def _stub_probes(self, jelly, *, plugin_installed=True, library_options=None, trickplay_options=None):
-        """Stub all three HTTP calls the readiness probe makes."""
+        """Stub all HTTP calls the readiness probe makes.
+
+        Jellyfin 10.11 returns ``TrickplayOptions`` as a NESTED property
+        inside ``/System/Configuration`` (there's no /System/Configuration/trickplay
+        sub-path — verified live against 10.11.8 returning 404).
+        """
         library_options = library_options or {
             "EnableTrickplayImageExtraction": True,
             "SaveTrickplayWithMedia": True,
@@ -465,8 +470,9 @@ class TestTrickplayReadiness:
                 resp.json = MagicMock(
                     return_value=[{"Name": "Movies", "ItemId": "1", "LibraryOptions": library_options}]
                 )
-            elif "/System/Configuration/trickplay" in url:
-                resp.json = MagicMock(return_value=trickplay_options)
+            elif url.rstrip("/").endswith("/System/Configuration"):
+                # TrickplayOptions nests inside the full config dict.
+                resp.json = MagicMock(return_value={"TrickplayOptions": trickplay_options})
             else:
                 resp.json = MagicMock(return_value={})
             return resp
@@ -506,9 +512,16 @@ class TestTrickplayReadiness:
                 resp.json = MagicMock(return_value={})
             elif "/Library/VirtualFolders" in url:
                 resp.json = MagicMock(return_value=[])
-            elif "/System/Configuration/trickplay" in url:
+            elif url.rstrip("/").endswith("/System/Configuration"):
                 resp.json = MagicMock(
-                    return_value={"TileWidth": 10, "TileHeight": 10, "WidthResolutions": [320], "Interval": 10000}
+                    return_value={
+                        "TrickplayOptions": {
+                            "TileWidth": 10,
+                            "TileHeight": 10,
+                            "WidthResolutions": [320],
+                            "Interval": 10000,
+                        }
+                    }
                 )
             else:
                 resp.json = MagicMock(return_value={})
@@ -587,11 +600,18 @@ class TestTrickplayFixAll:
                         }
                     ]
                 )
-            elif "/System/Configuration/trickplay" in url and method == "GET":
+            elif url.rstrip("/").endswith("/System/Configuration") and method == "GET":
                 resp.json = MagicMock(
-                    return_value={"TileWidth": 8, "TileHeight": 8, "WidthResolutions": [320], "Interval": 10000}
+                    return_value={
+                        "TrickplayOptions": {
+                            "TileWidth": 8,
+                            "TileHeight": 8,
+                            "WidthResolutions": [320],
+                            "Interval": 10000,
+                        }
+                    }
                 )
-            elif "/System/Configuration/trickplay" in url and method == "POST":
+            elif url.rstrip("/").endswith("/System/Configuration") and method == "POST":
                 pass
             return resp
 
@@ -608,23 +628,31 @@ class TestTrickplayFixAll:
         assert step_names.index("apply_recommended_settings") < step_names.index("sync_trickplay_options")
 
     def test_merges_trickplay_options_preserves_extras(self, jellyfin_server_stub):
-        """sync_trickplay_options must fetch-merge-PUT — admin fields
-        like EnableHwAcceleration, Qscale, ProcessThreads survive."""
+        """sync_trickplay_options must fetch-merge-POST — admin fields
+        like EnableHwAcceleration, Qscale, ProcessThreads survive.
+
+        Jellyfin 10.11 nests TrickplayOptions inside /System/Configuration,
+        so the fetch-merge-POST operates on the full config dict (with
+        every top-level field preserved too)."""
         posted_body: dict = {}
 
         def fake_request(method, url, **kwargs):
             resp = MagicMock(status_code=200, raise_for_status=MagicMock())
-            if "/System/Configuration/trickplay" in url:
+            if url.rstrip("/").endswith("/System/Configuration"):
                 if method == "GET":
                     resp.json = MagicMock(
                         return_value={
-                            "TileWidth": 8,  # will be rewritten to 10
-                            "TileHeight": 8,
-                            "WidthResolutions": [480],  # ours (320) will be prepended
-                            "Interval": 5000,  # will be rewritten to 10000
-                            "EnableHwAcceleration": True,  # must survive
-                            "Qscale": 5,  # must survive
-                            "ProcessThreads": 4,  # must survive
+                            "ServerName": "Jellytest",  # unrelated admin field
+                            "LogFileRetentionDays": 3,  # unrelated admin field
+                            "TrickplayOptions": {
+                                "TileWidth": 8,  # will be rewritten to 10
+                                "TileHeight": 8,
+                                "WidthResolutions": [480],  # ours (320) will be prepended
+                                "Interval": 5000,  # will be rewritten to 10000
+                                "EnableHwAcceleration": True,  # must survive
+                                "Qscale": 5,  # must survive
+                                "ProcessThreads": 4,  # must survive
+                            },
                         }
                     )
                 else:
@@ -635,17 +663,21 @@ class TestTrickplayFixAll:
             outcome = jellyfin_server_stub.sync_trickplay_options()
 
         assert outcome["ok"] is True
-        # Our three rewrites happened.
-        assert posted_body["TileWidth"] == 10
-        assert posted_body["TileHeight"] == 10
-        assert posted_body["Interval"] == 10000
+        # Top-level config fields survived the round-trip.
+        assert posted_body["ServerName"] == "Jellytest"
+        assert posted_body["LogFileRetentionDays"] == 3
+        # TrickplayOptions sub-dict was mutated correctly.
+        tp = posted_body["TrickplayOptions"]
+        assert tp["TileWidth"] == 10
+        assert tp["TileHeight"] == 10
+        assert tp["Interval"] == 10000
         # Our width was added (prepended so it's the default).
-        assert posted_body["WidthResolutions"][0] == 320
-        assert 480 in posted_body["WidthResolutions"]
+        assert tp["WidthResolutions"][0] == 320
+        assert 480 in tp["WidthResolutions"]
         # Admin customisations survived.
-        assert posted_body["EnableHwAcceleration"] is True
-        assert posted_body["Qscale"] == 5
-        assert posted_body["ProcessThreads"] == 4
+        assert tp["EnableHwAcceleration"] is True
+        assert tp["Qscale"] == 5
+        assert tp["ProcessThreads"] == 4
 
 
 # ============================================================

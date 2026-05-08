@@ -283,19 +283,34 @@ def _jellyfin_plugin_cached_installed(server: MediaServer) -> bool:
     """Return True when the Media Preview Bridge plugin is installed on ``server``.
 
     Cached on the :class:`JellyfinServer` instance under
-    ``_media_preview_bridge_installed`` so dispatch decisions don't pay
-    the HTTP round-trip per call. Populated opportunistically by
-    ``test_connection`` (see routes/api_servers.py) and refreshed by
-    ``install_plugin`` on success.
+    ``_media_preview_bridge_installed``. If the cache is cold (``None``),
+    probe once with the plugin's Ping endpoint — that's a ~200 ms HTTP
+    round-trip, orders of magnitude cheaper than the 30 s Pass-2
+    lookup we're deciding whether to skip. Without this probe, the
+    first dispatch after every container restart would miss Mode A
+    even when the plugin IS installed, because the registry builds a
+    fresh ``JellyfinServer`` per dispatch and the cache never warms.
 
-    Falsy default — when we haven't probed yet, assume "no plugin" and
-    skip the expensive lookup. Worst case the very first webhook after
-    container start skips Mode A fast-path until the cache warms via
-    a test-connection click; that's a one-time trade-off in return for
-    never paying a 30s Pass-2 on dispatch when the plugin is missing.
+    Probe failures (server unreachable, plugin not installed) populate
+    the cache with ``False`` so subsequent dispatches for the same
+    server instance short-circuit immediately.
     """
     cached = getattr(server, "_media_preview_bridge_installed", None)
-    return bool(cached)
+    if cached is not None:
+        return bool(cached)
+    # Cold cache — probe now. ``check_plugin_installed`` writes the
+    # result to the cache field as a side effect.
+    if hasattr(server, "check_plugin_installed"):
+        try:
+            probe = server.check_plugin_installed()
+            return bool(probe.get("installed"))
+        except Exception as exc:
+            logger.debug(
+                "Plugin probe failed for {!r} during dispatch: {}. Assuming no plugin for this dispatch.",
+                getattr(server, "name", "?"),
+                exc,
+            )
+    return False
 
 
 def _make_item_id_resolver(canonical_path: str, phase_callback=None):

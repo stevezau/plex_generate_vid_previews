@@ -701,32 +701,35 @@ class JellyfinServer(EmbyApiClient):
         }
 
     def fetch_trickplay_options(self) -> dict[str, Any] | None:
-        """GET /System/Configuration/trickplay — returns the parsed dict.
+        """Return the server-wide ``TrickplayOptions`` sub-dict.
+
+        Jellyfin 10.11 stores trickplay options as a NESTED property
+        inside ``/System/Configuration`` (``.TrickplayOptions``) —
+        there's no sub-path for it. Probed live against Jellyfin
+        10.11.8: ``GET /System/Configuration/trickplay`` returns 404,
+        ``GET /System/Configuration`` returns the whole config dict
+        with ``TrickplayOptions`` as one field.
 
         Returns ``None`` when the endpoint fails (older Jellyfin,
         permission denied, server unreachable). Callers should treat
-        ``None`` as "can't probe, render the row as unknown" rather than
-        as a correctness claim.
-
-        Audited against Jellyfin release-10.11.z
-        ``Jellyfin.Api/Controllers/ConfigurationController.cs`` which
-        routes ``/System/Configuration/{key}`` through
-        ``IConfigurationManager.GetConfiguration(key)``. The ``trickplay``
-        config key resolves to ``TrickplayOptions`` in
-        ``MediaBrowser.Model/Configuration/TrickplayOptions.cs``.
+        ``None`` as "can't probe, render the row as unknown" rather
+        than as a correctness claim.
         """
         try:
-            response = self._request("GET", "/System/Configuration/trickplay")
+            response = self._request("GET", "/System/Configuration")
             response.raise_for_status()
             data = response.json()
         except Exception as exc:
             logger.debug(
-                "Could not fetch /System/Configuration/trickplay on {!r}: {}",
+                "Could not fetch /System/Configuration on {!r}: {}",
                 self.name,
                 exc,
             )
             return None
-        return data if isinstance(data, dict) else None
+        if not isinstance(data, dict):
+            return None
+        tp = data.get("TrickplayOptions")
+        return tp if isinstance(tp, dict) else None
 
     def sync_trickplay_options(self) -> dict[str, Any]:
         """Ensure server-wide TrickplayOptions matches our adapter's geometry.
@@ -739,47 +742,71 @@ class JellyfinServer(EmbyApiClient):
         silently breaks client rendering: adoption "succeeds" but the
         scrubber pulls the wrong pixel range per tile.
 
-        Fetch-merge-PUT pattern (``/System/Configuration/*`` endpoints
-        are wholesale replace, like ``/Library/VirtualFolders/LibraryOptions``):
+        Fetch-merge-POST pattern. ``/System/Configuration`` is a
+        wholesale replace (verified — Jellyfin stores the full config
+        dict and replaces it atomically). We:
 
-        1. GET current options.
-        2. Rewrite ONLY ``TileWidth``, ``TileHeight``, ``Interval``.
+        1. GET the complete ``/System/Configuration`` dict.
+        2. Rewrite ONLY ``TrickplayOptions.TileWidth``, ``TileHeight``, ``Interval``.
         3. Extend ``WidthResolutions`` to include our adapter's width
            (never replace — a user wanting additional widths keeps them).
         4. POST the complete mutated dict back.
 
         Returns ``{"ok": bool, "error": str, "before": {...}, "after": {...}}``
-        so the UI can show what changed.
+        so the UI can show what changed. ``before`` / ``after`` are the
+        ``TrickplayOptions`` sub-dicts, not the whole config.
         """
         geometry = self._adapter_geometry()
-        before = self.fetch_trickplay_options()
-        if before is None:
+        try:
+            response = self._request("GET", "/System/Configuration")
+            response.raise_for_status()
+            full_config = response.json()
+        except Exception as exc:
             return {
                 "ok": False,
-                "error": "Could not read /System/Configuration/trickplay",
+                "error": f"Could not read /System/Configuration: {exc}",
+                "before": None,
+                "after": None,
+            }
+        if not isinstance(full_config, dict):
+            return {
+                "ok": False,
+                "error": "Unexpected /System/Configuration response shape",
                 "before": None,
                 "after": None,
             }
 
-        after = dict(before)
-        after["TileWidth"] = geometry["tile_w"]
-        after["TileHeight"] = geometry["tile_h"]
-        after["Interval"] = geometry["interval_ms"]
+        before_tp = full_config.get("TrickplayOptions")
+        if not isinstance(before_tp, dict):
+            return {
+                "ok": False,
+                "error": "Server config has no TrickplayOptions block",
+                "before": None,
+                "after": None,
+            }
 
-        existing_widths = list(after.get("WidthResolutions") or [])
+        after_tp = dict(before_tp)
+        after_tp["TileWidth"] = geometry["tile_w"]
+        after_tp["TileHeight"] = geometry["tile_h"]
+        after_tp["Interval"] = geometry["interval_ms"]
+
+        existing_widths = list(after_tp.get("WidthResolutions") or [])
         if geometry["width"] not in existing_widths:
             existing_widths.append(geometry["width"])
             # Jellyfin renders resolutions in the order stored — keep
             # ours first so the default player width matches our tiles.
             existing_widths.insert(0, existing_widths.pop())
-        after["WidthResolutions"] = existing_widths
+        after_tp["WidthResolutions"] = existing_widths
+
+        mutated_config = dict(full_config)
+        mutated_config["TrickplayOptions"] = after_tp
 
         try:
-            response = self._request("POST", "/System/Configuration/trickplay", json_body=after)
-            response.raise_for_status()
+            update = self._request("POST", "/System/Configuration", json_body=mutated_config)
+            update.raise_for_status()
         except Exception as exc:
-            return {"ok": False, "error": str(exc), "before": before, "after": after}
-        return {"ok": True, "error": "", "before": before, "after": after}
+            return {"ok": False, "error": str(exc), "before": before_tp, "after": after_tp}
+        return {"ok": True, "error": "", "before": before_tp, "after": after_tp}
 
     def _check_trickplay_options(self) -> dict[str, Any]:
         """Compare server-wide ``TrickplayOptions`` with our adapter geometry."""
@@ -791,7 +818,7 @@ class JellyfinServer(EmbyApiClient):
                 "server": None,
                 "ours": ours,
                 "fix_kind": "set_trickplay_options",
-                "reason": "Could not read /System/Configuration/trickplay",
+                "reason": "Could not read server TrickplayOptions",
             }
         mismatches: list[str] = []
         if int(server.get("TileWidth") or 0) != ours["tile_w"]:
