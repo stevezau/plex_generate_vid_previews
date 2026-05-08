@@ -851,6 +851,134 @@ def install_jellyfin_plugin(server_id: str):
     return jsonify(result)
 
 
+@api.route("/servers/<server_id>/previews-readiness", methods=["GET"])
+@setup_or_auth_required
+def previews_readiness(server_id: str):
+    """One-call readiness probe for the "Previews readiness" card.
+
+    Aggregates per-vendor readiness into one stoplight payload. Drives
+    the unified card on the Edit-Server modal that replaces the
+    separate Plugin / Health / Vendor-extraction panels.
+
+    * Jellyfin: see :meth:`JellyfinServer.trickplay_readiness` —
+      includes version, plugin, library settings, server-wide
+      TrickplayOptions geometry.
+    * Emby: see :meth:`EmbyServer.previews_readiness` — simpler;
+      overall always ok (sidecar auto-discovery works regardless of
+      library flags, but we still surface CPU-saver recommendations).
+    * Plex: returns a minimal "always ok" structure. The existing
+      scanner-thumbnail panel stays unchanged for Plex in this rollout.
+    """
+    raw_servers = _get_media_servers()
+    target = next((s for s in raw_servers if isinstance(s, dict) and s.get("id") == server_id), None)
+    if target is None:
+        return jsonify({"ok": False, "error": f"server {server_id!r} not found"}), 404
+
+    try:
+        cfg = server_config_from_dict(target)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"invalid server config: {exc}"}), 400
+
+    live = _instantiate_for_probe(cfg)
+    if live is None:
+        return jsonify({"ok": False, "error": "could not instantiate server client"}), 400
+
+    try:
+        if cfg.type is ServerType.JELLYFIN and hasattr(live, "trickplay_readiness"):
+            return jsonify({"vendor": "jellyfin", **live.trickplay_readiness()})
+        if cfg.type is ServerType.EMBY and hasattr(live, "previews_readiness"):
+            return jsonify({"vendor": "emby", **live.previews_readiness()})
+        # Plex (and any future vendor without a readiness probe) —
+        # return a minimal shape so the UI still renders something.
+        return jsonify(
+            {
+                "vendor": cfg.type.value,
+                "overall_ok": True,
+                "library_settings": {"ok": True, "issues": []},
+            }
+        )
+    except Exception as exc:
+        logger.warning("Readiness probe on {!r} raised: {}", cfg.name or cfg.id, exc)
+        return jsonify({"ok": False, "error": str(exc)}), 200
+
+
+@api.route("/servers/<server_id>/trickplay-readiness", methods=["GET"])
+@setup_or_auth_required
+def jellyfin_trickplay_readiness(server_id: str):
+    """Legacy alias for the unified readiness endpoint (Jellyfin only).
+
+    Kept for API compatibility with any external tool that already
+    points at this URL. New UI callers should use
+    ``/api/servers/<id>/previews-readiness`` which works for every
+    vendor.
+    """
+    raw_servers = _get_media_servers()
+    target = next((s for s in raw_servers if isinstance(s, dict) and s.get("id") == server_id), None)
+    if target is None:
+        return jsonify({"ok": False, "error": f"server {server_id!r} not found"}), 404
+
+    try:
+        cfg = server_config_from_dict(target)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"invalid server config: {exc}"}), 400
+
+    if cfg.type is not ServerType.JELLYFIN:
+        return jsonify({"ok": False, "error": "trickplay readiness is Jellyfin-only"}), 400
+
+    live = _instantiate_for_probe(cfg)
+    if live is None or not hasattr(live, "trickplay_readiness"):
+        return jsonify({"ok": False, "error": "this Jellyfin client doesn't support readiness probe"}), 400
+
+    try:
+        return jsonify(live.trickplay_readiness())
+    except Exception as exc:
+        logger.warning("Trickplay readiness probe on {!r} raised: {}", cfg.name or cfg.id, exc)
+        return jsonify({"ok": False, "error": str(exc)}), 200
+
+
+@api.route("/servers/<server_id>/trickplay-fix-all", methods=["POST"])
+@setup_or_auth_required
+def jellyfin_trickplay_fix_all(server_id: str):
+    """Auto-heal every Jellyfin readiness issue in one call.
+
+    Body: ``{"install_plugin": bool}`` (default true). When true AND the
+    plugin isn't installed, the flow installs + restarts Jellyfin before
+    applying settings. When false, only the non-destructive steps
+    (library flags + server TrickplayOptions geometry) run.
+
+    Returns the same ``{"steps": [...], "ok": bool, "error": str}`` shape
+    as ``install_plugin`` so the UI's step-list progress component can
+    render both flows identically.
+    """
+    raw_servers = _get_media_servers()
+    target = next((s for s in raw_servers if isinstance(s, dict) and s.get("id") == server_id), None)
+    if target is None:
+        return jsonify({"ok": False, "error": f"server {server_id!r} not found"}), 404
+
+    try:
+        cfg = server_config_from_dict(target)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"invalid server config: {exc}"}), 400
+
+    if cfg.type is not ServerType.JELLYFIN:
+        return jsonify({"ok": False, "error": "trickplay-fix-all is Jellyfin-only"}), 400
+
+    live = _instantiate_for_probe(cfg)
+    if live is None or not hasattr(live, "trickplay_fix_all"):
+        return jsonify({"ok": False, "error": "this Jellyfin client doesn't support fix-all"}), 400
+
+    payload = request.get_json(silent=True) or {}
+    install_plugin = bool(payload.get("install_plugin", True))
+
+    try:
+        result = live.trickplay_fix_all(install_plugin=install_plugin)
+    except Exception as exc:
+        logger.warning("Trickplay fix-all on {!r} raised: {}", cfg.name or cfg.id, exc)
+        return jsonify({"ok": False, "error": str(exc)}), 200
+
+    return jsonify(result)
+
+
 @api.route("/servers/<server_id>/enabled", methods=["PATCH"])
 @setup_or_auth_required
 def set_server_enabled(server_id: str):

@@ -61,6 +61,12 @@ class JellyfinServer(EmbyApiClient):
         super().__init__(config, default_name="Jellyfin")
         self._last_full_refresh_at = 0.0
         self._full_refresh_lock = threading.Lock()
+        # Per-instance cache of Media Preview Bridge plugin presence —
+        # read by the dispatcher to decide whether an item-id lookup is
+        # worth paying for (plugin ⇒ ~200ms, no plugin ⇒ ~30s cold).
+        # Populated by ``check_plugin_installed`` and refreshed after
+        # ``install_plugin``. ``None`` means "not probed yet".
+        self._media_preview_bridge_installed: bool | None = None
 
     @property
     def type(self) -> ServerType:
@@ -336,17 +342,22 @@ class JellyfinServer(EmbyApiClient):
         try:
             response = self._request("GET", "/MediaPreviewBridge/Ping")
         except Exception as exc:
+            self._media_preview_bridge_installed = False
             return {"installed": False, "version": "", "error": f"{type(exc).__name__}: {exc}"[:200]}
         if response.status_code != 200:
+            self._media_preview_bridge_installed = False
             return {"installed": False, "version": "", "error": f"HTTP {response.status_code}"}
         try:
             payload = response.json()
+            installed = bool(payload.get("ok"))
+            self._media_preview_bridge_installed = installed
             return {
-                "installed": bool(payload.get("ok")),
+                "installed": installed,
                 "version": str(payload.get("version") or ""),
                 "error": "",
             }
         except (ValueError, AttributeError) as exc:
+            self._media_preview_bridge_installed = False
             return {"installed": False, "version": "", "error": f"bad JSON: {exc}"[:200]}
 
     def install_plugin(self) -> dict[str, Any]:
@@ -441,9 +452,16 @@ class JellyfinServer(EmbyApiClient):
             _record("restart", False, str(exc))
             result["error"] = f"plugin queued but restart failed: {exc}"
             result["ok"] = True  # install succeeded even if restart didn't
+            # Cache is intentionally NOT flipped here — the plugin isn't
+            # live until the restart completes. The caller polls
+            # check_plugin_installed() post-restart which will refresh it.
             return result
 
         result["ok"] = True
+        # Same reasoning: caller polls check_plugin_installed() after the
+        # restart finishes. Leaving the cache at its prior value avoids a
+        # window where the dispatcher thinks the plugin is live but the
+        # server is mid-restart and returning 503.
         return result
 
     # ------------------------------------------------------------------
@@ -458,45 +476,84 @@ class JellyfinServer(EmbyApiClient):
     # pages, especially when getting any one wrong silently breaks
     # the pipeline.
 
-    # The recommended settings + rationale strings, defined once so
-    # check + apply stay in sync. Order matters: the UI renders them
-    # in this order so critical issues land at the top.
-    _RECOMMENDED_SETTINGS: tuple[tuple[str, str, bool, str, str], ...] = (
-        (
-            "EnableTrickplayImageExtraction",
-            "Trickplay enabled in Jellyfin",
-            True,
-            "critical",
-            "Without this, Jellyfin ignores our published trickplay sheets entirely "
-            "AND deletes them on the next library refresh. Must stay on.",
-        ),
-        (
-            "SaveTrickplayWithMedia",
-            "Look for trickplay next to the media file",
-            True,
-            "critical",
-            "Tells Jellyfin to look in '<media>.trickplay/' (where this app writes) "
-            "instead of '<config>/data/trickplay/' (which we never write to).",
-        ),
-        (
-            "ExtractTrickplayImagesDuringLibraryScan",
-            "Skip Jellyfin's own trickplay generation",
-            False,
-            "recommended",
-            "When this app owns trickplay, Jellyfin's scan-time extraction is wasted CPU "
-            "and produces duplicate output. Off = let this app do it; on = Jellyfin also "
-            "burns CPU re-creating thumbnails we already published.",
-        ),
-        (
-            "EnableRealtimeMonitor",
-            "Auto-detect new files (real-time monitoring)",
-            True,
-            "recommended",
-            "Without this, new files added by Sonarr/Radarr only get noticed on Jellyfin's "
-            "next manual scan or a webhook nudge — the 'not in library yet' status hangs "
-            "around longer than it needs to.",
-        ),
-    )
+    def _recommended_settings(self) -> tuple[tuple[str, str, bool, str, str], ...]:
+        """Settings + rationale, parameterised by plugin presence.
+
+        ``ExtractTrickplayImagesDuringLibraryScan`` is the only flag
+        whose recommendation depends on plugin state:
+
+        * Plugin installed (Mode A) — recommend ``False``. The plugin
+          activates our tiles instantly via ``SaveTrickplayInfo``;
+          Jellyfin's scan-time extraction is wasted CPU.
+        * Plugin absent (Mode B) — recommend ``True``. Without the
+          plugin we rely on ``/Library/Media/Updated`` triggering
+          ``TrickplayProvider`` for adoption, and that path is gated
+          by this flag (``TrickplayProvider.cs`` L94-108).
+
+        All other flags are identical in both modes. Order matters —
+        the UI renders them top-to-bottom and critical issues should
+        land first.
+        """
+        plugin = getattr(self, "_media_preview_bridge_installed", None)
+        # When plugin state is unknown (never probed), assume "no
+        # plugin" for settings recommendations — safe default, Mode B
+        # works without plugin and survives a later plugin install
+        # without any re-fix needed (extra flag = redundant, not broken).
+        plugin_installed = bool(plugin)
+        scan_ext_recommended = not plugin_installed
+        scan_ext_severity = "recommended" if plugin_installed else "critical"
+        scan_ext_rationale = (
+            "With the Media Preview Bridge plugin installed, this app registers "
+            "previews instantly and Jellyfin's scan-time extraction is just wasted "
+            "CPU. Recommended: off."
+            if plugin_installed
+            else "Without the plugin, Jellyfin needs this flag ON to trigger the "
+            "'import existing tiles' path — which is how our previews get adopted "
+            "when they land on disk. Off = previews only activate at 3 AM "
+            "(Jellyfin's daily scheduled task). Strongly recommended: on."
+        )
+
+        return (
+            (
+                "EnableTrickplayImageExtraction",
+                "Trickplay enabled in Jellyfin",
+                True,
+                "critical",
+                "Without this, Jellyfin ignores our published trickplay sheets entirely "
+                "AND deletes them on the next library refresh. Must stay on.",
+            ),
+            (
+                "SaveTrickplayWithMedia",
+                "Look for trickplay next to the media file",
+                True,
+                "critical",
+                "Tells Jellyfin to look in '<media>.trickplay/' (where this app writes) "
+                "instead of '<config>/data/trickplay/' (which we never write to).",
+            ),
+            (
+                "ExtractTrickplayImagesDuringLibraryScan",
+                "Jellyfin scan-time extraction",
+                scan_ext_recommended,
+                scan_ext_severity,
+                scan_ext_rationale,
+            ),
+            (
+                "EnableRealtimeMonitor",
+                "Auto-detect new files (real-time monitoring)",
+                True,
+                "recommended",
+                "Without this, new files added by Sonarr/Radarr only get noticed on Jellyfin's "
+                "next manual scan or a webhook nudge — the 'not in library yet' status hangs "
+                "around longer than it needs to.",
+            ),
+        )
+
+    # Back-compat alias for test code and callers that read the tuple
+    # directly. New code should prefer ``_recommended_settings()`` which
+    # returns the plugin-aware set.
+    @property
+    def _RECOMMENDED_SETTINGS(self) -> tuple[tuple[str, str, bool, str, str], ...]:  # noqa: N802
+        return self._recommended_settings()
 
     def check_settings_health(self) -> list[HealthCheckIssue]:
         """Return a per-library audit of preview-relevant Jellyfin settings.
@@ -526,15 +583,16 @@ class JellyfinServer(EmbyApiClient):
             return []
 
         issues: list[HealthCheckIssue] = []
+        recommended = self._recommended_settings()
         for raw in folders:
             if not isinstance(raw, dict):
                 continue
             lib_id = str(raw.get("ItemId") or raw.get("Id") or raw.get("Name") or "")
             lib_name = str(raw.get("Name") or "")
             options = raw.get("LibraryOptions") or {}
-            for flag, label, recommended, severity, rationale in self._RECOMMENDED_SETTINGS:
+            for flag, label, want, severity, rationale in recommended:
                 current = bool(options.get(flag, False))
-                if current == recommended:
+                if current == want:
                     continue
                 issues.append(
                     HealthCheckIssue(
@@ -544,7 +602,7 @@ class JellyfinServer(EmbyApiClient):
                         label=label,
                         rationale=rationale,
                         current=current,
-                        recommended=recommended,
+                        recommended=want,
                         severity=severity,
                         fixable=True,
                     )
@@ -581,6 +639,7 @@ class JellyfinServer(EmbyApiClient):
 
         target_flags = set(flags) if flags is not None else None
         results: dict[str, str] = {}
+        recommended = self._recommended_settings()
 
         for raw in folders:
             if not isinstance(raw, dict):
@@ -589,12 +648,12 @@ class JellyfinServer(EmbyApiClient):
             options = dict(raw.get("LibraryOptions") or {})
 
             changed_flags: list[str] = []
-            for flag, _label, recommended, _sev, _rationale in self._RECOMMENDED_SETTINGS:
+            for flag, _label, want, _sev, _rationale in recommended:
                 if target_flags is not None and flag not in target_flags:
                     continue
-                if bool(options.get(flag, False)) == recommended:
+                if bool(options.get(flag, False)) == want:
                     continue
-                options[flag] = recommended
+                options[flag] = want
                 changed_flags.append(flag)
 
             if not changed_flags:
@@ -620,6 +679,321 @@ class JellyfinServer(EmbyApiClient):
                     results[f"{lib_id}:{flag}"] = f"error: {exc}"
 
         return results
+
+    # ------------------------------------------------------------------
+    # Unified "Previews readiness" probe + auto-fix
+    # ------------------------------------------------------------------
+
+    def _adapter_geometry(self) -> dict[str, int]:
+        """Our Jellyfin trickplay adapter's geometry (read once).
+
+        Width + frame_interval come from this server's ``output`` settings
+        (shared shape with the plugin-registration path at line 144 above
+        so the two views can never disagree). Tile dimensions are the
+        adapter's hardcoded 10x10 constants.
+        """
+        output = (self._config.output or {}) if getattr(self, "_config", None) else {}
+        return {
+            "width": int(output.get("width") or 320),
+            "tile_w": 10,
+            "tile_h": 10,
+            "interval_ms": int(output.get("frame_interval") or 10) * 1000,
+        }
+
+    def fetch_trickplay_options(self) -> dict[str, Any] | None:
+        """GET /System/Configuration/trickplay — returns the parsed dict.
+
+        Returns ``None`` when the endpoint fails (older Jellyfin,
+        permission denied, server unreachable). Callers should treat
+        ``None`` as "can't probe, render the row as unknown" rather than
+        as a correctness claim.
+
+        Audited against Jellyfin release-10.11.z
+        ``Jellyfin.Api/Controllers/ConfigurationController.cs`` which
+        routes ``/System/Configuration/{key}`` through
+        ``IConfigurationManager.GetConfiguration(key)``. The ``trickplay``
+        config key resolves to ``TrickplayOptions`` in
+        ``MediaBrowser.Model/Configuration/TrickplayOptions.cs``.
+        """
+        try:
+            response = self._request("GET", "/System/Configuration/trickplay")
+            response.raise_for_status()
+            data = response.json()
+        except Exception as exc:
+            logger.debug(
+                "Could not fetch /System/Configuration/trickplay on {!r}: {}",
+                self.name,
+                exc,
+            )
+            return None
+        return data if isinstance(data, dict) else None
+
+    def sync_trickplay_options(self) -> dict[str, Any]:
+        """Ensure server-wide TrickplayOptions matches our adapter's geometry.
+
+        Jellyfin's adoption code
+        (``TrickplayManager.RefreshTrickplayDataInternal`` L256-261)
+        synthesises the ``TrickplayInfo`` DB row from server-wide
+        ``TrickplayOptions`` verbatim — not measured from tiles. A
+        mismatch (e.g. server ``TileWidth=8`` vs our adapter's 10)
+        silently breaks client rendering: adoption "succeeds" but the
+        scrubber pulls the wrong pixel range per tile.
+
+        Fetch-merge-PUT pattern (``/System/Configuration/*`` endpoints
+        are wholesale replace, like ``/Library/VirtualFolders/LibraryOptions``):
+
+        1. GET current options.
+        2. Rewrite ONLY ``TileWidth``, ``TileHeight``, ``Interval``.
+        3. Extend ``WidthResolutions`` to include our adapter's width
+           (never replace — a user wanting additional widths keeps them).
+        4. POST the complete mutated dict back.
+
+        Returns ``{"ok": bool, "error": str, "before": {...}, "after": {...}}``
+        so the UI can show what changed.
+        """
+        geometry = self._adapter_geometry()
+        before = self.fetch_trickplay_options()
+        if before is None:
+            return {
+                "ok": False,
+                "error": "Could not read /System/Configuration/trickplay",
+                "before": None,
+                "after": None,
+            }
+
+        after = dict(before)
+        after["TileWidth"] = geometry["tile_w"]
+        after["TileHeight"] = geometry["tile_h"]
+        after["Interval"] = geometry["interval_ms"]
+
+        existing_widths = list(after.get("WidthResolutions") or [])
+        if geometry["width"] not in existing_widths:
+            existing_widths.append(geometry["width"])
+            # Jellyfin renders resolutions in the order stored — keep
+            # ours first so the default player width matches our tiles.
+            existing_widths.insert(0, existing_widths.pop())
+        after["WidthResolutions"] = existing_widths
+
+        try:
+            response = self._request("POST", "/System/Configuration/trickplay", json_body=after)
+            response.raise_for_status()
+        except Exception as exc:
+            return {"ok": False, "error": str(exc), "before": before, "after": after}
+        return {"ok": True, "error": "", "before": before, "after": after}
+
+    def _check_trickplay_options(self) -> dict[str, Any]:
+        """Compare server-wide ``TrickplayOptions`` with our adapter geometry."""
+        ours = self._adapter_geometry()
+        server = self.fetch_trickplay_options()
+        if server is None:
+            return {
+                "ok": False,
+                "server": None,
+                "ours": ours,
+                "fix_kind": "set_trickplay_options",
+                "reason": "Could not read /System/Configuration/trickplay",
+            }
+        mismatches: list[str] = []
+        if int(server.get("TileWidth") or 0) != ours["tile_w"]:
+            mismatches.append(f"TileWidth={server.get('TileWidth')!r} (ours={ours['tile_w']})")
+        if int(server.get("TileHeight") or 0) != ours["tile_h"]:
+            mismatches.append(f"TileHeight={server.get('TileHeight')!r} (ours={ours['tile_h']})")
+        if int(server.get("Interval") or 0) != ours["interval_ms"]:
+            mismatches.append(f"Interval={server.get('Interval')!r}ms (ours={ours['interval_ms']}ms)")
+        widths = [int(w) for w in (server.get("WidthResolutions") or [])]
+        if ours["width"] not in widths:
+            mismatches.append(f"WidthResolutions missing {ours['width']} (has {widths})")
+        return {
+            "ok": not mismatches,
+            "server": server,
+            "ours": ours,
+            "fix_kind": "set_trickplay_options" if mismatches else None,
+            "reason": "; ".join(mismatches) if mismatches else "",
+        }
+
+    def _parse_version_tuple(self, version: str) -> tuple[int, ...]:
+        """Parse ``"10.11.2"`` → ``(10, 11, 2)``; defensive against garbage."""
+        parts: list[int] = []
+        for raw in str(version).split("."):
+            try:
+                parts.append(int(raw.split("-")[0].split("+")[0]))
+            except (ValueError, TypeError):
+                break
+            if len(parts) >= 3:
+                break
+        return tuple(parts)
+
+    def trickplay_readiness(self) -> dict[str, Any]:
+        """One-call readiness probe for the Edit-Server modal.
+
+        Aggregates four independent checks:
+
+        1. **Version** — Jellyfin 10.10+ is required for the
+           ``SaveTrickplayWithMedia`` code path. Older versions look in
+           ``<config>/data/trickplay/`` where we never write.
+        2. **Plugin** — Media Preview Bridge presence. Informational for
+           users who opt out; drives Mode A vs Mode B settings
+           recommendations.
+        3. **Per-library settings** — uses the plugin-aware
+           ``_recommended_settings``. With plugin → recommend scan-extraction
+           OFF. Without plugin → recommend scan-extraction ON (needed for
+           adoption trigger).
+        4. **Server-wide TrickplayOptions** — tile geometry MUST match our
+           adapter or clients render broken previews silently.
+
+        Returns a dict the UI card renders as a stoplight panel. Each
+        section carries ``ok`` + an optional ``fix_kind`` string the UI
+        maps to a button action.
+        """
+        # Probe plugin first — all downstream checks depend on its state.
+        plugin = self.check_plugin_installed()
+
+        # Version — requires a /System/Info call; tolerate failure.
+        version_value = ""
+        version_ok = True
+        version_fix_kind: str | None = None
+        version_reason = ""
+        try:
+            response = self._request("GET", "/System/Info")
+            response.raise_for_status()
+            data = response.json() or {}
+            version_value = str(data.get("Version") or "") or ""
+            parsed = self._parse_version_tuple(version_value)
+            if parsed and parsed < (10, 10):
+                version_ok = False
+                version_fix_kind = "upgrade_jellyfin"
+                version_reason = (
+                    f"Jellyfin {version_value} is pre-10.10 — SaveTrickplayWithMedia "
+                    "isn't supported. Upgrade to 10.10+ for native adoption."
+                )
+        except Exception as exc:
+            logger.debug("Version probe failed for {!r}: {}", self.name, exc)
+            version_reason = f"Could not read /System/Info: {exc}"
+
+        library_issues = self.check_settings_health()
+
+        options_check = self._check_trickplay_options()
+
+        # Mode hint string — drives the "Activation mode" row on the UI card.
+        if plugin.get("installed"):
+            mode = "plugin_instant"
+        elif any(i.flag == "ExtractTrickplayImagesDuringLibraryScan" and not i.current for i in library_issues):
+            # User hasn't fixed scan-ext yet — Mode B won't activate until they do.
+            mode = "scan_nudge_pending"
+        else:
+            mode = "scan_nudge"
+
+        overall_ok = version_ok and not library_issues and options_check["ok"]
+
+        return {
+            "version": {
+                "ok": version_ok,
+                "value": version_value,
+                "fix_kind": version_fix_kind,
+                "reason": version_reason,
+            },
+            "plugin": {
+                "installed": bool(plugin.get("installed")),
+                "version": plugin.get("version") or "",
+                "error": plugin.get("error") or "",
+                "mode": mode,
+            },
+            "library_settings": {
+                "ok": not library_issues,
+                "issues": [
+                    {
+                        "library_id": i.library_id,
+                        "library_name": i.library_name,
+                        "flag": i.flag,
+                        "label": i.label,
+                        "current": i.current,
+                        "recommended": i.recommended,
+                        "severity": i.severity,
+                        "rationale": i.rationale,
+                    }
+                    for i in library_issues
+                ],
+            },
+            "trickplay_options": options_check,
+            "overall_ok": overall_ok,
+        }
+
+    def trickplay_fix_all(self, *, install_plugin: bool = True) -> dict[str, Any]:
+        """Auto-fix every readiness issue in one call.
+
+        Steps (each produces a row in the returned ``steps`` list):
+
+        1. ``install_plugin()`` — only if ``install_plugin=True`` AND the
+           plugin isn't already installed. This is the only step that
+           restarts Jellyfin, so opt-in by the user.
+        2. ``apply_recommended_settings()`` — plugin-aware flag fixes.
+        3. ``sync_trickplay_options()`` — server-wide geometry sync.
+
+        Mirrors the existing ``install_plugin`` step-list shape so the
+        UI's progress component can render both flows identically.
+        """
+        result: dict[str, Any] = {"steps": [], "ok": True, "error": ""}
+
+        def _record(step: str, ok: bool, detail: str = "") -> None:
+            result["steps"].append({"step": step, "ok": ok, "detail": detail})
+            if not ok:
+                result["ok"] = False
+                if not result["error"]:
+                    result["error"] = detail
+
+        if install_plugin:
+            plugin_state = self.check_plugin_installed()
+            if plugin_state.get("installed"):
+                _record("install_plugin", True, "already installed")
+            else:
+                try:
+                    install_outcome = self.install_plugin()
+                except Exception as exc:
+                    _record("install_plugin", False, str(exc))
+                    return result
+                if install_outcome.get("ok"):
+                    _record(
+                        "install_plugin",
+                        True,
+                        "queued — poll plugin status after restart (~30s)",
+                    )
+                else:
+                    _record(
+                        "install_plugin",
+                        False,
+                        install_outcome.get("error") or "install failed",
+                    )
+                    return result
+
+        settings_outcome = self.apply_recommended_settings()
+        if "_global" in settings_outcome:
+            _record("apply_recommended_settings", False, settings_outcome["_global"])
+        else:
+            errors = [k for k, v in settings_outcome.items() if not str(v).startswith("ok")]
+            if errors:
+                _record(
+                    "apply_recommended_settings",
+                    False,
+                    f"{len(errors)} issue(s): {errors[0]}",
+                )
+            else:
+                _record(
+                    "apply_recommended_settings",
+                    True,
+                    f"applied {len(settings_outcome)} library change(s)",
+                )
+
+        geometry_outcome = self.sync_trickplay_options()
+        if geometry_outcome["ok"]:
+            _record("sync_trickplay_options", True, "server geometry matches adapter")
+        else:
+            _record(
+                "sync_trickplay_options",
+                False,
+                geometry_outcome.get("error") or "TrickplayOptions sync failed",
+            )
+
+        return result
 
     # The flag(s) that ``set_vendor_extraction`` flips for Jellyfin —
     # used by ``get_vendor_extraction_status`` to count per-library

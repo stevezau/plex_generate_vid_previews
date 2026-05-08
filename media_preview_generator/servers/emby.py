@@ -323,6 +323,68 @@ class EmbyServer(EmbyApiClient):
                 )
         return issues
 
+    def previews_readiness(self) -> dict[str, Any]:
+        """One-call readiness probe for the Emby "Previews readiness" card.
+
+        Emby's sidecar auto-discovery works purely by filename
+        convention (``<basename>-<width>-<interval>.bif``) — no
+        library flag gates the READ path, only generation. So the
+        readiness card on Emby is always "ok": every issue is
+        advisory (wasted-CPU warnings), nothing ever blocks preview
+        playback.
+
+        Returns a dict shaped the same as
+        :meth:`JellyfinServer.trickplay_readiness` so the UI can
+        render a unified card per vendor.
+        """
+        # Version probe — tolerate failure, report unknown rather than error.
+        version_value = ""
+        version_ok = True
+        try:
+            response = self._request("GET", "/System/Info")
+            response.raise_for_status()
+            data = response.json() or {}
+            version_value = str(data.get("Version") or "")
+        except Exception as exc:
+            logger.debug("Version probe failed for {!r}: {}", self.name, exc)
+
+        library_issues = self.check_settings_health()
+
+        return {
+            "version": {
+                "ok": version_ok,
+                "value": version_value,
+                "fix_kind": None,
+                "reason": "",
+            },
+            "path_refresh": {
+                "ok": True,  # Emby has native path-based /Library/Media/Updated
+                "endpoint": "/Library/Media/Updated",
+            },
+            "library_settings": {
+                "ok": not library_issues,
+                "issues": [
+                    {
+                        "library_id": i.library_id,
+                        "library_name": i.library_name,
+                        "flag": i.flag,
+                        "label": i.label,
+                        "current": i.current,
+                        "recommended": i.recommended,
+                        # Emby issues are always 'recommended' (CPU savers).
+                        # The sidecar READ path works regardless — nothing
+                        # in this list blocks preview playback.
+                        "severity": i.severity,
+                        "rationale": i.rationale,
+                    }
+                    for i in library_issues
+                ],
+            },
+            # Emby is always "ok" — library_settings issues are all
+            # advisory, never blocking.
+            "overall_ok": True,
+        }
+
     def apply_recommended_settings(self, flags: list[str] | None = None) -> dict[str, str]:
         """Flip mis-set Emby library flags to their recommended values.
 

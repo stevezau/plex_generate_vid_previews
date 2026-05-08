@@ -658,11 +658,13 @@ class TestParseWebhook:
 class TestSettingsHealth:
     """check_settings_health surfaces every mis-set preview-relevant flag."""
 
-    def test_no_issues_when_all_recommended(self, jelly):
+    def test_no_issues_when_all_recommended_with_plugin(self, jelly):
+        """Mode A (plugin installed): scan-extraction OFF is recommended."""
+        jelly._media_preview_bridge_installed = True
         all_good = {
             "EnableTrickplayImageExtraction": True,
             "SaveTrickplayWithMedia": True,
-            "ExtractTrickplayImagesDuringLibraryScan": False,
+            "ExtractTrickplayImagesDuringLibraryScan": False,  # off — plugin handles activation
             "EnableRealtimeMonitor": True,
         }
         with patch.object(JellyfinServer, "_request") as req:
@@ -674,15 +676,66 @@ class TestSettingsHealth:
             issues = jelly.check_settings_health()
         assert issues == []
 
+    def test_no_issues_when_all_recommended_without_plugin(self, jelly):
+        """Mode B (no plugin): scan-extraction ON is recommended — it's what
+        triggers TrickplayProvider to adopt our existing tiles on scan."""
+        jelly._media_preview_bridge_installed = False
+        all_good = {
+            "EnableTrickplayImageExtraction": True,
+            "SaveTrickplayWithMedia": True,
+            "ExtractTrickplayImagesDuringLibraryScan": True,  # ON — needed for adoption
+            "EnableRealtimeMonitor": True,
+        }
+        with patch.object(JellyfinServer, "_request") as req:
+            req.return_value = MagicMock(
+                status_code=200,
+                json=MagicMock(return_value=[{"Name": "Movies", "ItemId": "1", "LibraryOptions": all_good}]),
+                raise_for_status=MagicMock(),
+            )
+            issues = jelly.check_settings_health()
+        assert issues == []
+
+    def test_scan_extraction_recommendation_flips_with_plugin_state(self, jelly):
+        """Pin the plugin-aware flag: same library options render as OK or
+        as an issue depending solely on whether the plugin is installed."""
+        options = {
+            "EnableTrickplayImageExtraction": True,
+            "SaveTrickplayWithMedia": True,
+            "ExtractTrickplayImagesDuringLibraryScan": False,  # Mode A: fine, Mode B: wrong
+            "EnableRealtimeMonitor": True,
+        }
+
+        def _one_lib_response(*a, **kw):
+            return MagicMock(
+                status_code=200,
+                json=MagicMock(return_value=[{"Name": "Movies", "ItemId": "1", "LibraryOptions": options}]),
+                raise_for_status=MagicMock(),
+            )
+
+        # Plugin installed → flag=False is the recommendation → no issue.
+        jelly._media_preview_bridge_installed = True
+        with patch.object(JellyfinServer, "_request", side_effect=_one_lib_response):
+            issues_with_plugin = jelly.check_settings_health()
+        assert issues_with_plugin == []
+
+        # Plugin absent → flag=False is wrong (Mode B needs True for
+        # scan-nudge adoption) → issue raised.
+        jelly._media_preview_bridge_installed = False
+        with patch.object(JellyfinServer, "_request", side_effect=_one_lib_response):
+            issues_without_plugin = jelly.check_settings_health()
+        assert any(
+            i.flag == "ExtractTrickplayImagesDuringLibraryScan" and i.recommended is True for i in issues_without_plugin
+        )
+
     def test_reports_each_misset_flag_per_library(self, jelly):
-        # Movies has Realtime off (recommended); TV has both critical
-        # flags wrong AND scan extraction on. We expect one issue per
-        # mis-set flag on each library — the apply step decides whether
-        # to flip them, the audit just *reports*.
+        # Pin plugin-installed path so scan-extraction=False is the
+        # expected recommendation. Without this, the per-library issue
+        # count depends on plugin state (covered separately above).
+        jelly._media_preview_bridge_installed = True
         bad_critical = {
             "EnableTrickplayImageExtraction": False,  # critical
             "SaveTrickplayWithMedia": False,  # critical
-            "ExtractTrickplayImagesDuringLibraryScan": True,  # recommended
+            "ExtractTrickplayImagesDuringLibraryScan": True,  # recommended (with plugin: want False)
             "EnableRealtimeMonitor": False,  # recommended
         }
         movies_good_except_realtime = {
@@ -729,6 +782,11 @@ class TestApplyRecommendedSettings:
         # the library. Other flags retain their current values in the
         # POST'd LibraryOptions because Jellyfin's update endpoint is a
         # wholesale replace, not a diff (D38 caveat).
+        #
+        # Pin plugin-installed → scan-extraction=False is the
+        # recommendation, keeping this test insensitive to plugin state
+        # (covered separately in TestSettingsHealth).
+        jelly._media_preview_bridge_installed = True
         bad_realtime = {
             "EnableTrickplayImageExtraction": True,
             "SaveTrickplayWithMedia": True,
@@ -775,6 +833,8 @@ class TestApplyRecommendedSettings:
 
     def test_skips_libraries_already_correct(self, jelly):
         # Both libraries fine — apply makes zero POSTs and returns {}.
+        # Pin plugin-installed so scan-ext=False matches the recommendation.
+        jelly._media_preview_bridge_installed = True
         all_good = {
             "EnableTrickplayImageExtraction": True,
             "SaveTrickplayWithMedia": True,
