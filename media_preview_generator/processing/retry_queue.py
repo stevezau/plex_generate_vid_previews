@@ -188,6 +188,8 @@ def _upsert_retry_chain_job(
     server_name: str | None = None,
     server_type: str | None = None,
     reason: str | None = None,
+    display_name: str | None = None,
+    source: str | None = None,
 ) -> None:
     """Best-effort upsert of the user-visible retry-chain Job row.
 
@@ -196,6 +198,16 @@ def _upsert_retry_chain_job(
     is set up by the web app — when retries fire from a non-web context
     like a CLI smoke test or a test harness, the import or the call
     might fail; the retry itself must keep going regardless).
+
+    ``display_name`` is the cleaned title the originating webhook job
+    used (e.g. ``"Deadliest Catch S22E01"``) — without it the retry-
+    chain row falls back to the raw filename
+    (``Deadliest Catch (2005) - S22E01 - Kings of the Frozen North
+    [WEBDL-1080p]…SNAKE.mkv``), which the user reads as a different
+    item from its parent dispatch row. ``source`` is the trigger pill
+    label (``"sonarr"``, ``"radarr"``, ``"sportarr"``, ``"plex"``, …)
+    and feeds the same UI fallback ``_serverBadge()`` uses when
+    ``server_type`` is empty.
     """
     try:
         import os as _os
@@ -210,7 +222,7 @@ def _upsert_retry_chain_job(
             next_run_at = (_dt.now(_tz.utc) + _td(seconds=int(wait_seconds))).isoformat()
         get_job_manager().upsert_retry_chain_job(
             canonical_path=canonical_path,
-            basename=_os.path.basename(canonical_path) or canonical_path,
+            basename=display_name or _os.path.basename(canonical_path) or canonical_path,
             attempt=attempt,
             max_attempts=len(_BACKOFF),
             next_run_at=next_run_at,
@@ -220,6 +232,7 @@ def _upsert_retry_chain_job(
             server_name=server_name,
             server_type=server_type,
             reason=reason,
+            source=source,
         )
     except Exception as exc:
         logger.debug("Retry-chain Job upsert failed for {!r}: {}", canonical_path, exc)
@@ -233,6 +246,8 @@ def schedule_retry_for_unindexed(
     item_id_by_server: dict[str, str] | None = None,
     attempt: int = 1,
     server_id_filter: str | None = None,
+    display_name: str | None = None,
+    source: str | None = None,
 ) -> bool:
     """Convenience wrapper that schedules a retry calling back into process_canonical_path.
 
@@ -287,6 +302,8 @@ def schedule_retry_for_unindexed(
             attempt=fired_attempt,
             outcome="running",
             server_id=_retry_pin_id,
+            display_name=display_name,
+            source=source,
         )
 
         # Bind a synthetic failure scope for the retry. The original
@@ -316,6 +333,8 @@ def schedule_retry_for_unindexed(
                     # — covers BOTH config-pinned (vendor webhook)
                     # and originator-pinned (worker case 2) dispatches.
                     server_id_filter=server_id_filter,
+                    display_name=display_name,
+                    source=source,
                 )
             except Exception as exc:
                 logger.exception(
@@ -334,6 +353,8 @@ def schedule_retry_for_unindexed(
                     item_id_by_server=item_id_by_server,
                     attempt=fired_attempt + 1,
                     server_id_filter=server_id_filter,
+                    display_name=display_name,
+                    source=source,
                 )
                 return
 
@@ -380,6 +401,8 @@ def schedule_retry_for_unindexed(
                     item_id_by_server=item_id_by_server,
                     attempt=next_attempt,
                     server_id_filter=server_id_filter,
+                    display_name=display_name,
+                    source=source,
                 )
                 if not rescheduled:
                     _upsert_retry_chain_job(
@@ -387,6 +410,8 @@ def schedule_retry_for_unindexed(
                         attempt=fired_attempt,
                         outcome="exhausted",
                         server_id=_retry_pin_id,
+                        display_name=display_name,
+                        source=source,
                         reason=(
                             f"Server still hasn't indexed this file after "
                             f"{fired_attempt} retry attempt(s). The publisher's "
@@ -403,6 +428,8 @@ def schedule_retry_for_unindexed(
                     attempt=fired_attempt,
                     outcome="completed",
                     server_id=_retry_pin_id,
+                    display_name=display_name,
+                    source=source,
                 )
 
     scheduled = scheduler.schedule(canonical_path, _callback, attempt=attempt)

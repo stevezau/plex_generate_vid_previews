@@ -1425,7 +1425,7 @@ const STATUS_META = {
     // time so the per-item registration call (Jellyfin Media Preview Bridge plugin or
     // /Items/{id}/Refresh) was skipped. The retry queue picks this back up — once the
     // server indexes the file, the registration fires and the row promotes to "Generated".
-    published_pending_registration: { label: 'Generated (registering)', cls: 'bg-success', tip: 'Tiles are on disk; waiting for the media server to index the file so trickplay registration can complete. The retry queue will finish this automatically.' },
+    published_pending_registration: { label: 'Generated (auto-retrying)', cls: 'bg-success', tip: 'Tiles are on disk; the server has not indexed the file yet so trickplay registration is pending. A retry-chain row was spawned (look for the matching title with a "Registering N/M" badge) and will keep trying every 30s → 2m → 5m → 15m → 1h until it lands.' },
 
     // Output already on disk; source unchanged — nothing to redo.
     skipped_bif_exists:     { label: 'Already Existed', cls: 'bg-info text-dark', tip: 'Output already on disk and source unchanged' },
@@ -1516,7 +1516,34 @@ function _renderPublishersBlock(job) {
         );
     }).filter(Boolean).join('');
     if (!lines) return '';
-    return `<div class="mt-3 pt-2 border-top"><strong class="me-2">Servers:</strong>${lines}</div>`;
+    // Surface a callout when ANY publisher landed on
+    // PUBLISHED_PENDING_REGISTRATION — the per-server badge says
+    // "Generated (auto-retrying)" but users were missing the link
+    // between that and the spawned retry-chain row in the queue.
+    // The chain row carries the SAME title + source pill (after the
+    // retry-queue display_name/source plumbing) so "look for the
+    // matching title with a 'Registering N/M' badge" is actionable.
+    const anyPending = rows.some(function (entry) {
+        const c = (entry && entry.counts) || {};
+        return (c.published_pending_registration || 0) > 0;
+    });
+    let pendingNote = '';
+    if (anyPending) {
+        const pendingServers = rows
+            .filter(function (e) { return ((e.counts || {}).published_pending_registration || 0) > 0; })
+            .map(function (e) { return e.server_name || (e.server_type || '').toUpperCase() || 'Server'; });
+        const list = pendingServers.length ? ` on ${escapeHtmlText(pendingServers.join(', '))}` : '';
+        pendingNote = (
+            `<div class="alert alert-warning py-1 px-2 mt-2 mb-0 small" role="status">` +
+            `<i class="bi bi-arrow-clockwise me-1"></i>` +
+            `<strong>Auto-retrying${list}.</strong> ` +
+            `Tiles are on disk; the server hasn't indexed the file yet, so trickplay registration is still pending. ` +
+            `A retry-chain row was spawned in the queue (same title; "Registering N/M" badge). ` +
+            `It backs off 30s → 2m → 5m → 15m → 1h until the registration completes.` +
+            `</div>`
+        );
+    }
+    return `<div class="mt-3 pt-2 border-top"><strong class="me-2">Servers:</strong>${lines}${pendingNote}</div>`;
 }
 
 let _jobQueueUpdatePending = false;
@@ -1594,7 +1621,14 @@ function updateJobQueue() {
         // had ad-hoc me-1 margins that produced different gaps depending
         // on which set was rendered.
         if (job.status === 'running' || job.status === 'pending') {
+            // Pending/running rows used to expose only a Cancel button —
+            // users had no way to peek at a long-running job's logs or
+            // open a retry-chain row's synthesized status. Adding View
+            // Logs here mirrors the Active Jobs panel button group.
             actionButtons = `<div class="btn-group btn-group-sm icon-btn-group" role="group">
+                <button class="btn btn-outline-secondary" onclick="showLogsModal('${escapeHtml(job.id)}')" title="View logs" aria-label="View logs">
+                    <i class="bi bi-file-text"></i>
+                </button>
                 <button class="btn btn-outline-danger" onclick="cancelJob('${escapeHtml(job.id)}')" title="Cancel" aria-label="Cancel job">
                     <i class="bi bi-x-lg"></i>
                 </button>

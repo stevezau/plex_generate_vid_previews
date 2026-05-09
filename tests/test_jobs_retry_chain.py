@@ -436,3 +436,202 @@ class TestUpsertRetryChainJob:
         )
         assert job.config["is_retry_chain"] is True  # distinguisher
         assert job.config["retry_attempt"] == 2
+
+
+class TestUpsertRetryChainJobSourceAndDisplay:
+    """Cross-feature: ``source`` (trigger pill) + ``basename`` cleanup
+    on subsequent upserts (cleaner title wins).
+
+    Pre-fix the chain row dropped both the cleaned title (showed the raw
+    filename instead of "Deadliest Catch S22E01") and the colored source
+    pill (no Sonarr/Radarr/Sportarr/Plex chip), so it visually
+    disconnected from its parent dispatch row in the queue table.
+    """
+
+    def test_source_is_persisted_on_create(self, jm):
+        job = jm.upsert_retry_chain_job(
+            canonical_path="/data/x.mkv",
+            basename="x.mkv",
+            attempt=1,
+            max_attempts=5,
+            next_run_at=None,
+            wait_seconds=30,
+            outcome="scheduled",
+            source="sonarr",
+        )
+        assert job.config.get("source") == "sonarr", (
+            "Without config['source'], _serverBadge() in app.js falls through to "
+            "an unlabelled chain row — the user can't tell at a glance which "
+            "trigger spawned the chain."
+        )
+
+    def test_source_back_fills_on_subsequent_upsert(self, jm):
+        """Some retry-chain call sites don't have ``source`` in scope yet
+        (e.g. a re-schedule after a non-deterministic exception). When a
+        later upsert DOES carry it, fill in the gap rather than
+        clobbering an already-set value with None.
+        """
+        path = "/data/x.mkv"
+        jm.upsert_retry_chain_job(
+            canonical_path=path,
+            basename="x.mkv",
+            attempt=1,
+            max_attempts=5,
+            next_run_at=None,
+            wait_seconds=30,
+            outcome="scheduled",
+        )
+        job = jm.upsert_retry_chain_job(
+            canonical_path=path,
+            basename="x.mkv",
+            attempt=2,
+            max_attempts=5,
+            next_run_at=None,
+            wait_seconds=120,
+            outcome="scheduled",
+            source="radarr",
+        )
+        assert job.config["source"] == "radarr"
+
+    def test_source_does_not_overwrite_existing(self, jm):
+        """First write wins: don't clobber a real source with a later
+        ``None`` from a context that lost it (e.g. a worker callback
+        rebuilt without the original webhook payload in scope).
+        """
+        path = "/data/x.mkv"
+        jm.upsert_retry_chain_job(
+            canonical_path=path,
+            basename="x.mkv",
+            attempt=1,
+            max_attempts=5,
+            next_run_at=None,
+            wait_seconds=30,
+            outcome="scheduled",
+            source="sonarr",
+        )
+        job = jm.upsert_retry_chain_job(
+            canonical_path=path,
+            basename="x.mkv",
+            attempt=2,
+            max_attempts=5,
+            next_run_at=None,
+            wait_seconds=120,
+            outcome="scheduled",
+            source=None,
+        )
+        assert job.config["source"] == "sonarr"
+
+    def test_cleaner_title_replaces_raw_basename_on_subsequent_upsert(self, jm):
+        """Live regression (2026-05-10): retry-queue's first call comes
+        from a path-only context and uses ``os.path.basename`` (raw
+        filename like 'Deadliest Catch (2005) - S22E01 - Kings of the
+        Frozen North [WEBDL-1080p][EAC3 2.0][h264]-SNAKE.mkv'); a later
+        call from the worker carries the dispatcher's cleaned
+        ``library_name`` ('Deadliest Catch S22E01'). Prefer the cleaner
+        title so the chain row matches its parent dispatch row.
+        """
+        path = (
+            "/data/Deadliest Catch (2005) - S22E01 - Kings of the Frozen North [WEBDL-1080p][EAC3 2.0][h264]-SNAKE.mkv"
+        )
+        raw = "Deadliest Catch (2005) - S22E01 - Kings of the Frozen North [WEBDL-1080p][EAC3 2.0][h264]-SNAKE.mkv"
+        clean = "Deadliest Catch S22E01"
+        jm.upsert_retry_chain_job(
+            canonical_path=path,
+            basename=raw,
+            attempt=1,
+            max_attempts=5,
+            next_run_at=None,
+            wait_seconds=30,
+            outcome="scheduled",
+        )
+        job = jm.upsert_retry_chain_job(
+            canonical_path=path,
+            basename=clean,
+            attempt=2,
+            max_attempts=5,
+            next_run_at=None,
+            wait_seconds=120,
+            outcome="scheduled",
+        )
+        assert job.library_name == clean, (
+            f"Cleaner title should win; got {job.library_name!r}. "
+            "Without this, the chain row stays glued to the raw filename "
+            "even after a later caller passes the dispatcher's cleaned title."
+        )
+        assert job.config["retry_basename"] == clean
+
+    def test_raw_basename_does_not_overwrite_cleaner_existing(self, jm):
+        """Reverse direction: don't regress a clean title to a raw
+        basename if a later upsert hits the path-only fallback.
+        """
+        path = "/data/Foo.mkv"
+        jm.upsert_retry_chain_job(
+            canonical_path=path,
+            basename="Foo (Cleaned)",
+            attempt=1,
+            max_attempts=5,
+            next_run_at=None,
+            wait_seconds=30,
+            outcome="scheduled",
+        )
+        job = jm.upsert_retry_chain_job(
+            canonical_path=path,
+            basename="Foo.mkv.with.much.longer.raw.label",
+            attempt=2,
+            max_attempts=5,
+            next_run_at=None,
+            wait_seconds=120,
+            outcome="scheduled",
+        )
+        assert job.library_name == "Foo (Cleaned)"
+
+
+class TestRetryChainSynthesizedLogs:
+    """The chain Job's ``View Logs`` modal used to show the misleading
+    "Log file was cleared due to log retention policy." sentinel because
+    chain Jobs never write a per-attempt log file (they're UI-only).
+    Synthesize a meaningful status block instead.
+    """
+
+    def test_get_logs_returns_synthesized_status_for_chain_job(self, jm):
+        path = "/data/X.mkv"
+        jm.upsert_retry_chain_job(
+            canonical_path=path,
+            basename="X.mkv",
+            attempt=2,
+            max_attempts=5,
+            next_run_at=None,
+            wait_seconds=60,
+            outcome="running",
+            source="sonarr",
+        )
+        chain_id = "retry-" + __import__("hashlib").sha256(path.encode()).hexdigest()[:16]
+        logs = jm.get_logs(chain_id)
+
+        assert logs, "Synthesized log lines must not be empty for a chain Job"
+        joined = "\n".join(logs)
+        assert "no per-attempt logs" in joined.lower(), (
+            "Synthesized log must explain to the user why per-attempt logs are missing here."
+        )
+        assert "X.mkv" in joined, "Synthesized log must surface the source file name"
+        assert "2 of 5" in joined, "Synthesized log must surface attempt N of M"
+        assert "Log file was cleared" not in joined, (
+            "Pre-fix the retention sentinel was returned — that's misleading; "
+            "no log was ever written for a chain Job to clear."
+        )
+
+    def test_get_logs_paginated_returns_synthesized_status_for_chain_job(self, jm):
+        path = "/data/Y.mkv"
+        jm.upsert_retry_chain_job(
+            canonical_path=path,
+            basename="Y.mkv",
+            attempt=1,
+            max_attempts=5,
+            next_run_at=None,
+            wait_seconds=30,
+            outcome="scheduled",
+        )
+        chain_id = "retry-" + __import__("hashlib").sha256(path.encode()).hexdigest()[:16]
+        result = jm.get_logs_paginated(chain_id)
+        assert result["total_lines"] >= 6
+        assert all("Log file was cleared" not in line for line in result["lines"])

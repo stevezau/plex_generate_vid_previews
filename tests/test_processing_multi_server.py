@@ -606,14 +606,15 @@ class TestCrossServerBifReuse:
         statuses = {p.server_id: p.status for p in result.publishers}
         assert statuses["jelly-1"] in _PUBLISHED_LIKE_STATUSES
         # Emby's existing output exists on disk so the publisher takes
-        # the skip path. Because no item_id was supplied for Emby in
-        # this dispatch (only ``jelly-1`` had a hint) AND Emby uses
-        # per-item registration, the publisher returns
-        # PUBLISHED_PENDING_REGISTRATION so a follow-up retry can
-        # resolve the item id and complete /Items/{id}/Refresh. The
-        # output still counts as "on disk" — only the registration
-        # step is deferred.
-        assert statuses["emby-1"] is PublisherStatus.PUBLISHED_PENDING_REGISTRATION
+        # the skip path. Pre-fix this returned PUBLISHED_PENDING_REGISTRATION
+        # — but Emby's resolver hard-codes ``None`` so PENDING was
+        # unsatisfiable and the chain exhausted at attempt 5 (live
+        # regression ``retry-3d1cfc6394a78c5a`` 2026-05-10). Path-based
+        # ``/Library/Media/Updated`` IS Emby's registration mechanism
+        # and runs on every dispatch, so SKIPPED_OUTPUT_EXISTS is the
+        # correct terminal state — there's nothing useful left for a
+        # retry to do.
+        assert statuses["emby-1"] is PublisherStatus.SKIPPED_OUTPUT_EXISTS
 
     def test_single_publisher_does_not_attempt_bif_reuse(self, mock_config_for_processing, tmp_path):
         """With only one owning publisher there's nobody to share BIF

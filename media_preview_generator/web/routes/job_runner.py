@@ -364,6 +364,12 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                             config.webhook_deleted_paths = [
                                 str(path).strip() for path in value if str(path).strip()
                             ] or None
+                    elif key == "source":
+                        # Trigger pill (sonarr/radarr/sportarr/plex/…) so
+                        # spawned retry-chain rows can render the same
+                        # source pill the parent dispatch row carries.
+                        if value:
+                            config.webhook_source = str(value).strip().lower() or None
                     elif key == "webhook_item_id_hints":
                         # Per-path ``{server_id: item_id}`` hints from vendor
                         # webhooks — passed through to process_canonical_path

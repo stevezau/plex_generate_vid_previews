@@ -853,22 +853,47 @@ def _summarise_results(results: list[PublisherResult], status: MultiServerStatus
 
 
 def _server_needs_item_registration(server: MediaServer) -> bool:
-    """Return True when ``server`` activates trickplay/sidecar via per-item API.
+    """Return True when ``server`` MUST resolve an item id to fully publish.
 
-    Jellyfin and Emby both expose ``/Items/{id}/Refresh`` (and Jellyfin
-    additionally has the Media Preview Bridge plugin endpoint) which
-    register on-disk artifacts with the server's library DB. When the
-    item id can't be resolved at publish time, those calls are skipped
-    and the artifacts sit on disk un-registered until the server's own
-    scan picks them up. The dispatcher uses this signal to decide
-    whether the result is fully ``PUBLISHED`` or
-    ``PUBLISHED_PENDING_REGISTRATION`` (retry once the id resolves).
+    Two conditions both need to hold:
+
+    1. The server class overrides :meth:`MediaServer._trigger_item_refresh`
+       — i.e. it has a per-item refresh endpoint at all.
+    2. The dispatcher's resolver policy will actually attempt to look up
+       an item id for this server. ``_make_item_id_resolver`` hard-codes
+       ``None`` for Emby unconditionally (Sonarr/Radarr never carry Emby
+       ids and the lookup is slow), and for Jellyfin it returns ``None``
+       when the Media Preview Bridge plugin isn't installed (the lookup
+       costs ~30s cold and buys nothing without the plugin). When the
+       resolver is guaranteed to return ``None``, classifying the result
+       as ``PUBLISHED_PENDING_REGISTRATION`` creates an unsatisfiable
+       retry — the chain runs all 5 attempts and exhausts because the
+       id will NEVER resolve.
+
+    Live regression (chain ``retry-3d1cfc6394a78c5a`` against
+    Deadliest Catch S22E01, 2026-05-10 05:27 → 06:51): EmbyTest was
+    permanently ``PUBLISHED_PENDING_REGISTRATION`` because ``Emby`` is
+    in the resolver's no-lookup list. The path-based
+    ``/Library/Media/Updated`` partial scan fired correctly on every
+    attempt — the BIF was discoverable — but the chain still reported
+    "failed" after 70+ minutes of backoff because the
+    ``any(... PENDING_REGISTRATION ...)`` continuation condition was
+    permanently true.
 
     Plex doesn't reach this code path with ``item_id=None`` because its
     adapter declares :meth:`OutputAdapter.needs_server_metadata` =
     True — we short-circuit upstream into ``SKIPPED_NOT_IN_LIBRARY``.
     """
-    return type(server)._trigger_item_refresh is not MediaServer._trigger_item_refresh
+    if type(server)._trigger_item_refresh is MediaServer._trigger_item_refresh:
+        return False
+    # Mirror the resolver's no-lookup policy in ``_make_item_id_resolver``.
+    # Without this guard, Emby (always) and Jellyfin-without-plugin chains
+    # exhaust at attempt 5 with no path to terminate.
+    if server.type is ServerType.EMBY:
+        return False
+    if server.type is ServerType.JELLYFIN and not _jellyfin_plugin_cached_installed(server):
+        return False
+    return True
 
 
 def _publish_one(
@@ -961,45 +986,52 @@ def _publish_one(
     # regeneration. Falls through to publish if the meta is missing
     # (older publishes pre-journal) or if it doesn't match.
     if skip_if_exists and output_paths and outputs_fresh_for_source(output_paths, bundle.canonical_path):
-        # Two distinct sub-cases when we land here:
-        #   (a) duplicate webhook for an already-published file —
-        #       item_id is known (or vendor doesn't need it). The
-        #       previous publish already fired registration. Just
-        #       return SKIPPED_OUTPUT_EXISTS; an extra trigger_refresh
-        #       would fan out HTTP calls for no semantic gain (and
-        #       Jellyfin's path-nudge endpoint is NOT rate-limited —
-        #       only the full /Library/Refresh fallback is, inside
-        #       _maybe_trigger_full_refresh).
-        #   (b) PENDING_REGISTRATION retry — outputs are on disk but
-        #       previous attempt's item_id was None so the plugin
-        #       bridge / /Items/{id}/Refresh never fired. On retry,
-        #       item_id may now resolve. Fire trigger_refresh so the
-        #       registration completes and the next dispatch rolls
-        #       over to plain SKIPPED_OUTPUT_EXISTS.
-        if _server_needs_item_registration(server):
-            try:
-                server.trigger_refresh(
-                    item_id=item_id,
-                    remote_path=bundle.canonical_path,
-                    deleted_paths=deleted_paths,
-                )
-            except Exception as exc:
-                logger.debug("trigger_refresh on skip-if-exists failed for {}: {}", server.name, exc)
-            if item_id is None:
-                # Registration still didn't fire — re-arm the retry so
-                # we try once the server indexes the file.
-                return PublisherResult(
-                    server_id=server.id,
-                    server_name=server.name,
-                    adapter_name=adapter.name,
-                    status=PublisherStatus.PUBLISHED_PENDING_REGISTRATION,
-                    output_paths=output_paths,
-                    message=(
-                        f"Output already on disk for {server.name}, but the server hasn't indexed "
-                        f"this file yet — will retry to register the trickplay row."
-                    ),
-                    frame_source="output_existed",
-                )
+        # Three distinct sub-cases when we land here:
+        #   (a) duplicate webhook for an already-published file with
+        #       item_id known — fire trigger_refresh so the path-based
+        #       scan nudge re-runs (an in-place re-encode that left the
+        #       outputs on disk but updated the source mtime would
+        #       otherwise fall through with no server-side signal).
+        #   (b) Emby (or Jellyfin without the plugin) — item_id will
+        #       NEVER resolve via the resolver's policy, so we MUST
+        #       still fire trigger_refresh for the path-based nudge,
+        #       but we MUST NOT classify the result as PENDING
+        #       (regression ``retry-3d1cfc6394a78c5a`` 2026-05-10:
+        #       chains exhausted at attempt 5 because the
+        #       continuation condition was permanently true).
+        #   (c) PENDING_REGISTRATION retry on a server where item_id
+        #       CAN resolve (Plex / Jellyfin-with-plugin) — outputs
+        #       are on disk but previous attempt's item_id was None
+        #       so the plugin bridge / /Items/{id}/Refresh never
+        #       fired. On retry, item_id may now resolve. Fire
+        #       trigger_refresh so the registration completes and
+        #       the next dispatch rolls over to plain
+        #       SKIPPED_OUTPUT_EXISTS.
+        try:
+            server.trigger_refresh(
+                item_id=item_id,
+                remote_path=bundle.canonical_path,
+                deleted_paths=deleted_paths,
+            )
+        except Exception as exc:
+            logger.debug("trigger_refresh on skip-if-exists failed for {}: {}", server.name, exc)
+        if item_id is None and _server_needs_item_registration(server):
+            # Registration still didn't fire — re-arm the retry so
+            # we try once the server indexes the file. Only reachable
+            # for Plex (via SKIPPED upstream) and Jellyfin-with-plugin
+            # — the discriminator excludes the unsatisfiable cases.
+            return PublisherResult(
+                server_id=server.id,
+                server_name=server.name,
+                adapter_name=adapter.name,
+                status=PublisherStatus.PUBLISHED_PENDING_REGISTRATION,
+                output_paths=output_paths,
+                message=(
+                    f"Output already on disk for {server.name}, but the server hasn't indexed "
+                    f"this file yet — will retry to register the trickplay row."
+                ),
+                frame_source="output_existed",
+            )
         return PublisherResult(
             server_id=server.id,
             server_name=server.name,
@@ -1096,6 +1128,8 @@ def process_canonical_path(
     server_id_filter: str | None = None,
     phase_callback=None,
     deleted_paths: list[str] | None = None,
+    display_name: str | None = None,
+    source: str | None = None,
 ) -> MultiServerResult:
     """Process ``canonical_path`` and publish to every owning server.
 
@@ -1425,7 +1459,7 @@ def process_canonical_path(
             any_pending = any(r.status is PublisherStatus.PUBLISHED_PENDING_REGISTRATION for r in results)
             fast_status = MultiServerStatus.PUBLISHED if any_pending else MultiServerStatus.SKIPPED
             fast_message = (
-                "All outputs fresh; awaiting server-side trickplay registration"
+                "Tiles already on disk; auto-retry scheduled until the server indexes the file"
                 if any_pending
                 else "All outputs fresh; FFmpeg skipped"
             )
@@ -1454,6 +1488,8 @@ def process_canonical_path(
                     item_id_by_server=item_id_by_server,
                     attempt=retry_attempt + 1,
                     server_id_filter=server_id_filter,
+                    display_name=display_name,
+                    source=source,
                 )
             return MultiServerResult(
                 canonical_path=canonical_path,
@@ -1840,6 +1876,8 @@ def process_canonical_path(
                 # Without this the retry fans out to non-originator
                 # servers (final-audit MED).
                 server_id_filter=server_id_filter,
+                display_name=display_name,
+                source=source,
             )
 
         # Orphan cleanup runs once at the end of the dispatch so it sees

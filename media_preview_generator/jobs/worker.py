@@ -426,6 +426,15 @@ class Worker:
             else:
                 per_item_pin = None
 
+            # ``webhook_source`` lives on Config when this dispatch came
+            # from a webhook (Sonarr/Radarr/Plex/…). Use it as the gate
+            # for ``display_name``: webhook jobs have ``library_name``
+            # set to the cleaned title (e.g. ``"Deadliest Catch S22E01"``);
+            # full library scans set it to the section name (e.g.
+            # ``"Movies"``) which would mislead the chain row.
+            _webhook_source = getattr(config, "webhook_source", None) or None
+            _retry_display_name = self.library_name or None if _webhook_source else None
+
             def _run_once(gpu, gpu_device):
                 return process_canonical_path(
                     canonical_path=item.canonical_path,
@@ -447,6 +456,8 @@ class Worker:
                     # path's parent folder so unrelated entries simply
                     # find no matching artifacts and become no-ops.
                     deleted_paths=getattr(config, "webhook_deleted_paths", None) or None,
+                    display_name=_retry_display_name,
+                    source=_webhook_source,
                 )
 
             # Persist the per-file outcome via the job-runner-installed

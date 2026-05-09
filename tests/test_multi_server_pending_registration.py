@@ -107,11 +107,39 @@ def _plex():
 
 
 class TestServerNeedsItemRegistration:
-    def test_jellyfin_needs_item_registration(self):
-        assert _server_needs_item_registration(_jelly()) is True
+    """Discriminator must mirror the resolver's no-lookup policy in
+    ``_make_item_id_resolver`` — a server that the resolver hard-codes
+    to ``None`` MUST NOT be classified as needing item-registration,
+    otherwise its retry chain has no way to terminate (live regression
+    chain ``retry-3d1cfc6394a78c5a`` 2026-05-10).
+    """
 
-    def test_emby_needs_item_registration(self):
-        assert _server_needs_item_registration(_emby()) is True
+    def test_jellyfin_with_plugin_needs_item_registration(self):
+        from media_preview_generator.processing import multi_server as ms
+
+        with patch.object(ms, "_jellyfin_plugin_cached_installed", return_value=True):
+            assert _server_needs_item_registration(_jelly()) is True
+
+    def test_jellyfin_without_plugin_does_not_need_item_registration(self):
+        """Without the Media Preview Bridge plugin the resolver returns
+        ``None`` to avoid the 30s Pass-2 enumeration cost — so the chain
+        could never resolve an id and would exhaust at attempt 5.
+        """
+        from media_preview_generator.processing import multi_server as ms
+
+        with patch.object(ms, "_jellyfin_plugin_cached_installed", return_value=False):
+            assert _server_needs_item_registration(_jelly()) is False
+
+    def test_emby_does_not_need_item_registration(self):
+        """Emby's resolver hard-codes ``None`` (Sonarr/Radarr never
+        carry Emby ids and the lookup is slow). Without this fix every
+        chain involving Emby would exhaust at attempt 5 because the
+        ``any(... PENDING_REGISTRATION ...)`` continuation condition
+        was permanently true. The path-based ``/Library/Media/Updated``
+        partial scan IS the registration mechanism for Emby and it
+        ran successfully during publish.
+        """
+        assert _server_needs_item_registration(_emby()) is False
 
     def test_plex_does_not_need_item_registration(self):
         # Plex inherits the base no-op _trigger_item_refresh.
@@ -125,11 +153,21 @@ class TestServerNeedsItemRegistration:
 
 class TestPublishSuccessReturnsPending:
     def test_jellyfin_publish_with_item_id_None_returns_PENDING(self, tmp_path):
-        """Tiles on disk, but item_id=None → PENDING_REGISTRATION (not PUBLISHED)."""
+        """Tiles on disk, item_id=None, plugin INSTALLED → PENDING.
+
+        Plugin-installed Jellyfin is the one server tier where the
+        resolver will actually try to look up an id on the next retry
+        — so PENDING is satisfiable.
+        """
+        from media_preview_generator.processing import multi_server as ms
+
         jelly = _jelly()
         adapter = _adapter()
 
-        with patch.object(JellyfinServer, "trigger_refresh") as refresh:
+        with (
+            patch.object(ms, "_jellyfin_plugin_cached_installed", return_value=True),
+            patch.object(JellyfinServer, "trigger_refresh") as refresh,
+        ):
             outcome = _publish_one(
                 jelly,
                 adapter,
@@ -167,7 +205,15 @@ class TestPublishSuccessReturnsPending:
 
         assert outcome.status is PublisherStatus.PUBLISHED
 
-    def test_emby_publish_with_item_id_None_returns_PENDING(self, tmp_path):
+    def test_emby_publish_with_item_id_None_returns_PUBLISHED(self, tmp_path):
+        """Emby's resolver hard-codes ``None``, so PENDING here would be
+        unsatisfiable: every retry would re-resolve to None, the chain
+        would exhaust at attempt 5 (live regression
+        ``retry-3d1cfc6394a78c5a`` on Deadliest Catch S22E01,
+        2026-05-10). The path-based ``/Library/Media/Updated`` partial
+        scan IS the registration mechanism for Emby and ran during
+        publish — return PUBLISHED, not PENDING.
+        """
         emby = _emby()
         adapter = _adapter(name="emby_sidecar")
 
@@ -180,7 +226,7 @@ class TestPublishSuccessReturnsPending:
                 skip_if_exists=False,
             )
 
-        assert outcome.status is PublisherStatus.PUBLISHED_PENDING_REGISTRATION
+        assert outcome.status is PublisherStatus.PUBLISHED
 
     def test_plex_publish_unaffected_by_PENDING_path(self, tmp_path):
         """Plex never reaches publish-with-item_id=None because its
@@ -230,8 +276,11 @@ class TestPublishSuccessReturnsPending:
 
 
 class TestSkipIfExistsBranchPromotesPending:
-    def test_skip_if_exists_with_item_id_None_returns_PENDING_for_jellyfin(self, tmp_path):
-        """Outputs already on disk + item_id None → still PENDING (retry will pick up)."""
+    def test_skip_if_exists_with_item_id_None_returns_PENDING_for_jellyfin_with_plugin(self, tmp_path):
+        """Outputs already on disk + item_id None + plugin INSTALLED →
+        PENDING (retry's id-resolution can satisfy it)."""
+        from media_preview_generator.processing import multi_server as ms
+
         jelly = _jelly()
         # Real output path so outputs_fresh_for_source can decide skip.
         out = tmp_path / "Movie.trickplay" / "320 - 10x10" / "0.jpg"
@@ -247,6 +296,7 @@ class TestSkipIfExistsBranchPromotesPending:
                 "media_preview_generator.processing.multi_server.outputs_fresh_for_source",
                 return_value=True,
             ),
+            patch.object(ms, "_jellyfin_plugin_cached_installed", return_value=True),
             patch.object(JellyfinServer, "trigger_refresh") as refresh,
         ):
             outcome = _publish_one(
@@ -264,11 +314,14 @@ class TestSkipIfExistsBranchPromotesPending:
         # critical bit — without it the retry would never promote).
         refresh.assert_called_once()
 
-    def test_skip_if_exists_with_item_id_None_returns_PENDING_for_emby(self, tmp_path):
-        """Same matrix cell as Jellyfin but for Emby — both servers use
-        per-item registration, so the PENDING promotion logic applies
-        equally. Asserts the discriminator + skip-branch wiring don't
-        accidentally treat Emby differently from Jellyfin."""
+    def test_skip_if_exists_with_item_id_None_returns_SKIPPED_OUTPUT_EXISTS_for_emby(self, tmp_path):
+        """Emby's resolver hard-codes ``None`` so PENDING here would be
+        unsatisfiable (retry would re-resolve to None and the chain
+        would exhaust at attempt 5 — see live regression
+        ``retry-3d1cfc6394a78c5a``). The path-based scan ran during
+        the original publish, so SKIPPED_OUTPUT_EXISTS is the right
+        terminal state — there's nothing useful left for a retry to do.
+        """
         emby = _emby()
         out = tmp_path / "Movie-320-10.bif"
         out.write_bytes(b"BIF")
@@ -290,16 +343,12 @@ class TestSkipIfExistsBranchPromotesPending:
                 skip_if_exists=True,
             )
 
-        assert outcome.status is PublisherStatus.PUBLISHED_PENDING_REGISTRATION
+        assert outcome.status is PublisherStatus.SKIPPED_OUTPUT_EXISTS
         adapter.publish.assert_not_called()
+        # trigger_refresh STILL fires — the path-based nudge is the
+        # registration mechanism for Emby and must run on every dispatch
+        # so a manually re-encoded source is re-noticed by Emby's scan.
         refresh.assert_called_once()
-        # Boundary kwargs assertion — trigger_refresh receives item_id=None
-        # AND remote_path so the path-based nudge fires (the critical bit
-        # — without it Emby never re-checks the path and the retry's
-        # item-id resolution would have nothing to anchor to).
-        call = refresh.call_args
-        assert call.kwargs["item_id"] is None
-        assert call.kwargs["remote_path"] == str(tmp_path / "Movie.mkv")
 
     def test_skip_if_exists_with_resolved_item_id_returns_SKIPPED_OUTPUT_EXISTS(self, tmp_path):
         """On a retry where the item id now resolves: skip-if-exists fires
@@ -447,9 +496,15 @@ class TestAllFreshFastPathRegistrationRetry:
 
         from unittest.mock import patch as _patch
 
+        from media_preview_generator.processing import multi_server as ms
+
         with (
             _patch.object(JellyfinServer, "trigger_refresh") as refresh_mock,
             _patch.object(JellyfinServer, "resolve_remote_path_to_item_id", return_value=None),
+            # Plugin-installed Jellyfin is the only Jellyfin tier where the
+            # resolver attempts a lookup → it's the only tier where the
+            # discriminator returns True → PENDING is satisfiable here.
+            _patch.object(ms, "_jellyfin_plugin_cached_installed", return_value=True),
         ):
             mock_config.working_tmp_folder = str(tmp_path / "tmp")
             result = process_canonical_path(
@@ -642,3 +697,74 @@ class TestPendingRegistrationCountsAsPublished:
         assert PublisherStatus.SKIPPED_OUTPUT_EXISTS not in _PUBLISHED_LIKE_STATUSES
         assert PublisherStatus.SKIPPED_NOT_INDEXED not in _PUBLISHED_LIKE_STATUSES
         assert PublisherStatus.FAILED not in _PUBLISHED_LIKE_STATUSES
+
+
+class TestEmbyChainTerminatesNaturally:
+    """Live regression: chain ``retry-3d1cfc6394a78c5a`` against
+    Deadliest Catch S22E01 (2026-05-10 05:27 → 06:51) ran all 5 retry
+    attempts then exhausted because EmbyTest was permanently
+    PUBLISHED_PENDING_REGISTRATION — the resolver hard-codes None for
+    Emby and the discriminator (pre-fix) returned True, so the
+    continuation condition ``any(... PENDING_REGISTRATION ...)`` was
+    permanently true. Result: chain falsely reported ``failed`` after
+    70+ minutes of backoff while the BIF was already on disk and
+    Emby's path-based scan had registered it correctly on attempt 1.
+
+    These tests pin the fix: Emby's PUBLISHED_PENDING_REGISTRATION
+    pathway must not exist at all. Path-based scan IS Emby's
+    registration mechanism and the result must be PUBLISHED on the
+    initial publish (publish branch) and SKIPPED_OUTPUT_EXISTS on
+    every subsequent dispatch (skip-if-exists branch).
+    """
+
+    def test_emby_publish_branch_returns_PUBLISHED_with_no_item_id(self, tmp_path):
+        emby = _emby()
+        adapter = _adapter(name="emby_sidecar")
+        with patch.object(EmbyServer, "trigger_refresh") as refresh:
+            outcome = _publish_one(
+                emby,
+                adapter,
+                _bundle(tmp_path),
+                item_id=None,
+                skip_if_exists=False,
+            )
+        assert outcome.status is PublisherStatus.PUBLISHED, (
+            "Emby's publish branch with item_id=None MUST return PUBLISHED; "
+            "if it returns PENDING the chain has no path to terminate."
+        )
+        # Path-based scan nudge MUST still fire — it's how Emby learns
+        # about the new BIF (and how a re-encoded source gets re-scanned).
+        refresh.assert_called_once()
+        call = refresh.call_args
+        assert call.kwargs["item_id"] is None
+        assert call.kwargs["remote_path"] == str(tmp_path / "Movie.mkv")
+
+    def test_emby_skip_branch_returns_SKIPPED_OUTPUT_EXISTS_with_no_item_id(self, tmp_path):
+        emby = _emby()
+        out = tmp_path / "Movie-320-10.bif"
+        out.write_bytes(b"BIF")
+        adapter = _adapter(name="emby_sidecar")
+        adapter.compute_output_paths.return_value = [out]
+        with (
+            patch(
+                "media_preview_generator.processing.multi_server.outputs_fresh_for_source",
+                return_value=True,
+            ),
+            patch.object(EmbyServer, "trigger_refresh") as refresh,
+        ):
+            outcome = _publish_one(
+                emby,
+                adapter,
+                _bundle(tmp_path),
+                item_id=None,
+                skip_if_exists=True,
+            )
+        assert outcome.status is PublisherStatus.SKIPPED_OUTPUT_EXISTS, (
+            "Emby's skip-if-exists branch with item_id=None MUST return "
+            "SKIPPED_OUTPUT_EXISTS — pre-fix it returned PENDING and the "
+            "chain exhausted at attempt 5 (live regression "
+            "retry-3d1cfc6394a78c5a 2026-05-10)."
+        )
+        # Path nudge still fires on every dispatch so an in-place
+        # re-encode gets re-noticed by Emby's scan.
+        refresh.assert_called_once()

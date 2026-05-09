@@ -172,6 +172,13 @@ class Config:
     # upgrade victim used. None = no upgrade signal; cleanup falls back
     # to its post-publish neighbor sweep only.
     webhook_deleted_paths: list[str] | None = None
+    # Trigger-source pill (``"sonarr"``, ``"radarr"``, ``"sportarr"``,
+    # ``"plex"``, ``"emby"``, ``"jellyfin"``, ``"custom"``, ``"scheduled"``,
+    # …) the dispatcher carries down to ``process_canonical_path`` so the
+    # retry-chain Job can render the same colored pill its parent dispatch
+    # row carries — without it the chain row falls back to a bare title
+    # and the user can't tell at a glance which trigger spawned the chain.
+    webhook_source: str | None = None
     # Exclude paths: list of {"value": str, "type": "path"|"regex"}; path = prefix match, regex = full match
     exclude_paths: list[dict[str, str]] | None = None
     # When a job is pinned to one configured media-server (via the Schedules

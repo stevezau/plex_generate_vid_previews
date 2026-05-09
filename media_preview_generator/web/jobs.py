@@ -29,6 +29,53 @@ from loguru import logger
 LOG_RETENTION_CLEARED_MESSAGE = "Log file was cleared due to log retention policy."
 
 
+def _synthesize_retry_chain_log_lines(job: "Job") -> list[str]:
+    """Render a retry-chain Job's state as readable log-style lines.
+
+    Retry-chain rows (``config["is_retry_chain"]``) never write a per-
+    attempt log file — they're a UI surface for the headless retry
+    queue. Returning the literal "Log file was cleared..." message here
+    misleads users into thinking real logs were pruned, when no log
+    ever existed for this row in the first place.
+
+    Each per-attempt dispatch is a SEPARATE Job with its own log file
+    (look it up by basename in the Jobs panel).
+    """
+
+    def _ts(iso_value: str | None) -> str:
+        if not iso_value:
+            return "--:--:--"
+        try:
+            return datetime.fromisoformat(iso_value).strftime("%H:%M:%S")
+        except (TypeError, ValueError):
+            return "--:--:--"
+
+    cfg = job.config or {}
+    started_at = cfg.get("retry_started_at") or job.created_at
+    started_ts = _ts(started_at)
+    basename = cfg.get("retry_basename") or job.library_name or "(unknown)"
+    canonical = cfg.get("retry_chain_for") or "(unknown)"
+    attempt = cfg.get("retry_attempt", 0)
+    max_attempts = cfg.get("retry_max_attempts", 0)
+    last_outcome = cfg.get("last_outcome") or "(unknown)"
+
+    lines = [
+        f"[{started_ts}] Retry-chain status row (no per-attempt logs are written here).",
+        f"[{started_ts}] Each retry attempt is a separate Job with its own log file —",
+        f"[{started_ts}] look up '{basename}' in the Jobs panel to see the dispatched logs.",
+        f"[{started_ts}] Source path: {canonical}",
+        f"[{started_ts}] Chain status: {job.status.value if hasattr(job.status, 'value') else job.status}",
+        f"[{started_ts}] Attempt: {attempt} of {max_attempts}",
+        f"[{started_ts}] Last outcome: {last_outcome}",
+    ]
+    if job.progress and job.progress.retry_eta:
+        eta_ts = _ts(job.progress.retry_eta)
+        lines.append(f"[{started_ts}] Next attempt scheduled at: {eta_ts}")
+    if job.error:
+        lines.append(f"[{started_ts}] Reason: {job.error}")
+    return lines
+
+
 # Sentinel for update_progress kwargs that need to distinguish
 # "not passed" from "explicitly set to None" — the existing fields use
 # None as "leave alone," but retry_eta needs an explicit clear path.
@@ -997,6 +1044,7 @@ class JobManager:
         server_name: str | None = None,
         server_type: str | None = None,
         reason: str | None = None,
+        source: str | None = None,
     ) -> Job:
         """Create or update the retry-chain Job for ``canonical_path``.
 
@@ -1050,19 +1098,27 @@ class JobManager:
         with self._lock:
             job = self._jobs.get(chain_id)
             if job is None:
+                init_config: dict[str, Any] = {
+                    "is_retry_chain": True,
+                    "retry_chain_for": canonical_path,
+                    "retry_max_attempts": int(max_attempts),
+                    "retry_basename": basename,
+                    "retry_started_at": now_iso,
+                }
+                if source:
+                    # Surface the trigger pill (sonarr/radarr/sportarr/plex/…)
+                    # the same way real dispatch jobs do — _serverBadge() in
+                    # app.js falls back on config["source"] when the row has
+                    # no server_type, so without this the chain row renders
+                    # bare while the parent row carries the colored pill.
+                    init_config["source"] = source
                 job = Job(
                     id=chain_id,
                     library_name=basename,
                     server_id=server_id,
                     server_name=server_name,
                     server_type=server_type,
-                    config={
-                        "is_retry_chain": True,
-                        "retry_chain_for": canonical_path,
-                        "retry_max_attempts": int(max_attempts),
-                        "retry_basename": basename,
-                        "retry_started_at": now_iso,
-                    },
+                    config=init_config,
                 )
                 self._jobs[chain_id] = job
             else:
@@ -1071,6 +1127,17 @@ class JobManager:
                     job.server_id = server_id
                     job.server_name = server_name
                     job.server_type = server_type
+                if source and not job.config.get("source"):
+                    job.config["source"] = source
+                # When the cleaned title arrives later (e.g. first attempt
+                # was scheduled with the raw basename, second attempt's
+                # caller has the dispatcher's library_name) prefer the
+                # cleaner one — tested by length-comparing rather than
+                # blindly overwriting, since "Show S01E01" is shorter
+                # AND cleaner than "Show.Name.S01E01.…-RELEASE.mkv".
+                if basename and basename != job.library_name and len(basename) < len(job.library_name or ""):
+                    job.library_name = basename
+                    job.config["retry_basename"] = basename
 
             job.config["retry_attempt"] = int(attempt)
             job.config["retry_max_attempts"] = int(max_attempts)
@@ -1491,6 +1558,15 @@ class JobManager:
                     return logs[-last_n:]
                 return logs
             job = self._jobs.get(job_id)
+            if job and job.config.get("is_retry_chain"):
+                # Retry-chain rows are EPHEMERAL UI state — they never write
+                # a per-attempt log file, so pre-fix the retention-fallback
+                # branch below misled users into thinking real logs had
+                # been pruned. Synthesize a chain-status summary instead.
+                logs = _synthesize_retry_chain_log_lines(job)
+                if last_n:
+                    return logs[-last_n:]
+                return logs
             if job and job.status in (
                 JobStatus.COMPLETED,
                 JobStatus.FAILED,
@@ -1526,6 +1602,11 @@ class JobManager:
                 return {"lines": sliced, "total_lines": total, "offset": offset}
 
             job = self._jobs.get(job_id)
+            if job and job.config.get("is_retry_chain"):
+                logs = _synthesize_retry_chain_log_lines(job)
+                total = len(logs)
+                sliced = logs[offset : offset + limit] if limit is not None else logs[offset:]
+                return {"lines": sliced, "total_lines": total, "offset": offset}
             if job and job.status in (
                 JobStatus.COMPLETED,
                 JobStatus.FAILED,
