@@ -276,17 +276,6 @@ class EmbyServer(EmbyApiClient):
 
     _RECOMMENDED_SETTINGS: tuple[tuple[str, str, bool, str, str], ...] = (
         (
-            "EnableChapterImageExtraction",
-            "Enable BIF sidecar discovery",
-            True,
-            "critical",
-            "Master gate for Emby's BIF sidecar discovery. With this OFF, Emby never "
-            "looks for the <basename>-W-I.bif files this app publishes — they sit on "
-            "disk doing nothing and the player serves no scrubbing previews. Enabling "
-            "it lets Emby READ existing sidecar BIFs without forcing it to GENERATE "
-            "new ones (that's the separate ExtractChapterImagesDuringLibraryScan flag).",
-        ),
-        (
             "ExtractTrickplayImagesDuringLibraryScan",
             "Skip Emby's own trickplay generation",
             False,
@@ -299,10 +288,9 @@ class EmbyServer(EmbyApiClient):
             "Skip Emby's chapter-image extraction",
             False,
             "recommended",
-            "Stops Emby generating chapter images on every scan. The separate "
-            "EnableChapterImageExtraction flag (above) keeps the BIF discovery pipeline "
-            "ON so Emby still reads our sidecar BIFs — Emby just doesn't run its own "
-            "ffmpeg against every video during scans.",
+            "Older Emby's preview-thumbnail mechanism. We don't write chapter images, so "
+            "leaving this on means Emby generates them every scan with no display impact "
+            "from anything this app publishes.",
         ),
         (
             "EnableRealtimeMonitor",
@@ -374,35 +362,6 @@ class EmbyServer(EmbyApiClient):
     # aren't deleted by any change), so confirm.kind is always "button"
     # and the body explains what the action does + what it costs.
     _FLAG_METADATA: dict[str, dict[str, Any]] = {
-        "EnableChapterImageExtraction": {
-            "check_id": "chapter_extraction_enabled",
-            "docs_anchor": "chapter-extraction-enabled",
-            "tooltip": "Master gate for Emby reading sidecar BIF files",
-            "explanation": (
-                "<p><strong>What it does:</strong> turns Emby's BIF sidecar discovery on or off. "
-                "When ON, Emby looks for <code>&lt;basename&gt;-&lt;width&gt;-&lt;interval&gt;.bif</code> "
-                "files next to each media file at scan time and serves them to the player as "
-                "scrubbing previews. When OFF, Emby ignores sidecar BIFs entirely.</p>"
-                "<p><strong>Why we recommend on:</strong> this app publishes a sidecar BIF in "
-                "exactly that filename pattern next to every video. Without this flag enabled, "
-                "those BIF files sit on disk doing nothing — players show a blank scrubber. "
-                "Enabling it does NOT make Emby generate its own BIFs (that's the separate "
-                "<em>Extract Chapter Images During Library Scan</em> flag, which we recommend OFF).</p>"
-                "<p><strong>What happens if you disable it:</strong> Emby stops reading our BIF "
-                "sidecars. The files stay on disk but the player has no scrubbing previews "
-                "until you re-enable the flag.</p>"
-            ),
-            "enable_body": (
-                "Turns ON Emby's BIF sidecar discovery. Emby will start serving the BIF files "
-                "this app publishes alongside each media file. Does NOT make Emby generate its "
-                "own BIFs — that's a separate flag. Reversible any time."
-            ),
-            "disable_body": (
-                "Turns OFF Emby's BIF sidecar discovery. Emby will stop reading the BIF files "
-                "this app publishes — players will show a blank scrubber. Files stay on disk; "
-                "re-enable any time to restore."
-            ),
-        },
         "ExtractTrickplayImagesDuringLibraryScan": {
             "check_id": "scan_extraction",
             "docs_anchor": "scan-extraction",
@@ -433,32 +392,28 @@ class EmbyServer(EmbyApiClient):
         "ExtractChapterImagesDuringLibraryScan": {
             "check_id": "chapter_extraction",
             "docs_anchor": "chapter-extraction",
-            "tooltip": "Stop Emby generating chapter images during scans",
+            "tooltip": "Emby's older chapter-image preview pipeline",
             "explanation": (
-                "<p><strong>What it does:</strong> when ON, Emby runs ffmpeg against every "
-                "video during a library scan to generate its own chapter-image / BIF set. When "
-                "OFF, Emby skips the generation step.</p>"
-                "<p><strong>Relationship to the master flag:</strong> this flag controls "
-                "GENERATING; the separate <em>Enable Chapter Image Extraction</em> flag controls "
-                "READING. We recommend Enable=ON + Extract=OFF — Emby reads the BIF sidecars "
-                "this app publishes, but doesn't waste CPU generating its own.</p>"
-                "<p><strong>Why we recommend off:</strong> this app already generates BIFs "
-                "(GPU-accelerated, HDR-aware, frame-cached). Letting Emby also extract during "
-                "scans is pure duplicate CPU.</p>"
-                "<p><strong>What happens if you enable it:</strong> Emby starts generating its "
-                "own BIFs during every scan in parallel to this app. Whichever lands first wins; "
-                "non-destructive but scans get longer. Reversible any time.</p>"
+                "<p><strong>What it does:</strong> generates chapter-image thumbnails during "
+                "library scans — the preview mechanism Emby used before 4.8 introduced "
+                "trickplay tiles.</p>"
+                "<p><strong>Why we recommend off:</strong> chapter images aren't what this app "
+                "publishes (we write trickplay tiles). Leaving chapter-image extraction on means "
+                "Emby burns CPU during every scan generating thumbnails nothing in this pipeline "
+                "reads or displays.</p>"
+                "<p><strong>What happens if you enable it:</strong> Emby generates chapter images "
+                "during scans. They don't replace or conflict with this app's trickplay tiles — "
+                "just wasted CPU. Reversible any time.</p>"
             ),
             "enable_body": (
-                "Re-enables Emby's scan-time BIF generation. Emby will run ffmpeg against every "
-                "video during scans in parallel to this app. Doesn't break anything but burns "
-                "CPU on duplicate work. Reversible."
+                "Re-enables Emby's chapter-image extraction during library scans. Legacy Emby "
+                "preview mechanism; doesn't affect trickplay tiles this app publishes. Just "
+                "costs CPU during scans."
             ),
             "disable_body": (
-                "Stops Emby generating BIFs during scans. This app keeps publishing BIF "
-                "sidecars the same way — Emby just doesn't duplicate the work. Reading "
-                "(controlled by the separate 'Enable Chapter Image Extraction' flag) is "
-                "unaffected. Non-destructive and reversible."
+                "Stops Emby generating chapter-image thumbnails during scans. This app's "
+                "trickplay tiles aren't affected — they're a separate mechanism. Non-destructive "
+                "and reversible."
             ),
         },
         "EnableRealtimeMonitor": {
@@ -709,7 +664,6 @@ class EmbyServer(EmbyApiClient):
         # --- Library settings — per-library per-flag rows ------------
         library_checks: list[dict[str, Any]] = []
         library_section_ok = True
-        library_has_critical_failure = False
         try:
             response = self._request("GET", "/Library/VirtualFolders")
             response.raise_for_status()
@@ -732,8 +686,6 @@ class EmbyServer(EmbyApiClient):
                     row_ok = current == recommended
                     if not row_ok:
                         library_section_ok = False
-                        if severity == "critical":
-                            library_has_critical_failure = True
                     meta = self._FLAG_METADATA.get(flag, {})
                     actions = self._flag_actions(flag, current)
                     for key in ("enable", "disable"):
@@ -760,27 +712,13 @@ class EmbyServer(EmbyApiClient):
                         }
                     )
 
-        # Section severity reflects the most severe failed check.
-        # ``critical`` means a flag that genuinely breaks preview
-        # rendering (e.g. EnableChapterImageExtraction=False, which
-        # gates Emby's BIF discovery — without it, every BIF this app
-        # publishes is invisible to the player). ``recommended`` is
-        # advisory (wasted CPU on duplicate work but doesn't break
-        # playback). All-OK collapses to ``info``.
-        if library_has_critical_failure:
-            section_severity = "critical"
-        elif not library_section_ok:
-            section_severity = "recommended"
-        else:
-            section_severity = "info"
-
         sections.append(
             {
                 "id": "library_settings",
                 "title": "Library settings",
                 "docs_anchor": "library-settings",
                 "ok": library_section_ok,
-                "severity": section_severity,
+                "severity": "recommended" if not library_section_ok else "info",
                 "checks": library_checks,
             }
         )
@@ -865,15 +803,8 @@ class EmbyServer(EmbyApiClient):
 
         return {
             "vendor": "emby",
-            # ``overall_ok`` flips False when:
-            #   - We can't reach Emby at all (every check depends on it), OR
-            #   - A CRITICAL library flag is mis-set (e.g.
-            #     ``EnableChapterImageExtraction=False`` — Emby's BIF
-            #     discovery gate; without it, every BIF this app publishes
-            #     is invisible). Advisory ``recommended``-severity issues
-            #     (wasted-CPU warnings) keep overall_ok=True; only true
-            #     "previews don't work" failures break it.
-            "overall_ok": connection_ok and not library_has_critical_failure,
+            # Emby library-flag issues are advisory, never blocking.
+            "overall_ok": connection_ok,
             "sections": sections,
         }
 
