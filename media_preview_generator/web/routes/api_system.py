@@ -702,14 +702,34 @@ def get_whats_new():
 @api.route("/system/whats-new/dismiss", methods=["POST"])
 @setup_or_auth_required
 def dismiss_whats_new():
-    """Mark the current version's changelog as seen."""
+    """Mark the current version's changelog as seen.
+
+    Only persists ``current_version`` when it parses cleanly as semver.
+    Dev/PR/local-build images report non-semver strings like
+    ``dev@abc1234`` or ``PR-42``; writing those into
+    ``last_seen_version`` would make every future
+    ``parse_version(last_seen)`` raise and silently swallow real
+    release entries on the next upgrade. Skipping the write keeps the
+    prior valid baseline (typically the user's pre-upgrade release).
+    """
+    from ...version_check import parse_version
     from ..settings_manager import get_settings_manager
 
     settings = get_settings_manager()
     version_info = _get_version_info()
     current = version_info.get("current_version", "")
-    if current and current not in ("0.0.0", "0.0.0.dev0", "local build"):
-        settings.update({"last_seen_version": current})
+    if not current:
+        return jsonify({"ok": True})
+    # 0.0.0 / 0.0.0.dev0 are version-unknown sentinels from get_current_version's
+    # fallback path — they parse cleanly but writing them would make every real
+    # release look "newer" forever on the next upgrade.
+    if current in ("0.0.0", "0.0.0.dev0"):
+        return jsonify({"ok": True})
+    try:
+        parse_version(current)
+    except ValueError:
+        return jsonify({"ok": True})
+    settings.update({"last_seen_version": current})
     return jsonify({"ok": True})
 
 
