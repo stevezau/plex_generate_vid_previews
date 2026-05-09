@@ -551,7 +551,21 @@ class JobManager:
             return
 
         needs_resave: list[Job] = []
+        retry_chain_orphans: list[str] = []
         for job in stored_jobs:
+            # Retry-chain Jobs (id prefix ``retry-``) are EPHEMERAL by
+            # design — the underlying ``threading.Timer`` instances in
+            # the in-process retry queue do not survive a container
+            # restart, so a persisted retry-chain Job is meaningless
+            # (the chain it was tracking is gone). Pre-fix these would
+            # be loaded back into ``_jobs`` and "revived" by the
+            # interrupted-jobs logic below, accumulating thousands of
+            # orphaned rows that hammer the dashboard. Drop them at
+            # load time AND remove them from the SQLite store so the
+            # next graceful exit doesn't re-write them.
+            if job.id.startswith("retry-"):
+                retry_chain_orphans.append(job.id)
+                continue
             # Mark any "running" jobs as failed on startup (interrupted by
             # restart/crash). Same policy as the legacy JSON loader had.
             if job.status == JobStatus.RUNNING:
@@ -569,6 +583,21 @@ class JobManager:
             elif job.status == JobStatus.PENDING:
                 self._interrupted_jobs.append(job)
             self._jobs[job.id] = job
+
+        # Best-effort delete of any orphaned retry-chain rows. Failures
+        # don't block startup — the upsert path now skips persistence,
+        # so even if delete fails the store stops growing.
+        if retry_chain_orphans and self._storage is not None:
+            logger.info(
+                "Dropping {} orphaned retry-chain Job(s) from previous run "
+                "(retry chains are ephemeral; persistence was a regression in 9fc29dd)",
+                len(retry_chain_orphans),
+            )
+            for chain_id in retry_chain_orphans:
+                try:
+                    self._storage.delete(chain_id)
+                except Exception as exc:
+                    logger.debug("Could not delete orphaned retry-chain {}: {}", chain_id, exc)
 
         for job in needs_resave:
             self._persist_job(job)
@@ -1085,7 +1114,25 @@ class JobManager:
             # display.
             job.created_at = now_iso
 
-            self._persist_job(job)
+            # Retry-chain Jobs are EPHEMERAL by design — they exist
+            # only to surface the in-process retry timers to the user-
+            # visible Jobs panel. The underlying timers
+            # (RetryScheduler in retry_queue.py) live in
+            # ``threading.Timer`` instances that DO NOT survive a
+            # container restart, so persisting these Job rows leaves
+            # orphaned entries that:
+            #   * Get "revived" by the interrupted-jobs logic on
+            #     startup, hammering the dashboard with stale rows.
+            #   * Accumulate without bound — full library scan
+            #     produced 5,387 stale rows in production 2026-05-09
+            #     before this fix landed.
+            #   * Slow Plex readiness probes to 30+ seconds because
+            #     the dashboard rendered 50+ orphaned chains.
+            #
+            # Skip persistence: the chain Job lives only in the
+            # in-memory ``_jobs`` dict, broadcasts via SocketIO, and
+            # disappears with the container. The retry chain itself is
+            # a transient signal, not a durable workload.
             self._emit_event("job_updated", job.to_dict())
         return job
 

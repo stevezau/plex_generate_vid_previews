@@ -327,6 +327,92 @@ class TestUpsertRetryChainJob:
     # UI integration — config aliases
     # ------------------------------------------------------------------
 
+    def test_chain_jobs_are_ephemeral_not_persisted_to_disk(self, jm, tmp_path):
+        """Regression for 5,387-orphan production incident 2026-05-09:
+        my 9fc29dd commit persisted retry-chain Jobs to ``jobs.db``.
+        Each library scan / webhook burst created hundreds of chains;
+        on container restart they were "revived" by the
+        interrupted-jobs logic and hammered the dashboard until the
+        Plex previews-readiness probe slowed to 30+ seconds.
+
+        Fix: retry-chain Jobs are EPHEMERAL — they live only in the
+        in-memory ``_jobs`` dict and disappear with the container.
+        The underlying ``threading.Timer`` instances in the retry
+        queue don't survive restart either, so the chain itself is
+        gone — the user-visible Job row would be orphaned anyway.
+
+        This test pins that contract: upserting a retry-chain Job
+        does NOT touch the SQLite store. A new ``JobManager`` started
+        against the same config dir doesn't see the chain.
+        """
+        from media_preview_generator.web.jobs import JobManager
+
+        path = "/data/Movies/Foo.mkv"
+        jm.upsert_retry_chain_job(
+            canonical_path=path,
+            basename="Foo.mkv",
+            attempt=1,
+            max_attempts=5,
+            next_run_at=None,
+            wait_seconds=30,
+            outcome="scheduled",
+        )
+        # The chain Job IS visible in this JobManager instance...
+        assert any(j.id.startswith("retry-") for j in jm.get_all_jobs())
+
+        # ...but a brand-new JobManager (simulating a container
+        # restart) loading the same config dir MUST NOT see it.
+        import media_preview_generator.web.jobs as jobs_mod
+
+        with jobs_mod._job_lock:
+            jobs_mod._job_manager = None
+        jm2 = JobManager(config_dir=jm.config_dir)
+        assert not any(j.id.startswith("retry-") for j in jm2.get_all_jobs()), (
+            "Retry-chain Jobs MUST NOT survive a JobManager restart — they are "
+            "ephemeral by design (the underlying retry timer is gone after restart, "
+            "so a persisted Job row would be orphaned). Pre-fix this test would "
+            "fail because 9fc29dd called self._persist_job() on every upsert, "
+            "leaving the chain in jobs.db forever."
+        )
+
+    def test_load_drops_legacy_retry_chain_orphans(self, tmp_path):
+        """Belt-and-braces: even if a legacy ``jobs.db`` from a pre-fix
+        deployment contains persisted retry-chain rows, ``_load_jobs``
+        drops them at startup AND removes them from the store. This is
+        the recovery path for users who upgrade from 9fc29dd → the
+        next release without the fix; without this pruning, their
+        existing 5K+ orphans would still hammer the dashboard on first
+        boot of the fixed code.
+        """
+        import media_preview_generator.web.jobs as jobs_mod
+        from media_preview_generator.web.jobs import JobManager, JobStorage
+
+        with jobs_mod._job_lock:
+            jobs_mod._job_manager = None
+
+        config_dir = tmp_path / "legacy_config"
+        config_dir.mkdir()
+        # Hand-write the legacy persisted state by upserting directly
+        # via JobStorage (bypassing the new ephemeral upsert path).
+        storage = JobStorage(str(config_dir / "jobs.db"))
+        from media_preview_generator.web.jobs import Job
+
+        legacy_chain = Job(id="retry-deadbeef00000000", library_name="Old Chain")
+        storage.upsert(legacy_chain)
+        # Also stash a normal pending job so we can verify the load
+        # only drops chain Jobs, not other pending ones.
+        normal = Job(id="normal-1", library_name="Normal")
+        storage.upsert(normal)
+        storage.close()
+
+        # Fresh JobManager loads from the same config dir.
+        jm = JobManager(config_dir=str(config_dir))
+        all_jobs = jm.get_all_jobs()
+        chain_ids = [j.id for j in all_jobs if j.id.startswith("retry-")]
+        normal_ids = [j.id for j in all_jobs if not j.id.startswith("retry-")]
+        assert chain_ids == [], f"Legacy retry-chain Job(s) {chain_ids} survived load — pruning regression"
+        assert "normal-1" in normal_ids, "Pruning is over-aggressive — non-chain Jobs MUST survive load"
+
     def test_sets_existing_ui_aliases_for_existing_retry_renderer(self, jm):
         """The existing app.js retry-badge + countdown rendering reads
         ``config.is_retry`` and ``config.max_retries``. Our retry-chain
