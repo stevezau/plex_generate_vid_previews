@@ -136,7 +136,13 @@ class _FakeServer(MediaServer):
     def resolve_item_to_remote_path(self, item_id: str) -> str | None:
         return "/m/foo.mkv" if item_id == "42" else None
 
-    def trigger_refresh(self, *, item_id: str | None, remote_path: str | None) -> None:
+    def trigger_refresh(
+        self,
+        *,
+        item_id: str | None,
+        remote_path: str | None,
+        deleted_paths: list[str] | None = None,
+    ) -> None:
         return None
 
     def parse_webhook(self, payload: dict[str, Any] | bytes, headers: dict[str, str]) -> WebhookEvent | None:

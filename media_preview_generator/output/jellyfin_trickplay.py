@@ -153,6 +153,39 @@ class JellyfinTrickplayAdapter(OutputAdapter):
         """
         return JellyfinTrickplayAdapter.trickplay_dir(canonical_path) / f"{int(width)} - {int(tile_w)}x{int(tile_h)}"
 
+    def list_orphans_in_folder(self, folder: Path, live_basenames: set[str]) -> list[Path]:
+        """Enumerate ``<stem>.trickplay/`` directories whose source video is gone.
+
+        Returns trickplay directories matching the pattern Jellyfin reads
+        — ``<media_dir>/<basename>.trickplay/`` — where ``<basename>`` is
+        not in ``live_basenames``. Skips the atomic-swap debris dirs
+        (``.<basename>.trickplay.staging/``, ``.<basename>.trickplay.old/``)
+        which are owned by an in-flight publish.
+
+        Typical case: Radarr upgrades a movie file from
+        ``Movie-1080p-TheMrG.mkv`` to ``Movie-2160p-HDSWEB.mkv``. The
+        old ``.mkv`` is deleted, but ``Movie-1080p-TheMrG.trickplay/``
+        sits next to the new file forever unless something sweeps it.
+        This helper returns that orphan path.
+        """
+        try:
+            entries = list(folder.glob("*.trickplay"))
+        except OSError:
+            return []
+        orphans: list[Path] = []
+        for path in entries:
+            if not path.is_dir():
+                continue
+            # Skip atomic-swap debris (POSIX glob("*.trickplay") usually
+            # excludes hidden names already, but be paranoid for fs's
+            # like SMB / FAT that don't honour the ``.`` convention).
+            if path.name.startswith("."):
+                continue
+            if path.stem in live_basenames:
+                continue
+            orphans.append(path)
+        return orphans
+
     def publish(self, bundle: BifBundle, output_paths: list[Path], item_id: str | None = None) -> None:
         """Pack ``bundle.frame_dir`` JPG frames into Jellyfin tile sheets.
 

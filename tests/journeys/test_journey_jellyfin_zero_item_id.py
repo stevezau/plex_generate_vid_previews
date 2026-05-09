@@ -28,8 +28,8 @@ from PIL import Image
 
 from media_preview_generator.output import BifBundle, JellyfinTrickplayAdapter
 from media_preview_generator.processing.multi_server import (
+    _PUBLISHED_LIKE_STATUSES,
     MultiServerStatus,
-    PublisherStatus,
     process_canonical_path,
 )
 from media_preview_generator.servers import ServerType
@@ -376,8 +376,8 @@ class TestDispatcherLookupPolicy:
         mock_config.working_tmp_folder = str(tmp_path / "tmp")
         refresh_args: list[dict] = []
 
-        def capture_refresh(self, *, item_id, remote_path):
-            refresh_args.append({"item_id": item_id, "remote_path": remote_path})
+        def capture_refresh(self, *, item_id, remote_path, deleted_paths=None):
+            refresh_args.append({"item_id": item_id, "remote_path": remote_path, "deleted_paths": deleted_paths})
 
         from media_preview_generator.servers.emby import EmbyServer
 
@@ -406,8 +406,8 @@ class TestDispatcherLookupPolicy:
 
         refresh_args: list[dict] = []
 
-        def capture_refresh(self, *, item_id, remote_path):
-            refresh_args.append({"item_id": item_id, "remote_path": remote_path})
+        def capture_refresh(self, *, item_id, remote_path, deleted_paths=None):
+            refresh_args.append({"item_id": item_id, "remote_path": remote_path, "deleted_paths": deleted_paths})
 
         with (
             patch.object(EmbyApiClient, "resolve_remote_path_to_item_id", return_value=None) as lookup_mock,
@@ -1062,4 +1062,9 @@ class TestNoPassTwoCost:
             "no plugin. Regression in _make_item_id_resolver's vendor branching."
         )
         assert result.status is MultiServerStatus.PUBLISHED
-        assert result.publishers[0].status is PublisherStatus.PUBLISHED
+        # Without an item id (no plugin → no resolve), the publisher
+        # returns PUBLISHED_PENDING_REGISTRATION (tiles on disk, retry
+        # will pick up the registration once Jellyfin indexes the file).
+        # The aggregate MultiServerStatus is still PUBLISHED because the
+        # PENDING flavour counts as a published-shaped outcome.
+        assert result.publishers[0].status in _PUBLISHED_LIKE_STATUSES

@@ -102,11 +102,46 @@ class EmbyServer(EmbyApiClient):
             json_body={"Updates": [{"Path": server_view_path, "UpdateType": "Modified"}]},
         )
         response.raise_for_status()
+        logger.info(
+            "[{}] Triggered partial scan: {}",
+            self.name,
+            server_view_path,
+        )
+
+    def _trigger_path_deleted(self, server_view_path: str) -> None:
+        """Tell Emby a previously-imported file is gone.
+
+        Same ``/Library/Media/Updated`` endpoint as
+        :meth:`_trigger_path_refresh`, but with ``UpdateType:"Deleted"``
+        so Emby drops the stale library row instead of waiting for its
+        filesystem monitor / scheduled scan to notice. Used after
+        Radarr/Sonarr upgrade webhooks where the payload's
+        ``deletedFiles[]`` lists the prior release that was replaced.
+
+        Best-effort; failures are logged at debug level by the base
+        wrapper.
+        """
+        response = self._request(
+            "POST",
+            "/Library/Media/Updated",
+            json_body={"Updates": [{"Path": server_view_path, "UpdateType": "Deleted"}]},
+        )
+        response.raise_for_status()
+        logger.info(
+            "[{}] Notified deleted path: {}",
+            self.name,
+            server_view_path,
+        )
 
     def _trigger_item_refresh(self, item_id: str) -> None:
         """Refresh metadata for a single Emby item id."""
         response = self._request("POST", f"/Items/{item_id}/Refresh")
         response.raise_for_status()
+        logger.info(
+            "[{}] Triggered item refresh: {}",
+            self.name,
+            item_id,
+        )
 
     def set_vendor_extraction(
         self,

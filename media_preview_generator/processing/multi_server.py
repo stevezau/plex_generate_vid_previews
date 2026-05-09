@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -58,6 +59,7 @@ class PublisherStatus(str, Enum):
     """Per-publisher outcome categories."""
 
     PUBLISHED = "published"
+    PUBLISHED_PENDING_REGISTRATION = "published_pending_registration"
     SKIPPED_NOT_INDEXED = "skipped_not_indexed"
     SKIPPED_NOT_IN_LIBRARY = "skipped_not_in_library"
     SKIPPED_OUTPUT_EXISTS = "skipped_output_exists"
@@ -109,7 +111,31 @@ class MultiServerResult:
 
     @property
     def published_count(self) -> int:
-        return sum(1 for p in self.publishers if p.status is PublisherStatus.PUBLISHED)
+        return sum(1 for p in self.publishers if p.status in _PUBLISHED_LIKE_STATUSES)
+
+
+_PUBLISHED_LIKE_STATUSES: frozenset[PublisherStatus] = frozenset(
+    {
+        PublisherStatus.PUBLISHED,
+        # PENDING_REGISTRATION means tiles/sidecar landed on disk; only
+        # the server-side "register this trickplay row" step is deferred
+        # to a retry. From the user's "did the file generate?" angle it
+        # counts as published.
+        PublisherStatus.PUBLISHED_PENDING_REGISTRATION,
+    }
+)
+
+
+# Video extensions used by the orphan-cleanup sweep to decide which
+# files in a folder are "live media" and which sidecars own them.
+# Matches the formats Plex / Emby / Jellyfin ingest by default — being
+# conservative here is critical: if a media file's extension isn't in
+# this set, the sweep treats its basename as absent and may delete
+# legitimate sidecars. Add new extensions only when the corresponding
+# server actually plays them as video items.
+_VIDEO_EXTS: frozenset[str] = frozenset(
+    {".mkv", ".mp4", ".m4v", ".mov", ".avi", ".ts", ".m2ts", ".wmv", ".webm", ".mpg", ".mpeg"}
+)
 
 
 def _adapter_for_server(server_config: ServerConfig) -> OutputAdapter | None:
@@ -172,6 +198,269 @@ def _tmp_path_for(canonical_path: str, working_tmp_folder: str) -> str:
     """
     digest = hashlib.sha256(canonical_path.encode("utf-8")).hexdigest()[:16]
     return os.path.join(working_tmp_folder, f"frames-{digest}")
+
+
+def _adapters_for_cleanup(registry: ServerRegistry) -> list[OutputAdapter]:
+    """Return one adapter instance per configured server, for the orphan sweep.
+
+    The cleanup pass needs to know what artifact patterns to look for
+    (Jellyfin's ``<basename>.trickplay/``, Emby's ``<basename>-W-I.bif``).
+    Reusing :func:`_adapter_for_server` keeps the pattern definition in
+    one place — if a future server type adds another sidecar style, the
+    sweep picks it up automatically once the adapter implements
+    :meth:`OutputAdapter.list_orphans_in_folder`.
+
+    Skips adapters that don't write basename-derived sidecars (Plex's
+    bundle BIF lives under the Plex config folder, not next to the
+    media — its default ``list_orphans_in_folder`` returns ``[]`` so
+    including it here is safe but wasted work).
+    """
+    seen_kinds: set[str] = set()
+    adapters: list[OutputAdapter] = []
+    for cfg in registry.configs():
+        adapter = _adapter_for_server(cfg)
+        if adapter is None:
+            continue
+        # Dedupe by adapter class name — multiple Jellyfin servers all
+        # share the same artifact layout, so one JellyfinTrickplayAdapter
+        # is enough for the sweep.
+        if adapter.name in seen_kinds:
+            continue
+        seen_kinds.add(adapter.name)
+        adapters.append(adapter)
+    return adapters
+
+
+def cleanup_orphaned_outputs(
+    canonical_path: str,
+    *,
+    deleted_paths: list[str] | None,
+    registry: ServerRegistry,
+    config: Config,
+) -> list[Path]:
+    """Remove orphaned per-media sidecars next to ``canonical_path``.
+
+    Two passes, both idempotent:
+
+    1. **Targeted (webhook-driven).** For each path in ``deleted_paths``
+       (typically Radarr/Sonarr's ``deletedFiles[]`` from an upgrade
+       event), compute the artifact paths each adapter *would* have
+       written for that source basename and remove them if they exist.
+       Precise — never touches anything except the named upgrade victim.
+
+    2. **Neighbor sweep (safety net).** Scan ``canonical_path``'s
+       parent folder for sibling artifacts (``*.trickplay/``,
+       ``*-W-I.bif``) whose source video is no longer present. Catches
+       upgrades where the webhook payload didn't carry ``deletedFiles[]``
+       (older fork versions, manual renames). Bounded to one folder; no
+       recursion.
+
+    Safety:
+      * The neighbor sweep is **skipped** if the folder contains zero
+        recognised video files. A media folder that suddenly has no
+        ``.mkv`` / ``.mp4`` is most likely a temporarily-unmounted
+        volume; deleting all its sidecars would destroy work.
+      * Each removal is logged at INFO with the source-missing
+        explanation so an operator can audit what was deleted.
+      * ``rmtree(ignore_errors=True)`` / ``unlink(missing_ok=True)``
+        keeps the function idempotent even when the targeted + sweep
+        passes converge on the same path.
+
+    Returns the list of paths actually removed (after deletion). Best-
+    effort: per-path errors are logged at warning level but never
+    propagate — cleanup must not fail the surrounding job.
+    """
+    del config  # reserved for future settings (e.g. opt-out flag)
+
+    removed: list[Path] = []
+    adapters = _adapters_for_cleanup(registry)
+    if not adapters:
+        return removed
+
+    media_dir = Path(canonical_path).parent
+
+    # --- Pass 1: targeted webhook-driven removal --------------------
+    # Artifacts for ``old_path`` live in ``old_path``'s parent folder —
+    # not necessarily the new file's folder. Sonarr cross-season
+    # upgrades (Season 1 → Season 2) hit different directories. Always
+    # work relative to the OLD path's folder for this pass.
+    if deleted_paths:
+        for old_path in deleted_paths:
+            if not old_path:
+                continue
+            # CRITICAL safety guard — skip ``old_path`` if a file still
+            # exists at that exact path. Radarr's ``deletedFiles[]`` for
+            # an in-place upgrade (same filename, new content) lists the
+            # path of the OLD file that was overwritten — but that path
+            # now hosts the NEW file. Deleting sidecars for that
+            # basename would wipe the previews we just published. The
+            # canonical_path equality check below catches the most
+            # common case (Radarr's payload echoes movieFile.path);
+            # the exists() check covers path-mapping edge cases. Same
+            # smoke test that exposed this: Gary (2026) 2026-05-09 — the
+            # cleanup deleted the live ``.trickplay/`` + ``.bif`` after
+            # publish completed, until the retry's regenerate restored
+            # them.
+            try:
+                if os.path.exists(old_path):
+                    logger.debug(
+                        "Cleanup: skipping deleted_path {!r} — still exists on disk "
+                        "(in-place upgrade, not a true deletion).",
+                        old_path,
+                    )
+                    continue
+            except OSError as exc:
+                logger.debug("Cleanup: stat({!r}) failed: {}", old_path, exc)
+                continue
+            old_folder = Path(old_path).parent
+            candidate_basename = Path(old_path).stem
+            # Defensive: also skip when candidate_basename collides with
+            # canonical_path's basename (covers path-mapping edge cases
+            # where the deleted_path is a different mount but resolves
+            # to the same file).
+            if candidate_basename == Path(canonical_path).stem:
+                logger.debug(
+                    "Cleanup: skipping deleted_path {!r} — basename matches the "
+                    "canonical path's basename (in-place upgrade).",
+                    old_path,
+                )
+                continue
+            # Build the "live" basename set from the OLD folder's current
+            # video files, *excluding* the candidate basename. If the new
+            # file landed in this same folder under a new name, both
+            # remain in ``live_basenames_for_targeted`` (so unrelated
+            # adapter outputs there are protected).
+            try:
+                live_basenames_for_targeted = {
+                    p.stem for p in _list_video_files(old_folder) if p.stem != candidate_basename
+                }
+            except OSError as exc:
+                logger.debug("Cleanup: cannot enumerate {} for targeted pass: {}", old_folder, exc)
+                continue
+            for adapter in adapters:
+                try:
+                    for orphan in adapter.list_orphans_in_folder(old_folder, live_basenames_for_targeted):
+                        # Restrict to artifacts whose stem matches the
+                        # named deleted basename — protects against
+                        # accidentally cleaning unrelated orphans in
+                        # this targeted pass (the sweep below handles
+                        # those separately).
+                        orphan_basename_token = _orphan_source_basename(orphan, adapter)
+                        if orphan_basename_token != candidate_basename:
+                            continue
+                        if _safe_remove(orphan):
+                            removed.append(orphan)
+                            logger.info(
+                                "Cleanup: removed orphan {} (Radarr/Sonarr replaced source {!r})",
+                                orphan,
+                                old_path,
+                            )
+                except OSError as exc:
+                    logger.warning(
+                        "Cleanup: targeted pass failed for {!r} (adapter {}): {}",
+                        old_path,
+                        adapter.name,
+                        exc,
+                    )
+
+    # --- Pass 2: neighbor sweep (safety net) ------------------------
+    try:
+        live_videos = _list_video_files(media_dir)
+    except OSError as exc:
+        logger.debug("Cleanup: cannot enumerate {} for sweep: {}", media_dir, exc)
+        return removed
+
+    if not live_videos:
+        # Empty folder — most likely a temporarily-unmounted volume.
+        # Skip the sweep so we never wipe sidecars whose source disk
+        # just isn't visible right now.
+        logger.debug(
+            "Cleanup: skipping sweep of {} (no video files visible — possible mount issue)",
+            media_dir,
+        )
+        return removed
+
+    live_basenames = {p.stem for p in live_videos}
+    for adapter in adapters:
+        try:
+            for orphan in adapter.list_orphans_in_folder(media_dir, live_basenames):
+                if orphan in removed:
+                    # Already taken out by the targeted pass.
+                    continue
+                if _safe_remove(orphan):
+                    removed.append(orphan)
+                    logger.info(
+                        "Cleanup: removed orphan {} (no live source video for that basename)",
+                        orphan,
+                    )
+        except OSError as exc:
+            logger.warning(
+                "Cleanup: sweep pass failed for {} (adapter {}): {}",
+                media_dir,
+                adapter.name,
+                exc,
+            )
+
+    return removed
+
+
+def _list_video_files(folder: Path) -> list[Path]:
+    """Return regular video files directly under ``folder`` (no recursion)."""
+    if not folder.exists():
+        return []
+    return [p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in _VIDEO_EXTS]
+
+
+def _orphan_source_basename(artifact: Path, adapter: OutputAdapter) -> str:
+    """Recover the source media basename that ``artifact`` was named after.
+
+    Mirrors each adapter's naming convention so the targeted-cleanup
+    pass can verify ``artifact`` actually corresponds to the deleted
+    path before removing it. Returns ``""`` when the pattern doesn't
+    match — safer than guessing.
+    """
+    # Jellyfin: ``<basename>.trickplay`` directory. ``Path.stem`` strips
+    # the ``.trickplay`` suffix exactly.
+    if artifact.suffix == ".trickplay":
+        return artifact.stem
+    # Emby: ``<basename>-<W>-<I>.bif`` (and ``.bif.meta``). Strip ``.meta``
+    # if present, then trim the ``-<W>-<I>`` numeric suffix.
+    name = artifact.name
+    if name.endswith(".bif.meta"):
+        name = name[: -len(".bif.meta")]
+    elif name.endswith(".bif"):
+        name = name[: -len(".bif")]
+    else:
+        return ""
+    parts = name.rsplit("-", 2)
+    if len(parts) != 3 or not parts[1].isdigit() or not parts[2].isdigit():
+        return ""
+    return parts[0]
+
+
+def _safe_remove(path: Path) -> bool:
+    """Delete ``path`` (file or directory). Return True on success / already-gone."""
+    try:
+        if path.is_dir():
+            shutil.rmtree(path, ignore_errors=False)
+        else:
+            try:
+                path.unlink(missing_ok=True)
+            except TypeError:
+                # Python <3.8 fallback (we target >=3.10 but be safe).
+                if path.exists():
+                    path.unlink()
+        return True
+    except FileNotFoundError:
+        return True
+    except (OSError, PermissionError) as exc:
+        logger.warning(
+            "Cleanup: could not remove {} ({}: {}). Leaving it in place.",
+            path,
+            type(exc).__name__,
+            exc,
+        )
+        return False
 
 
 def _resolve_publishers(
@@ -540,7 +829,7 @@ def _summarise_results(results: list[PublisherResult], status: MultiServerStatus
     n = len(results)
     word = "server" if n == 1 else "servers"
     if status is MultiServerStatus.PUBLISHED:
-        published = sum(1 for r in results if r.status is PublisherStatus.PUBLISHED)
+        published = sum(1 for r in results if r.status in _PUBLISHED_LIKE_STATUSES)
         if published == n:
             return f"Published to {n} {word}"
         return f"Published to {published} of {n} {word}"
@@ -563,6 +852,25 @@ def _summarise_results(results: list[PublisherResult], status: MultiServerStatus
     return ""
 
 
+def _server_needs_item_registration(server: MediaServer) -> bool:
+    """Return True when ``server`` activates trickplay/sidecar via per-item API.
+
+    Jellyfin and Emby both expose ``/Items/{id}/Refresh`` (and Jellyfin
+    additionally has the Media Preview Bridge plugin endpoint) which
+    register on-disk artifacts with the server's library DB. When the
+    item id can't be resolved at publish time, those calls are skipped
+    and the artifacts sit on disk un-registered until the server's own
+    scan picks them up. The dispatcher uses this signal to decide
+    whether the result is fully ``PUBLISHED`` or
+    ``PUBLISHED_PENDING_REGISTRATION`` (retry once the id resolves).
+
+    Plex doesn't reach this code path with ``item_id=None`` because its
+    adapter declares :meth:`OutputAdapter.needs_server_metadata` =
+    True — we short-circuit upstream into ``SKIPPED_NOT_IN_LIBRARY``.
+    """
+    return type(server)._trigger_item_refresh is not MediaServer._trigger_item_refresh
+
+
 def _publish_one(
     server: MediaServer,
     adapter: OutputAdapter,
@@ -571,6 +879,7 @@ def _publish_one(
     *,
     skip_if_exists: bool,
     frame_source: str = "extracted",
+    deleted_paths: list[str] | None = None,
 ) -> PublisherResult:
     """Run one publisher; convert *expected* failures into a :class:`PublisherResult`.
 
@@ -584,6 +893,10 @@ def _publish_one(
     is forwarded onto the result for UI display. The skip-if-exists path
     overrides this with ``"output_existed"`` because in that branch the
     publisher didn't need any frames at all.
+
+    ``deleted_paths`` (Radarr/Sonarr ``deletedFiles[]`` from upgrade
+    webhooks) is forwarded to ``server.trigger_refresh`` so the server
+    drops its stale library row for the replaced source path.
     """
     # Short-circuit when the adapter requires server metadata (Plex bundle
     # hash, Jellyfin item id) and the upstream lookup returned None. This
@@ -648,6 +961,45 @@ def _publish_one(
     # regeneration. Falls through to publish if the meta is missing
     # (older publishes pre-journal) or if it doesn't match.
     if skip_if_exists and output_paths and outputs_fresh_for_source(output_paths, bundle.canonical_path):
+        # Two distinct sub-cases when we land here:
+        #   (a) duplicate webhook for an already-published file —
+        #       item_id is known (or vendor doesn't need it). The
+        #       previous publish already fired registration. Just
+        #       return SKIPPED_OUTPUT_EXISTS; an extra trigger_refresh
+        #       would fan out HTTP calls for no semantic gain (and
+        #       Jellyfin's path-nudge endpoint is NOT rate-limited —
+        #       only the full /Library/Refresh fallback is, inside
+        #       _maybe_trigger_full_refresh).
+        #   (b) PENDING_REGISTRATION retry — outputs are on disk but
+        #       previous attempt's item_id was None so the plugin
+        #       bridge / /Items/{id}/Refresh never fired. On retry,
+        #       item_id may now resolve. Fire trigger_refresh so the
+        #       registration completes and the next dispatch rolls
+        #       over to plain SKIPPED_OUTPUT_EXISTS.
+        if _server_needs_item_registration(server):
+            try:
+                server.trigger_refresh(
+                    item_id=item_id,
+                    remote_path=bundle.canonical_path,
+                    deleted_paths=deleted_paths,
+                )
+            except Exception as exc:
+                logger.debug("trigger_refresh on skip-if-exists failed for {}: {}", server.name, exc)
+            if item_id is None:
+                # Registration still didn't fire — re-arm the retry so
+                # we try once the server indexes the file.
+                return PublisherResult(
+                    server_id=server.id,
+                    server_name=server.name,
+                    adapter_name=adapter.name,
+                    status=PublisherStatus.PUBLISHED_PENDING_REGISTRATION,
+                    output_paths=output_paths,
+                    message=(
+                        f"Output already on disk for {server.name}, but the server hasn't indexed "
+                        f"this file yet — will retry to register the trickplay row."
+                    ),
+                    frame_source="output_existed",
+                )
         return PublisherResult(
             server_id=server.id,
             server_name=server.name,
@@ -685,9 +1037,33 @@ def _publish_one(
 
     # Best-effort refresh; failures are logged but don't fail the publisher.
     try:
-        server.trigger_refresh(item_id=item_id, remote_path=bundle.canonical_path)
+        server.trigger_refresh(
+            item_id=item_id,
+            remote_path=bundle.canonical_path,
+            deleted_paths=deleted_paths,
+        )
     except Exception as exc:
         logger.debug("trigger_refresh failed for {}: {}", server.name, exc)
+
+    # When the server activates trickplay via per-item API but we
+    # didn't have an item_id at publish time, the plugin-bridge /
+    # /Items/{id}/Refresh calls were skipped — tiles are on disk but
+    # the server's library DB doesn't know about them yet. Mark as
+    # PENDING_REGISTRATION so the dispatcher schedules a retry that
+    # picks the freshly-indexed item id and fires the registration.
+    if item_id is None and _server_needs_item_registration(server):
+        return PublisherResult(
+            server_id=server.id,
+            server_name=server.name,
+            adapter_name=adapter.name,
+            status=PublisherStatus.PUBLISHED_PENDING_REGISTRATION,
+            output_paths=output_paths,
+            message=(
+                f"Tiles published, waiting for {server.name} to index the file so the "
+                f"trickplay row can be registered (will retry)."
+            ),
+            frame_source=frame_source,
+        )
 
     return PublisherResult(
         server_id=server.id,
@@ -719,6 +1095,7 @@ def process_canonical_path(
     retry_attempt: int = 0,
     server_id_filter: str | None = None,
     phase_callback=None,
+    deleted_paths: list[str] | None = None,
 ) -> MultiServerResult:
     """Process ``canonical_path`` and publish to every owning server.
 
@@ -969,6 +1346,49 @@ def process_canonical_path(
                         message="Output already exists (source unchanged)",
                         frame_source="output_existed",
                     )
+                )
+                # Forward the deleted-path signal even on the fast path.
+                # The webhook just told us about an upgrade; even though
+                # outputs for the new file are already on disk, the
+                # server-side library row for the OLD file still needs
+                # the ``UpdateType:"Deleted"`` nudge. Without this the
+                # fast path silently swallowed the deletion signal — see
+                # smoke test 2026-05-09 where No Ordinary Heist's old
+                # release lingered in Jellyfin's library after the
+                # webhook fired.
+                if deleted_paths:
+                    try:
+                        server.trigger_refresh(
+                            item_id=None,
+                            remote_path=None,
+                            deleted_paths=deleted_paths,
+                        )
+                    except Exception as exc:
+                        logger.debug(
+                            "Deleted-path nudge on all-fresh fast path failed for {}: {}",
+                            server.name,
+                            exc,
+                        )
+            # Even on the all-fresh fast path, run the orphan cleanup —
+            # an upgrade webhook with deletedFiles[] arriving for a file
+            # whose new outputs are already on disk (e.g. duplicate-fire,
+            # or webhook arrived after a manual scan completed) MUST still
+            # remove the old release's sidecars. Without this hook the
+            # cleanup only ran on slow-path dispatches; the fast path
+            # silently lost the deletion signal.
+            try:
+                cleanup_orphaned_outputs(
+                    canonical_path,
+                    deleted_paths=deleted_paths,
+                    registry=registry,
+                    config=config,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Orphan cleanup raised an unexpected error on the all-fresh fast path "
+                    "for {}: {}. Sidecars from a previous release group may remain on disk.",
+                    canonical_path,
+                    exc,
                 )
             return MultiServerResult(
                 canonical_path=canonical_path,
@@ -1222,13 +1642,14 @@ def process_canonical_path(
                 item_id,
                 skip_if_exists=not regenerate,
                 frame_source=upstream_frame_source,
+                deleted_paths=deleted_paths,
             )
             # One INFO line per publisher so an op debugging "which
             # server got the BIF and which didn't?" can scan the log
             # by canonical_path. ``output`` makes the destination
             # explicit on the same line — no need to cross-reference
             # the preceding "Generated BIF file:" line.
-            log_fn = logger.info if outcome.status is PublisherStatus.PUBLISHED else logger.warning
+            log_fn = logger.info if outcome.status in _PUBLISHED_LIKE_STATUSES else logger.warning
             if outcome.status in (
                 PublisherStatus.SKIPPED_OUTPUT_EXISTS,
                 PublisherStatus.SKIPPED_NOT_INDEXED,
@@ -1246,7 +1667,7 @@ def process_canonical_path(
             )
             results.append(outcome)
 
-        any_published = any(r.status is PublisherStatus.PUBLISHED for r in results)
+        any_published = any(r.status in _PUBLISHED_LIKE_STATUSES for r in results)
         all_failed = all(r.status is PublisherStatus.FAILED for r in results)
 
         if any_published:
@@ -1272,7 +1693,10 @@ def process_canonical_path(
             # "≥1 wrote" so callers don't conflate the two.
             status = MultiServerStatus.SKIPPED
 
-        published_count = sum(1 for r in results if r.status is PublisherStatus.PUBLISHED)
+        published_count = sum(1 for r in results if r.status in _PUBLISHED_LIKE_STATUSES)
+        pending_registration_count = sum(
+            1 for r in results if r.status is PublisherStatus.PUBLISHED_PENDING_REGISTRATION
+        )
         skipped_count = sum(
             1
             for r in results
@@ -1284,15 +1708,33 @@ def process_canonical_path(
             )
         )
         failed_count = sum(1 for r in results if r.status is PublisherStatus.FAILED)
-        logger.info(
-            "Dispatch complete: path={} status={} published={} skipped={} failed={} frames={}",
-            canonical_path,
-            status.value,
-            published_count,
-            skipped_count,
-            failed_count,
-            frame_count,
-        )
+        # ``published`` here counts both fully-PUBLISHED and
+        # PUBLISHED_PENDING_REGISTRATION (output is on disk for both).
+        # The ``pending_registration`` field surfaces the subset still
+        # waiting for the server to index the file so a retry can fire
+        # the plugin-bridge / metadata-refresh endpoints. Omitted when
+        # zero so the common case stays terse.
+        if pending_registration_count:
+            logger.info(
+                "Dispatch complete: path={} status={} published={} pending_registration={} skipped={} failed={} frames={}",
+                canonical_path,
+                status.value,
+                published_count,
+                pending_registration_count,
+                skipped_count,
+                failed_count,
+                frame_count,
+            )
+        else:
+            logger.info(
+                "Dispatch complete: path={} status={} published={} skipped={} failed={} frames={}",
+                canonical_path,
+                status.value,
+                published_count,
+                skipped_count,
+                failed_count,
+                frame_count,
+            )
 
         # Schedule a retry when at least one publisher is waiting for
         # the source server to finish indexing. Skipped via
@@ -1304,7 +1746,18 @@ def process_canonical_path(
             schedule_retry_on_not_indexed
             and status is not MultiServerStatus.FAILED
             and any(
-                r.status in (PublisherStatus.SKIPPED_NOT_INDEXED, PublisherStatus.SKIPPED_NOT_IN_LIBRARY)
+                r.status
+                in (
+                    PublisherStatus.SKIPPED_NOT_INDEXED,
+                    PublisherStatus.SKIPPED_NOT_IN_LIBRARY,
+                    # PENDING_REGISTRATION means the tiles are on disk but
+                    # the server (Jellyfin/Emby) hadn't indexed the new
+                    # file at publish time, so the plugin-bridge /
+                    # /Items/{id}/Refresh registration calls were
+                    # skipped. Retry until the server resolves an item id
+                    # so the registration finally fires.
+                    PublisherStatus.PUBLISHED_PENDING_REGISTRATION,
+                )
                 for r in results
             )
         ):
@@ -1322,6 +1775,27 @@ def process_canonical_path(
                 # Without this the retry fans out to non-originator
                 # servers (final-audit MED).
                 server_id_filter=server_id_filter,
+            )
+
+        # Orphan cleanup runs once at the end of the dispatch so it sees
+        # the final on-disk state (any sidecars we just wrote count as
+        # "live"). Two passes inside ``cleanup_orphaned_outputs``: targeted
+        # via webhook ``deleted_paths`` and a sibling-folder sweep. Best-
+        # effort — exceptions never propagate up to the dispatcher.
+        try:
+            cleanup_orphaned_outputs(
+                canonical_path,
+                deleted_paths=deleted_paths,
+                registry=registry,
+                config=config,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Orphan cleanup raised an unexpected error for {}: {}. "
+                "Sidecars from a previous release group may remain on disk; "
+                "the next successful dispatch on the same folder will retry.",
+                canonical_path,
+                exc,
             )
 
         return MultiServerResult(

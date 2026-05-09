@@ -119,3 +119,45 @@ class EmbyBifAdapter(OutputAdapter):
         media_path = Path(canonical_path)
         basename = media_path.stem
         return media_path.parent / f"{basename}-{int(width)}-{int(frame_interval)}.bif"
+
+    def list_orphans_in_folder(self, folder: Path, live_basenames: set[str]) -> list[Path]:
+        """Enumerate ``<basename>-<W>-<I>.bif`` (and ``.bif.meta``) sidecars
+        whose source video is gone.
+
+        Emby's auto-discovery looks for ``<basename>-<width>-<interval>.bif``
+        next to each media file. When Radarr/Sonarr upgrades a file with a
+        new release-group / quality suffix, the old ``.bif`` (and the
+        journal ``.bif.meta`` next to it) sit next to the new file
+        unowned. This helper returns both for the caller to delete.
+
+        Returns paths grouped sidecar-then-meta so the caller's removal
+        log line order reads naturally. Returns ``[]`` if the folder
+        cannot be read.
+        """
+        try:
+            entries = list(folder.glob("*.bif"))
+        except OSError:
+            return []
+        orphans: list[Path] = []
+        for path in entries:
+            if not path.is_file():
+                continue
+            # Filename pattern: ``<basename>-<W>-<I>.bif``. Strip the
+            # ``-<W>-<I>.bif`` suffix to recover the original media
+            # basename. Two trailing ``-NUMBER`` segments before ``.bif``
+            # signal a managed sidecar; anything else is a foreign file
+            # and we leave it alone.
+            stem = path.stem  # ``<basename>-<W>-<I>``
+            parts = stem.rsplit("-", 2)
+            if len(parts) != 3 or not parts[1].isdigit() or not parts[2].isdigit():
+                continue
+            base = parts[0]
+            if not base or base in live_basenames:
+                continue
+            orphans.append(path)
+            # Sibling .meta journal — only return it if it actually
+            # exists (the journal is best-effort and may be missing).
+            meta = path.with_suffix(path.suffix + ".meta")
+            if meta.exists():
+                orphans.append(meta)
+        return orphans

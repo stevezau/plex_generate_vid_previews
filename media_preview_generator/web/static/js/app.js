@@ -1421,6 +1421,11 @@ const STATUS_META = {
     // Success — file generated this run OR successfully published to a server.
     generated:              { label: 'Generated',     cls: 'bg-success', tip: 'Preview was generated' },
     published:              { label: 'Generated',     cls: 'bg-success', tip: 'Preview was published to this server' },
+    // Tiles / sidecar are on disk, but the server hadn't indexed the file at publish
+    // time so the per-item registration call (Jellyfin Media Preview Bridge plugin or
+    // /Items/{id}/Refresh) was skipped. The retry queue picks this back up — once the
+    // server indexes the file, the registration fires and the row promotes to "Generated".
+    published_pending_registration: { label: 'Generated (registering)', cls: 'bg-success', tip: 'Tiles are on disk; waiting for the media server to index the file so trickplay registration can complete. The retry queue will finish this automatically.' },
 
     // Output already on disk; source unchanged — nothing to redo.
     skipped_bif_exists:     { label: 'Already Existed', cls: 'bg-info text-dark', tip: 'Output already on disk and source unchanged' },
@@ -1486,7 +1491,7 @@ function _renderPublishersBlock(job) {
         const logo = _vendorLogo(stype, 12) || '';
         const sname = entry.server_name || stype.toUpperCase() || 'Server';
         const counts = (entry && typeof entry.counts === 'object' && entry.counts) ? entry.counts : {};
-        const statusOrder = ['published', 'skipped_output_exists', 'skipped_not_indexed', 'not_indexed', 'skipped_not_in_library', 'skipped', 'no_owners', 'no_frames', 'failed'];
+        const statusOrder = ['published', 'published_pending_registration', 'skipped_output_exists', 'skipped_not_indexed', 'not_indexed', 'skipped_not_in_library', 'skipped', 'no_owners', 'no_frames', 'failed'];
         const seen = new Set();
         const ordered = statusOrder.filter(function (k) { seen.add(k); return counts[k] > 0; })
             .concat(Object.keys(counts).filter(function (k) { return !seen.has(k) && counts[k] > 0; }));

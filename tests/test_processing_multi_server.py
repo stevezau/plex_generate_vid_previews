@@ -21,6 +21,7 @@ import pytest
 
 from media_preview_generator.processing.frame_cache import reset_frame_cache
 from media_preview_generator.processing.multi_server import (
+    _PUBLISHED_LIKE_STATUSES,
     MultiServerStatus,
     PublisherStatus,
     _adapter_for_server,
@@ -441,7 +442,7 @@ class TestSinglePublisher:
         assert result.status is MultiServerStatus.PUBLISHED
         assert result.frame_count == 5
         assert len(result.publishers) == 1
-        assert result.publishers[0].status is PublisherStatus.PUBLISHED
+        assert result.publishers[0].status in _PUBLISHED_LIKE_STATUSES
         # Exactly one FFmpeg pass — the cornerstone of the multi-server design.
         assert gen.call_count == 1
 
@@ -493,8 +494,8 @@ class TestMultiPublisherFanOut:
         assert result.status is MultiServerStatus.PUBLISHED
         assert len(result.publishers) == 2
         statuses = {p.server_id: p.status for p in result.publishers}
-        assert statuses["emby-1"] is PublisherStatus.PUBLISHED
-        assert statuses["jelly-1"] is PublisherStatus.PUBLISHED
+        assert statuses["emby-1"] in _PUBLISHED_LIKE_STATUSES
+        assert statuses["jelly-1"] in _PUBLISHED_LIKE_STATUSES
 
         # Both formats landed on disk in the layouts each vendor expects.
         assert (media_dir / "Test (2024)-320-10.bif").exists()
@@ -603,11 +604,16 @@ class TestCrossServerBifReuse:
         # reused frames.
         assert result.status is MultiServerStatus.PUBLISHED
         statuses = {p.server_id: p.status for p in result.publishers}
-        assert statuses["jelly-1"] is PublisherStatus.PUBLISHED
-        # Emby's existing output is still SKIPPED_OUTPUT_EXISTS — its
-        # BIF was already on disk, so the publisher takes the skip path
-        # like any other repeat publish.
-        assert statuses["emby-1"] is PublisherStatus.SKIPPED_OUTPUT_EXISTS
+        assert statuses["jelly-1"] in _PUBLISHED_LIKE_STATUSES
+        # Emby's existing output exists on disk so the publisher takes
+        # the skip path. Because no item_id was supplied for Emby in
+        # this dispatch (only ``jelly-1`` had a hint) AND Emby uses
+        # per-item registration, the publisher returns
+        # PUBLISHED_PENDING_REGISTRATION so a follow-up retry can
+        # resolve the item id and complete /Items/{id}/Refresh. The
+        # output still counts as "on disk" — only the registration
+        # step is deferred.
+        assert statuses["emby-1"] is PublisherStatus.PUBLISHED_PENDING_REGISTRATION
 
     def test_single_publisher_does_not_attempt_bif_reuse(self, mock_config_for_processing, tmp_path):
         """With only one owning publisher there's nobody to share BIF
@@ -644,7 +650,7 @@ class TestCrossServerBifReuse:
             )
 
         assert gen.call_count == 1
-        assert result.publishers[0].status is PublisherStatus.PUBLISHED
+        assert result.publishers[0].status in _PUBLISHED_LIKE_STATUSES
 
 
 class TestPartialFailureIsolation:
@@ -693,8 +699,8 @@ class TestPartialFailureIsolation:
 
         assert result.status is MultiServerStatus.PUBLISHED
         statuses = {p.server_id: p.status for p in result.publishers}
-        assert statuses["emby-1"] is PublisherStatus.PUBLISHED
-        assert statuses["jelly-1"] is PublisherStatus.PUBLISHED
+        assert statuses["emby-1"] in _PUBLISHED_LIKE_STATUSES
+        assert statuses["jelly-1"] in _PUBLISHED_LIKE_STATUSES
 
 
 class TestNotYetIndexedRoutesToSkip:
@@ -847,7 +853,7 @@ class TestNotInLibraryRoutesToSkip:
 
         refresh_calls: list[tuple[str | None, str | None]] = []
 
-        def fake_trigger_refresh(self, *, item_id, remote_path):
+        def fake_trigger_refresh(self, *, item_id, remote_path, deleted_paths=None):
             refresh_calls.append((item_id, remote_path))
 
         def fake_generate_images(video_file, output_folder, *args, **kwargs):
@@ -871,7 +877,7 @@ class TestNotInLibraryRoutesToSkip:
 
         # Jellyfin published without needing an item_id lookup.
         assert len(result.publishers) == 1
-        assert result.publishers[0].status is PublisherStatus.PUBLISHED
+        assert result.publishers[0].status in _PUBLISHED_LIKE_STATUSES
         assert result.status is MultiServerStatus.PUBLISHED
 
         # Critical dispatcher-change assertion: the expensive Pass-2
@@ -921,7 +927,7 @@ class TestNotInLibraryRoutesToSkip:
 
         scan_nudges: list[tuple[str | None, str | None]] = []
 
-        def fake_trigger_refresh(self, *, item_id, remote_path):
+        def fake_trigger_refresh(self, *, item_id, remote_path, deleted_paths=None):
             scan_nudges.append((item_id, remote_path))
 
         def fake_generate_images(video_file, output_folder, *args, **kwargs):
@@ -1033,7 +1039,7 @@ class TestSkipIfExists:
                 regenerate=True,
             )
 
-        assert result.publishers[0].status is PublisherStatus.PUBLISHED
+        assert result.publishers[0].status in _PUBLISHED_LIKE_STATUSES
 
 
 class TestPartialSuccessRetryIdempotency:
@@ -1117,8 +1123,8 @@ class TestPartialSuccessRetryIdempotency:
 
         # First call: both publishers succeed.
         first_statuses = {p.server_id: p.status for p in first.publishers}
-        assert first_statuses["emby-1"] is PublisherStatus.PUBLISHED, first_statuses
-        assert first_statuses["jelly-1"] is PublisherStatus.PUBLISHED, first_statuses
+        assert first_statuses["emby-1"] in _PUBLISHED_LIKE_STATUSES, first_statuses
+        assert first_statuses["jelly-1"] in _PUBLISHED_LIKE_STATUSES, first_statuses
 
         # Second call (the retry): both outputs exist + fresh.
         second_statuses = {p.server_id: p.status for p in second.publishers}

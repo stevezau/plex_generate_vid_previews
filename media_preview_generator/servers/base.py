@@ -321,7 +321,13 @@ class MediaServer(ABC):
         del server_view_path
         return None
 
-    def trigger_refresh(self, *, item_id: str | None, remote_path: str | None) -> None:
+    def trigger_refresh(
+        self,
+        *,
+        item_id: str | None,
+        remote_path: str | None,
+        deleted_paths: list[str] | None = None,
+    ) -> None:
         """Notify the server about media or sidecar changes.
 
         For path-based scan-nudges, fires :meth:`_trigger_path_refresh`
@@ -335,6 +341,13 @@ class MediaServer(ABC):
         :meth:`_trigger_item_refresh` once. Both hooks are best-effort:
         per-candidate exceptions are swallowed and logged so a single
         transient HTTP failure can't suppress the rest of the fan-out.
+
+        ``deleted_paths`` is the list of source paths that no longer
+        exist (typical Radarr/Sonarr upgrade — old release deleted,
+        new release imported). Each path is fanned out through
+        :meth:`_trigger_path_deleted` so the server drops the stale
+        library entry instead of waiting for its own filesystem
+        monitor / scheduled scan to notice the deletion.
         """
         if remote_path:
             from ..config.paths import expand_path_mapping_candidates
@@ -349,6 +362,54 @@ class MediaServer(ABC):
                         candidate,
                         exc,
                     )
+        if deleted_paths:
+            import os as _os
+
+            from ..config.paths import expand_path_mapping_candidates
+
+            for old in deleted_paths:
+                if not old:
+                    continue
+                # Skip "deletions" where the file still exists. Radarr's
+                # ``deletedFiles[]`` for an in-place upgrade (same path,
+                # new content) lists the path of the file that was
+                # overwritten — telling the server it's deleted would
+                # drop a library entry that should stay. Same guard the
+                # cleanup function uses; both fired in the Gary (2026)
+                # smoke test 2026-05-09 before this fix.
+                try:
+                    if _os.path.exists(old):
+                        logger.debug(
+                            "Deleted-path nudge: skipping {!r} — still exists on disk.",
+                            old,
+                        )
+                        continue
+                except OSError:
+                    continue
+                for candidate in expand_path_mapping_candidates(old, self.path_mappings):
+                    # Per-mount safety check — a path-mapping fan-out
+                    # could surface a candidate that maps to a live file
+                    # on a different mount. Stat each candidate before
+                    # nudging the server.
+                    try:
+                        if _os.path.exists(candidate):
+                            logger.debug(
+                                "Deleted-path nudge on {}: candidate {!r} still exists; skipping.",
+                                self.name,
+                                candidate,
+                            )
+                            continue
+                    except OSError:
+                        continue
+                    try:
+                        self._trigger_path_deleted(candidate)
+                    except Exception as exc:
+                        logger.debug(
+                            "Deleted-path nudge failed on {} for {}: {}",
+                            self.name,
+                            candidate,
+                            exc,
+                        )
         if item_id:
             try:
                 self._trigger_item_refresh(item_id)
@@ -367,6 +428,20 @@ class MediaServer(ABC):
         vendor-specific scan-nudge call (Plex
         ``/library/sections/{key}/refresh?path=…``, Emby/Jellyfin
         ``/Library/Media/Updated``).
+        """
+        del server_view_path
+
+    def _trigger_path_deleted(self, server_view_path: str) -> None:
+        """Subclass hook: tell the server an old path is gone.
+
+        Default is a no-op (Plex's targeted partial-scan on the *new*
+        path naturally also re-checks the surrounding folder, so a
+        separate deletion nudge isn't required there).
+
+        Emby and Jellyfin override with ``POST /Library/Media/Updated``
+        carrying ``UpdateType:"Deleted"`` so the server drops the
+        stale library row immediately instead of waiting for its
+        filesystem monitor or the next scheduled scan.
         """
         del server_view_path
 

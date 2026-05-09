@@ -356,6 +356,14 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                         config.regenerate_thumbnails = bool(value)
                     elif key == "webhook_paths":
                         config.webhook_paths = [str(path).strip() for path in value if str(path).strip()]
+                    elif key == "webhook_deleted_paths":
+                        # Radarr/Sonarr deletedFiles[] from upgrade events.
+                        # Forwarded to process_canonical_path so cleanup +
+                        # deleted-path nudge target the right paths.
+                        if isinstance(value, list | tuple):
+                            config.webhook_deleted_paths = [
+                                str(path).strip() for path in value if str(path).strip()
+                            ] or None
                     elif key == "webhook_item_id_hints":
                         # Per-path ``{server_id: item_id}`` hints from vendor
                         # webhooks — passed through to process_canonical_path

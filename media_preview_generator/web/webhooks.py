@@ -469,6 +469,65 @@ def _extract_radarr_file_path(payload: dict) -> str:
     return combined.strip()
 
 
+def _dedupe_normalised_paths(paths: list[str]) -> list[str]:
+    """Normalise + dedupe a list of paths while preserving first-seen order."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for raw in paths:
+        if not raw:
+            continue
+        normalised = os.path.normpath(raw).replace("\\", "/")
+        if normalised in seen:
+            continue
+        seen.add(normalised)
+        out.append(normalised)
+    return out
+
+
+def _extract_radarr_deleted_paths(payload: dict) -> list[str]:
+    """Extract paths of files Radarr replaced during a Download upgrade.
+
+    On upgrade events Radarr's ``Download`` webhook carries a top-level
+    ``deletedFiles`` array — each entry has ``path`` (absolute) or
+    ``relativePath`` (combined with ``movie.folderPath``). Some forks
+    additionally include ``movieFile.previousFile`` with the same shape.
+
+    Returns a list of unique normalised absolute paths in stable order.
+    Missing / malformed entries are silently skipped — webhook payloads
+    from older versions and forks can omit fields without warning, and
+    blowing up on those would lose the legitimate new-file processing
+    that this Download event is *primarily* about.
+    """
+    paths: list[str] = []
+    folder_path = str(_as_dict(payload.get("movie")).get("folderPath", "")).strip()
+
+    raw_deleted = payload.get("deletedFiles") or []
+    if isinstance(raw_deleted, list):
+        for entry in raw_deleted:
+            if not isinstance(entry, dict):
+                continue
+            absolute = str(entry.get("path") or "").strip()
+            if not absolute:
+                relative = str(entry.get("relativePath") or "").strip()
+                absolute = _combine_path(folder_path, relative) if relative else ""
+            if absolute:
+                paths.append(absolute)
+
+    # Some Radarr forks (and the older v3 ``OnDownload`` template)
+    # surface the replaced file under ``movieFile.previousFile`` instead.
+    movie_file = _as_dict(payload.get("movieFile"))
+    previous = movie_file.get("previousFile")
+    if isinstance(previous, dict):
+        absolute = str(previous.get("path") or "").strip()
+        if not absolute:
+            relative = str(previous.get("relativePath") or "").strip()
+            absolute = _combine_path(folder_path, relative) if relative else ""
+        if absolute:
+            paths.append(absolute)
+
+    return _dedupe_normalised_paths(paths)
+
+
 def _extract_sonarr_file_path(payload: dict) -> str:
     """Extract a target file path from a Sonarr/Sportarr Download webhook payload.
 
@@ -491,6 +550,33 @@ def _extract_sonarr_file_path(payload: dict) -> str:
     # Sportarr uses a flat filePath key at the root level
     file_path = str(payload.get("filePath", "")).strip()
     return file_path
+
+
+def _extract_sonarr_deleted_paths(payload: dict) -> list[str]:
+    """Extract paths of episode files Sonarr replaced during a Download upgrade.
+
+    Sonarr's ``Download`` event carries the same ``deletedFiles`` array
+    shape as Radarr — each entry has ``path`` or ``relativePath``
+    (combined with ``series.path``). Returns unique normalised paths in
+    stable order; malformed entries are silently skipped (see
+    :func:`_extract_radarr_deleted_paths` for the rationale).
+    """
+    paths: list[str] = []
+    series_path = str(_as_dict(payload.get("series")).get("path", "")).strip()
+
+    raw_deleted = payload.get("deletedFiles") or []
+    if isinstance(raw_deleted, list):
+        for entry in raw_deleted:
+            if not isinstance(entry, dict):
+                continue
+            absolute = str(entry.get("path") or "").strip()
+            if not absolute:
+                relative = str(entry.get("relativePath") or "").strip()
+                absolute = _combine_path(series_path, relative) if relative else ""
+            if absolute:
+                paths.append(absolute)
+
+    return _dedupe_normalised_paths(paths)
 
 
 _EP_CODE_RE = re.compile(r"\b[Ss](\d{1,3})[Ee](\d{1,3})\b")
@@ -624,8 +710,21 @@ def _format_plex_title_from_item(item) -> str | None:
     return _format_plex_title_from_metadata(synthetic)
 
 
-def _schedule_webhook_job(source: str, title: str, file_path: str, server_id: str | None = None) -> bool:
-    """Schedule a debounced single-file webhook job and batch paths per (source, server_id)."""
+def _schedule_webhook_job(
+    source: str,
+    title: str,
+    file_path: str,
+    server_id: str | None = None,
+    *,
+    deleted_paths: list[str] | None = None,
+) -> bool:
+    """Schedule a debounced single-file webhook job and batch paths per (source, server_id).
+
+    ``deleted_paths`` carries the Radarr/Sonarr ``deletedFiles[]`` array
+    when this webhook is an upgrade event — they are merged into the
+    batch and forwarded to ``process_canonical_path`` so the orphan
+    cleanup / deleted-path nudge can fire.
+    """
     safe_source = str(source or "unknown")
     safe_title = str(title or "Unknown")
     normalized_input_path = str(file_path or "").strip()
@@ -668,10 +767,18 @@ def _schedule_webhook_job(source: str, title: str, file_path: str, server_id: st
                     "file_paths": set(),
                     "titles": [],
                     "server_id": server_id,
+                    "deleted_paths": set(),
                 }
                 _pending_batches[debounce_key] = batch
             batch["file_paths"].add(normalized_path)
             batch["titles"].append(safe_title)
+            if deleted_paths:
+                # Defensive: older batches may not have the field if they
+                # were created by a stale code path concurrently.
+                batch.setdefault("deleted_paths", set())
+                for old in deleted_paths:
+                    if old:
+                        batch["deleted_paths"].add(old)
 
             fire_at = datetime.now(timezone.utc).timestamp() + delay
             batch["fire_at"] = fire_at
@@ -783,6 +890,14 @@ def _execute_webhook_job(debounce_key: str) -> None:
         # the configured TTL, blocking legitimate re-imports for up to
         # 2x TTL after the original fire (audit M5).
 
+        # ``deleted_paths`` carries Radarr/Sonarr ``deletedFiles[]`` from
+        # upgrade events through to ``process_canonical_path`` so the
+        # orphan cleanup pass + ``UpdateType:"Deleted"`` nudge can
+        # target the precise paths the upgrade replaced.
+        webhook_deleted_paths = sorted(
+            path for path in batch.get("deleted_paths", set()) if isinstance(path, str) and path
+        )
+
         overrides = {
             "sort_by": "newest",
             "webhook_paths": webhook_paths,
@@ -793,6 +908,8 @@ def _execute_webhook_job(debounce_key: str) -> None:
             overrides["selected_libraries"] = selected_libraries
         if b_sid:
             overrides["server_id"] = b_sid
+        if webhook_deleted_paths:
+            overrides["webhook_deleted_paths"] = webhook_deleted_paths
         _start_job_async(job.id, overrides)
         _add_history_entry(
             source,
@@ -861,9 +978,12 @@ def radarr_webhook():
     movie = _as_dict(data.get("movie"))
     movie_title = str(movie.get("title", "Unknown")).strip() or "Unknown"
     movie_file_path = _extract_radarr_file_path(data)
+    deleted_paths = _extract_radarr_deleted_paths(data)
 
     server_id = (request.args.get("server_id") or "").strip() or None
     kwargs = {"server_id": server_id} if server_id else {}
+    if deleted_paths:
+        kwargs["deleted_paths"] = deleted_paths
     was_queued = _schedule_webhook_job("radarr", movie_title, movie_file_path, **kwargs)
     if not was_queued:
         logger.debug(
@@ -939,9 +1059,12 @@ def _handle_sonarr_compatible_webhook(source: str):
         series_title = str(data.get("eventTitle", "")).strip() or str(data.get("instanceName", "")).strip() or "Unknown"
     display_title = _format_sonarr_episode_title(series_title, data.get("episodes"))
     episode_file_path = _extract_sonarr_file_path(data)
+    deleted_paths = _extract_sonarr_deleted_paths(data)
 
     server_id = (request.args.get("server_id") or "").strip() or None
     kwargs = {"server_id": server_id} if server_id else {}
+    if deleted_paths:
+        kwargs["deleted_paths"] = deleted_paths
     was_queued = _schedule_webhook_job(source, display_title, episode_file_path, **kwargs)
     if not was_queued:
         logger.debug(

@@ -441,6 +441,12 @@ class Worker:
                     server_id_filter=per_item_pin,
                     regenerate=bool(getattr(config, "regenerate_thumbnails", False)),
                     phase_callback=_phase_cb,
+                    # Radarr/Sonarr deletedFiles[] from upgrade webhooks.
+                    # The job-wide list is forwarded as-is; the cleanup
+                    # pass inside process_canonical_path looks at each
+                    # path's parent folder so unrelated entries simply
+                    # find no matching artifacts and become no-ops.
+                    deleted_paths=getattr(config, "webhook_deleted_paths", None) or None,
                 )
 
             # Persist the per-file outcome via the job-runner-installed

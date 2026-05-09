@@ -165,6 +165,13 @@ class Config:
     # different per-server hint per path. None = no hint, fall back to the
     # legacy Plex-resolves-then-fans-out flow.
     webhook_item_id_hints: dict[str, dict[str, str]] | None = None
+    # Paths Radarr/Sonarr told us they replaced (``deletedFiles[]`` from
+    # Download upgrade events). Threaded through to
+    # ``process_canonical_path`` so the orphan-cleanup pass and per-server
+    # ``UpdateType:"Deleted"`` nudges can target the precise paths the
+    # upgrade victim used. None = no upgrade signal; cleanup falls back
+    # to its post-publish neighbor sweep only.
+    webhook_deleted_paths: list[str] | None = None
     # Exclude paths: list of {"value": str, "type": "path"|"regex"}; path = prefix match, regex = full match
     exclude_paths: list[dict[str, str]] | None = None
     # When a job is pinned to one configured media-server (via the Schedules

@@ -97,8 +97,9 @@ class JellyfinServer(EmbyApiClient):
                 json_body={"Updates": [{"Path": server_view_path, "UpdateType": "Created"}]},
             )
             response.raise_for_status()
-            logger.debug(
-                "Jellyfin /Library/Media/Updated nudged scan for {}",
+            logger.info(
+                "[{}] Triggered partial scan: {}",
+                self.name,
                 server_view_path,
             )
             return
@@ -110,6 +111,33 @@ class JellyfinServer(EmbyApiClient):
             )
 
         self._maybe_trigger_full_refresh()
+
+    def _trigger_path_deleted(self, server_view_path: str) -> None:
+        """Tell Jellyfin a previously-imported file is gone.
+
+        Same ``/Library/Media/Updated`` endpoint as
+        :meth:`_trigger_path_refresh`, but with ``UpdateType:"Deleted"``
+        so Jellyfin drops the stale library row immediately. Used after
+        Radarr/Sonarr upgrade webhooks where the payload's
+        ``deletedFiles[]`` lists the prior release that was replaced —
+        without this, Jellyfin's library item lingers on the old path
+        until its filesystem monitor or the 3 AM scheduled scan
+        notices the deletion.
+
+        Best-effort; failures are logged at debug level by the base
+        wrapper.
+        """
+        response = self._request(
+            "POST",
+            "/Library/Media/Updated",
+            json_body={"Updates": [{"Path": server_view_path, "UpdateType": "Deleted"}]},
+        )
+        response.raise_for_status()
+        logger.info(
+            "[{}] Notified deleted path: {}",
+            self.name,
+            server_view_path,
+        )
 
     def _trigger_item_refresh(self, item_id: str) -> None:
         """Refresh metadata + register published trickplay for one item.
@@ -155,8 +183,9 @@ class JellyfinServer(EmbyApiClient):
                 params={"width": adapter_width, "intervalMs": adapter_interval_ms},
             )
             if resp.status_code == 204:
-                logger.debug(
-                    "Jellyfin trickplay registered via Media Preview Bridge plugin for {}",
+                logger.info(
+                    "[{}] Registered trickplay via Media Preview Bridge plugin: item {}",
+                    self.name,
                     item_id,
                 )
             elif resp.status_code == 404:
@@ -183,6 +212,11 @@ class JellyfinServer(EmbyApiClient):
         try:
             response = self._request("POST", f"/Items/{item_id}/Refresh")
             response.raise_for_status()
+            logger.info(
+                "[{}] Triggered item refresh: {}",
+                self.name,
+                item_id,
+            )
             return
         except Exception as exc:
             logger.debug("Jellyfin per-item refresh failed for {}: {}", item_id, exc)
@@ -211,6 +245,10 @@ class JellyfinServer(EmbyApiClient):
         try:
             response = self._request("POST", "/Library/Refresh")
             response.raise_for_status()
+            logger.info(
+                "[{}] Triggered full library refresh (path-based nudge unavailable)",
+                self.name,
+            )
         except Exception as exc:
             logger.debug("Jellyfin /Library/Refresh failed: {}", exc)
 
