@@ -81,24 +81,12 @@ Generates video preview thumbnails for **Plex, Emby, and Jellyfin**. These are t
 
 ## Screenshots
 
-<div align="center">
-
-<table>
-  <tr>
-    <td><a href="docs/images/home.png"><img src="docs/images/home.png" alt="Dashboard showing connected Plex / Jellyfin / Emby servers, GPU workers, and job statistics" width="380"></a></td>
-    <td><a href="docs/images/servers.png"><img src="docs/images/servers.png" alt="Servers page with one card per Plex / Jellyfin / Emby server, each showing connection status and library count" width="380"></a></td>
-    <td><a href="docs/images/settings.png"><img src="docs/images/settings.png" alt="Settings — Processing Options card with per-GPU configuration for an NVIDIA TITAN RTX and Intel UHD 770, CPU workers, and thumbnail quality" width="380"></a></td>
-    <td><a href="docs/images/automation.png"><img src="docs/images/automation.png" alt="Automation page Triggers tab listing trigger sources for Sonarr / Radarr / Tdarr / per-vendor manual imports" width="380"></a></td>
-  </tr>
-  <tr>
-    <td align="center"><em>Dashboard</em></td>
-    <td align="center"><em>Servers</em></td>
-    <td align="center"><em>Settings</em></td>
-    <td align="center"><em>Automation</em></td>
-  </tr>
-</table>
-
-</div>
+<table><tr>
+<td><a href="docs/images/home.png"><img src="docs/images/home.png" alt="Dashboard showing connected Plex / Jellyfin / Emby servers, GPU workers, and job statistics" width="380"></a></td>
+<td><a href="docs/images/servers.png"><img src="docs/images/servers.png" alt="Servers page with one card per Plex / Jellyfin / Emby server, each showing connection status and library count" width="380"></a></td>
+<td><a href="docs/images/settings.png"><img src="docs/images/settings.png" alt="Settings — Processing Options card with per-GPU configuration for an NVIDIA TITAN RTX and Intel UHD 770, CPU workers, and thumbnail quality" width="380"></a></td>
+<td><a href="docs/images/automation.png"><img src="docs/images/automation.png" alt="Automation page Triggers tab listing trigger sources for Sonarr / Radarr / Tdarr / per-vendor manual imports" width="380"></a></td>
+</tr></table>
 
 ---
 
