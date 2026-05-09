@@ -621,19 +621,24 @@ class ScheduleManager:
                     )
                 self._load_status = status
 
-    def _latest_schedules_backup(self) -> str | None:
-        """Find the newest ``schedules.json[.<stamp>].bak`` next to the live file.
+    def _enumerate_schedules_backups(self) -> list[str]:
+        """Return ``schedules.json[.<stamp>].bak`` paths newest-first.
 
         We rotate timestamped backups (``schedules.json.20260504-024519.bak``)
         on every save AND keep a plain ``schedules.json.bak``. Both are
-        candidates for recovery; pick whichever is newest by mtime so the
-        user gets the closest-to-current state on restore.
+        candidates for recovery; sort by mtime descending so callers get
+        the closest-to-current state first.
+
+        Live regression 2026-05-10: the user's NEWEST .bak was also
+        owned root:root 0600 (same chown event that broke the live
+        file). We MUST iterate, not pick a single newest, so callers
+        can fall through to the next-readable backup.
         """
         try:
             cfg_dir = os.path.dirname(self.schedules_file) or "."
             stem = os.path.basename(self.schedules_file)  # "schedules.json"
         except OSError:
-            return None
+            return []
         candidates: list[tuple[float, str]] = []
         try:
             for name in os.listdir(cfg_dir):
@@ -647,11 +652,18 @@ class ScheduleManager:
                 except OSError:
                     continue
         except OSError:
-            return None
-        if not candidates:
-            return None
+            return []
         candidates.sort(reverse=True)
-        return candidates[0][1]
+        return [path for _mtime, path in candidates]
+
+    def _latest_schedules_backup(self) -> str | None:
+        """Newest ``.bak`` file or None — used for the load-status hint.
+
+        Doesn't filter by readability; the recovery flow does that
+        per-candidate (see :meth:`recover_schedules_from_backup`).
+        """
+        backups = self._enumerate_schedules_backups()
+        return backups[0] if backups else None
 
     @property
     def load_status(self) -> dict[str, object]:
@@ -659,33 +671,70 @@ class ScheduleManager:
         return dict(self._load_status)
 
     def recover_schedules_from_backup(self) -> dict[str, object]:
-        """Atomic restore of ``schedules.json`` from the newest backup.
+        """Atomic restore of ``schedules.json`` from the newest readable backup.
 
-        Returns a dict the API can hand back to the UI describing the
-        outcome (``ok``, count restored, or an error + actionable hint).
+        Iterates backups newest-first. Skips any that are unreadable
+        (PermissionError — typical when a host-side `chown root` event
+        broke ownership on the live file AND the most-recent saves
+        that inherited it) or malformed. Returns a dict the API can
+        hand back to the UI describing the outcome (``ok``, count
+        restored, list of attempted backups + per-attempt failure
+        reason, or ``no_backup`` when nothing was usable).
+
         Best-effort ``os.chown`` to the runtime user — surfaces EPERM
         cleanly instead of failing the whole restore.
         """
-        backup = self._latest_schedules_backup()
-        if not backup:
+        backups = self._enumerate_schedules_backups()
+        if not backups:
             return {
                 "status": "no_backup",
                 "message": "No schedules.json backup file was found in the config directory.",
             }
-        try:
-            with open(backup) as f:
-                data = json.load(f)
-        except (OSError, json.JSONDecodeError) as exc:
+
+        attempts: list[dict[str, str]] = []
+        backup: str | None = None
+        data: dict | None = None
+        for candidate in backups:
+            try:
+                with open(candidate) as f:
+                    parsed = json.load(f)
+            except (OSError, json.JSONDecodeError) as exc:
+                attempts.append({"path": candidate, "error": f"{type(exc).__name__}: {exc}"})
+                continue
+            if not isinstance(parsed, dict) or "schedules" not in parsed:
+                attempts.append(
+                    {
+                        "path": candidate,
+                        "error": "Missing top-level 'schedules' key",
+                    }
+                )
+                continue
+            backup = candidate
+            data = parsed
+            break
+
+        if backup is None or data is None:
+            # All candidates failed. Pick the most-instructive failure
+            # for the surface error: prefer a PermissionError (so the
+            # UI hint can call out chown) over a malformed-shape one.
+            primary = next(
+                (a for a in attempts if "PermissionError" in a.get("error", "")),
+                attempts[0] if attempts else None,
+            )
             return {
-                "status": "backup_unreadable",
-                "backup_path": backup,
-                "error": f"{type(exc).__name__}: {exc}",
-            }
-        if not isinstance(data, dict) or "schedules" not in data:
-            return {
-                "status": "backup_invalid",
-                "backup_path": backup,
-                "error": "Backup file is missing the top-level 'schedules' key.",
+                "status": "no_backup",
+                "message": (
+                    "Found backup file(s) but none were readable. "
+                    "Most likely the same chown event that broke schedules.json also "
+                    "affected the most recent backup(s) — see attempts for details."
+                ),
+                "primary_error": primary,
+                "attempts": attempts,
+                "recovery_hint": (
+                    f"Run `chown {os.getuid()}:{os.getgid()} /config/schedules.json*` "
+                    "on the host to restore ownership of every backup, then click "
+                    "Recover from backup again."
+                ),
             }
 
         # Atomic write: temp file in same dir, then os.replace. Avoids a

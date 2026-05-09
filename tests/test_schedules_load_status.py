@@ -222,7 +222,12 @@ class TestRecoverFromBackup:
         finally:
             manager.stop()
 
-    def test_recover_with_unreadable_backup_returns_error(self, tmp_path):
+    def test_recover_with_only_unreadable_backups_returns_no_backup_with_attempts(self, tmp_path):
+        """When EVERY backup is unreadable (typical when a host-side
+        chown hit both the live file AND the most recent .bak), the
+        recovery surfaces a helpful 'no_backup' result that lists the
+        attempts + a chown hint covering all backups.
+        """
         live = tmp_path / "schedules.json"
         live.write_text("{not valid json")
         bak = tmp_path / "schedules.json.bak"
@@ -232,22 +237,82 @@ class TestRecoverFromBackup:
         try:
             with patch("builtins.open", side_effect=PermissionError(13, "Permission denied")):
                 result = manager.recover_schedules_from_backup()
-            assert result["status"] == "backup_unreadable"
-            assert "PermissionError" in result["error"]
+            assert result["status"] == "no_backup", (
+                "All-backups-unreadable must surface 'no_backup', not 'backup_unreadable' — "
+                "the latter implies a single specific file failed; here we tried everything."
+            )
+            assert "attempts" in result and len(result["attempts"]) >= 1
+            assert "PermissionError" in result["primary_error"]["error"]
+            assert "chown" in result["recovery_hint"], (
+                "Hint MUST mention chown — that's the only fix when every backup is owned "
+                "by a UID this process can't read."
+            )
         finally:
             manager.stop()
 
-    def test_recover_with_invalid_backup_shape_returns_error(self, tmp_path):
+    def test_recover_falls_through_to_next_readable_backup(self, tmp_path):
+        """Live regression 2026-05-10: the user's NEWEST .bak was also
+        owned root:root 0600 (same chown event broke both). The
+        recovery MUST iterate newest-first, skip unreadable candidates,
+        and restore from the next-readable one.
+        """
         live = tmp_path / "schedules.json"
         live.write_text("{not valid json")
-        bak = tmp_path / "schedules.json.bak"
-        # Backup is valid JSON but missing the required 'schedules' key.
-        bak.write_text(json.dumps({"junk": "data"}))
+
+        # NEWEST .bak — simulated unreadable. We patch builtins.open to
+        # raise PermissionError when this specific path is opened, while
+        # still allowing the older (readable) .bak through.
+        bad_newest = tmp_path / "schedules.json.20260510-070000.bak"
+        bad_newest.write_text(json.dumps({"schedules": {"x": {"name": "Bad", "enabled": True}}}))
+        # Set its mtime so it sorts as newest.
+        os.utime(bad_newest, (time.time(), time.time()))
+
+        # OLDER .bak — readable and valid.
+        good_older = tmp_path / "schedules.json.20260101-000000.bak"
+        good_older.write_text(json.dumps({"schedules": {"good-1": {"name": "Older Good", "enabled": True}}}))
+        os.utime(good_older, (time.time() - 86400, time.time() - 86400))
+
+        real_open = open
+
+        def selective_open(path, *args, **kwargs):
+            if str(path) == str(bad_newest):
+                raise PermissionError(13, "Permission denied")
+            return real_open(path, *args, **kwargs)
+
+        manager = _make_manager(tmp_path)
+        try:
+            with patch("builtins.open", side_effect=selective_open):
+                result = manager.recover_schedules_from_backup()
+            assert result["status"] == "ok", f"Expected ok, got {result}"
+            assert result["backup_path"] == str(good_older), (
+                f"Should have fallen through to the older readable backup; got {result['backup_path']}"
+            )
+            assert result["restored_count"] == 1
+            # Verify the in-memory state matches the older backup.
+            assert manager.get_all_schedules()[0]["name"] == "Older Good"
+        finally:
+            manager.stop()
+
+    def test_recover_with_invalid_backup_shape_falls_through(self, tmp_path):
+        """When the newest .bak is malformed (missing 'schedules' key),
+        skip it and try the next one.
+        """
+        live = tmp_path / "schedules.json"
+        live.write_text("{not valid json")
+        # Newest .bak is malformed.
+        bad = tmp_path / "schedules.json.20260510-070000.bak"
+        bad.write_text(json.dumps({"junk": "data"}))
+        os.utime(bad, (time.time(), time.time()))
+        # Older .bak is valid.
+        good = tmp_path / "schedules.json.20260101-000000.bak"
+        good.write_text(json.dumps({"schedules": {"a": {"name": "Recovered", "enabled": True}}}))
+        os.utime(good, (time.time() - 86400, time.time() - 86400))
 
         manager = _make_manager(tmp_path)
         try:
             result = manager.recover_schedules_from_backup()
-            assert result["status"] == "backup_invalid"
-            assert "schedules" in result["error"]
+            assert result["status"] == "ok"
+            assert result["backup_path"] == str(good)
+            assert manager.get_all_schedules()[0]["name"] == "Recovered"
         finally:
             manager.stop()
