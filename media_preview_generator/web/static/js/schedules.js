@@ -281,6 +281,98 @@ function _scheduleQuietHoursOverlap(schedule) {
 }
 window._scheduleQuietHoursOverlap = _scheduleQuietHoursOverlap;
 
+// Render a recovery banner above the schedules table when the backend
+// failed to load schedules.json. Pre-fix the user saw an empty list
+// with no indication their schedules existed but were unreadable
+// (typical cause: file owned root:root after host-side `chown` /
+// upgrade; container runs as abc:abc per linuxserver.io PUID/PGID).
+//
+// The banner offers a one-click recovery from the newest .bak file, plus
+// a fallback explanation of the manual `chown` recovery path.
+function _renderScheduleLoadBanner() {
+    const tbody = document.getElementById('scheduleList');
+    if (!tbody) return;
+    const card = tbody.closest('.card') || tbody.closest('section') || tbody.parentElement;
+    if (!card) return;
+
+    let banner = document.getElementById('scheduleLoadBanner');
+    const status = (window._schedulesLoadStatus || {}).status;
+    if (!status || status === 'ok') {
+        if (banner) banner.remove();
+        return;
+    }
+
+    const detail = window._schedulesLoadStatus || {};
+    const titleByStatus = {
+        permission_denied: 'Could not read saved schedules — file permissions',
+        corrupt_json: 'Could not read saved schedules — file is corrupt',
+        load_failed: 'Could not read saved schedules',
+        no_backup: 'Could not load schedules and no backup is available',
+    };
+    const title = titleByStatus[status] || 'Could not load schedules';
+    const hint = detail.recovery_hint || 'See container logs for details.';
+    const hasBackup = !!detail.backup_path;
+
+    const recoveryButton = hasBackup
+        ? `<button type="button" class="btn btn-sm btn-warning ms-2" onclick="recoverSchedulesFromBackup()">
+              <i class="bi bi-arrow-counterclockwise me-1"></i>Recover from backup
+           </button>`
+        : '';
+
+    const html = `
+        <div id="scheduleLoadBanner" class="alert alert-warning d-flex flex-column gap-2 mb-3" role="alert">
+            <div class="d-flex align-items-start gap-2">
+                <i class="bi bi-exclamation-triangle-fill mt-1"></i>
+                <div class="flex-grow-1">
+                    <strong>${escapeHtml(title)}</strong>
+                    <div class="small mt-1">${escapeHtml(hint)}</div>
+                </div>
+                ${recoveryButton}
+            </div>
+        </div>`;
+
+    if (banner) {
+        banner.outerHTML = html;
+    } else {
+        // Insert above the table's containing card body so it sits at the
+        // top of the schedules section.
+        const cardBody = tbody.closest('.card-body') || card;
+        cardBody.insertAdjacentHTML('afterbegin', html);
+    }
+}
+
+// Trigger backend restore from the newest schedules.json[.<stamp>].bak file.
+// Used by the recovery banner above. On success, refreshes the list.
+async function recoverSchedulesFromBackup() {
+    if (!confirm('Restore schedules from the newest backup file? Existing schedules.json will be overwritten with the backup contents.')) {
+        return;
+    }
+    let result;
+    try {
+        result = await apiPost('/api/schedules/recover_from_backup', {});
+    } catch (err) {
+        // apiPost throws on non-2xx; surface the body on the toast if available.
+        const msg = (err && err.body && err.body.error) || err.message || 'Recovery request failed';
+        showToast('Recovery failed', msg, 'danger');
+        return;
+    }
+    if (result && result.status === 'ok') {
+        const count = result.restored_count || 0;
+        showToast('Schedules restored', `Restored ${count} schedule(s) from ${result.backup_path}.`, 'success');
+        if (result.chown && result.chown.ok === false) {
+            // Restore wrote successfully but chown failed (typical in
+            // unprivileged containers). Surface the hint so the user knows
+            // to fix ownership on the host before the next restart.
+            showToast('Heads up', result.chown.hint || 'Could not chown the restored file.', 'warning');
+        }
+        await loadSchedules();
+    } else {
+        const msg = (result && (result.error || result.recovery_hint)) || 'Recovery failed for an unknown reason.';
+        showToast('Recovery failed', msg, 'danger');
+    }
+}
+window.recoverSchedulesFromBackup = recoverSchedulesFromBackup;
+
 function updateScheduleList() {
     // Always update the teaser card if it exists (Dashboard).
     updateScheduleTeaser();
@@ -289,6 +381,8 @@ function updateScheduleList() {
     // tbody isn't in the DOM, there's nothing else to render.
     const tbody = document.getElementById('scheduleList');
     if (!tbody) return;
+
+    _renderScheduleLoadBanner();
 
     if (schedules.length === 0) {
         tbody.innerHTML = `

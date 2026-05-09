@@ -1262,36 +1262,93 @@ class PlexServer(MediaServer):
             )
 
     def search_items(self, query: str, limit: int = 50) -> list[MediaItem]:
-        """Search Plex via ``library.search()`` (server-side index lookup).
+        """Search Plex via ``searchHubs()`` (cross-library index lookup).
 
-        Plex's native search API returns matches across all sections in a
-        single round-trip. The base-class default would walk every item in
-        every library — D4 measured 13.6s for a single-word query against
-        a 119k-item Plex; this override drops that to <1s by letting Plex
-        do the filtering itself.
+        Pre-fix this called ``library.search(title=needle)`` which is
+        scoped to the user's enabled-library config. Live regression
+        2026-05-10: a multi-server install with ``plex_library_ids = []``
+        (or no library IDs persisted at all) got zero hits across the
+        ENTIRE Plex catalogue. The user typed "the matrix" and saw an
+        empty list because no per-section was selected for the search
+        to walk.
+
+        ``searchHubs()`` is Plex's cross-library hub-search endpoint
+        (``/hubs/search``). It always queries every section, which is
+        what the Preview Inspector needs — the user's per-server library
+        filter is for ingestion, not for browsing. Cost-wise it's
+        comparable to a single ``library.search()`` per section but
+        without the per-section round-trips. When the parsed query
+        carries S##E##, we follow up by drilling into the matched
+        Series for the specific episode.
+
+        Empty query → empty list. Failures (auth, network) → empty
+        list with a WARNING — the inspector renders an empty result
+        rather than spinning.
         """
         from ..plex_client import _build_episode_title, _extract_item_locations, retry_plex_call
+        from ..search import SearchQuery
+        from ..search.rank import filter_and_rank
 
-        needle = (query or "").strip()
-        if not needle:
+        sq = SearchQuery.parse(query)
+        if sq.is_empty:
             return []
+
         plex = self._connect()
         try:
-            raw_results = retry_plex_call(plex.library.search, title=needle, limit=limit)
+            # searchHubs returns Hub objects (one per type — movies,
+            # shows, episodes, actors…); each hub contains items.
+            hubs = retry_plex_call(plex.search, query=sq.title, limit=limit)
         except Exception as exc:
             logger.warning(
                 "Plex search for {!r} failed ({}: {}). Verify Plex is reachable; falling back to "
                 "no-results so the inspector page renders an empty list rather than spinning.",
-                needle,
+                sq.raw,
                 type(exc).__name__,
                 exc,
             )
             return []
 
+        # Project hub items into (name, type, carrier) tuples so the
+        # shared rank pass can compare them against the parsed query.
+        candidates: list[tuple[str, str, object]] = []
+        for m in hubs or []:
+            try:
+                metadata_type = getattr(m, "METADATA_TYPE", "") or getattr(m, "type", "")
+                if metadata_type == "episode":
+                    title = _build_episode_title(m)
+                else:
+                    title = getattr(m, "title", "") or ""
+                candidates.append((title, str(metadata_type or "").lower(), m))
+            except Exception as exc:
+                logger.debug("Skipping Plex search hit due to projection error: {}", exc)
+                continue
+
+        ranked = filter_and_rank(sq, candidates, limit=limit * 2)
+
         items: list[MediaItem] = []
-        for m in raw_results or []:
+        for m in ranked:
             if len(items) >= limit:
                 break
+            metadata_type = getattr(m, "METADATA_TYPE", "") or getattr(m, "type", "")
+
+            # When the user typed S##E## and we've matched a Series,
+            # drill into it for the specific episode rather than
+            # surfacing the un-clickable Show row.
+            if sq.has_episode and metadata_type == "show":
+                try:
+                    ep = retry_plex_call(m.episode, season=sq.season, episode=sq.episode)
+                except Exception as exc:
+                    logger.debug(
+                        "Plex episode lookup S{}E{} on {!r} failed: {}",
+                        sq.season,
+                        sq.episode,
+                        getattr(m, "title", "?"),
+                        exc,
+                    )
+                    continue
+                m = ep
+                metadata_type = "episode"
+
             try:
                 locations = _extract_item_locations(m)
             except Exception:
@@ -1303,7 +1360,6 @@ class PlexServer(MediaServer):
                 # the BIF.
                 continue
             try:
-                metadata_type = getattr(m, "METADATA_TYPE", "") or getattr(m, "type", "")
                 if metadata_type == "episode":
                     title = _build_episode_title(m)
                 else:
@@ -1312,7 +1368,6 @@ class PlexServer(MediaServer):
                     MediaItem(
                         id=_plex_item_id(m),
                         title=title,
-                        type=metadata_type or "",
                         remote_path=locations[0] if locations else "",
                         library_id=str(getattr(m, "librarySectionID", "") or ""),
                     )
@@ -1320,6 +1375,16 @@ class PlexServer(MediaServer):
             except Exception as exc:
                 logger.debug("Skipping Plex search hit due to projection error: {}", exc)
                 continue
+
+        if not items:
+            logger.info(
+                "[{}] Search returned no results for {!r} (parsed title={!r}, S{}E{})",
+                self.name,
+                sq.raw,
+                sq.title,
+                sq.season,
+                sq.episode,
+            )
         return items
 
     def resolve_item_to_remote_path(self, item_id: str) -> str | None:

@@ -463,6 +463,13 @@ class ScheduleManager:
         self.schedules_file = os.path.join(config_dir, "schedules.json")
         self.run_job_callback = run_job_callback
         self._schedules: dict[str, dict] = {}
+        # Surface the most recent schedules.json load result to the API +
+        # UI. Pre-fix the loader's PermissionError was logged but the
+        # Schedules page rendered "no schedules" with no recovery hint
+        # (live regression 2026-05-10: /config/schedules.json shipped as
+        # root:root 0600 in the user's container; gunicorn ran as
+        # abc:abc and silently couldn't load any schedules).
+        self._load_status: dict[str, object] = {"status": "ok"}
         # Single RLock guarding ``_schedules`` mutations + reads. Without
         # this, APScheduler firing _update_last_run on multiple schedules
         # concurrently with a CRUD call (create/update/delete) could trip
@@ -552,10 +559,10 @@ class ScheduleManager:
                 # safe-merge with whatever the jobstore did persist.
                 self._reregister_loaded_schedules()
             except (OSError, json.JSONDecodeError) as e:
-                bak = self.schedules_file + ".bak"
+                backup_path = self._latest_schedules_backup()
                 bak_hint = (
-                    f" A backup is at {bak} — `mv` it to {self.schedules_file} and restart to recover."
-                    if os.path.exists(bak)
+                    f" A backup is at {backup_path} — `mv` it to {self.schedules_file} and restart to recover."
+                    if backup_path
                     else ""
                 )
                 logger.warning(
@@ -567,6 +574,171 @@ class ScheduleManager:
                     e,
                     bak_hint,
                 )
+                # Build a structured status block the API can hand to the UI
+                # so the user gets a visible recovery hint instead of an
+                # unexplained empty schedule list.
+                status: dict[str, object] = {
+                    "status": (
+                        "permission_denied"
+                        if isinstance(e, PermissionError)
+                        else ("corrupt_json" if isinstance(e, json.JSONDecodeError) else "load_failed")
+                    ),
+                    "path": self.schedules_file,
+                    "error_type": type(e).__name__,
+                    "error_message": str(e),
+                    "backup_path": backup_path,
+                    "process_user": f"{os.getuid()}:{os.getgid()}",
+                }
+                try:
+                    st = os.stat(self.schedules_file)
+                    status["file_owner"] = f"{st.st_uid}:{st.st_gid}"
+                    status["file_mode"] = oct(st.st_mode & 0o777)
+                except OSError:
+                    pass
+                if isinstance(e, PermissionError):
+                    suid = status.get("file_owner", "?")
+                    puid = status["process_user"]
+                    if backup_path:
+                        status["recovery_hint"] = (
+                            f"The schedules file is owned {suid} but this process runs as "
+                            f"{puid}. Click 'Recover from backup' to restore from {backup_path}, "
+                            f"or run `chown {puid} {self.schedules_file}` on the host."
+                        )
+                    else:
+                        status["recovery_hint"] = (
+                            f"The schedules file is owned {suid} but this process runs as "
+                            f"{puid}. Run `chown {puid} {self.schedules_file}` on the host to "
+                            f"restore access."
+                        )
+                elif isinstance(e, json.JSONDecodeError) and backup_path:
+                    status["recovery_hint"] = (
+                        f"The schedules file is corrupt. Click 'Recover from backup' to restore from {backup_path}."
+                    )
+                else:
+                    status["recovery_hint"] = (
+                        "Schedules failed to load. Re-create them on the Schedules page, or "
+                        "restore from a backup if one is available in the config directory."
+                    )
+                self._load_status = status
+
+    def _latest_schedules_backup(self) -> str | None:
+        """Find the newest ``schedules.json[.<stamp>].bak`` next to the live file.
+
+        We rotate timestamped backups (``schedules.json.20260504-024519.bak``)
+        on every save AND keep a plain ``schedules.json.bak``. Both are
+        candidates for recovery; pick whichever is newest by mtime so the
+        user gets the closest-to-current state on restore.
+        """
+        try:
+            cfg_dir = os.path.dirname(self.schedules_file) or "."
+            stem = os.path.basename(self.schedules_file)  # "schedules.json"
+        except OSError:
+            return None
+        candidates: list[tuple[float, str]] = []
+        try:
+            for name in os.listdir(cfg_dir):
+                if not name.startswith(stem):
+                    continue
+                if not name.endswith(".bak"):
+                    continue
+                full = os.path.join(cfg_dir, name)
+                try:
+                    candidates.append((os.path.getmtime(full), full))
+                except OSError:
+                    continue
+        except OSError:
+            return None
+        if not candidates:
+            return None
+        candidates.sort(reverse=True)
+        return candidates[0][1]
+
+    @property
+    def load_status(self) -> dict[str, object]:
+        """Last result of :meth:`_load_schedules` for the API/UI to surface."""
+        return dict(self._load_status)
+
+    def recover_schedules_from_backup(self) -> dict[str, object]:
+        """Atomic restore of ``schedules.json`` from the newest backup.
+
+        Returns a dict the API can hand back to the UI describing the
+        outcome (``ok``, count restored, or an error + actionable hint).
+        Best-effort ``os.chown`` to the runtime user — surfaces EPERM
+        cleanly instead of failing the whole restore.
+        """
+        backup = self._latest_schedules_backup()
+        if not backup:
+            return {
+                "status": "no_backup",
+                "message": "No schedules.json backup file was found in the config directory.",
+            }
+        try:
+            with open(backup) as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError) as exc:
+            return {
+                "status": "backup_unreadable",
+                "backup_path": backup,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        if not isinstance(data, dict) or "schedules" not in data:
+            return {
+                "status": "backup_invalid",
+                "backup_path": backup,
+                "error": "Backup file is missing the top-level 'schedules' key.",
+            }
+
+        # Atomic write: temp file in same dir, then os.replace. Avoids a
+        # partially-written schedules.json if the disk fills mid-write.
+        tmp = self.schedules_file + ".restore.tmp"
+        try:
+            with open(tmp, "w") as f:
+                json.dump(data, f, indent=2)
+            os.replace(tmp, self.schedules_file)
+        except OSError as exc:
+            try:
+                if os.path.exists(tmp):
+                    os.unlink(tmp)
+            except OSError:
+                pass
+            return {
+                "status": "write_failed",
+                "backup_path": backup,
+                "error": f"{type(exc).__name__}: {exc}",
+                "recovery_hint": (
+                    "Could not write the restored file. The config directory may not be "
+                    "writable by the running process — fix ownership on the host."
+                ),
+            }
+        # Best-effort chown so a future load isn't blocked by the same issue
+        # (the original failure was almost always 'wrong owner'). This is
+        # expected to fail in unprivileged containers (EPERM); we surface
+        # it but keep going since the restore itself succeeded.
+        chown_result: dict[str, object] = {"attempted": True}
+        try:
+            os.chown(self.schedules_file, os.getuid(), os.getgid())
+            chown_result["ok"] = True
+        except (OSError, AttributeError) as exc:
+            chown_result["ok"] = False
+            chown_result["error"] = f"{type(exc).__name__}: {exc}"
+            chown_result["hint"] = (
+                f"Could not chown the restored file to {os.getuid()}:{os.getgid()} "
+                "(typical in unprivileged containers). The restore still wrote successfully — "
+                "if the next load fails, run `chown` on the host."
+            )
+
+        # Reload so APScheduler picks up the restored crons immediately.
+        with self._lock:
+            self._schedules = {}
+            self._load_status = {"status": "ok"}
+            self._load_schedules()
+
+        return {
+            "status": "ok",
+            "backup_path": backup,
+            "restored_count": len(self._schedules),
+            "chown": chown_result,
+        }
 
     def _reregister_loaded_schedules(self) -> None:
         """Re-register every enabled in-memory schedule with APScheduler (D30).

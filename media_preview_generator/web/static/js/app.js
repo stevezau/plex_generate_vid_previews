@@ -708,6 +708,12 @@ async function loadSchedules() {
     try {
         const data = await apiGet('/api/schedules');
         schedules = data.schedules || [];
+        // Carry the backend's load_status onto a window global so the
+        // schedules table renderer can surface a recovery banner when the
+        // schedules.json file failed to load (the typical cause is wrong
+        // file ownership in the user's container — pre-fix the user just
+        // saw an empty list with no hint).
+        window._schedulesLoadStatus = data.load_status || { status: 'ok' };
         updateScheduleList();
     } catch (error) {
         console.error('Failed to load schedules:', error);

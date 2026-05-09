@@ -18,9 +18,37 @@ from . import api
 @api.route("/schedules")
 @api_token_required
 def get_schedules():
-    """Get all schedules."""
+    """Get all schedules.
+
+    Includes a ``load_status`` block so the UI can surface a recovery
+    banner when ``schedules.json`` failed to load (the typical cause
+    is wrong file ownership in the user's container — pre-fix the
+    user just saw an empty list with no hint that their schedules
+    existed but were unreadable).
+    """
     schedule_manager = get_schedule_manager()
-    return jsonify({"schedules": schedule_manager.get_all_schedules()})
+    return jsonify(
+        {
+            "schedules": schedule_manager.get_all_schedules(),
+            "load_status": schedule_manager.load_status,
+        }
+    )
+
+
+@api.route("/schedules/recover_from_backup", methods=["POST"])
+@api_token_required
+def recover_schedules_from_backup():
+    """Restore ``schedules.json`` from the newest backup file.
+
+    Used by the Schedules page's recovery banner when the original
+    file failed to load (PermissionError / corrupt JSON). Returns the
+    outcome ({status: "ok"|"no_backup"|"backup_unreadable"|"backup_invalid"|"write_failed"})
+    plus details so the UI can show a clear next-step message.
+    """
+    schedule_manager = get_schedule_manager()
+    result = schedule_manager.recover_schedules_from_backup()
+    http_status = 200 if result.get("status") == "ok" else 409
+    return jsonify(result), http_status
 
 
 @api.route("/schedules/<schedule_id>")

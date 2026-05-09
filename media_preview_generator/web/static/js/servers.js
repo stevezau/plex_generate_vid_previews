@@ -945,6 +945,103 @@
     let _editReauthQcPoll = null;
     let _editReauthQcSecret = null;
 
+    // Render the Emby/Jellyfin webhook info card on the per-server Edit
+    // modal's "Webhook & Scanner" tab. Pre-fix the tab was Plex-only;
+    // Emby and Jellyfin users had no place to find the webhook URL their
+    // plugin should POST to. The backend at
+    // /api/settings/<vendor>_webhook/info returns the URL + plugin
+    // install instructions; this function paints them.
+    async function _renderVendorWebhookSection(server) {
+        const card = document.getElementById('editVendorWebhookCard');
+        if (!card) return;
+        const t = String(server.type || '').toLowerCase();
+        if (t !== 'emby' && t !== 'jellyfin') {
+            card.classList.add('d-none');
+            return;
+        }
+        card.classList.remove('d-none');
+
+        const headerEl = document.getElementById('editVendorWebhookHeader');
+        const urlInput = document.getElementById('editVendorWebhookUrl');
+        const hintEl = document.getElementById('editVendorWebhookPluginHint');
+        const stepsEl = document.getElementById('editVendorWebhookSteps');
+        const testBtn = document.getElementById('editVendorWebhookTestBtn');
+        const testResult = document.getElementById('editVendorWebhookTestResult');
+        const copyBtn = document.getElementById('editVendorWebhookCopyBtn');
+
+        if (headerEl) headerEl.textContent = (t === 'emby' ? 'Emby' : 'Jellyfin') + ' Webhook';
+        if (urlInput) urlInput.value = 'Loading…';
+        if (hintEl) hintEl.textContent = '';
+        if (stepsEl) stepsEl.innerHTML = '';
+        if (testResult) testResult.textContent = '';
+
+        let info;
+        try {
+            const url = '/api/settings/' + t + '_webhook/info?server_id=' + encodeURIComponent(server.id);
+            info = await apiGet(url);
+        } catch (err) {
+            if (urlInput) urlInput.value = '';
+            if (hintEl) {
+                hintEl.classList.remove('alert-info');
+                hintEl.classList.add('alert-danger');
+                hintEl.textContent = 'Could not load webhook info: ' + (err && err.message || err);
+            }
+            return;
+        }
+
+        if (urlInput) urlInput.value = info.webhook_url_with_token || info.webhook_url || '';
+        if (hintEl) {
+            hintEl.classList.remove('alert-danger');
+            hintEl.classList.add('alert-info');
+            const plugin = info.plugin || {};
+            const installLink = plugin.install_url
+                ? ` <a href="${plugin.install_url}" target="_blank" rel="noopener">${escapeHtml(plugin.plugin_name || 'plugin')} install instructions ↗</a>`
+                : '';
+            hintEl.innerHTML = '<i class="bi bi-info-circle me-1"></i>' +
+                'You need the ' + escapeHtml(plugin.plugin_name || 'webhook plugin') +
+                ' installed on your ' + escapeHtml(t === 'emby' ? 'Emby' : 'Jellyfin') +
+                ' server.' + installLink;
+        }
+        if (stepsEl) {
+            const steps = (info.plugin || {}).config_steps || [];
+            stepsEl.innerHTML = steps.map(s => '<li>' + escapeHtml(s) + '</li>').join('');
+        }
+
+        if (copyBtn && urlInput) {
+            copyBtn.onclick = () => {
+                urlInput.select();
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(urlInput.value).catch(() => {});
+                } else {
+                    try { document.execCommand('copy'); } catch (_) {}
+                }
+                copyBtn.innerHTML = '<i class="bi bi-check2"></i>';
+                setTimeout(() => { copyBtn.innerHTML = '<i class="bi bi-clipboard"></i>'; }, 1500);
+            };
+        }
+
+        if (testBtn) {
+            testBtn.onclick = async () => {
+                if (!testResult) return;
+                testResult.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Testing…';
+                try {
+                    const url = '/api/settings/' + t + '_webhook/test?server_id=' + encodeURIComponent(server.id);
+                    const result = await apiPost(url, {});
+                    if (result && result.success) {
+                        testResult.innerHTML = '<i class="bi bi-check-circle-fill text-success me-1"></i>' +
+                            escapeHtml(result.message || 'Round-trip OK.');
+                    } else {
+                        testResult.innerHTML = '<i class="bi bi-x-circle-fill text-danger me-1"></i>' +
+                            escapeHtml((result && (result.error || result.hint)) || 'Webhook test failed.');
+                    }
+                } catch (err) {
+                    const msg = (err && err.body && (err.body.error || err.body.hint)) || (err && err.message) || 'Webhook test failed';
+                    testResult.innerHTML = '<i class="bi bi-x-circle-fill text-danger me-1"></i>' + escapeHtml(msg);
+                }
+            };
+        }
+    }
+
     function _resetEditReauthSection(serverType) {
         const t = String(serverType || '').toLowerCase();
         const plex = document.getElementById('editReauthPlex');
@@ -1139,6 +1236,14 @@
         _editState = { server, allServers };
 
         $('#editServerName').textContent = server.name || '';
+        // Long server names (e.g. "My Plex Server In The Living Room With Lots Of Movies")
+        // used to wrap the modal title onto two lines because the inner span had no
+        // text-truncate. The CSS truncates with ellipsis; surface the full name on
+        // hover so the truncation isn't lossy.
+        const nameWrap = $('#editServerNameWrap');
+        if (nameWrap) {
+            nameWrap.title = `Edit ${server.name || ''}`.trim();
+        }
         // Show the vendor logo next to the title — replaces the old text
         // type-badge ("plex" / "emby" / "jellyfin") which was redundant
         // because the icon already conveys the vendor.
@@ -1176,12 +1281,24 @@
         // an old value from a previous Edit doesn't leak across.
         _resetEditReauthSection(server.type || '');
 
-        // Plex-only: show the config folder field + wire its inline validator,
-        // and reveal the "Webhook & Scanner" tab (Phase H4).
+        // Plex-only: show the config folder field + wire its inline validator.
         const isPlex = (server.type || '').toLowerCase() === 'plex';
         $('#editPlexConfigGroup').classList.toggle('d-none', !isPlex);
+        // The "Webhook & Scanner" tab now shows for ALL server types.
+        // Pre-fix it was hidden for non-Plex servers — closing the user's
+        // bug report "Plex has webhook register section but emby and jelly
+        // does not? Why?". Per-vendor content is rendered by
+        // _renderVendorWebhookSection() below.
         const automationTabLi = document.getElementById('editTabAutomationLi');
-        if (automationTabLi) automationTabLi.classList.toggle('d-none', !isPlex);
+        if (automationTabLi) automationTabLi.classList.remove('d-none');
+        // Plex-specific cards stay hidden for non-Plex servers; the
+        // Emby/Jellyfin info card (#editVendorWebhookCard) is the only
+        // thing that should render for them.
+        const plexWebhookCard = document.getElementById('editPlexWebhookCard');
+        const plexRecentlyAddedCard = document.getElementById('editPlexRecentlyAddedCard');
+        if (plexWebhookCard) plexWebhookCard.classList.toggle('d-none', !isPlex);
+        if (plexRecentlyAddedCard) plexRecentlyAddedCard.classList.toggle('d-none', !isPlex);
+        _renderVendorWebhookSection(server);
         // Always force the General tab active on open. Without this, opening a
         // Plex server, clicking "Webhook & Scanner", closing, then opening a
         // non-Plex server leaves the now-hidden Plex pane visible because
@@ -1848,13 +1965,30 @@
 
         const ok = check.ok !== false;
         const sev = check.severity || 'info';
+        // Four-tier visual hierarchy so users can tell at a glance whether
+        // a red ✗ is "blocks the server from working" (Required) or "the
+        // server still works but you're missing a recommended optimisation"
+        // (Recommended). Pre-fix every failing check rendered identically
+        // — users panicked over amber recommendations they could safely
+        // ignore.
+        //   Required + ok      → green ✓ + grey "Required" badge
+        //   Required + fail    → red ✗ + red "Required" badge
+        //   Recommended + ok   → grey ✓ + grey "Recommended" badge
+        //   Recommended + fail → amber ⚠ + amber "Recommended" badge
         let icon;
-        if (ok) {
+        let tierBadge;
+        if (ok && sev === 'critical') {
             icon = '<i class="bi bi-check-circle-fill text-success mt-1"></i>';
+            tierBadge = '<span class="badge bg-success-subtle text-success-emphasis border border-success-subtle ms-1" title="This check is required for the server to work. It is currently passing.">Required</span>';
+        } else if (ok) {
+            icon = '<i class="bi bi-check-circle text-secondary mt-1"></i>';
+            tierBadge = '<span class="badge bg-secondary-subtle text-secondary-emphasis border border-secondary-subtle ms-1" title="This check is a recommendation, not a requirement. It is currently passing.">Recommended</span>';
         } else if (sev === 'critical') {
             icon = '<i class="bi bi-x-circle-fill text-danger mt-1"></i>';
+            tierBadge = '<span class="badge bg-danger-subtle text-danger-emphasis border border-danger-subtle ms-1" title="This is required — fix it to get the server working.">Required — fix to enable</span>';
         } else {
             icon = '<i class="bi bi-exclamation-triangle-fill text-warning mt-1"></i>';
+            tierBadge = '<span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle ms-1" title="The server still works without this — it is a recommended improvement, not a blocker.">Recommended — server still works</span>';
         }
 
         const anchor = check.docs_anchor
@@ -1890,7 +2024,7 @@
             : '';
 
         const labelHtml = escapeHtml(check.label || check.id || '');
-        row.innerHTML = `${icon}<div class="flex-grow-1">${labelHtml}${infoIcon}${reasonStr}${currentStr}</div>`;
+        row.innerHTML = `${icon}<div class="flex-grow-1">${labelHtml}${tierBadge}${infoIcon}${reasonStr}${currentStr}</div>`;
 
         // Attach the rich explanation HTML to the info-icon button as
         // a DOM property — can't round-trip multi-paragraph HTML through

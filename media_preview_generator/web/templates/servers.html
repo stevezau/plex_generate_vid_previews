@@ -57,12 +57,12 @@
     <div class="modal-dialog modal-lg modal-dialog-scrollable">
         <div class="modal-content">
             <div class="modal-header">
-                <h5 class="modal-title d-flex align-items-center gap-2">
-                    <i class="bi bi-pencil"></i>
-                    <img id="editServerVendorLogo" src="" alt="" width="20" height="20" class="d-none">
-                    <span>Edit <span id="editServerName"></span></span>
+                <h5 class="modal-title d-flex align-items-center gap-2 flex-grow-1" style="min-width: 0;">
+                    <i class="bi bi-pencil flex-shrink-0"></i>
+                    <img id="editServerVendorLogo" src="" alt="" width="20" height="20" class="d-none flex-shrink-0">
+                    <span class="text-truncate" style="min-width: 0;" id="editServerNameWrap">Edit <span id="editServerName"></span></span>
                 </h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                <button type="button" class="btn-close flex-shrink-0" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
                 <input type="hidden" id="editServerId">
@@ -316,6 +316,25 @@
                                             previews from working correctly.</li>
                                     </ul>
 
+                                    <p><strong>Per-row tier badges:</strong> each
+                                    check is tagged so you know whether to act on it:</p>
+                                    <ul>
+                                        <li><span class="badge bg-success-subtle text-success-emphasis border border-success-subtle">Required</span>
+                                            (green ✓) — required for the server
+                                            to work; currently passing.</li>
+                                        <li><span class="badge bg-danger-subtle text-danger-emphasis border border-danger-subtle">Required — fix to enable</span>
+                                            (red ✗) — required and currently failing;
+                                            previews won't work until you fix this.</li>
+                                        <li><span class="badge bg-secondary-subtle text-secondary-emphasis border border-secondary-subtle">Recommended</span>
+                                            (grey ✓) — a recommended optimisation
+                                            that's already on; nothing to do.</li>
+                                        <li><span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle">Recommended — server still works</span>
+                                            (amber ⚠) — a recommended optimisation
+                                            that's not on. The server still works
+                                            without it; flip it on if you want the
+                                            recommended setup.</li>
+                                    </ul>
+
                                     <p><strong>Per-row toggles:</strong> each check
                                     that has a toggleable state shows <em>Enable</em>
                                     or <em>Disable</em> inline. Clicking opens a
@@ -466,15 +485,50 @@
                         </div>
                     </div>
 
-                    <!-- Webhook & Scanner (Plex-only): full controls live here.
-                         The Plex Direct webhook is currently registered against a single
-                         Plex token at app level; per-server registration in a multi-Plex
-                         install is tracked as a follow-up. -->
+                    <!-- Webhook & Scanner: Plex shows the registration controls;
+                         Emby/Jellyfin show plugin-install instructions + the URL the
+                         user needs to paste into their server's webhook plugin (the
+                         #editVendorWebhookCard below, populated by JS at modal-open
+                         time). Pre-fix this tab was Plex-only and Emby/Jellyfin users
+                         had no place to find the webhook URL. -->
                     <div class="tab-pane fade" id="edit-tab-automation">
                         <div id="editPlexWebhookServerCaption" class="small text-muted mb-3"></div>
 
+                        <!-- Emby / Jellyfin Webhook info card (shown by JS for non-Plex servers). -->
+                        <div id="editVendorWebhookCard" class="card mb-3 d-none">
+                            <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+                                <div>
+                                    <i class="bi bi-broadcast me-2"></i>
+                                    <span id="editVendorWebhookHeader">Webhook</span>
+                                </div>
+                                <span class="badge bg-secondary" id="editVendorWebhookPluginBadge">Plugin required</span>
+                            </div>
+                            <div class="card-body">
+                                <p class="mb-2">
+                                    Configure your media server's webhook plugin to POST events to this URL.
+                                    The same endpoint receives Plex, Emby and Jellyfin events — the server
+                                    is identified by the payload itself.
+                                </p>
+                                <label class="form-label small text-muted">Webhook URL (with auth token)</label>
+                                <div class="input-group input-group-sm mb-2">
+                                    <input type="text" class="form-control font-monospace" id="editVendorWebhookUrl" readonly>
+                                    <button class="btn btn-outline-secondary" type="button" id="editVendorWebhookCopyBtn" title="Copy to clipboard">
+                                        <i class="bi bi-clipboard"></i>
+                                    </button>
+                                </div>
+                                <div id="editVendorWebhookPluginHint" class="alert alert-info small mb-2"></div>
+                                <ol id="editVendorWebhookSteps" class="mb-3 small"></ol>
+                                <div class="d-flex gap-2 flex-wrap">
+                                    <button class="btn btn-sm btn-outline-primary" type="button" id="editVendorWebhookTestBtn">
+                                        <i class="bi bi-broadcast-pin me-1"></i>Test webhook
+                                    </button>
+                                </div>
+                                <div id="editVendorWebhookTestResult" class="small mt-2"></div>
+                            </div>
+                        </div>
+
                         <!-- Plex Direct Webhook -->
-                        <div class="card mb-3">
+                        <div class="card mb-3" id="editPlexWebhookCard">
                             <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
                                 <div>
                                     <i class="bi bi-lightning-charge me-2"></i>Plex Direct Webhook
@@ -536,8 +590,8 @@
                             </div>
                         </div>
 
-                        <!-- Recently Added Scanner -->
-                        <div class="card mb-3">
+                        <!-- Recently Added Scanner (Plex-only, hidden via JS for non-Plex servers) -->
+                        <div class="card mb-3" id="editPlexRecentlyAddedCard">
                             <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
                                 <div>
                                     <i class="bi bi-arrow-repeat me-2"></i>Plex Recently Added Scanner

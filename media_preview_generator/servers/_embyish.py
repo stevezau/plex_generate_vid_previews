@@ -314,37 +314,165 @@ class EmbyApiClient(MediaServer):
             )
 
     def search_items(self, query: str, limit: int = 50) -> list[MediaItem]:
-        """Search via ``/Items?searchTerm=…&Recursive=true`` (server-side index).
+        """Two-pass search via the shared :class:`SearchQuery` abstraction.
 
-        Both Emby and Jellyfin expose ``searchTerm`` on the ``/Items``
-        endpoint; the server filters and returns only matches in one
-        round-trip. The base-class default would walk every library and
-        every item — D4 fix on Plex side; same brute-force walk hits
-        Emby/Jellyfin equally hard on big installs.
+        Pre-fix this called ``/Items?searchTerm=...`` directly with the
+        raw query string. ``searchTerm`` is a substring matcher with no
+        relevance ranking, so ``"the boys s01e01"`` returned every item
+        containing the token "boys" (Wonder Boys, Nickel Boys, Jersey
+        Boys, Bad Boys, Boys State, Good Boys) — the user got 6 wrong
+        results before the right one. Live regression 2026-05-10.
+
+        Two-pass strategy:
+
+        1. **Series-first** (only when the query carries S##E##):
+           ``/Items?NameStartsWith=<title>&IncludeItemTypes=Series`` —
+           prefix-indexed lookup. If a Series matches AND the query has
+           an episode, follow up with ``/Shows/<series_id>/Episodes``
+           filtered by season + episode number. This is the precise
+           path that pre-fix produced zero hits because ``searchTerm``
+           returned only Movie + Episode types and the matched Series
+           had no Path field of its own.
+
+        2. **Fallback**: ``/Items?searchTerm=<title>`` against
+           Series + Movie + Episode, then client-side rank with the
+           shared :func:`rank_score` so a 1.0 exact-title-match
+           ("The Boys") sorts above a 0.2 single-token match
+           ("Wonder Boys"). The 0.3 floor inside ``filter_and_rank``
+           drops the substring-only noise.
+
+        Empty query → empty list (caller-handled). Both passes together
+        return at most ``limit`` items.
         """
-        needle = (query or "").strip()
-        if not needle:
+        from ..search import SearchQuery
+        from ..search.rank import filter_and_rank
+
+        sq = SearchQuery.parse(query)
+        if sq.is_empty:
             return []
-        params = {
-            "searchTerm": needle,
-            "IncludeItemTypes": "Movie,Episode",
+
+        results: list[MediaItem] = []
+        seen_ids: set[str] = set()
+
+        # ---------------------------------------------------------------
+        # Pass 1: Series-first (only when episode hint present).
+        # NameStartsWith is server-indexed — fast and precise.
+        # ---------------------------------------------------------------
+        if sq.has_episode:
+            series_params = {
+                "NameStartsWith": sq.title,
+                "IncludeItemTypes": "Series",
+                "Recursive": "true",
+                "Fields": "Path",
+                "Limit": "10",
+            }
+            try:
+                series_hits = self.query_items(series_params)
+            except Exception as exc:
+                logger.debug(
+                    "[{}] Series-first NameStartsWith pass failed for {!r}: {}",
+                    self.name,
+                    sq.raw,
+                    exc,
+                )
+                series_hits = []
+            for series in series_hits or []:
+                if not isinstance(series, dict):
+                    continue
+                series_id = str(series.get("Id") or "")
+                if not series_id:
+                    continue
+                ep_params = {
+                    "Season": str(sq.season),
+                    "Fields": "Path",
+                    "Limit": "200",
+                }
+                try:
+                    ep_response = self._request("GET", f"/Shows/{series_id}/Episodes", params=ep_params).json()
+                except Exception as exc:
+                    logger.debug(
+                        "[{}] Episodes lookup for series {} failed: {}",
+                        self.name,
+                        series_id,
+                        exc,
+                    )
+                    continue
+                for ep in ep_response.get("Items", []) or []:
+                    if not isinstance(ep, dict):
+                        continue
+                    if ep.get("IndexNumber") != sq.episode:
+                        continue
+                    path = str(ep.get("Path") or "")
+                    if not path:
+                        continue
+                    eid = str(ep.get("Id") or "")
+                    if eid in seen_ids:
+                        continue
+                    seen_ids.add(eid)
+                    results.append(
+                        MediaItem(
+                            id=eid,
+                            library_id=str(ep.get("ParentId") or series_id),
+                            title=_format_emby_title(ep),
+                            remote_path=path,
+                        )
+                    )
+                    if len(results) >= limit:
+                        return results
+
+        # ---------------------------------------------------------------
+        # Pass 2: searchTerm fallback with client-side rank.
+        # Covers movies + cases where the Series-first pass missed (the
+        # series isn't a NameStartsWith match, e.g. user typed "boys"
+        # for "The Boys").
+        # ---------------------------------------------------------------
+        fallback_params = {
+            "searchTerm": sq.title,
+            "IncludeItemTypes": "Series,Movie,Episode",
             "Recursive": "true",
             "Fields": "Path",
-            "Limit": str(int(limit)),
+            # Emby/Jellyfin servers cap at varying limits; ask for plenty
+            # so the rank pass has enough candidates to choose from
+            # without blowing the wire.
+            "Limit": str(min(int(limit) * 4, 200)),
         }
-        raw_items = self.query_items(params)
-        results: list[MediaItem] = []
-        for raw in raw_items:
+        try:
+            raw_items = self.query_items(fallback_params)
+        except Exception as exc:
+            logger.info(
+                "[{}] searchTerm fallback failed for {!r}: {}. Returning what Series-first found.",
+                self.name,
+                sq.raw,
+                exc,
+            )
+            raw_items = []
+
+        # Rank candidates by name + type before applying the path filter
+        # — a Series hit has no Path of its own, but if the user typed
+        # S##E## we already pulled its episodes in Pass 1, so we just
+        # need to drop unranked Series rows here.
+        candidates: list[tuple[str, str, dict]] = []
+        for raw in raw_items or []:
             if not isinstance(raw, dict):
                 continue
+            ctype = str(raw.get("Type") or "").lower()
+            cname = _format_emby_title(raw)
+            candidates.append((cname, ctype, raw))
+
+        ranked = filter_and_rank(sq, candidates, limit=limit * 2)
+        for raw in ranked:
             path = str(raw.get("Path") or "")
             if not path:
-                # Series/season-level matches don't carry a file path; skip
-                # so the inspector list never shows un-clickable rows.
+                # Skip path-less Series rows — the inspector needs an
+                # actual media file to load the BIF.
                 continue
+            rid = str(raw.get("Id") or "")
+            if rid in seen_ids:
+                continue
+            seen_ids.add(rid)
             results.append(
                 MediaItem(
-                    id=str(raw.get("Id") or ""),
+                    id=rid,
                     library_id=str(raw.get("ParentId") or ""),
                     title=_format_emby_title(raw),
                     remote_path=path,
@@ -352,6 +480,19 @@ class EmbyApiClient(MediaServer):
             )
             if len(results) >= limit:
                 break
+
+        if not results:
+            # Surface zero-result searches at INFO so users investigating
+            # "why doesn't search work" can grep the logs without enabling
+            # debug. Pre-fix this happened silently.
+            logger.info(
+                "[{}] Search returned no results for {!r} (parsed title={!r}, S{}E{})",
+                self.name,
+                sq.raw,
+                sq.title,
+                sq.season,
+                sq.episode,
+            )
         return results
 
     def resolve_item_to_remote_path(self, item_id: str) -> str | None:
