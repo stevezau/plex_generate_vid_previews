@@ -363,6 +363,170 @@ class TestScheduleRetryForUnindexed:
             f"out to non-originator servers — M4 contract violation."
         )
 
+    def test_chained_retry_fires_when_still_pending_registration(self):
+        """Regression for live Homebodies S01E01 (2026-05-09): the retry
+        queue's continuation check pre-fix only looked for
+        SKIPPED_NOT_INDEXED. A Jellyfin/Emby publisher returning
+        PUBLISHED_PENDING_REGISTRATION (item_id still None on the
+        retry) was treated as "done" — the chain terminated and the
+        plugin-bridge / /Items/{id}/Refresh registration calls never
+        fired. Ship-blocking regression that left items un-registered
+        in Jellyfin's library DB.
+
+        Fix: continuation check now includes PENDING_REGISTRATION
+        alongside SKIPPED_NOT_INDEXED and SKIPPED_NOT_IN_LIBRARY.
+        """
+        from media_preview_generator.processing.multi_server import (
+            MultiServerResult,
+            MultiServerStatus,
+            PublisherResult,
+            PublisherStatus,
+        )
+
+        registry = MagicMock()
+        config = MagicMock()
+        call_count = {"n": 0}
+        chain_complete = threading.Event()
+
+        def fake_process(**kwargs):
+            call_count["n"] += 1
+            if call_count["n"] < 2:
+                # First retry: still PENDING_REGISTRATION (item_id None).
+                # Aggregate is PUBLISHED (PENDING counts as published-shaped),
+                # but the per-publisher row needs another retry.
+                return MultiServerResult(
+                    canonical_path=kwargs["canonical_path"],
+                    status=MultiServerStatus.PUBLISHED,
+                    publishers=[
+                        PublisherResult(
+                            server_id="jelly-1",
+                            server_name="jelly-1",
+                            adapter_name="jellyfin_trickplay",
+                            status=PublisherStatus.PUBLISHED_PENDING_REGISTRATION,
+                            message="awaiting registration",
+                        )
+                    ],
+                    frame_count=0,
+                    message="pending",
+                )
+            chain_complete.set()
+            return MultiServerResult(
+                canonical_path=kwargs["canonical_path"],
+                status=MultiServerStatus.PUBLISHED,
+                publishers=[
+                    PublisherResult(
+                        server_id="jelly-1",
+                        server_name="jelly-1",
+                        adapter_name="jellyfin_trickplay",
+                        status=PublisherStatus.PUBLISHED,
+                        message="registered",
+                    )
+                ],
+                frame_count=6,
+                message="ok",
+            )
+
+        with (
+            patch(
+                "media_preview_generator.processing.retry_queue._BACKOFF",
+                (0.05,) + tuple([0.05] * (len(_BACKOFF) - 1)),
+            ),
+            patch(
+                "media_preview_generator.processing.multi_server.process_canonical_path",
+                side_effect=fake_process,
+            ),
+        ):
+            schedule_retry_for_unindexed(
+                "/foo.mkv",
+                registry=registry,
+                config=config,
+                item_id_by_server=None,
+                attempt=1,
+            )
+            assert chain_complete.wait(timeout=2), (
+                "Retry queue did not chain — PUBLISHED_PENDING_REGISTRATION "
+                "publisher result must trigger another retry attempt. Pre-fix "
+                "the continuation check only looked for SKIPPED_NOT_INDEXED, "
+                "so PENDING terminated the chain silently."
+            )
+            time.sleep(0.05)
+
+        assert call_count["n"] == 2
+
+    def test_chained_retry_fires_when_still_skipped_not_in_library(self):
+        """Counterpart matrix row: SKIPPED_NOT_IN_LIBRARY (the upstream
+        short-circuit when adapter.needs_server_metadata + item_id is
+        None for Plex) must also continue the chain.
+        """
+        from media_preview_generator.processing.multi_server import (
+            MultiServerResult,
+            MultiServerStatus,
+            PublisherResult,
+            PublisherStatus,
+        )
+
+        registry = MagicMock()
+        config = MagicMock()
+        call_count = {"n": 0}
+        chain_complete = threading.Event()
+
+        def fake_process(**kwargs):
+            call_count["n"] += 1
+            if call_count["n"] < 2:
+                return MultiServerResult(
+                    canonical_path=kwargs["canonical_path"],
+                    status=MultiServerStatus.SKIPPED_NOT_INDEXED,
+                    publishers=[
+                        PublisherResult(
+                            server_id="plex-1",
+                            server_name="plex-1",
+                            adapter_name="plex_bundle",
+                            status=PublisherStatus.SKIPPED_NOT_IN_LIBRARY,
+                            message="not in library",
+                        )
+                    ],
+                    frame_count=0,
+                    message="waiting",
+                )
+            chain_complete.set()
+            return MultiServerResult(
+                canonical_path=kwargs["canonical_path"],
+                status=MultiServerStatus.PUBLISHED,
+                publishers=[
+                    PublisherResult(
+                        server_id="plex-1",
+                        server_name="plex-1",
+                        adapter_name="plex_bundle",
+                        status=PublisherStatus.PUBLISHED,
+                        message="ok",
+                    )
+                ],
+                frame_count=6,
+                message="ok",
+            )
+
+        with (
+            patch(
+                "media_preview_generator.processing.retry_queue._BACKOFF",
+                (0.05,) + tuple([0.05] * (len(_BACKOFF) - 1)),
+            ),
+            patch(
+                "media_preview_generator.processing.multi_server.process_canonical_path",
+                side_effect=fake_process,
+            ),
+        ):
+            schedule_retry_for_unindexed(
+                "/foo.mkv",
+                registry=registry,
+                config=config,
+                item_id_by_server=None,
+                attempt=1,
+            )
+            assert chain_complete.wait(timeout=2)
+            time.sleep(0.05)
+
+        assert call_count["n"] == 2
+
     def test_chained_retry_fires_when_still_unindexed(self):
         """Retry that returns SKIPPED_NOT_INDEXED schedules a follow-up."""
         from media_preview_generator.processing.multi_server import (

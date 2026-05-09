@@ -280,11 +280,37 @@ def schedule_retry_for_unindexed(
                 )
                 return
 
-            # Did any publisher remain SKIPPED_NOT_INDEXED? If so, schedule
-            # another retry; otherwise we're done. PUBLISHED, FAILED, and
-            # SKIPPED_OUTPUT_EXISTS all terminate the retry chain.
-            still_unindexed = any(p.status is PublisherStatus.SKIPPED_NOT_INDEXED for p in result.publishers)
-            if still_unindexed and result.status is not MultiServerStatus.FAILED:
+            # Did any publisher need another shot? If so, schedule
+            # another retry; otherwise the chain is complete. The three
+            # "needs more time" statuses:
+            #   * SKIPPED_NOT_INDEXED — Plex hasn't analysed the file yet
+            #     (no bundle hash → can't write the BIF)
+            #   * SKIPPED_NOT_IN_LIBRARY — server doesn't know the file
+            #     exists yet (resolve_remote_path_to_item_id returned None)
+            #   * PUBLISHED_PENDING_REGISTRATION — tiles/sidecar are on
+            #     disk but Jellyfin/Emby item_id wasn't resolved at
+            #     publish time, so the per-item registration calls
+            #     (Media Preview Bridge plugin + /Items/{id}/Refresh)
+            #     never fired. The retry re-resolves the item id so the
+            #     registration can complete.
+            #
+            # PUBLISHED, FAILED, and SKIPPED_OUTPUT_EXISTS all terminate
+            # the retry chain.
+            #
+            # Live Homebodies S01E01 (2026-05-09) regression: pre-fix the
+            # check only looked for SKIPPED_NOT_INDEXED, so a JellyTest
+            # PENDING_REGISTRATION result on attempt #1 silently terminated
+            # the chain — the trickplay tiles never got registered.
+            needs_retry = any(
+                p.status
+                in (
+                    PublisherStatus.SKIPPED_NOT_INDEXED,
+                    PublisherStatus.SKIPPED_NOT_IN_LIBRARY,
+                    PublisherStatus.PUBLISHED_PENDING_REGISTRATION,
+                )
+                for p in result.publishers
+            )
+            if needs_retry and result.status is not MultiServerStatus.FAILED:
                 schedule_retry_for_unindexed(
                     path,
                     registry=registry,
