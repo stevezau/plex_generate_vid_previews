@@ -1636,10 +1636,13 @@ function updateJobQueue() {
                  </button>`
             : '';
         const isRetry = !!(job.config && job.config.is_retry);
+        const isRetryChain = !!(job.config && job.config.is_retry_chain);
         const retryAttempt = job.config && typeof job.config.retry_attempt === 'number' ? job.config.retry_attempt : 0;
         const maxRetries = job.config && typeof job.config.max_retries === 'number' ? job.config.max_retries : 0;
         const retryLabel = isRetry && maxRetries > 0
-            ? ` <span class="badge bg-warning text-dark ms-1" title="Retry attempt"><i class="bi bi-arrow-repeat me-1"></i>Retry ${retryAttempt}/${maxRetries}</span>`
+            ? (isRetryChain
+                ? ` <span class="badge bg-info text-dark ms-1" title="Background registration retry — Jellyfin/Emby hadn't indexed the file at publish time, so the per-item registration calls (plugin bridge / /Items/{id}/Refresh) are being retried until the server catches up. Tiles are already on disk."><i class="bi bi-arrow-clockwise me-1"></i>Registering ${retryAttempt}/${maxRetries}</span>`
+                : ` <span class="badge bg-warning text-dark ms-1" title="Retry attempt"><i class="bi bi-arrow-repeat me-1"></i>Retry ${retryAttempt}/${maxRetries}</span>`)
             : '';
         const priorityCell = renderPriorityCell(job);
         const scheduledAt = job.config && job.config.scheduled_at;
@@ -1857,10 +1860,13 @@ function updateActiveJobs(runningJobs) {
         // backoff — render this as its own state, not as "Running 0%."
         const isRetryWaiting = !isPaused && !!retryEta && new Date(retryEta).getTime() > Date.now() - 1500;
         const isRetry = !!(job.config && job.config.is_retry);
+        const isRetryChain = !!(job.config && job.config.is_retry_chain);
         const retryAttempt = job.config && typeof job.config.retry_attempt === 'number' ? job.config.retry_attempt : 0;
         const maxRetries = job.config && typeof job.config.max_retries === 'number' ? job.config.max_retries : 0;
         const retryChip = isRetry && maxRetries > 0
-            ? ` <span class="badge bg-warning text-dark ms-1" title="Retry attempt"><i class="bi bi-arrow-repeat me-1"></i>Retry ${retryAttempt}/${maxRetries}</span>`
+            ? (isRetryChain
+                ? ` <span class="badge bg-info text-dark ms-1" title="Background registration retry"><i class="bi bi-arrow-clockwise me-1"></i>Registering ${retryAttempt}/${maxRetries}</span>`
+                : ` <span class="badge bg-warning text-dark ms-1" title="Retry attempt"><i class="bi bi-arrow-repeat me-1"></i>Retry ${retryAttempt}/${maxRetries}</span>`)
             : (isRetry ? ' <span class="badge bg-warning text-dark ms-1"><i class="bi bi-arrow-repeat me-1"></i>Retry</span>' : '');
         let statusBadge;
         if (isPaused) {

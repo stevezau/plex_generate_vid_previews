@@ -954,6 +954,141 @@ class JobManager:
                 if jid in self._jobs and self._jobs[jid].status == JobStatus.RUNNING
             ]
 
+    def upsert_retry_chain_job(
+        self,
+        *,
+        canonical_path: str,
+        basename: str,
+        attempt: int,
+        max_attempts: int,
+        next_run_at: str | None,
+        wait_seconds: int | None,
+        outcome: str,  # "scheduled" | "running" | "completed" | "exhausted"
+        server_id: str | None = None,
+        server_name: str | None = None,
+        server_type: str | None = None,
+        reason: str | None = None,
+    ) -> Job:
+        """Create or update the retry-chain Job for ``canonical_path``.
+
+        A "retry chain" Job is a single user-visible row that surfaces
+        the headless retry queue's progress for one canonical path. Each
+        call to this method either creates the row (first retry being
+        scheduled) or updates it in place (subsequent attempts), bumping
+        ``created_at`` so the row sorts to the top of the "newest first"
+        Jobs list — operators can SEE that something is still working in
+        the background instead of trusting only the logs.
+
+        Stable ID derivation (``retry-<hash16>``) prevents duplicate rows
+        across attempts and survives restarts. Cannot collide with the
+        UUIDs that ``create_job`` produces (different prefix, different
+        length).
+
+        State machine driven by ``outcome``:
+          * ``"scheduled"``  → status=PENDING, retry_eta + retry_wait_total set
+          * ``"running"``    → status=RUNNING, retry_eta cleared (countdown stops)
+          * ``"completed"``  → status=COMPLETED, completed_at set
+          * ``"exhausted"``  → status=FAILED with ``reason`` written to ``error``
+
+        Args:
+            canonical_path: Source media path; used to derive the stable
+                Job ID (so subsequent retries update the same row).
+            basename: Display label — usually ``os.path.basename(canonical_path)``
+                or a Sonarr-style cleaned title. Renders as the Job's
+                ``library_name`` (the column the operator scans).
+            attempt: Current attempt number (1-indexed).
+            max_attempts: Backoff schedule's max attempts; surfaces as
+                "Retry 2 of 6" in the UI.
+            next_run_at: ISO timestamp when the next attempt fires —
+                drives the existing ``retry_eta`` countdown machinery in
+                ``app.js``. ``None`` clears it (e.g. when the chain
+                completes or the retry is firing right now).
+            wait_seconds: Seconds between this state and ``next_run_at``;
+                drives the retry-wait progress bar.
+            outcome: State transition (see state machine above).
+            server_id / server_name / server_type: Server attribution
+                pulled from the originating webhook so the Job's vendor
+                pill matches the parent dispatch.
+            reason: Human-readable explanation surfaced in ``error`` when
+                ``outcome == "exhausted"`` — e.g. "JellyTest still hasn't
+                indexed after 6 attempts".
+        """
+        import hashlib
+
+        chain_id = "retry-" + hashlib.sha256(canonical_path.encode("utf-8")).hexdigest()[:16]
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        with self._lock:
+            job = self._jobs.get(chain_id)
+            if job is None:
+                job = Job(
+                    id=chain_id,
+                    library_name=basename,
+                    server_id=server_id,
+                    server_name=server_name,
+                    server_type=server_type,
+                    config={
+                        "is_retry_chain": True,
+                        "retry_chain_for": canonical_path,
+                        "retry_max_attempts": int(max_attempts),
+                        "retry_basename": basename,
+                        "retry_started_at": now_iso,
+                    },
+                )
+                self._jobs[chain_id] = job
+            else:
+                # Late-arriving server attribution wins over an empty one.
+                if not job.server_id and server_id:
+                    job.server_id = server_id
+                    job.server_name = server_name
+                    job.server_type = server_type
+
+            job.config["retry_attempt"] = int(attempt)
+            job.config["retry_max_attempts"] = int(max_attempts)
+            job.config["last_outcome"] = outcome
+            # Aliases so the existing app.js retry badge + countdown
+            # rendering (which reads ``config.is_retry`` and
+            # ``config.max_retries``) just works without a JS change.
+            # The new ``is_retry_chain`` flag distinguishes background
+            # registration retries from worker-level dispatch retries
+            # — UI can choose to style differently in a follow-up.
+            job.config["is_retry"] = True
+            job.config["max_retries"] = int(max_attempts)
+
+            # State transitions
+            if outcome == "scheduled":
+                job.status = JobStatus.PENDING
+                job.progress.retry_eta = next_run_at
+                job.progress.retry_wait_total = wait_seconds
+                job.error = None
+            elif outcome == "running":
+                job.status = JobStatus.RUNNING
+                job.started_at = job.started_at or now_iso
+                job.progress.retry_eta = None
+                job.progress.retry_wait_total = None
+            elif outcome == "completed":
+                job.status = JobStatus.COMPLETED
+                job.completed_at = now_iso
+                job.progress.retry_eta = None
+                job.progress.retry_wait_total = None
+                job.error = None
+            elif outcome == "exhausted":
+                job.status = JobStatus.FAILED
+                job.completed_at = now_iso
+                job.progress.retry_eta = None
+                job.progress.retry_wait_total = None
+                job.error = reason or f"Retry chain exhausted after {attempt} attempts"
+
+            # Bump created_at so the row sorts to top of "newest first"
+            # whenever a state change happens. Original chain start is
+            # preserved in config["retry_started_at"] for chain-age
+            # display.
+            job.created_at = now_iso
+
+            self._persist_job(job)
+            self._emit_event("job_updated", job.to_dict())
+        return job
+
     def update_job_config(self, job_id: str, config: dict[str, Any]) -> None:
         """Update stored config for a job (e.g. when start is deferred due to pause)."""
         with self._lock:

@@ -178,6 +178,53 @@ def reset_retry_scheduler() -> None:
         _singleton = None
 
 
+def _upsert_retry_chain_job(
+    *,
+    canonical_path: str,
+    attempt: int,
+    outcome: str,
+    wait_seconds: int | None = None,
+    server_id: str | None = None,
+    server_name: str | None = None,
+    server_type: str | None = None,
+    reason: str | None = None,
+) -> None:
+    """Best-effort upsert of the user-visible retry-chain Job row.
+
+    Wraps :meth:`JobManager.upsert_retry_chain_job` so failures inside
+    the retry callback path don't propagate (the JobManager singleton
+    is set up by the web app — when retries fire from a non-web context
+    like a CLI smoke test or a test harness, the import or the call
+    might fail; the retry itself must keep going regardless).
+    """
+    try:
+        import os as _os
+        from datetime import datetime as _dt
+        from datetime import timedelta as _td
+        from datetime import timezone as _tz
+
+        from ..web.jobs import get_job_manager
+
+        next_run_at: str | None = None
+        if outcome == "scheduled" and wait_seconds is not None:
+            next_run_at = (_dt.now(_tz.utc) + _td(seconds=int(wait_seconds))).isoformat()
+        get_job_manager().upsert_retry_chain_job(
+            canonical_path=canonical_path,
+            basename=_os.path.basename(canonical_path) or canonical_path,
+            attempt=attempt,
+            max_attempts=len(_BACKOFF),
+            next_run_at=next_run_at,
+            wait_seconds=wait_seconds,
+            outcome=outcome,
+            server_id=server_id,
+            server_name=server_name,
+            server_type=server_type,
+            reason=reason,
+        )
+    except Exception as exc:
+        logger.debug("Retry-chain Job upsert failed for {!r}: {}", canonical_path, exc)
+
+
 def schedule_retry_for_unindexed(
     canonical_path: str,
     *,
@@ -231,6 +278,16 @@ def schedule_retry_for_unindexed(
             logger.info("Retry #{} firing for {} (server={})", fired_attempt, path, _retry_server_tag)
         else:
             logger.info("Retry #{} firing for {}", fired_attempt, path)
+
+        # Surface the retry to the user-visible Jobs panel — countdown
+        # ends, status flips to "running" so the row no longer shows
+        # "next in Xs" while the dispatch is actually executing.
+        _upsert_retry_chain_job(
+            canonical_path=path,
+            attempt=fired_attempt,
+            outcome="running",
+            server_id=_retry_pin_id,
+        )
 
         # Bind a synthetic failure scope for the retry. The original
         # job has long completed by the time this APScheduler timer
@@ -311,15 +368,53 @@ def schedule_retry_for_unindexed(
                 for p in result.publishers
             )
             if needs_retry and result.status is not MultiServerStatus.FAILED:
-                schedule_retry_for_unindexed(
+                next_attempt = fired_attempt + 1
+                # ``schedule_retry_for_unindexed`` will upsert the row
+                # to "scheduled" if the next attempt is within
+                # BACKOFF_SCHEDULE; otherwise it returns False and we
+                # surface the chain as exhausted below.
+                rescheduled = schedule_retry_for_unindexed(
                     path,
                     registry=registry,
                     config=config,
                     item_id_by_server=item_id_by_server,
-                    attempt=fired_attempt + 1,
+                    attempt=next_attempt,
                     server_id_filter=server_id_filter,
                 )
+                if not rescheduled:
+                    _upsert_retry_chain_job(
+                        canonical_path=path,
+                        attempt=fired_attempt,
+                        outcome="exhausted",
+                        server_id=_retry_pin_id,
+                        reason=(
+                            f"Server still hasn't indexed this file after "
+                            f"{fired_attempt} retry attempt(s). The publisher's "
+                            f"output is on disk but the server-side trickplay "
+                            f"row never registered — likely the file is outside "
+                            f"every configured library root, or the server's "
+                            f"realtime monitor is disabled."
+                        ),
+                    )
             else:
                 logger.info("Retry chain for {} complete on attempt #{}", path, fired_attempt)
+                _upsert_retry_chain_job(
+                    canonical_path=path,
+                    attempt=fired_attempt,
+                    outcome="completed",
+                    server_id=_retry_pin_id,
+                )
 
-    return scheduler.schedule(canonical_path, _callback, attempt=attempt)
+    scheduled = scheduler.schedule(canonical_path, _callback, attempt=attempt)
+    if scheduled:
+        # Surface the pending retry to the user-visible Jobs panel.
+        # ``BACKOFF_SCHEDULE`` indexes are 0-based; attempt is 1-based.
+        wait_seconds = _BACKOFF[attempt - 1]
+        _upsert_retry_chain_job(
+            canonical_path=canonical_path,
+            attempt=attempt,
+            outcome="scheduled",
+            wait_seconds=wait_seconds,
+            server_id=server_id_filter,
+        )
+    return scheduled
