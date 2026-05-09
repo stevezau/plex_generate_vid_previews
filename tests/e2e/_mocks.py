@@ -226,6 +226,102 @@ def mock_jellyfin_quick_connect(
     page.route("**/api/servers/auth/jellyfin/quick-connect/exchange", exchange)
 
 
+def mock_server_connection_probe(
+    page: Page,
+    *,
+    ok: bool = True,
+    server_name: str = "Jellyfin Test",
+    version: str | None = "10.11.8",
+    message: str = "Connected",
+) -> None:
+    """POST /api/servers/<id>/test-connection — per-card connection probe.
+
+    Runs sequentially per server on /servers page load. On success
+    the readiness probe fires next; on failure the readiness probe
+    is skipped (gated in servers.js).
+    """
+    body = {
+        "ok": ok,
+        "server_name": server_name,
+        "version": version,
+        "message": message if ok else "Connection failed",
+    }
+
+    def handler(route: Route) -> None:
+        _fulfill_json(route, body)
+
+    page.route("**/api/servers/*/test-connection", handler)
+
+
+def mock_server_previews_readiness(
+    page: Page,
+    *,
+    vendor: str = "jellyfin",
+    critical_count: int = 1,
+    recommended_count: int = 0,
+) -> None:
+    """GET /api/servers/<id>/previews-readiness — drives the inline
+    ✓/⚠/❗ glyph next to each server name on /servers.
+
+    Returns the unified envelope {vendor, overall_ok, sections[]}
+    with at least one section containing the requested number of
+    critical / recommended failing checks.
+    """
+    checks = []
+    for i in range(critical_count):
+        checks.append(
+            {
+                "id": f"critical-{i}",
+                "label": f"Critical check {i}",
+                "tooltip": "Critical issue",
+                "explanation": "",
+                "ok": False,
+                "severity": "critical",
+                "current": False,
+                "recommended": True,
+                "actions": {},
+                "reason": "Needs attention",
+                "meta": {},
+            }
+        )
+    for i in range(recommended_count):
+        checks.append(
+            {
+                "id": f"rec-{i}",
+                "label": f"Recommended check {i}",
+                "tooltip": "Recommended improvement",
+                "explanation": "",
+                "ok": False,
+                "severity": "recommended",
+                "current": False,
+                "recommended": True,
+                "actions": {},
+                "reason": "Could be improved",
+                "meta": {},
+            }
+        )
+    overall_ok = len(checks) == 0
+    worst_severity = "critical" if critical_count else ("recommended" if recommended_count else "info")
+    payload = {
+        "vendor": vendor,
+        "overall_ok": overall_ok,
+        "sections": [
+            {
+                "id": "library_settings",
+                "title": "Library settings",
+                "docs_anchor": "library-settings",
+                "ok": overall_ok,
+                "severity": worst_severity,
+                "checks": checks,
+            }
+        ],
+    }
+    page.route(
+        "**/api/servers/*/previews-readiness",
+        lambda route: _fulfill_json(route, payload),
+    )
+
+
 def mock_server_health_check(
     page: Page,
     *,
