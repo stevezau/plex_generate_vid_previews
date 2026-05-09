@@ -156,7 +156,6 @@ def seed_jobs(config_dir: str | Path) -> int:
         JobProgress,
         JobStatus,
         JobStorage,
-        WorkerStatus,
     )
 
     db_path = str(Path(config_dir) / "jobs.db")
@@ -200,63 +199,42 @@ def seed_jobs(config_dir: str | Path) -> int:
                 )
             )
 
-        # 2 running jobs with realistic workers.
-        running_specs = [
-            ("Movies", "plex-home", "Home Plex", "plex", 842, 217, 25.8),
-            ("Shows", "jellyfin-home", "Home Jellyfin", "jellyfin", 58, 4, 6.9),
+        # Three more completed jobs to bring the list to 9. All seeded
+        # rows MUST be COMPLETED — ``JobManager._load_from_disk`` flips
+        # any RUNNING row to FAILED on startup (jobs.py:557-564) and
+        # PENDING rows sit in the "interrupted jobs" list. Both outcomes
+        # muddy the marketing shot; COMPLETED is the only status that
+        # survives the boot flip cleanly.
+        extra_completed = [
+            ("Stand-up Comedy", "jellyfin-home", "Home Jellyfin", "jellyfin", 61, 61),
+            ("Documentaries", "emby-home", "Home Emby", "emby", 138, 138),
+            ("Anime", "plex-home", "Home Plex", "plex", 224, 224),
         ]
-        for lib, sid, sname, stype, total, done, pct in running_specs:
-            created = now - timedelta(minutes=12)
+        for j, (lib, sid, sname, stype, total, processed) in enumerate(extra_completed):
+            created = now - timedelta(hours=(6 + j), minutes=11 * j)
+            started = created + timedelta(seconds=3)
+            finished = started + timedelta(minutes=4 + j)
             rows.append(
                 Job(
                     id=str(uuid.uuid4()),
-                    status=JobStatus.RUNNING,
+                    status=JobStatus.COMPLETED,
                     created_at=_iso(created),
-                    started_at=_iso(created + timedelta(seconds=2)),
-                    library_id=f"lib-r-{sid}",
+                    started_at=_iso(started),
+                    completed_at=_iso(finished),
+                    library_id=f"lib-extra-{j}",
                     library_name=lib,
                     server_id=sid,
                     server_name=sname,
                     server_type=stype,
                     progress=JobProgress(
-                        percent=pct,
+                        percent=100.0,
                         total_items=total,
-                        processed_items=done,
-                        speed="1.8x",
-                        workers=[
-                            WorkerStatus(
-                                worker_id=0,
-                                worker_type="GPU",
-                                worker_name="NVIDIA TITAN RTX #0",
-                                status="processing",
-                                current_title=f"Episode {done + 1} of {lib}",
-                                library_name=lib,
-                                progress_percent=min(pct + 12.3, 99.0),
-                                speed="1.8x",
-                                ffmpeg_started=True,
-                                current_phase="Encoding previews",
-                            ),
-                        ],
+                        processed_items=processed,
+                        outcome={"created": processed, "skipped": 0, "failed": 0},
                     ),
-                    config={"trigger": "scheduled", "path_count": total},
+                    config={"trigger": "manual", "path_count": total},
                 )
             )
-
-        # 1 pending — waiting for an active schedule slot.
-        rows.append(
-            Job(
-                id=str(uuid.uuid4()),
-                status=JobStatus.PENDING,
-                created_at=_iso(now - timedelta(minutes=3)),
-                library_id="lib-p",
-                library_name="Films",
-                server_id="emby-home",
-                server_name="Home Emby",
-                server_type="emby",
-                progress=JobProgress(total_items=401),
-                config={"trigger": "webhook", "path_count": 401},
-            )
-        )
 
         for row in rows:
             storage.upsert(row)
