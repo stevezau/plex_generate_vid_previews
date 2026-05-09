@@ -79,9 +79,7 @@
                     <div class="col-md-6 mb-3">
                         <label for="cpuThreads" class="form-label">
                             CPU Workers
-                            <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
-                               data-bs-toggle="tooltip" data-bs-placement="top"
-                               title="How many items the CPU processes at the same time, in addition to any GPU workers. Each worker keeps one job busy at a time. Set to 0 to disable CPU processing entirely."></i>
+                            <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="How many items the CPU processes at the same time, in addition to any GPU workers. Each worker keeps one job busy at a time. Set to 0 to disable CPU processing entirely."><i class="bi bi-info-circle"></i></button>
                         </label>
                         <input type="number" class="form-control has-stepper" id="cpuThreads"
                                min="0" max="32" value="1">
@@ -101,9 +99,7 @@
                     <div class="col-md-6 mb-3">
                         <label for="thumbnailInterval" class="form-label">
                             Thumbnail Interval
-                            <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
-                               data-bs-toggle="tooltip" data-bs-placement="top"
-                               title="Seconds between thumbnails in the preview strip. Smaller = smoother scrubbing in your player, but bigger BIF files and longer to generate. Default 2s works well for most setups; raise to 5–10s if you don't need fine scrubbing and want faster jobs."></i>
+                            <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Seconds between thumbnails in the preview strip. Smaller = smoother scrubbing in your player, but bigger BIF files and longer to generate. Default 2s works well for most setups; raise to 5–10s if you don't need fine scrubbing and want faster jobs."><i class="bi bi-info-circle"></i></button>
                         </label>
                         <div class="input-group">
                             <input type="number" class="form-control has-stepper" id="thumbnailInterval"
@@ -114,23 +110,31 @@
                     <div class="col-md-6 mb-3">
                         <label for="thumbnailQuality" class="form-label">
                             Thumbnail Quality: <span id="qualityValue">4</span>/10
-                            <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
-                               data-bs-toggle="tooltip" data-bs-placement="top"
-                               title="JPEG quality of each thumbnail (1 = smallest and blurriest, 10 = sharpest and largest). Default 4 looks fine at typical scrubbing sizes. Raise if thumbs look blocky on a 4K display; lower to shrink BIF files."></i>
+                            <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="JPEG quality of each thumbnail (1 = smallest and blurriest, 10 = sharpest and largest). Default 4 looks fine at typical scrubbing sizes. Raise if thumbs look blocky on a 4K display; lower to shrink BIF files."><i class="bi bi-info-circle"></i></button>
                         </label>
                         <input type="range" class="form-range" id="thumbnailQuality"
                                min="1" max="10" value="4">
                     </div>
                 </div>
 
-                <!-- HDR Tone Mapping -->
+                <!-- HDR Tone Mapping.
+                     ⓘ opens the shared #globalInfoModal (no longer toggles
+                     an inline alert) so the UX matches every other ⓘ in
+                     the app. `data-explain-template` references the hidden
+                     <template> below whose innerHTML becomes the modal
+                     body when clicked. -->
                 <div class="row">
                     <div class="col-md-6 mb-3">
                         <label for="tonemapAlgorithm" class="form-label">
                             HDR Tone Mapping
-                            <i class="bi bi-info-circle text-muted ms-1" style="cursor: pointer;"
-                               onclick="document.getElementById('tonemapHelp').classList.toggle('d-none')"
-                               title="Click for details"></i>
+                            <button type="button" class="info-icon info-icon-more ms-1" tabindex="0"
+                                    data-bs-toggle="tooltip" data-bs-placement="top"
+                                    title="How HDR brightness is mapped to SDR — click for details"
+                                    data-explain-title="HDR Tone Mapping"
+                                    data-explain-template="tonemapHelpTpl"
+                                    aria-label="Explain HDR Tone Mapping">
+                                <i class="bi bi-info-circle"></i>
+                            </button>
                         </label>
                         <select class="form-select" id="tonemapAlgorithm">
                             <option value="hable">Hable (default) &mdash; balanced, slightly darker</option>
@@ -143,43 +147,46 @@
                         <div class="form-text" id="tonemapDescription">
                             Preserves dark and bright details with a filmic look. Good all-round choice.
                         </div>
-                        <div class="alert alert-secondary mt-2 small d-none" id="tonemapHelp">
-                            <strong>What is tone mapping?</strong><br>
-                            HDR (High Dynamic Range) videos have a wider range of brightness than a
-                            standard display can show. Tone mapping converts those brightness levels
-                            so thumbnails look correct on any screen. This setting only affects HDR
-                            content (HDR10, HLG, Dolby Vision).
-                            <hr class="my-2">
-                            <strong>Which should I pick?</strong>
-                            <ul class="mb-0 mt-1">
-                                <li><strong>Hable</strong> &mdash; The Plex default. Gives a filmic,
-                                    cinematic look that preserves detail in both shadows and highlights.
-                                    Can look slightly darker than the original.</li>
-                                <li><strong>Reinhard</strong> &mdash; Produces the brightest thumbnails,
-                                    closest to how standard (non-HDR) content looks. Try this first
-                                    if your thumbnails look too dark.</li>
-                                <li><strong>Mobius</strong> &mdash; A good middle ground: keeps colors
-                                    natural and accurate with good brightness. Slightly less bright
-                                    than Reinhard.</li>
-                                <li><strong>Clip</strong> &mdash; Keeps colours perfectly accurate for
-                                    normal brightness, but cuts off very bright highlights sharply.</li>
-                                <li><strong>Gamma</strong> &mdash; Makes everything noticeably brighter,
-                                    but can wash out colours and reduce contrast.</li>
-                                <li><strong>Linear</strong> &mdash; A simple brightness stretch.
-                                    Can look flat or washed out on some content.</li>
-                            </ul>
-                        </div>
                     </div>
                 </div>
+
+                <!-- Hidden template referenced by the HDR ⓘ above. Rendered
+                     into the shared #globalInfoModal via data-explain-template.
+                     Keeps the long prose out of the form's visual flow while
+                     still being inline-editable by docs writers. -->
+                <template id="tonemapHelpTpl">
+                    <p><strong>What is tone mapping?</strong></p>
+                    <p>HDR (High Dynamic Range) videos carry a wider range of brightness
+                    than a standard display can show. Tone mapping converts those
+                    brightness levels so thumbnails look correct on any screen. This
+                    setting only affects HDR content (HDR10, HLG, Dolby Vision).</p>
+                    <p><strong>Which should I pick?</strong></p>
+                    <ul>
+                        <li><strong>Hable</strong> &mdash; The Plex default. Filmic,
+                            cinematic look that preserves detail in both shadows and
+                            highlights. Can look slightly darker than the original.</li>
+                        <li><strong>Reinhard</strong> &mdash; Produces the brightest
+                            thumbnails, closest to how standard (non-HDR) content looks.
+                            Try this first if your thumbnails look too dark.</li>
+                        <li><strong>Mobius</strong> &mdash; A good middle ground: keeps
+                            colors natural and accurate with good brightness. Slightly
+                            less bright than Reinhard.</li>
+                        <li><strong>Clip</strong> &mdash; Keeps colours perfectly
+                            accurate for normal brightness, but cuts off very bright
+                            highlights sharply.</li>
+                        <li><strong>Gamma</strong> &mdash; Makes everything noticeably
+                            brighter, but can wash out colours and reduce contrast.</li>
+                        <li><strong>Linear</strong> &mdash; A simple brightness stretch.
+                            Can look flat or washed out on some content.</li>
+                    </ul>
+                </template>
 
                 <!-- Smart caching across servers (was: "Frame reuse"). Renamed
                      to lead with the user benefit; per-knob detail moved into
                      ⓘ tooltips so the form scans cleanly. -->
                 <hr>
                 <h6 class="mb-2">Smart caching across servers
-                    <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
-                       data-bs-toggle="tooltip" data-bs-placement="top"
-                       title="When two or more servers contain the same file and a webhook for one fires shortly after the other, the second one reuses the already-extracted frames instead of running FFmpeg again."></i>
+                    <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="When two or more servers contain the same file and a webhook for one fires shortly after the other, the second one reuses the already-extracted frames instead of running FFmpeg again."><i class="bi bi-info-circle"></i></button>
                 </h6>
                 <div class="alert alert-info py-2 small d-none" id="frameReuseMultiServerHint">
                     <i class="bi bi-info-circle me-1"></i>
@@ -193,9 +200,7 @@
                             <input class="form-check-input" type="checkbox" id="frameReuseEnabled" checked>
                             <label class="form-check-label" for="frameReuseEnabled">
                                 Enable smart caching
-                                <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
-                                   data-bs-toggle="tooltip" data-bs-placement="top"
-                                   title="On: results from one server's webhook are reused if another server's webhook fires for the same file within the cache window. Off: each webhook runs FFmpeg from scratch."></i>
+                                <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="On: results from one server's webhook are reused if another server's webhook fires for the same file within the cache window. Off: each webhook runs FFmpeg from scratch."><i class="bi bi-info-circle"></i></button>
                             </label>
                         </div>
                         <div class="form-text">
@@ -205,9 +210,7 @@
                     <div class="col-md-4 mb-3">
                         <label for="frameReuseTtlMinutes" class="form-label">
                             Cache window (minutes)
-                            <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
-                               data-bs-toggle="tooltip" data-bs-placement="top"
-                               title="How long results stay cached before being deleted. Longer = more reuse but more disk; shorter = saves disk but more re-processing."></i>
+                            <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="How long results stay cached before being deleted. Longer = more reuse but more disk; shorter = saves disk but more re-processing."><i class="bi bi-info-circle"></i></button>
                         </label>
                         <input type="number" class="form-control has-stepper" id="frameReuseTtlMinutes"
                                min="1" max="1440" value="60">
@@ -218,9 +221,7 @@
                     <div class="col-md-4 mb-3">
                         <label for="frameReuseMaxDiskMb" class="form-label">
                             Max cache size (MB)
-                            <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
-                               data-bs-toggle="tooltip" data-bs-placement="top"
-                               title="Maximum disk space the cache can use. When full, the oldest cached results are deleted to make room."></i>
+                            <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Maximum disk space the cache can use. When full, the oldest cached results are deleted to make room."><i class="bi bi-info-circle"></i></button>
                         </label>
                         <input type="number" class="form-control has-stepper" id="frameReuseMaxDiskMb"
                                min="64" max="65536" step="64" value="2048">

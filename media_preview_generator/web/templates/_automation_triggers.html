@@ -303,9 +303,7 @@
                 <div class="form-check form-switch mb-3">
                     <input class="form-check-input" type="checkbox" id="webhookEnabled" checked>
                     <label class="form-check-label" for="webhookEnabled">Enable webhook processing
-                        <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
-                           data-bs-toggle="tooltip" data-bs-placement="top"
-                           title="Master switch for every incoming webhook (Sonarr, Radarr, Custom, and the per-server Plex Direct webhook). Turn off to pause everything without losing your individual settings."></i>
+                        <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Master switch for every incoming webhook (Sonarr, Radarr, Custom, and the per-server Plex Direct webhook). Turn off to pause everything without losing your individual settings."><i class="bi bi-info-circle"></i></button>
                     </label>
                     <div class="form-text">Master switch for all incoming webhooks. Turn off to pause without touching any individual settings.</div>
                 </div>
@@ -313,9 +311,7 @@
                 <div class="mb-3">
                     <label for="webhookDelay" class="form-label">
                         Delay before processing: <strong><span id="delayValue">60</span>s</strong>
-                        <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
-                           data-bs-toggle="tooltip" data-bs-placement="top"
-                           title="How long to wait after the last import before running a batch. Gives your media server time to finish indexing the new file before we try to process it. If more imports arrive during the wait, they join the batch and the timer restarts."></i>
+                        <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="How long to wait after the last import before running a batch. Gives your media server time to finish indexing the new file before we try to process it. If more imports arrive during the wait, they join the batch and the timer restarts."><i class="bi bi-info-circle"></i></button>
                     </label>
                     <input type="range" class="form-range" id="webhookDelay" min="10" max="300" step="10" value="60">
                     <div class="form-text">
@@ -325,9 +321,7 @@
 
                 <div class="mb-3">
                     <label for="webhookRetryCount" class="form-label">Retry count
-                        <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
-                           data-bs-toggle="tooltip" data-bs-placement="top"
-                           title="If a file can't be found on the media server when the webhook fires (e.g. the server hasn't finished indexing it yet), how many times to retry. 0 = no retries."></i>
+                        <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="If a file can't be found on the media server when the webhook fires (e.g. the server hasn't finished indexing it yet), how many times to retry. 0 = no retries."><i class="bi bi-info-circle"></i></button>
                     </label>
                     <input type="number" class="form-control" id="webhookRetryCount" min="0" max="10" value="3" style="max-width: 6rem;">
                     <div class="form-text">
@@ -338,9 +332,7 @@
                 <div class="mb-3">
                     <label for="webhookRetryDelay" class="form-label">
                         Delay between retries: <strong><span id="retryDelayValue">30</span>s</strong>
-                        <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
-                           data-bs-toggle="tooltip" data-bs-placement="top"
-                           title="Wait before the first retry. Each later retry waits twice as long as the one before it, capped at the slider maximum."></i>
+                        <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Wait before the first retry. Each later retry waits twice as long as the one before it, capped at the slider maximum."><i class="bi bi-info-circle"></i></button>
                     </label>
                     <input type="range" class="form-range" id="webhookRetryDelay" min="10" max="300" step="5" value="30">
                     <div class="form-text">
@@ -350,9 +342,7 @@
 
                 <div class="mb-3">
                     <label for="webhookSecret" class="form-label">Webhook Secret
-                        <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
-                           data-bs-toggle="tooltip" data-bs-placement="top"
-                           title="Optional shared secret used to authenticate webhook calls instead of your main API token. Useful when Sonarr/Radarr can't send custom headers. Click 'Generate' for a fresh random value."></i>
+                        <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Optional shared secret used to authenticate webhook calls instead of your main API token. Useful when Sonarr/Radarr can't send custom headers. Click 'Generate' for a fresh random value."><i class="bi bi-info-circle"></i></button>
                     </label>
                     <div class="input-group">
                         <input type="password" class="form-control" id="webhookSecret" placeholder="Optional — falls back to API token">
@@ -400,9 +390,7 @@
                 <div class="mb-0">
                     <label for="maxConcurrentJobs" class="form-label">
                         Max concurrent jobs: <strong><span id="maxConcurrentJobsValue">3</span></strong>
-                        <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
-                           data-bs-toggle="tooltip" data-bs-placement="top"
-                           title="Cap on how many jobs can actively work at once (config load, library enumeration, server API calls, FFmpeg dispatch). Additional jobs queue as Pending and take slots as peers finish. Priority-aware: High-priority jobs jump the queue. Prevents webhook bursts from overwhelming media-server APIs."></i>
+                        <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Cap on how many jobs can actively work at once (config load, library enumeration, server API calls, FFmpeg dispatch). Additional jobs queue as Pending and take slots as peers finish. Priority-aware: High-priority jobs jump the queue. Prevents webhook bursts from overwhelming media-server APIs."><i class="bi bi-info-circle"></i></button>
                     </label>
                     <input type="range" class="form-range" id="maxConcurrentJobs" min="1" max="10" step="1" value="3">
                     <div class="form-text">

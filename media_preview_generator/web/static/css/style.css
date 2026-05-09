@@ -1513,3 +1513,43 @@ html[data-bs-theme="light"] .system-version-row { border-color: rgba(0, 0, 0, 0.
 .priority-dot-high   { background-color: #dc3545; }
 .priority-dot-normal { background-color: #0d6efd; }
 .priority-dot-low    { background-color: #6c757d; }
+
+/* ──────────────────────────────────────────────────────────────
+ * Unified info-icon (ⓘ) affordance
+ * Every ⓘ across the app uses `.info-icon` so users see
+ * consistent hover/click behaviour wherever it appears:
+ *   - hover → Bootstrap tooltip with the short one-liner
+ *   - click → shared `#globalInfoModal` (when rich explanation exists)
+ * Styles below give the icon a subtle interactive feel (muted colour
+ * at rest, primary blue on hover/focus) plus the help cursor so
+ * users know it's not just decoration.
+ * ────────────────────────────────────────────────────────────── */
+.info-icon {
+    color: var(--bs-secondary-color, var(--bs-secondary));
+    background: none;
+    border: none;
+    padding: 0;
+    line-height: 1;
+    cursor: help;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.15rem;
+}
+.info-icon:hover,
+.info-icon:focus-visible {
+    color: var(--bs-primary);
+    outline: none;
+}
+.info-icon:focus-visible {
+    box-shadow: 0 0 0 0.15rem rgba(13, 110, 253, 0.25);
+    border-radius: 2px;
+}
+/* Affordance: ⓘ icons that open a modal get a chevron to signal
+ * "there's more" vs. bare ⓘs that only have a hover tooltip. */
+.info-icon-more::after {
+    content: '\F285'; /* bi-chevron-right */
+    font-family: 'bootstrap-icons';
+    font-size: 0.7em;
+    margin-left: 0.1em;
+    opacity: 0.6;
+}

@@ -3407,6 +3407,92 @@ function _initBootstrapTooltips(scope) {
     });
 }
 window._initBootstrapTooltips = _initBootstrapTooltips;
+
+/**
+ * App-wide info-icon (ⓘ) unified behaviour.
+ *
+ * Every info icon in the app uses the `.info-icon` class, which:
+ *   1. Shows a Bootstrap tooltip on hover (short one-liner from `title`).
+ *   2. Opens a shared #globalInfoModal on click when a rich explanation
+ *      is available — either via `data-explain-template="tpl-id"` pointing
+ *      at a sibling `<template>` element, OR via `_explanationHtml` set
+ *      on the element by JS (readiness card's dynamic path).
+ *
+ * ⓘs with only a tooltip (no rich explanation) are still clickable buttons,
+ * but clicking them is a no-op — the tooltip IS the answer.
+ *
+ * The affordance that "this one has more": templates mark ⓘs-with-modal
+ * with a `.info-icon-more` class that adds a chevron-right glyph. Plus the
+ * tooltip text on those ⓘs usually ends with "— click for details".
+ *
+ * This handler is delegated to the document so dynamic re-renders
+ * (readiness card re-probes, library refreshes) need zero extra wiring.
+ */
+function _openGlobalInfoModal({ title, html, docsHref }) {
+    const modalEl = document.getElementById('globalInfoModal');
+    if (!modalEl || typeof bootstrap === 'undefined' || !bootstrap.Modal) return;
+    const titleEl = document.getElementById('globalInfoTitle');
+    const bodyEl = document.getElementById('globalInfoBody');
+    const docsLink = document.getElementById('globalInfoDocsLink');
+    if (titleEl) titleEl.textContent = title || 'About this setting';
+    // innerHTML is safe here UNDER A STRICT CONTRACT: explanation
+    // strings must be built from constant literals only. Never
+    // interpolate user / library / path / URL data into this field —
+    // tooltip / label fields are text-escaped elsewhere, but
+    // `explanation` is not. Sources today: backend _FLAG_METADATA
+    // dicts (static prose), <template> elements (authored inline),
+    // data-explain-html attrs (authored inline). A future contributor
+    // adding `f"<p>Library {lib_name}…</p>"` to an explanation would
+    // silently open XSS. Keep it literal.
+    if (bodyEl) {
+        bodyEl.innerHTML = html
+            || '<p class="text-muted">No detailed explanation available.</p>';
+    }
+    if (docsLink) {
+        if (docsHref) {
+            docsLink.href = docsHref;
+            docsLink.classList.remove('d-none');
+        } else {
+            docsLink.classList.add('d-none');
+        }
+    }
+    bootstrap.Modal.getOrCreateInstance(modalEl).show();
+}
+
+document.addEventListener('click', (ev) => {
+    const btn = ev.target.closest('.info-icon');
+    if (!btn) return;
+    // Resolve the rich HTML body from three possible sources, in order:
+    //   1. `_explanationHtml` DOM property (set by JS for dynamic rows)
+    //   2. <template> sibling referenced by data-explain-template
+    //   3. data-explain-html attribute (short one-shot payloads)
+    // If none produce content, the click is a no-op and the tooltip
+    // (if any) is the only affordance — by design.
+    let html = btn._explanationHtml || '';
+    if (!html) {
+        const tplId = btn.dataset.explainTemplate;
+        if (tplId) {
+            const tpl = document.getElementById(tplId);
+            if (tpl && tpl.content) html = tpl.innerHTML;
+        }
+    }
+    if (!html) html = btn.dataset.explainHtml || '';
+    if (!html) return;
+    ev.preventDefault();
+    // Bootstrap 5 moves the original `title=` attribute into
+    // `data-bs-original-title` once the tooltip is initialised, so fall
+    // back to BOTH — the live `title=` still works on ⓘ buttons that
+    // haven't had their tooltip activated yet (e.g. freshly rendered).
+    _openGlobalInfoModal({
+        title: btn.dataset.explainTitle
+            || btn.getAttribute('title')
+            || btn.getAttribute('data-bs-original-title')
+            || 'About this setting',
+        html,
+        docsHref: btn.dataset.explainDocs || '',
+    });
+});
+window._openGlobalInfoModal = _openGlobalInfoModal;
 // Explicit export so non-app.js scripts (servers.js, schedule_modal.js,
 // inline templates) can call ``window.appConfirm(...)`` without relying
 // on top-level-script-functions-become-globals semantics.

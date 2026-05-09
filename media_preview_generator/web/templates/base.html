@@ -214,6 +214,40 @@
         </div>
     </div>
 
+    <!-- Unified ⓘ info-icon explanation modal. Every `.info-icon` button
+         across the app opens this same modal on click when a rich
+         explanation is available. Hover shows the Bootstrap tooltip
+         (short one-liner); click opens the rich modal (paragraphs /
+         lists / code blocks). Single source of truth — prevents the
+         mixed tooltip / popover / ad-hoc-modal soup that crept in as
+         the app grew. See `_openGlobalInfoModal` in app.js. -->
+    <div class="modal fade" id="globalInfoModal" tabindex="-1" aria-labelledby="globalInfoTitle" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title d-flex align-items-center gap-2">
+                        <i class="bi bi-info-circle-fill text-primary"></i>
+                        <span id="globalInfoTitle">About this setting</span>
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <!-- Rich HTML set by JS: paragraphs, lists, code blocks.
+                         Server-controlled (no user input) so innerHTML is
+                         safe. See app.js _openGlobalInfoModal. -->
+                    <div id="globalInfoBody"></div>
+                </div>
+                <div class="modal-footer justify-content-between">
+                    <a id="globalInfoDocsLink" href="#" target="_blank" rel="noopener"
+                       class="btn btn-outline-primary d-none">
+                        <i class="bi bi-book me-1"></i>Open full documentation
+                    </a>
+                    <button type="button" class="btn btn-secondary ms-auto" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Toast Container -->
     <div class="toast-container position-fixed bottom-0 end-0 p-3">
         <div id="toastNotification" class="toast" role="alert" aria-live="assertive" aria-atomic="true">

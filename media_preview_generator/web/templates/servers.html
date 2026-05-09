@@ -98,34 +98,26 @@
                     <div class="tab-pane fade show active" id="edit-tab-general">
                         <div class="mb-3">
                             <label class="form-label">Display name
-                                <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
-                                   data-bs-toggle="tooltip" data-bs-placement="top"
-                                   title="What this server is called in the UI. Cosmetic only — pick anything memorable (e.g. 'Living Room Plex', 'NAS Jellyfin')."></i>
+                                <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="What this server is called in the UI. Cosmetic only — pick anything memorable (e.g. 'Living Room Plex', 'NAS Jellyfin')."><i class="bi bi-info-circle"></i></button>
                             </label>
                             <input type="text" id="editServerDisplayName" class="form-control">
                         </div>
                         <div class="mb-3">
                             <label class="form-label">Server URL
-                                <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
-                                   data-bs-toggle="tooltip" data-bs-placement="top"
-                                   title="The address this app uses to talk to your media server. Use the host's IP (e.g. http://192.168.1.100:32400), not 'localhost' — 'localhost' inside this container does NOT mean your host."></i>
+                                <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="The address this app uses to talk to your media server. Use the host's IP (e.g. http://192.168.1.100:32400), not 'localhost' — 'localhost' inside this container does NOT mean your host."><i class="bi bi-info-circle"></i></button>
                             </label>
                             <input type="text" id="editServerUrl" class="form-control" autocomplete="off">
                         </div>
                         <div class="form-check mb-3">
                             <input type="checkbox" id="editServerVerifySsl" class="form-check-input">
                             <label class="form-check-label" for="editServerVerifySsl">Verify SSL certificate
-                                <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
-                                   data-bs-toggle="tooltip" data-bs-placement="top"
-                                   title="Check the server's HTTPS certificate against trusted CAs. Turn off only when using a self-signed certificate (e.g. local Jellyfin behind your own reverse proxy). Leave on for any plain HTTP URL — it's a no-op there."></i>
+                                <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Check the server's HTTPS certificate against trusted CAs. Turn off only when using a self-signed certificate (e.g. local Jellyfin behind your own reverse proxy). Leave on for any plain HTTP URL — it's a no-op there."><i class="bi bi-info-circle"></i></button>
                             </label>
                         </div>
                         <div class="form-check mb-3">
                             <input type="checkbox" id="editServerEnabled" class="form-check-input">
                             <label class="form-check-label" for="editServerEnabled">Server enabled
-                                <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
-                                   data-bs-toggle="tooltip" data-bs-placement="top"
-                                   title="Off = this server is ignored entirely (no webhooks, no scans, no publishes). Use to pause one server without deleting it from your config."></i>
+                                <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Off = this server is ignored entirely (no webhooks, no scans, no publishes). Use to pause one server without deleting it from your config."><i class="bi bi-info-circle"></i></button>
                             </label>
                             <div class="form-text">Uncheck to pause publishing to this server.</div>
                         </div>
@@ -257,9 +249,7 @@
                                             title="Re-probe the server (e.g. after you've changed something in Jellyfin/Emby admin)">
                                         <i class="bi bi-arrow-clockwise"></i>
                                     </button>
-                                    <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
-                                       data-bs-toggle="tooltip" data-bs-placement="top"
-                                       title="Every setting this app needs to generate and activate previews on your media server: version compatibility, library settings, server-wide tile geometry, plus (for Jellyfin) the optional Media Preview Bridge plugin. Each row has its own Enable/Disable toggle."></i>
+                                    <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Every setting this app needs to generate and activate previews on your media server: version compatibility, library settings, server-wide tile geometry, plus (for Jellyfin) the optional Media Preview Bridge plugin. Each row has its own Enable/Disable toggle."><i class="bi bi-info-circle"></i></button>
                                 </h6>
 
                                 <!-- Rendered list of checks. Each row is a ✓ / ⚠ / ✗ line. -->
@@ -273,9 +263,7 @@
                                         <input type="checkbox" class="form-check-input" id="editReadinessPluginOptIn" checked>
                                         <label class="form-check-label" for="editReadinessPluginOptIn">
                                             Install Media Preview Bridge plugin (recommended — instant previews, no races)
-                                            <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
-                                               data-bs-toggle="tooltip" data-bs-placement="top"
-                                               title="With the plugin: previews appear in Jellyfin the moment this app finishes generating them. Without it: Jellyfin picks up our previews on its next scan (usually within seconds), or at worst on the 3 AM scheduled task. Installing requires a Jellyfin restart."></i>
+                                            <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="With the plugin: previews appear in Jellyfin the moment this app finishes generating them. Without it: Jellyfin picks up our previews on its next scan (usually within seconds), or at worst on the 3 AM scheduled task. Installing requires a Jellyfin restart."><i class="bi bi-info-circle"></i></button>
                                         </label>
                                     </div>
                                     <div id="editReadinessPluginOptOutWarning" class="alert alert-warning small mt-2 mb-0 d-none">
@@ -335,19 +323,13 @@
                         <table class="table table-sm" id="editPathMappingsTable">
                             <thead><tr>
                                 <th>Path on Media Server
-                                    <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
-                                       data-bs-toggle="tooltip" data-bs-placement="top"
-                                       title="The path your media server reports (what's stored in its database / shown in its admin UI)."></i>
+                                    <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="The path your media server reports (what's stored in its database / shown in its admin UI)."><i class="bi bi-info-circle"></i></button>
                                 </th>
                                 <th>Local path on this app
-                                    <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
-                                       data-bs-toggle="tooltip" data-bs-placement="top"
-                                       title="The path the same file appears at INSIDE this app's container — i.e. the volume mount target."></i>
+                                    <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="The path the same file appears at INSIDE this app's container — i.e. the volume mount target."><i class="bi bi-info-circle"></i></button>
                                 </th>
                                 <th>Path the webhook sends
-                                    <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
-                                       data-bs-toggle="tooltip" data-bs-placement="top"
-                                       title="Optional. Only needed if Sonarr / Radarr / Plex Direct posts a third different path (e.g. a MergerFS union mount). Leave blank otherwise."></i>
+                                    <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Optional. Only needed if Sonarr / Radarr / Plex Direct posts a third different path (e.g. a MergerFS union mount). Leave blank otherwise."><i class="bi bi-info-circle"></i></button>
                                 </th>
                                 <th></th>
                             </tr></thead>
@@ -372,9 +354,7 @@
                             <thead><tr>
                                 <th>Value</th>
                                 <th>Type
-                                    <i class="bi bi-info-circle text-muted ms-1" style="cursor: help;"
-                                       data-bs-toggle="tooltip" data-bs-placement="top"
-                                       title="Path prefix: skips anything under that folder (e.g. '/Trailers' skips every file under any folder called Trailers). Regex: matches the full file path against a regular expression — for advanced patterns."></i>
+                                    <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Path prefix: skips anything under that folder (e.g. '/Trailers' skips every file under any folder called Trailers). Regex: matches the full file path against a regular expression — for advanced patterns."><i class="bi bi-info-circle"></i></button>
                                 </th>
                                 <th></th>
                             </tr></thead>

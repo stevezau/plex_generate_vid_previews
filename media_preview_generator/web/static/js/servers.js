@@ -1861,10 +1861,24 @@
             ? `/docs/guides/previews-readiness.html#${encodeURIComponent(check.docs_anchor)}`
             : '';
         const tooltip = check.tooltip || '';
-        const infoIcon = tooltip
-            ? `<a href="${escapeAttr(anchor)}" target="_blank" rel="noopener" class="text-muted ms-1" `
-                + `data-bs-toggle="tooltip" title="${escapeAttr(tooltip)}">`
-                + `<i class="bi bi-info-circle"></i></a>`
+        const explanationHtml = check.explanation || '';
+        // Use the app-wide `.info-icon` pattern: hover = short tooltip,
+        // click = shared #globalInfoModal (when rich explanation exists).
+        // The `info-icon-more` class adds a chevron so users can tell
+        // at a glance which ⓘs have a modal behind them. The richer
+        // tooltip text ("— click for details") reinforces the affordance.
+        const hasMore = !!explanationHtml;
+        const tooltipText = hasMore && tooltip
+            ? `${tooltip} — click for details`
+            : tooltip;
+        const infoIcon = (tooltip || explanationHtml)
+            ? `<button type="button" class="info-icon${hasMore ? ' info-icon-more' : ''} ms-1" `
+                + `data-bs-toggle="tooltip" data-bs-placement="top" `
+                + `title="${escapeAttr(tooltipText || 'Click for details')}" `
+                + `data-explain-title="${escapeAttr(check.label || tooltip || 'About this check')}" `
+                + (anchor ? `data-explain-docs="${escapeAttr(anchor)}" ` : '')
+                + `aria-label="Explain ${escapeAttr(check.label || '')}">`
+                + `<i class="bi bi-info-circle"></i></button>`
             : '';
 
         const currentStr = check.current === null || check.current === undefined
@@ -1877,6 +1891,20 @@
 
         const labelHtml = escapeHtml(check.label || check.id || '');
         row.innerHTML = `${icon}<div class="flex-grow-1">${labelHtml}${infoIcon}${reasonStr}${currentStr}</div>`;
+
+        // Attach the rich explanation HTML to the info-icon button as
+        // a DOM property — can't round-trip multi-paragraph HTML through
+        // a data-attr string (quote/entity soup). The document-level
+        // .info-icon click delegator in app.js reads this back on open.
+        //
+        // Contract: renderReadiness() rebuilds every row on each probe
+        // (full innerHTML swap, not diff-based), so the fresh DOM node
+        // always carries the latest explanation — no stale-reference
+        // window after a re-probe. See renderReadiness above.
+        if (explanationHtml) {
+            const infoBtn = row.querySelector('.info-icon');
+            if (infoBtn) infoBtn._explanationHtml = explanationHtml;
+        }
 
         // Per-check toggle buttons.
         const actions = check.actions || {};
