@@ -412,6 +412,14 @@ def create_vendor_webhook_job(
         "webhook_paths": [canonical_path],
         "webhook_retry_count": retry_count,
         "webhook_retry_delay": retry_delay,
+        # Source pill (sonarr/radarr/sportarr/plex/emby/jellyfin/...)
+        # MUST appear in overrides so the job runner's _apply_overrides
+        # pass copies it onto Config.webhook_source — without that, the
+        # worker hands None to process_canonical_path and any spawned
+        # retry-chain row falls back to the raw filename + has no
+        # source pill (live regression: chain retry-c5cdf6e337bf for
+        # World's Most Secret Hotels S02E04, 2026-05-10).
+        "source": safe_source,
     }
     if item_id_by_server:
         # Wrap as {path: {server_id: item_id}} so the orchestrator can
@@ -903,6 +911,9 @@ def _execute_webhook_job(debounce_key: str) -> None:
             "webhook_paths": webhook_paths,
             "webhook_retry_count": retry_count,
             "webhook_retry_delay": retry_delay,
+            # See create_vendor_webhook_job — source MUST live in
+            # overrides so the job runner can plumb it onto Config.
+            "source": source,
         }
         if selected_libraries:
             overrides["selected_libraries"] = selected_libraries
