@@ -465,7 +465,7 @@ class JellyfinServer(EmbyApiClient):
         return result
 
     def uninstall_plugin(self) -> dict[str, Any]:
-        """Reverse of :meth:`install_plugin`: delete the package, restart Jellyfin.
+        """Reverse of :meth:`install_plugin`: delete the plugin, restart Jellyfin.
 
         Used by the "Uninstall plugin" row on the Previews readiness
         card. Falls the server back from Mode A (instant activation) to
@@ -476,9 +476,12 @@ class JellyfinServer(EmbyApiClient):
         Steps, all best-effort with structured errors so the UI can
         surface progress:
 
-        1. ``DELETE /Packages/{PLUGIN_GUID}`` — remove the installed
-           package. **404 is treated as success** — "already not
-           installed" is the desired end state.
+        1. ``DELETE /Plugins/{PLUGIN_GUID}`` — remove the installed
+           plugin by its assembly GUID. **404 is treated as success** —
+           "already not installed" is the desired end state.
+           (``/Packages/{guid}`` is the wrong endpoint — Jellyfin
+           returns 405 Method Not Allowed; ``/Packages`` is the
+           install-catalogue API.)
         2. ``POST /System/Restart`` — Jellyfin unloads plugins on
            startup, so a restart is required for the uninstall to take
            effect visibly.
@@ -498,7 +501,7 @@ class JellyfinServer(EmbyApiClient):
             result["steps"].append({"step": step, "ok": ok, "detail": detail})
 
         try:
-            response = self._request("DELETE", f"/Packages/{self.PLUGIN_GUID}")
+            response = self._request("DELETE", f"/Plugins/{self.PLUGIN_GUID}")
         except Exception as exc:
             result["error"] = f"could not send uninstall request: {exc}"
             _record("uninstall_package", False, str(exc))
@@ -732,52 +735,172 @@ class JellyfinServer(EmbyApiClient):
         "kind": "button",
         "phrase": "",
         "body": (
-            "Removes the Media Preview Bridge plugin and restarts Jellyfin. "
-            "Previews fall back to next-scan (Mode B) activation — already "
-            "published tiles stay on disk and are re-discovered on the next "
-            "library scan or Jellyfin's daily 3 AM task."
+            "Removes the Media Preview Bridge plugin and restarts Jellyfin (~30 seconds). "
+            "After restart, activation falls back from instant (Mode A) to next-scan "
+            "(Mode B): newly generated previews will wait for Jellyfin's next library scan "
+            "or the 3 AM daily refresh before appearing in the player. "
+            "Already-published tile files stay on disk untouched — this change is "
+            "reversible by re-installing the plugin any time."
         ),
     }
 
-    # Per-flag metadata — check_id, docs_anchor, tooltip one-liner, and
-    # (when non-null) the disable-confirm payload.
+    # Per-flag metadata — structured so the ⓘ popover, the
+    # enable-confirm dialog, and the disable-confirm dialog all read
+    # from the same source of truth. Keys:
+    #
+    #   check_id / docs_anchor — stable identifiers for the API + docs.
+    #   tooltip                — short one-line label (shown inline beside
+    #                            the row; NOT the popover body).
+    #   explanation            — multi-paragraph rich HTML for the ⓘ
+    #                            popover: what / why / what-happens-if-you
+    #                            -flip-it. Covers BOTH directions. Rendered
+    #                            via innerHTML (only server-controlled
+    #                            literals land here — no user input).
+    #   enable_body            — PLAIN-TEXT prose for the "Enable" confirm
+    #                            dialog (no HTML tags — rendered via
+    #                            textContent). Explains what turning the
+    #                            flag ON does and what it costs.
+    #   disable_body           — same for "Disable", PLAIN TEXT. Destructive
+    #                            cases cite the concrete data-loss risk.
+    #   disable_kind           — "type" for data-destructive flips
+    #                            (requires the user to type the exact
+    #                            phrase), "button" otherwise. Defaults
+    #                            to "button".
+    #   disable_phrase         — required typed phrase when
+    #                            disable_kind == "type". Ignored otherwise.
     _FLAG_METADATA: dict[str, dict[str, Any]] = {
         "EnableTrickplayImageExtraction": {
             "check_id": "enable_trickplay",
             "docs_anchor": "enable-trickplay",
-            "tooltip": (
-                "Jellyfin's master trickplay gate. Off makes Jellyfin delete "
-                "this app's published tiles on the next refresh."
+            "tooltip": "Jellyfin's master trickplay switch",
+            "explanation": (
+                "<p><strong>What it does:</strong> this is Jellyfin's master trickplay gate. "
+                "When on, Jellyfin recognises trickplay tile directories (the scrubbing-preview "
+                "images this app writes to <code>&lt;media&gt;.trickplay/</code>) and serves them "
+                "to the web/mobile players.</p>"
+                "<p><strong>Why we recommend on:</strong> without this flag Jellyfin completely "
+                "ignores our published tiles — AND will DELETE the <code>.trickplay/</code> "
+                "directory on the next library refresh because its internal logic treats the "
+                "files as orphaned. That's data loss: you'd need to re-run the generator to "
+                "restore previews for every file in the library.</p>"
+                "<p><strong>What happens if you disable it:</strong> Jellyfin stops serving "
+                "scrubbing previews across all players, and on the next scheduled library "
+                "refresh (or a manual Refresh Metadata) every <code>.trickplay/</code> directory "
+                "on disk gets deleted. Re-enabling later doesn't bring those files back — you "
+                "have to regenerate them.</p>"
             ),
-            "disable_confirm": _CONFIRM_ENABLE_TRICKPLAY_OFF,
+            "enable_body": (
+                "Turns ON Jellyfin's master trickplay switch. Published preview tiles become "
+                "visible to clients and are no longer at risk of being deleted by Jellyfin's "
+                "next refresh cycle. This is the recommended state."
+            ),
+            "disable_body": (
+                "Jellyfin will DELETE the published .trickplay/ directory on its next library "
+                "refresh — every preview tile this app has generated will be gone. "
+                "You will need to re-run the generator to restore them. "
+                "Type the phrase below to confirm you understand this is data-destructive."
+            ),
+            "disable_kind": "type",
+            "disable_phrase": "disable trickplay",
         },
         "SaveTrickplayWithMedia": {
             "check_id": "save_trickplay_with_media",
             "docs_anchor": "save-trickplay-with-media",
-            "tooltip": (
-                "Tells Jellyfin to look for previews next to the media file "
-                "(where this app writes them) instead of in its own cache."
+            "tooltip": "Look for trickplay next to the media file",
+            "explanation": (
+                "<p><strong>What it does:</strong> tells Jellyfin where on disk to look for "
+                "trickplay tiles. On = next to the video file "
+                "(<code>&lt;media&gt;.trickplay/</code>, which is where this app writes). "
+                "Off = inside Jellyfin's config directory "
+                "(<code>&lt;config&gt;/data/trickplay/</code>, which this app never writes to).</p>"
+                "<p><strong>Why we recommend on:</strong> off effectively hides every preview "
+                "this app has ever published — the files stay on disk but Jellyfin can't find "
+                "them. Re-enabling makes them visible again without regenerating, so this "
+                "isn't data-destructive, just invisibility.</p>"
+                "<p><strong>What happens if you disable it:</strong> every scrubbing preview "
+                "this app has published becomes invisible to Jellyfin clients. Existing "
+                "<code>.trickplay/</code> files stay on disk untouched, so the change is "
+                "reversible by simply re-enabling.</p>"
             ),
-            "disable_confirm": _CONFIRM_SAVE_TRICKPLAY_OFF,
+            "enable_body": (
+                "Jellyfin will look for trickplay next to each media file (where this app "
+                "writes), so published previews become visible again. Safe and reversible."
+            ),
+            "disable_body": (
+                "Jellyfin will stop looking for previews next to your media files. Published "
+                "tiles stay on disk (nothing is deleted) but become invisible to Jellyfin "
+                "clients until this is re-enabled."
+            ),
         },
         "ExtractTrickplayImagesDuringLibraryScan": {
             "check_id": "scan_extraction",
             "docs_anchor": "scan-extraction",
-            "tooltip": (
-                "When the plugin is absent, this must be ON so Jellyfin adopts "
-                "our tiles during library scans. With the plugin, it's optional."
+            "tooltip": "Jellyfin scan-time trickplay generation",
+            # The recommendation flips with plugin state — explanation text
+            # covers BOTH modes so the popover is informative in either state.
+            "explanation": (
+                "<p><strong>What it does:</strong> controls whether Jellyfin runs its own "
+                "trickplay generation during library scans. When on, Jellyfin will scan every "
+                "video file and generate preview tiles itself if none exist.</p>"
+                "<p><strong>Why we recommend it depends on the plugin:</strong></p>"
+                "<ul>"
+                "<li><strong>With the Media Preview Bridge plugin installed (Mode A):</strong> "
+                "recommend OFF. The plugin registers our published tiles instantly via a direct "
+                "API call, so Jellyfin running its own extraction on top is just wasted CPU "
+                "and produces duplicate output.</li>"
+                "<li><strong>Without the plugin (Mode B):</strong> recommend ON. Jellyfin's "
+                "scan-time code is the ADOPTION path — when it scans a file with existing "
+                "<code>.trickplay/</code> tiles next to it, it imports them into its database "
+                "(no ffmpeg, instant). With this flag off AND no plugin, adoption stalls until "
+                "the 3 AM daily 'Refresh Trickplay Images' task runs.</li>"
+                "</ul>"
+                "<p><strong>What happens if you deviate:</strong> extra CPU spikes during scans "
+                "(when on with plugin), or delayed adoption until the next daily task (when "
+                "off without plugin). Never data-destructive.</p>"
             ),
-            # Destructive without plugin (breaks Mode B); harmless with plugin.
-            # We rely on the caller's plugin_installed state to pick which
-            # confirm payload applies — done in _flag_actions below.
-            "disable_confirm_no_plugin": _CONFIRM_SCAN_EXTRACTION_OFF,
+            "enable_body": (
+                "Jellyfin will run its own trickplay generation during library scans. "
+                "Without the Media Preview Bridge plugin this is how our published tiles get "
+                "adopted — keep it ON. With the plugin installed this just duplicates work "
+                "and wastes CPU during scans."
+            ),
+            "disable_body_no_plugin": (
+                "Without the Media Preview Bridge plugin AND without this flag, Jellyfin only "
+                "adopts our previews at 3 AM (its daily scheduled task). New files will have "
+                "no scrubbing preview until then. Nothing is deleted."
+            ),
+            "disable_body_with_plugin": (
+                "With the plugin installed, Jellyfin's scan-time extraction is wasted CPU. "
+                "Disabling stops the duplicate work — adoption still happens instantly via "
+                "the plugin. Safe."
+            ),
         },
         "EnableRealtimeMonitor": {
             "check_id": "realtime_monitor",
             "docs_anchor": "realtime-monitor",
-            "tooltip": (
-                "Jellyfin's filesystem watcher. Off means new Sonarr/Radarr "
-                "files wait for a manual scan or webhook nudge to be noticed."
+            "tooltip": "Auto-detect new files (real-time monitoring)",
+            "explanation": (
+                "<p><strong>What it does:</strong> tells Jellyfin to watch the library's folder "
+                "tree for filesystem changes (new files, moves, renames) and pick them up "
+                "immediately instead of waiting for the next scheduled scan.</p>"
+                "<p><strong>Why we recommend on:</strong> Sonarr/Radarr imports a file, Jellyfin "
+                "notices within seconds, this app's webhook gets fired, preview gets generated "
+                "and published — total latency measured in seconds. With this off, the flow "
+                "stalls on Jellyfin's next manual scan or a webhook nudge from this app (we "
+                "send them, but they can be missed on network hiccups).</p>"
+                "<p><strong>What happens if you disable it:</strong> new files don't show up in "
+                "Jellyfin (or this app's preview pipeline) until someone triggers a scan. "
+                "Non-destructive and reversible — just slower.</p>"
+            ),
+            "enable_body": (
+                "Jellyfin will watch the library folders and auto-detect new files instantly. "
+                "This is the recommended state for fast preview generation after Sonarr/Radarr "
+                "imports."
+            ),
+            "disable_body": (
+                "Jellyfin will stop watching the filesystem for new files. New episodes/movies "
+                "imported by Sonarr/Radarr won't show up in Jellyfin — or kick off preview "
+                "generation — until a manual scan runs. Nothing is deleted; re-enable any time."
             ),
         },
     }
@@ -804,19 +927,32 @@ class JellyfinServer(EmbyApiClient):
     def _flag_actions(self, flag: str, current: bool, plugin_installed: bool) -> dict[str, Any]:
         """Build the ``actions`` blob for a flag row.
 
-        Each action is ``{"action": "apply_flag", "args": {...}, "confirm": ...}``
-        — rendered into the server payload verbatim so the UI's dispatcher
-        is data-driven (no frontend heuristics for which toggles are safe).
+        Each action carries ``{action, args, confirm}`` — rendered into
+        the server payload verbatim so the UI's dispatcher is
+        data-driven (no frontend heuristics for which toggles are safe).
 
-        Destructive cases carry a ``confirm`` blob; safe ones carry ``None``.
-        Action IDs and keys mirror what ``_FLAG_METADATA`` declared; the
-        plugin-state-dependent confirm for ``ExtractTrickplayImagesDuringLibraryScan``
-        is resolved here (destructive only when plugin absent).
+        Every enable/disable carries a confirm blob so users always see
+        an explanation of what they're about to do before the POST
+        fires. ``kind`` is "button" for reversible flips and "type" for
+        data-destructive flips (only ``EnableTrickplayImageExtraction →
+        false`` today).
+
+        The plugin-state-dependent disable copy for
+        ``ExtractTrickplayImagesDuringLibraryScan`` is resolved here
+        (the disable is less urgent with the plugin installed).
         """
         meta = self._FLAG_METADATA.get(flag, {})
-        disable_confirm = meta.get("disable_confirm")
-        if flag == "ExtractTrickplayImagesDuringLibraryScan" and not plugin_installed:
-            disable_confirm = meta.get("disable_confirm_no_plugin")
+
+        disable_body = meta.get("disable_body") or ""
+        # Plugin-state-dependent disable body for scan-extraction.
+        if flag == "ExtractTrickplayImagesDuringLibraryScan":
+            if plugin_installed:
+                disable_body = meta.get("disable_body_with_plugin") or disable_body
+            else:
+                disable_body = meta.get("disable_body_no_plugin") or disable_body
+
+        disable_kind = meta.get("disable_kind", "button")
+        disable_phrase = meta.get("disable_phrase", "")
 
         actions: dict[str, Any] = {}
         # Only expose the action that would CHANGE state — offering an
@@ -825,13 +961,21 @@ class JellyfinServer(EmbyApiClient):
             actions["enable"] = {
                 "action": "apply_flag",
                 "args": {"flag": flag, "value": True},
-                "confirm": None,
+                "confirm": {
+                    "kind": "button",
+                    "phrase": "",
+                    "body": meta.get("enable_body") or "",
+                },
             }
         if current:
             actions["disable"] = {
                 "action": "apply_flag",
                 "args": {"flag": flag, "value": False},
-                "confirm": disable_confirm,
+                "confirm": {
+                    "kind": disable_kind,
+                    "phrase": disable_phrase,
+                    "body": disable_body,
+                },
             }
         return actions
 
@@ -1231,7 +1375,21 @@ class JellyfinServer(EmbyApiClient):
                         "id": "reachable",
                         "label": "Jellyfin reachable",
                         "docs_anchor": "connection",
-                        "tooltip": "We can reach Jellyfin and it returned /System/Info.",
+                        "tooltip": "Server is reachable and responds to API calls",
+                        "explanation": (
+                            "<p><strong>What it checks:</strong> this app sent a GET to "
+                            "<code>/System/Info</code> on the configured Jellyfin URL and got back "
+                            "a successful JSON response.</p>"
+                            "<p><strong>Why it matters:</strong> every downstream check "
+                            "(plugin probe, library settings, trickplay geometry) depends on "
+                            "talking to Jellyfin. If this fails, the rest of the card is "
+                            "meaningless.</p>"
+                            "<p><strong>Common causes when it fails:</strong> wrong URL (e.g. "
+                            "<code>localhost</code> from inside this container — see the URL field "
+                            "tooltip in General), expired API key, Jellyfin restarting, or "
+                            "network issue. Read-only check — fix the URL/credentials in the "
+                            "General tab.</p>"
+                        ),
                         "ok": connection_ok,
                         "severity": "critical",
                         "current": "reachable" if connection_ok else "unreachable",
@@ -1256,8 +1414,17 @@ class JellyfinServer(EmbyApiClient):
                         "id": "server_version",
                         "label": f"Jellyfin {version_value}" if version_value else "Jellyfin version",
                         "docs_anchor": "version",
-                        "tooltip": (
-                            "Jellyfin 10.10+ is required for the SaveTrickplayWithMedia code path this app depends on."
+                        "tooltip": "Jellyfin 10.10+ required",
+                        "explanation": (
+                            "<p><strong>What it checks:</strong> Jellyfin's reported version is at least "
+                            "10.10, the release that introduced the <code>SaveTrickplayWithMedia</code> "
+                            "code path this app depends on.</p>"
+                            "<p><strong>Why it matters:</strong> on Jellyfin 10.9 and earlier, trickplay "
+                            "is stored exclusively under <code>&lt;config&gt;/data/trickplay/</code> — "
+                            "where this app never writes. Published previews would sit on disk invisible "
+                            "forever.</p>"
+                            "<p><strong>How to fix:</strong> upgrade Jellyfin via your package manager "
+                            "or container image. Read-only check — there's no toggle here.</p>"
                         ),
                         "ok": version_ok,
                         "severity": "critical",
@@ -1286,7 +1453,17 @@ class JellyfinServer(EmbyApiClient):
                 "enable": {
                     "action": "install_plugin",
                     "args": {},
-                    "confirm": None,
+                    "confirm": {
+                        "kind": "button",
+                        "phrase": "",
+                        "body": (
+                            "Adds the Media Preview Bridge plugin to Jellyfin and restarts the "
+                            "server. Previews you generate after install will appear INSTANTLY "
+                            "in Jellyfin clients (Mode A) instead of waiting for the next library "
+                            "scan or the 3 AM scheduled task. Takes ~30 seconds for Jellyfin to "
+                            "restart and re-index. Reversible via the Uninstall button."
+                        ),
+                    },
                 }
             }
         sections.append(
@@ -1301,9 +1478,24 @@ class JellyfinServer(EmbyApiClient):
                         "id": "plugin_installed",
                         "label": plugin_mode,
                         "docs_anchor": "plugin",
-                        "tooltip": (
-                            "The plugin makes new previews appear instantly. "
-                            "Without it Jellyfin adopts them on its next scan."
+                        "tooltip": "Optional plugin for instant preview activation",
+                        "explanation": (
+                            "<p><strong>What it is:</strong> the Media Preview Bridge plugin is a "
+                            "small Jellyfin plugin we publish alongside this app. When installed, "
+                            "it exposes an internal endpoint this app calls to register published "
+                            "previews directly with Jellyfin's trickplay manager — instantly, without "
+                            "waiting for a library scan.</p>"
+                            "<p><strong>The two activation modes:</strong></p>"
+                            "<ul>"
+                            "<li><strong>Mode A (plugin installed):</strong> new previews appear in "
+                            "the player the moment generation completes. Near-zero latency.</li>"
+                            "<li><strong>Mode B (no plugin):</strong> Jellyfin adopts our tiles on "
+                            "its next library scan (usually within minutes) or at worst on the 3 AM "
+                            "scheduled 'Refresh Trickplay Images' task. Fully functional — just slower.</li>"
+                            "</ul>"
+                            "<p><strong>Install / uninstall:</strong> both require a Jellyfin restart "
+                            "(~30 seconds). Published tiles stay on disk either way — switching modes "
+                            "is non-destructive and reversible.</p>"
                         ),
                         "ok": True,
                         "severity": "info",
@@ -1363,6 +1555,12 @@ class JellyfinServer(EmbyApiClient):
                             "label": f"{lib_name or 'library'} — {label}",
                             "docs_anchor": meta.get("docs_anchor", "library-settings"),
                             "tooltip": meta.get("tooltip", rationale),
+                            # Rich-HTML multi-paragraph what/why/impact for
+                            # the ⓘ popover. Falls back to tooltip + rationale
+                            # when a flag hasn't been enriched yet so old
+                            # rows still render something.
+                            "explanation": meta.get("explanation")
+                            or f"<p>{meta.get('tooltip', '') or ''}</p><p>{rationale}</p>",
                             "ok": row_ok,
                             "severity": severity,
                             "current": current,
@@ -1392,7 +1590,18 @@ class JellyfinServer(EmbyApiClient):
             server_actions["enable"] = {
                 "action": "sync_trickplay_options",
                 "args": {},
-                "confirm": None,
+                "confirm": {
+                    "kind": "button",
+                    "phrase": "",
+                    "body": (
+                        "Writes this app's tile geometry (TileWidth, TileHeight, Interval, "
+                        "WidthResolutions) back to Jellyfin's server-wide TrickplayOptions so "
+                        "the scrubber renders the correct pixel range for each tile. "
+                        "Existing admin-customised fields (like additional resolutions) are "
+                        "preserved. Non-destructive — no tiles are deleted and no restart is "
+                        "required. The change takes effect immediately for newly served previews."
+                    ),
+                },
             }
         sections.append(
             {
@@ -1406,10 +1615,25 @@ class JellyfinServer(EmbyApiClient):
                         "id": "trickplay_geometry",
                         "label": "Tile geometry matches adapter",
                         "docs_anchor": "trickplay-options",
-                        "tooltip": (
-                            "If server TrickplayOptions (tile size / interval / width) "
-                            "don't match what this app writes, Jellyfin's scrubber pulls "
-                            "the wrong pixel range per tile."
+                        "tooltip": "Server tile geometry must match what this app writes",
+                        "explanation": (
+                            "<p><strong>What it checks:</strong> Jellyfin's server-wide "
+                            "<code>TrickplayOptions</code> — tile width, tile height, frame interval, "
+                            "and resolution list — match the geometry this app uses when writing "
+                            "tile sheets.</p>"
+                            "<p><strong>Why it matters:</strong> Jellyfin synthesises the client-"
+                            "facing <code>TrickplayInfo</code> row from server-wide "
+                            "<code>TrickplayOptions</code> VERBATIM — not measured from the tile "
+                            "files themselves. A mismatch (e.g. server <code>TileWidth=8</code> vs "
+                            "app <code>10</code>) means Jellyfin tells the client to slice tiles "
+                            "at the wrong pixel coordinates. The preview loads, but renders "
+                            "wrong: stretched, sheared, or showing the wrong frame at each "
+                            "scrubber position.</p>"
+                            "<p><strong>What 'Sync options' does:</strong> rewrites only the "
+                            "fields we control (TileWidth, TileHeight, Interval, adds our width "
+                            "to WidthResolutions if missing) and POSTs the full config back. "
+                            "Admin-customised fields are preserved. No restart required; no "
+                            "tiles deleted.</p>"
                         ),
                         "ok": server_ok,
                         "severity": "critical" if not server_ok else "info",
@@ -1446,9 +1670,24 @@ class JellyfinServer(EmbyApiClient):
                         "id": "vendor_extraction_state",
                         "label": "Jellyfin scan-time extraction",
                         "docs_anchor": "vendor-extraction",
-                        "tooltip": (
-                            "With this app handling previews, Jellyfin's scan-time "
-                            "extraction is wasted CPU. You can safely leave it off."
+                        "tooltip": "Stop Jellyfin running its own trickplay generation",
+                        "explanation": (
+                            "<p><strong>What this controls:</strong> whether Jellyfin runs its own "
+                            "trickplay extraction during library scans across every configured "
+                            "library in one batch. This is a shortcut for flipping "
+                            "<code>ExtractTrickplayImagesDuringLibraryScan</code> + "
+                            "<code>SaveTrickplayWithMedia</code> on every library at once.</p>"
+                            "<p><strong>Why we recommend stopping it:</strong> this app owns "
+                            "preview generation end-to-end (with GPU acceleration, HDR tonemapping, "
+                            "frame-reuse caching, etc.) so letting Jellyfin ALSO extract tiles "
+                            "during scans is pure duplicate CPU. Published tiles get adopted via "
+                            "the plugin (Mode A, instant) or the scan-adoption path (Mode B); "
+                            "either way Jellyfin doesn't need to generate its own.</p>"
+                            "<p><strong>What happens if you re-enable:</strong> Jellyfin starts "
+                            "generating tiles during scans in parallel to this app's output. "
+                            "Wasteful but non-destructive — both sets of tiles end up in the "
+                            "same <code>.trickplay/</code> directory structure, and whichever "
+                            "gets registered first wins.</p>"
                         ),
                         "ok": True,
                         "severity": "info",
@@ -1458,12 +1697,33 @@ class JellyfinServer(EmbyApiClient):
                             "disable": {
                                 "action": "set_vendor_extraction",
                                 "args": {"scan_extraction": False},
-                                "confirm": None,
+                                "confirm": {
+                                    "kind": "button",
+                                    "phrase": "",
+                                    "body": (
+                                        "Stops Jellyfin running its own trickplay extraction "
+                                        "during library scans across all libraries. "
+                                        "Recommended when this app owns preview generation. "
+                                        "Non-destructive — existing tiles stay on disk and "
+                                        "continue to work."
+                                    ),
+                                },
                             },
                             "enable": {
                                 "action": "set_vendor_extraction",
                                 "args": {"scan_extraction": True},
-                                "confirm": None,
+                                "confirm": {
+                                    "kind": "button",
+                                    "phrase": "",
+                                    "body": (
+                                        "Re-enables Jellyfin's scan-time trickplay extraction "
+                                        "across all libraries. Jellyfin will generate its OWN "
+                                        "preview tiles in parallel to this app — duplicate CPU, "
+                                        "but no data loss. Useful only if you want Jellyfin to "
+                                        "take over preview generation and plan to stop using "
+                                        "this app for the affected libraries."
+                                    ),
+                                },
                             },
                         },
                         "reason": None,

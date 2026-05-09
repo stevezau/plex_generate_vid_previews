@@ -620,38 +620,102 @@ class PlexServer(MediaServer):
 
         return results
 
-    # Per-flag UX metadata — check_id, docs_anchor, tooltip one-liner.
-    # All Plex pref toggles are non-destructive (no data is deleted by
-    # flipping these flags), so no disable_confirm payloads needed.
+    # Per-flag UX metadata. All Plex pref toggles are non-destructive
+    # (no data is deleted by flipping them) so confirm.kind is always
+    # "button" and the body explains what enabling/disabling does.
     _PLEX_FLAG_METADATA: dict[str, dict[str, Any]] = {
         "FSEventLibraryUpdatesEnabled": {
             "check_id": "fsevent_updates",
             "docs_anchor": "fsevent-updates",
-            "tooltip": (
-                "Plex's filesystem watcher. Off = Plex never notices new files "
-                "unless this app nudges a scan or the periodic timer fires."
+            "tooltip": "Plex's real-time filesystem watcher",
+            "explanation": (
+                "<p><strong>What it does:</strong> when on, Plex subscribes to filesystem "
+                "events (inotify on Linux, FSEvents on macOS) and notices added / removed / "
+                "renamed files in your library folders in real time.</p>"
+                "<p><strong>Why we recommend on:</strong> most 'why didn't Plex pick up the "
+                "file?' complaints trace back here. With this off, Plex only learns about new "
+                "files when (a) this app's scan-nudges fire after a preview publish, or (b) "
+                "the periodic timer (ScheduledLibraryUpdatesEnabled, below) runs. Both are "
+                "best-effort; real-time eventing is the reliable path.</p>"
+                "<p><strong>What happens if you disable it:</strong> Plex stops watching for "
+                "file events. New Sonarr/Radarr imports become invisible to Plex until the "
+                "periodic scan runs or something external nudges a scan. Non-destructive and "
+                "reversible.</p>"
+            ),
+            "enable_body": (
+                "Plex will watch library folders for filesystem changes and pick up new "
+                "files in real time. This is the recommended state and eliminates most "
+                "'Plex didn't notice the file' issues."
+            ),
+            "disable_body": (
+                "Plex will stop watching the filesystem for new files. Adding files "
+                "externally (Sonarr/Radarr, rsync, etc.) won't show up in Plex until the "
+                "periodic scan runs or this app nudges Plex manually. Non-destructive and "
+                "reversible."
             ),
         },
         "FSEventLibraryPartialScanEnabled": {
             "check_id": "fsevent_partial",
             "docs_anchor": "fsevent-partial",
-            "tooltip": (
-                "When on, Plex only re-scans the directory that changed; off = "
-                "a full library scan every time a single file is added."
+            "tooltip": "Partial scan on filesystem change",
+            "explanation": (
+                "<p><strong>What it does:</strong> when a filesystem event fires (new file, "
+                "move, etc.), Plex only re-scans the specific directory that changed instead "
+                "of re-scanning the entire library.</p>"
+                "<p><strong>Why we recommend on:</strong> a full library scan for a 100k-item "
+                "Plex install can take many minutes — and with FSEvents enabled, you'd trigger "
+                "a full scan every single time a file changes. Partial scan limits the work to "
+                "the one directory that actually changed, typically finishing in seconds.</p>"
+                "<p><strong>What happens if you disable it:</strong> every filesystem event "
+                "triggers a full library scan. For small libraries this is fine; for large ones "
+                "it's painful and can queue scans faster than they complete. Reversible.</p>"
+            ),
+            "enable_body": (
+                "Plex will only re-scan the directory that changed when a filesystem event "
+                "fires. Recommended — saves minutes per event on large libraries."
+            ),
+            "disable_body": (
+                "Every filesystem event will trigger a FULL library scan. On large libraries "
+                "this can be many minutes per added file, and scans may queue faster than "
+                "they complete. Reversible, but rarely desirable."
             ),
         },
         "ScheduledLibraryUpdatesEnabled": {
             "check_id": "scheduled_scan",
             "docs_anchor": "scheduled-scan",
-            "tooltip": (
-                "Periodic scan safety net. Catches files missed by the real-time "
-                "watcher (network mounts, container restarts)."
+            "tooltip": "Periodic library scan safety net",
+            "explanation": (
+                "<p><strong>What it does:</strong> Plex runs a scheduled library scan at a "
+                "fixed interval (default: every hour) regardless of filesystem events.</p>"
+                "<p><strong>Why we recommend on:</strong> a belt-and-braces safety net for "
+                "cases where FSEvents can miss changes — network mounts (SMB/NFS don't always "
+                "propagate inotify), container restarts, or Plex bugs. Even with real-time "
+                "events enabled, the scheduled scan catches anything that slipped through.</p>"
+                "<p><strong>What happens if you disable it:</strong> Plex only picks up files "
+                "via real-time events (if on) or manual scans. On a network-mount setup where "
+                "FSEvents are unreliable, files can sit invisible for hours. Reversible.</p>"
+            ),
+            "enable_body": (
+                "Plex will run a scheduled library scan at its configured interval as a "
+                "safety net, catching anything missed by the real-time watcher. Recommended, "
+                "especially for network-mount setups."
+            ),
+            "disable_body": (
+                "Plex will stop running scheduled library scans. File pickup depends entirely "
+                "on real-time filesystem events (if enabled) or manual scans. On network-mount "
+                "setups this can leave files invisible for hours. Reversible."
             ),
         },
     }
 
     def _plex_flag_actions(self, flag: str, current: Any) -> dict[str, Any]:
-        """Build the ``actions`` blob for a Plex pref row."""
+        """Build the ``actions`` blob for a Plex pref row.
+
+        Every toggle carries a button-confirm blob with an explanation
+        of what the action does — users always see what they're about
+        to do before the POST fires.
+        """
+        meta = self._PLEX_FLAG_METADATA.get(flag, {})
         actions: dict[str, Any] = {}
         # Plex prefs return bool values; normalise for comparison.
         current_bool = bool(current) if not isinstance(current, str) else current.lower() == "true"
@@ -659,13 +723,21 @@ class PlexServer(MediaServer):
             actions["enable"] = {
                 "action": "apply_flag",
                 "args": {"flag": flag, "value": True},
-                "confirm": None,
+                "confirm": {
+                    "kind": "button",
+                    "phrase": "",
+                    "body": meta.get("enable_body") or "",
+                },
             }
         if current_bool:
             actions["disable"] = {
                 "action": "apply_flag",
                 "args": {"flag": flag, "value": False},
-                "confirm": None,
+                "confirm": {
+                    "kind": "button",
+                    "phrase": "",
+                    "body": meta.get("disable_body") or "",
+                },
             }
         return actions
 
@@ -753,7 +825,21 @@ class PlexServer(MediaServer):
                         "id": "reachable",
                         "label": "Plex reachable",
                         "docs_anchor": "connection",
-                        "tooltip": "We can reach Plex and it returned a machine identifier.",
+                        "tooltip": "Server is reachable and returned its machine identifier",
+                        "explanation": (
+                            "<p><strong>What it checks:</strong> this app sent a GET to the "
+                            "Plex root URL and received back the server's "
+                            "<code>machineIdentifier</code>, confirming authenticated connectivity.</p>"
+                            "<p><strong>Why it matters:</strong> the connection gates every "
+                            "other check (server prefs, vendor extraction, path lookups). If "
+                            "Plex isn't reachable, the rest of the readiness card can't "
+                            "meaningfully report state.</p>"
+                            "<p><strong>Common causes when it fails:</strong> wrong URL "
+                            "(e.g. <code>localhost</code> from inside this container — use the "
+                            "host's IP), expired / invalid Plex token, SSL cert verification "
+                            "failing on a self-signed cert, or Plex not running. Read-only "
+                            "check — fix the URL/token in the General tab.</p>"
+                        ),
                         "ok": connection_result.ok,
                         "severity": "critical",
                         "current": "reachable" if connection_result.ok else "unreachable",
@@ -778,7 +864,17 @@ class PlexServer(MediaServer):
                         "id": "server_version",
                         "label": f"Plex {connection_result.version}" if connection_result.version else "Plex version",
                         "docs_anchor": "version",
-                        "tooltip": "Any recent Plex release supports BIF bundle previews.",
+                        "tooltip": "Informational — any recent Plex release works",
+                        "explanation": (
+                            "<p><strong>What it reports:</strong> Plex Media Server's "
+                            "self-reported version from the root endpoint.</p>"
+                            "<p><strong>Why it's informational:</strong> BIF bundle previews "
+                            "(how this app publishes to Plex) have been supported for years — "
+                            "no minimum-version gate matters for normal operation.</p>"
+                            "<p><strong>When it would matter:</strong> if a future Plex release "
+                            "ever changes the bundle path layout or BIF format, this row will "
+                            "surface the version and recommend an action. Read-only.</p>"
+                        ),
                         "ok": True,
                         "severity": "info",
                         "current": connection_result.version or "unknown",
@@ -833,6 +929,8 @@ class PlexServer(MediaServer):
                     "label": label,
                     "docs_anchor": meta.get("docs_anchor", "library-settings"),
                     "tooltip": meta.get("tooltip", rationale),
+                    "explanation": meta.get("explanation")
+                    or f"<p>{meta.get('tooltip', '') or ''}</p><p>{rationale}</p>",
                     "ok": row_ok,
                     "severity": severity,
                     "current": current,
@@ -894,9 +992,24 @@ class PlexServer(MediaServer):
                         "id": "config_folder_writable",
                         "label": "Plex config folder is writable",
                         "docs_anchor": "plex-config-folder",
-                        "tooltip": (
-                            "BIF bundles land under this folder. If it's missing, "
-                            "read-only, or mis-mounted, no previews can be published."
+                        "tooltip": "Writable path where BIF bundles land",
+                        "explanation": (
+                            "<p><strong>What it checks:</strong> the <em>Plex config folder</em> "
+                            "configured in the General tab exists on this container's filesystem "
+                            "AND is writable by the user this app runs as.</p>"
+                            "<p><strong>Why it matters:</strong> BIF bundles (the preview files "
+                            "Plex reads) land under <code>&lt;config&gt;/Media/localhost/...</code>. "
+                            "If the folder is missing, read-only, or mis-mounted, every publish "
+                            "fails silently — this app generates the previews but can't write "
+                            "them to disk.</p>"
+                            "<p><strong>How we probe:</strong> <code>os.access(folder, W_OK)</code> "
+                            "only — pure read-only check; we never create, modify, or delete "
+                            "anything under your Plex config folder.</p>"
+                            "<p><strong>Common causes when it fails:</strong> Docker mount typed "
+                            "as <code>:ro</code> instead of read-write, wrong host path, "
+                            "PUID/PGID mismatch between this container and Plex's (Plex owns the "
+                            "folder and this app's user doesn't have write access). Read-only "
+                            "check here — fix via the Docker compose file or General tab.</p>"
                         ),
                         "ok": folder_ok,
                         "severity": "critical" if not folder_ok else "info",
@@ -931,9 +1044,27 @@ class PlexServer(MediaServer):
                         "id": "vendor_extraction_state",
                         "label": "Plex's own BIF generation",
                         "docs_anchor": "vendor-extraction",
-                        "tooltip": (
-                            "With this app handling BIFs, Plex's own BIF generation "
-                            "is wasted CPU. You can safely leave it off."
+                        "tooltip": "Stop Plex generating its own BIF previews",
+                        "explanation": (
+                            "<p><strong>What this controls:</strong> whether Plex generates "
+                            "its own BIF bundle previews ("
+                            "<code>enableBIFGeneration</code> per library section) during "
+                            "library analysis. Shortcut for toggling the setting across every "
+                            "library in one batch.</p>"
+                            "<p><strong>Why we recommend stopping it:</strong> this app "
+                            "generates BIFs and writes them directly to Plex's bundle "
+                            "directory. If Plex is also generating its own, you end up with "
+                            "two processes doing the same work — this app's output lands first, "
+                            "Plex's subsequent pass overwrites it with a lower-quality or "
+                            "differently-spaced version, undoing everything you just "
+                            "generated.</p>"
+                            "<p><strong>What happens if you re-enable:</strong> Plex's "
+                            "generation runs in parallel, and whichever writes last wins. "
+                            "Non-destructive in the data-loss sense, but your app-published "
+                            "previews may get stomped by Plex's own pass. Custom-agent "
+                            "libraries (common when using XBMCnfoMovieImporter etc.) can't "
+                            "be toggled via the API — Plex's section-edit endpoint rejects "
+                            "the change for those; they show as 'skipped' in the result.</p>"
                         ),
                         "ok": True,
                         "severity": "info",
@@ -943,12 +1074,33 @@ class PlexServer(MediaServer):
                             "disable": {
                                 "action": "set_vendor_extraction",
                                 "args": {"scan_extraction": False},
-                                "confirm": None,
+                                "confirm": {
+                                    "kind": "button",
+                                    "phrase": "",
+                                    "body": (
+                                        "Stops Plex generating its own BIF previews across "
+                                        "all supported library sections. Recommended when "
+                                        "this app owns preview generation. Non-destructive — "
+                                        "existing bundles stay on disk. Custom-agent libraries "
+                                        "can't be toggled via the API and will be skipped."
+                                    ),
+                                },
                             },
                             "enable": {
                                 "action": "set_vendor_extraction",
                                 "args": {"scan_extraction": True},
-                                "confirm": None,
+                                "confirm": {
+                                    "kind": "button",
+                                    "phrase": "",
+                                    "body": (
+                                        "Re-enables Plex's own BIF generation across all "
+                                        "supported library sections. Plex will generate its "
+                                        "OWN previews in parallel to this app — whichever "
+                                        "writes last to each bundle directory wins, so app-"
+                                        "published previews may get overwritten by Plex's "
+                                        "subsequent analysis pass."
+                                    ),
+                                },
                             },
                         },
                         "reason": None,
@@ -980,9 +1132,23 @@ class PlexServer(MediaServer):
                         "id": "path_mappings_valid",
                         "label": f"{len(mapping_rows)} path mapping{'s' if len(mapping_rows) != 1 else ''} configured",
                         "docs_anchor": "path-mappings",
-                        "tooltip": (
-                            "Path mappings translate Plex's server-view paths into "
-                            "container-local paths. Any broken local_prefix blocks publishing."
+                        "tooltip": "Configured mappings must point at paths that exist",
+                        "explanation": (
+                            "<p><strong>What it checks:</strong> for every configured path "
+                            "mapping (Plex server path → container-local path), the local "
+                            "prefix actually exists as a directory on this container.</p>"
+                            "<p><strong>Why it matters:</strong> path mappings translate between "
+                            "the paths Plex reports (e.g. <code>/data/Movies</code> on Plex's "
+                            "container) and the paths this app can read (e.g. "
+                            "<code>/mnt/media</code> inside ours). A broken local prefix means "
+                            "the translation silently no-ops — Plex tells us a file is at "
+                            "<code>/data/Movies/X.mkv</code>, we look at the missing "
+                            "<code>/mnt/media/Movies/X.mkv</code> that doesn't resolve, and the "
+                            "preview never gets generated.</p>"
+                            "<p><strong>Common causes when it fails:</strong> Docker volume "
+                            "removed or renamed, typo in the mapping, host filesystem "
+                            "unmounted. Read-only check — fix via the Path mappings tab in "
+                            "this modal.</p>"
                         ),
                         "ok": mappings_ok,
                         "severity": "recommended" if not mappings_ok else "info",

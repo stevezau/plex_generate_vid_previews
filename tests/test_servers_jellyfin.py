@@ -892,17 +892,22 @@ class TestApplyRecommendedSettings:
 
 
 class TestUninstallPlugin:
-    """uninstall_plugin: DELETE /Packages/{guid} + restart Jellyfin.
+    """uninstall_plugin: DELETE /Plugins/{guid} + restart Jellyfin.
+
+    Uses /Plugins/{guid} NOT /Packages/{guid} — the latter returns 405
+    (regression pinned here: a user's live Jellyfin returned 405 when
+    the older /Packages path shipped; /Plugins is the Jellyfin-correct
+    assembly-GUID uninstall endpoint).
 
     404 on the DELETE is treated as success (already-gone is the
     desired end state). Restart failure leaves ``ok=True`` because
-    the package was removed — it just won't unload visibly until
+    the plugin was removed — it just won't unload visibly until
     next manual restart.
     """
 
     def test_happy_path_deletes_then_restarts(self, jelly):
         responses: dict[tuple[str, str], MagicMock] = {
-            ("DELETE", f"/Packages/{JellyfinServer.PLUGIN_GUID}"): MagicMock(
+            ("DELETE", f"/Plugins/{JellyfinServer.PLUGIN_GUID}"): MagicMock(
                 status_code=204, raise_for_status=MagicMock()
             ),
             ("POST", "/System/Restart"): MagicMock(status_code=204, raise_for_status=MagicMock()),
@@ -918,7 +923,7 @@ class TestUninstallPlugin:
         steps = {s["step"] for s in result["steps"]}
         assert steps == {"uninstall_package", "restart"}
         # Both endpoints were hit, in order.
-        assert req.call_args_list[0].args == ("DELETE", f"/Packages/{JellyfinServer.PLUGIN_GUID}")
+        assert req.call_args_list[0].args == ("DELETE", f"/Plugins/{JellyfinServer.PLUGIN_GUID}")
         assert req.call_args_list[1].args == ("POST", "/System/Restart")
 
     def test_treats_404_as_success(self, jelly):
@@ -926,7 +931,7 @@ class TestUninstallPlugin:
         no error, restart still fires, ok=True. If this regresses, users
         will see "uninstall failed" on a redundant click."""
         responses: dict[tuple[str, str], MagicMock] = {
-            ("DELETE", f"/Packages/{JellyfinServer.PLUGIN_GUID}"): MagicMock(
+            ("DELETE", f"/Plugins/{JellyfinServer.PLUGIN_GUID}"): MagicMock(
                 status_code=404, raise_for_status=MagicMock()
             ),
             ("POST", "/System/Restart"): MagicMock(status_code=204, raise_for_status=MagicMock()),
@@ -961,6 +966,43 @@ class TestUninstallPlugin:
 
         assert result["ok"] is True
         assert "restart failed" in result["error"]
+
+    def test_uses_plugins_endpoint_not_packages(self, jelly):
+        """Regression pin: the first URL segment MUST be /Plugins, not /Packages.
+
+        A user's live Jellyfin returned HTTP 405 Method Not Allowed when
+        /Packages/{guid} was used — Jellyfin's /Packages endpoint is the
+        install-catalogue API and doesn't accept DELETE. The correct
+        uninstall endpoint keys off the plugin's assembly GUID at
+        /Plugins/{guid}. This test exists specifically so that bug
+        never ships again."""
+
+        captured_urls: list[str] = []
+
+        def fake_request(method, url, **kwargs):
+            captured_urls.append(f"{method} {url}")
+            if method == "DELETE":
+                return MagicMock(status_code=204, raise_for_status=MagicMock())
+            if method == "POST":
+                return MagicMock(status_code=204, raise_for_status=MagicMock())
+            raise AssertionError(f"unexpected {method} {url}")
+
+        with patch.object(JellyfinServer, "_request", side_effect=fake_request):
+            jelly.uninstall_plugin()
+
+        # Exact list equality — protects against: wrong URL path
+        # (/Packages), wrong method (POST), trailing slashes, accidental
+        # query-string suffixes, or reordering where the restart happens
+        # before the delete. Any one of these would have returned 405 or
+        # worse on the live Jellyfin that produced the bug report.
+        assert captured_urls == [
+            f"DELETE /Plugins/{JellyfinServer.PLUGIN_GUID}",
+            "POST /System/Restart",
+        ], (
+            "uninstall_plugin MUST target /Plugins/{guid} in that exact order — "
+            "using /Packages/{guid} returned HTTP 405 on the live Jellyfin that "
+            f"surfaced this bug. Got call sequence: {captured_urls!r}"
+        )
 
 
 class TestApplyFlagValues:

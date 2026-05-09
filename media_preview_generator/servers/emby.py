@@ -323,48 +323,118 @@ class EmbyServer(EmbyApiClient):
                 )
         return issues
 
-    # Per-flag UX metadata — check_id, docs_anchor, tooltip one-liner.
-    # All Emby flag toggles are non-destructive (sidecars aren't
-    # deleted by any flag flip), so no disable_confirm payloads needed.
+    # Per-flag UX metadata. Every Emby flag flip is reversible (sidecars
+    # aren't deleted by any change), so confirm.kind is always "button"
+    # and the body explains what the action does + what it costs.
     _FLAG_METADATA: dict[str, dict[str, Any]] = {
         "ExtractTrickplayImagesDuringLibraryScan": {
             "check_id": "scan_extraction",
             "docs_anchor": "scan-extraction",
-            "tooltip": (
-                "Emby 4.8+ scan-time trickplay generation. With this app handling previews, this flag is wasted CPU."
+            "tooltip": "Emby's own scan-time trickplay generation",
+            "explanation": (
+                "<p><strong>What it does:</strong> on Emby 4.8+, controls whether Emby generates "
+                "its own trickplay tiles during library scans.</p>"
+                "<p><strong>Why we recommend off:</strong> this app owns preview generation "
+                "(GPU-accelerated, HDR-aware, with frame-reuse caching). Letting Emby also "
+                "extract tiles during scans is pure duplicate CPU — both sets land in the same "
+                "place and whichever registers first wins, but you've burned twice the work.</p>"
+                "<p><strong>What happens if you enable it:</strong> Emby starts generating its own "
+                "trickplay tiles on every scan in parallel to this app. Nothing breaks, but scans "
+                "get longer and CPU usage during scans roughly doubles.</p>"
+            ),
+            "enable_body": (
+                "Re-enables Emby's scan-time trickplay generation. Emby will generate its OWN "
+                "preview tiles in parallel to this app on every library scan — duplicate work, "
+                "but nothing is deleted. Useful only if you plan to stop using this app for "
+                "Emby previews."
+            ),
+            "disable_body": (
+                "Stops Emby from generating its own trickplay tiles during library scans. "
+                "This app keeps publishing previews the same way — Emby just stops doing "
+                "duplicate work. Non-destructive and reversible."
             ),
         },
         "ExtractChapterImagesDuringLibraryScan": {
             "check_id": "chapter_extraction",
             "docs_anchor": "chapter-extraction",
-            "tooltip": (
-                "Older Emby's chapter-image preview pipeline. Disabling it "
-                "avoids duplicate work when this app owns trickplay."
+            "tooltip": "Emby's older chapter-image preview pipeline",
+            "explanation": (
+                "<p><strong>What it does:</strong> generates chapter-image thumbnails during "
+                "library scans — the preview mechanism Emby used before 4.8 introduced "
+                "trickplay tiles.</p>"
+                "<p><strong>Why we recommend off:</strong> chapter images aren't what this app "
+                "publishes (we write trickplay tiles). Leaving chapter-image extraction on means "
+                "Emby burns CPU during every scan generating thumbnails nothing in this pipeline "
+                "reads or displays.</p>"
+                "<p><strong>What happens if you enable it:</strong> Emby generates chapter images "
+                "during scans. They don't replace or conflict with this app's trickplay tiles — "
+                "just wasted CPU. Reversible any time.</p>"
+            ),
+            "enable_body": (
+                "Re-enables Emby's chapter-image extraction during library scans. Legacy Emby "
+                "preview mechanism; doesn't affect trickplay tiles this app publishes. Just "
+                "costs CPU during scans."
+            ),
+            "disable_body": (
+                "Stops Emby generating chapter-image thumbnails during scans. This app's "
+                "trickplay tiles aren't affected — they're a separate mechanism. Non-destructive "
+                "and reversible."
             ),
         },
         "EnableRealtimeMonitor": {
             "check_id": "realtime_monitor",
             "docs_anchor": "realtime-monitor",
-            "tooltip": (
-                "Emby's filesystem watcher. Off means new Sonarr/Radarr files wait for a manual scan or webhook nudge."
+            "tooltip": "Auto-detect new files (real-time monitoring)",
+            "explanation": (
+                "<p><strong>What it does:</strong> tells Emby to watch the library's folder tree "
+                "for filesystem changes (new files, moves, renames) and pick them up "
+                "immediately instead of waiting for the next scheduled scan.</p>"
+                "<p><strong>Why we recommend on:</strong> Sonarr/Radarr imports a file → Emby "
+                "notices within seconds → this app's webhook fires → preview gets generated and "
+                "published, total latency in seconds. Off means everything stalls until the next "
+                "scheduled scan or a webhook nudge from this app.</p>"
+                "<p><strong>What happens if you disable it:</strong> new files won't show up in "
+                "Emby — or trigger preview generation — until a manual scan runs. Non-destructive; "
+                "re-enabling any time restores the instant-notification flow.</p>"
+            ),
+            "enable_body": (
+                "Emby will watch the library folders and auto-detect new files instantly. "
+                "Recommended for fast preview generation after Sonarr/Radarr imports."
+            ),
+            "disable_body": (
+                "Emby will stop watching the filesystem for new files. New episodes/movies "
+                "imported by Sonarr/Radarr won't show up in Emby — or trigger preview "
+                "generation — until a manual scan runs. Reversible any time."
             ),
         },
     }
 
     def _flag_actions(self, flag: str, current: bool) -> dict[str, Any]:
-        """Build ``actions`` blob — only expose the toggle that changes state."""
+        """Build ``actions`` blob — expose the toggle that changes state,
+        and attach a button-confirm blob with the enable/disable body so
+        users see what they're about to do before clicking.
+        """
+        meta = self._FLAG_METADATA.get(flag, {})
         actions: dict[str, Any] = {}
         if not current:
             actions["enable"] = {
                 "action": "apply_flag",
                 "args": {"flag": flag, "value": True},
-                "confirm": None,
+                "confirm": {
+                    "kind": "button",
+                    "phrase": "",
+                    "body": meta.get("enable_body") or "",
+                },
             }
         if current:
             actions["disable"] = {
                 "action": "apply_flag",
                 "args": {"flag": flag, "value": False},
-                "confirm": None,
+                "confirm": {
+                    "kind": "button",
+                    "phrase": "",
+                    "body": meta.get("disable_body") or "",
+                },
             }
         return actions
 
@@ -495,7 +565,19 @@ class EmbyServer(EmbyApiClient):
                         "id": "reachable",
                         "label": "Emby reachable",
                         "docs_anchor": "connection",
-                        "tooltip": "We can reach Emby and it returned /System/Info.",
+                        "tooltip": "Server is reachable and responds to API calls",
+                        "explanation": (
+                            "<p><strong>What it checks:</strong> this app sent a GET to "
+                            "<code>/System/Info</code> on the configured Emby URL and got back a "
+                            "successful JSON response.</p>"
+                            "<p><strong>Why it matters:</strong> every downstream check depends "
+                            "on talking to Emby. If this fails, the rest of the card is "
+                            "meaningless.</p>"
+                            "<p><strong>Common causes when it fails:</strong> wrong URL (e.g. "
+                            "<code>localhost</code> from inside this container), expired API "
+                            "key, Emby restarting, or a network issue. Read-only check — fix "
+                            "the URL/credentials in the General tab.</p>"
+                        ),
                         "ok": connection_ok,
                         "severity": "critical",
                         "current": "reachable" if connection_ok else "unreachable",
@@ -520,7 +602,18 @@ class EmbyServer(EmbyApiClient):
                         "id": "server_version",
                         "label": f"Emby {version_value}" if version_value else "Emby version",
                         "docs_anchor": "version",
-                        "tooltip": "Any recent Emby release supports sidecar BIF auto-discovery.",
+                        "tooltip": "Informational — any recent Emby release works",
+                        "explanation": (
+                            "<p><strong>What it reports:</strong> Emby's self-reported version "
+                            "from <code>/System/Info</code>.</p>"
+                            "<p><strong>Why it's informational:</strong> Emby's sidecar BIF "
+                            "auto-discovery (how this app's previews become visible) works by "
+                            "filename convention — no minimum-version gate. Any recent Emby "
+                            "release supports it out of the box.</p>"
+                            "<p><strong>When it would matter:</strong> if Emby ever ships a "
+                            "major version that breaks sidecar discovery, this row will surface "
+                            "the version and recommend an action. Read-only check.</p>"
+                        ),
                         "ok": True,
                         "severity": "info",
                         "current": version_value or "unknown",
@@ -572,6 +665,8 @@ class EmbyServer(EmbyApiClient):
                             "label": f"{lib_name or 'library'} — {label}",
                             "docs_anchor": meta.get("docs_anchor", "library-settings"),
                             "tooltip": meta.get("tooltip", rationale),
+                            "explanation": meta.get("explanation")
+                            or f"<p>{meta.get('tooltip', '') or ''}</p><p>{rationale}</p>",
                             "ok": row_ok,
                             "severity": severity,
                             "current": current,
@@ -614,9 +709,19 @@ class EmbyServer(EmbyApiClient):
                         "id": "vendor_extraction_state",
                         "label": "Emby scan-time extraction",
                         "docs_anchor": "vendor-extraction",
-                        "tooltip": (
-                            "With this app handling previews, Emby's scan-time "
-                            "extraction is wasted CPU. You can safely leave it off."
+                        "tooltip": "Stop Emby running its own preview extraction",
+                        "explanation": (
+                            "<p><strong>What this controls:</strong> a server-wide shortcut for "
+                            "disabling Emby's own preview extraction (trickplay + chapter images) "
+                            "across every configured library in one batch.</p>"
+                            "<p><strong>Why we recommend stopping it:</strong> this app handles "
+                            "preview generation end-to-end (GPU-accelerated, HDR-aware, frame-"
+                            "reuse caching). Letting Emby ALSO extract during scans is "
+                            "duplicate CPU — both sets of images land in the same place, but "
+                            "you've burned twice the work.</p>"
+                            "<p><strong>What happens if you re-enable:</strong> Emby starts "
+                            "extracting its own preview images during library scans in parallel "
+                            "to this app. Wasteful but non-destructive.</p>"
                         ),
                         "ok": True,
                         "severity": "info",
@@ -626,12 +731,32 @@ class EmbyServer(EmbyApiClient):
                             "disable": {
                                 "action": "set_vendor_extraction",
                                 "args": {"scan_extraction": False},
-                                "confirm": None,
+                                "confirm": {
+                                    "kind": "button",
+                                    "phrase": "",
+                                    "body": (
+                                        "Stops Emby running its own trickplay + chapter-image "
+                                        "extraction during library scans across all libraries. "
+                                        "Recommended when this app owns preview generation. "
+                                        "Non-destructive — existing previews stay on disk and "
+                                        "continue to work."
+                                    ),
+                                },
                             },
                             "enable": {
                                 "action": "set_vendor_extraction",
                                 "args": {"scan_extraction": True},
-                                "confirm": None,
+                                "confirm": {
+                                    "kind": "button",
+                                    "phrase": "",
+                                    "body": (
+                                        "Re-enables Emby's scan-time preview extraction across "
+                                        "all libraries. Emby will generate its OWN preview "
+                                        "images in parallel to this app — duplicate CPU, no "
+                                        "data loss. Useful only if you plan to stop using this "
+                                        "app for Emby previews."
+                                    ),
+                                },
                             },
                         },
                         "reason": None,
