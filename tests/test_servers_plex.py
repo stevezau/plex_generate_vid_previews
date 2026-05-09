@@ -1156,3 +1156,35 @@ class TestPlexPreviewsReadiness:
         assert enable["args"] == {"flag": "FSEventLibraryUpdatesEnabled", "value": True}
         # Critical row → overall_ok must be False.
         assert payload["overall_ok"] is False
+
+    def test_vendor_extraction_probe_failure_is_not_green(self, plex_wrapper, tmp_path):
+        """When get_vendor_extraction_status raises, the section MUST report
+        ok=False (severity=info — missed probe isn't critical for preview
+        playback, but the UI must stop lying about state it can't read).
+        Prior regression hardcoded ok=True and rendered a green tick with
+        fallback-zero counts that looked identical to 'nothing extracting'."""
+        plex_wrapper._config.plex_config_folder = str(tmp_path)
+
+        with (
+            patch.object(PlexServer, "test_connection") as tc,
+            patch("media_preview_generator.servers.plex.requests.get") as prefs_get,
+            patch.object(PlexServer, "get_vendor_extraction_status") as vs,
+        ):
+            tc.return_value = ConnectionResult(ok=True, message="Connected")
+            prefs_get.return_value = self._prefs_response(
+                FSEventLibraryUpdatesEnabled=True,
+                FSEventLibraryPartialScanEnabled=True,
+                ScheduledLibraryUpdatesEnabled=True,
+            )
+            vs.side_effect = RuntimeError("boom")
+
+            payload = plex_wrapper.previews_readiness()
+
+        vendor = next(s for s in payload["sections"] if s["id"] == "vendor_extraction")
+        assert vendor["ok"] is False
+        assert vendor["severity"] == "info"
+        row = vendor["checks"][0]
+        assert row["ok"] is False
+        assert row["severity"] == "info"
+        assert "boom" in (row["reason"] or "")
+        assert row["current"] == "unknown (probe failed)"

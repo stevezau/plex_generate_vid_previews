@@ -1254,6 +1254,189 @@ class TestPreviewsReadinessJellyfin:
         assert disable["confirm"] is not None
         assert disable["confirm"]["kind"] == "button"
 
+    def test_plugin_absent_with_mode_a_library_is_critical(self, jelly):
+        """Plugin 404 + any library with ExtractTrickplayImagesDuringLibraryScan=false
+        is a hard failure — without the plugin, nothing adopts our tiles and
+        scrubbing previews never render. The row MUST be red X (ok=False,
+        severity=critical), not the prior hardcoded green tick."""
+        jelly._media_preview_bridge_installed = False
+        mode_a_options = {
+            "EnableTrickplayImageExtraction": True,
+            "SaveTrickplayWithMedia": True,
+            "ExtractTrickplayImagesDuringLibraryScan": False,
+            "EnableRealtimeMonitor": True,
+        }
+        good_trickplay = {"TileWidth": 10, "TileHeight": 10, "Interval": 10000, "WidthResolutions": [320]}
+
+        def fake_request(method, url, **kwargs):
+            if url == "/MediaPreviewBridge/Ping":
+                return MagicMock(status_code=404, json=MagicMock(return_value={}))
+            if url == "/System/Info":
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value={"Version": "10.11.8"}),
+                    raise_for_status=MagicMock(),
+                )
+            if url == "/System/Configuration":
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value={"TrickplayOptions": good_trickplay}),
+                    raise_for_status=MagicMock(),
+                )
+            if url == "/Library/VirtualFolders":
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value=[{"Name": "Movies", "ItemId": "m", "LibraryOptions": mode_a_options}]),
+                    raise_for_status=MagicMock(),
+                )
+            raise AssertionError(f"unexpected {method} {url}")
+
+        with patch.object(JellyfinServer, "_request", side_effect=fake_request):
+            payload = jelly.previews_readiness()
+
+        plugin_section = next(s for s in payload["sections"] if s["id"] == "plugin")
+        assert plugin_section["ok"] is False, (
+            "plugin-absent + Mode A library must fail — the on-disk tiles sit invisible forever. "
+            "Prior regression hardcoded ok=True and hid the real cause of missing previews."
+        )
+        assert plugin_section["severity"] == "critical"
+        row = plugin_section["checks"][0]
+        assert row["ok"] is False
+        assert row["severity"] == "critical"
+        assert "Movies" in row["reason"]
+        assert row["meta"]["plugin_required"] is True
+        assert "Movies" in row["meta"]["mode_a_libraries"]
+        # overall_ok must fall through — plugin is a real block now.
+        assert payload["overall_ok"] is False
+
+    def test_plugin_absent_with_all_mode_b_libraries_is_ok(self, jelly):
+        """Plugin 404 is fine when every library has scan-extraction enabled
+        (Mode B — Jellyfin adopts tiles on its own next scan). The row
+        stays a green tick with info severity."""
+        jelly._media_preview_bridge_installed = False
+        mode_b_options = {
+            "EnableTrickplayImageExtraction": True,
+            "SaveTrickplayWithMedia": True,
+            "ExtractTrickplayImagesDuringLibraryScan": True,
+            "EnableRealtimeMonitor": True,
+        }
+        good_trickplay = {"TileWidth": 10, "TileHeight": 10, "Interval": 10000, "WidthResolutions": [320]}
+
+        def fake_request(method, url, **kwargs):
+            if url == "/MediaPreviewBridge/Ping":
+                return MagicMock(status_code=404, json=MagicMock(return_value={}))
+            if url == "/System/Info":
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value={"Version": "10.11.8"}),
+                    raise_for_status=MagicMock(),
+                )
+            if url == "/System/Configuration":
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value={"TrickplayOptions": good_trickplay}),
+                    raise_for_status=MagicMock(),
+                )
+            if url == "/Library/VirtualFolders":
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value=[{"Name": "Movies", "ItemId": "m", "LibraryOptions": mode_b_options}]),
+                    raise_for_status=MagicMock(),
+                )
+            raise AssertionError(f"unexpected {method} {url}")
+
+        with patch.object(JellyfinServer, "_request", side_effect=fake_request):
+            payload = jelly.previews_readiness()
+
+        plugin_section = next(s for s in payload["sections"] if s["id"] == "plugin")
+        assert plugin_section["ok"] is True
+        assert plugin_section["severity"] == "info"
+        row = plugin_section["checks"][0]
+        assert row["ok"] is True
+        assert row["meta"]["plugin_required"] is False
+
+    def test_plugin_absent_with_no_libraries_is_ok(self, jelly):
+        """Matrix coverage: plugin absent + ``/Library/VirtualFolders``
+        returns an empty list (fresh install, or admin hasn't created
+        libraries yet). No libraries means no Mode A dependency, so the
+        plugin is truly optional and the row stays green.
+
+        Regression guard for someone inverting the plugin-required
+        condition (``not mode_a_library_names`` instead of
+        ``bool(mode_a_library_names)``) — that would flip the empty-libs
+        user to a red critical row with no test to catch it."""
+        jelly._media_preview_bridge_installed = False
+        good_trickplay = {"TileWidth": 10, "TileHeight": 10, "Interval": 10000, "WidthResolutions": [320]}
+
+        def fake_request(method, url, **kwargs):
+            if url == "/MediaPreviewBridge/Ping":
+                return MagicMock(status_code=404, json=MagicMock(return_value={}))
+            if url == "/System/Info":
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value={"Version": "10.11.8"}),
+                    raise_for_status=MagicMock(),
+                )
+            if url == "/System/Configuration":
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value={"TrickplayOptions": good_trickplay}),
+                    raise_for_status=MagicMock(),
+                )
+            if url == "/Library/VirtualFolders":
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value=[]),
+                    raise_for_status=MagicMock(),
+                )
+            raise AssertionError(f"unexpected {method} {url}")
+
+        with patch.object(JellyfinServer, "_request", side_effect=fake_request):
+            payload = jelly.previews_readiness()
+
+        plugin_section = next(s for s in payload["sections"] if s["id"] == "plugin")
+        assert plugin_section["ok"] is True
+        assert plugin_section["severity"] == "info"
+        row = plugin_section["checks"][0]
+        assert row["meta"]["plugin_required"] is False
+        assert row["meta"]["mode_a_libraries"] == []
+
+    def test_plugin_installed_regression_guard(self, jelly):
+        """With plugin installed, the row stays green regardless of library mode.
+        Regression guard against the Mode A/B logic accidentally flipping green→red
+        when the plugin probe is actually healthy."""
+        with patch.object(JellyfinServer, "_request", side_effect=self._wire_healthy(jelly)):
+            payload = jelly.previews_readiness()
+
+        plugin_section = next(s for s in payload["sections"] if s["id"] == "plugin")
+        assert plugin_section["ok"] is True
+        assert plugin_section["severity"] == "info"
+        assert plugin_section["checks"][0]["ok"] is True
+
+    def test_vendor_extraction_probe_failure_is_not_green(self, jelly):
+        """When get_vendor_extraction_status raises, the section MUST report
+        ok=False (severity=info — not critical, since a missed probe doesn't
+        break playback, but the UI must stop lying about state it can't read).
+        Prior regression hardcoded ok=True and rendered a green tick."""
+        with (
+            patch.object(JellyfinServer, "_request", side_effect=self._wire_healthy(jelly)),
+            patch.object(
+                JellyfinServer,
+                "get_vendor_extraction_status",
+                side_effect=RuntimeError("boom"),
+            ),
+        ):
+            payload = jelly.previews_readiness()
+
+        vendor = next(s for s in payload["sections"] if s["id"] == "vendor_extraction")
+        assert vendor["ok"] is False
+        assert vendor["severity"] == "info"
+        row = vendor["checks"][0]
+        assert row["ok"] is False
+        assert row["severity"] == "info"
+        assert "boom" in (row["reason"] or "")
+        assert row["current"] == "unknown (probe failed)"
+
     def test_legacy_trickplay_readiness_alias_still_works(self, jelly):
         """External tools that pin /trickplay-readiness must keep working.
         The alias must still return the legacy shape (plugin.mode,

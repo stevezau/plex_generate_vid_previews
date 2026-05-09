@@ -1338,6 +1338,30 @@ class JellyfinServer(EmbyApiClient):
         plugin = self.check_plugin_installed()
         plugin_installed = bool(plugin.get("installed"))
 
+        # Fetch library options up-front so the plugin section can decide
+        # whether plugin absence is a real break (any library in Mode A —
+        # ``ExtractTrickplayImagesDuringLibraryScan = false`` — requires
+        # the plugin to adopt our tiles; without it, scrubbing previews
+        # never render). The library-settings section below reuses the
+        # same ``folders`` payload.
+        try:
+            response = self._request("GET", "/Library/VirtualFolders")
+            response.raise_for_status()
+            folders = response.json()
+        except Exception as exc:
+            logger.debug("Library flags probe failed for {!r}: {}", self.name, exc)
+            folders = []
+
+        mode_a_library_names: list[str] = []
+        if isinstance(folders, list):
+            for raw in folders:
+                if not isinstance(raw, dict):
+                    continue
+                options = raw.get("LibraryOptions") or {}
+                if options.get("ExtractTrickplayImagesDuringLibraryScan") is False:
+                    mode_a_library_names.append(str(raw.get("Name") or "").strip() or "library")
+        plugin_required = bool(mode_a_library_names)
+
         sections: list[dict[str, Any]] = []
 
         # --- Connection + version (combined into one section) ---------
@@ -1439,7 +1463,16 @@ class JellyfinServer(EmbyApiClient):
         )
 
         # --- Plugin section ------------------------------------------
-        plugin_mode = "Instant (Mode A)" if plugin_installed else "Next scan (Mode B)"
+        if plugin_installed:
+            plugin_mode = "Instant (Mode A)"
+        elif mode_a_library_names:
+            # Plugin absent but a library is configured for Mode A — the
+            # "next scan" fallback doesn't apply here (scan-extraction is
+            # disabled on that library), so saying "Next scan (Mode B)"
+            # would contradict the red critical row below.
+            plugin_mode = "Plugin required — not installed"
+        else:
+            plugin_mode = "Next scan (Mode B)"
         if plugin_installed:
             plugin_actions = {
                 "disable": {
@@ -1466,13 +1499,41 @@ class JellyfinServer(EmbyApiClient):
                     },
                 }
             }
+        # Plugin-absence is only a valid "Mode B choice" when every library
+        # has scan-extraction enabled (so Jellyfin itself adopts our tiles
+        # on the next scan). If any library is configured for Mode A —
+        # ``ExtractTrickplayImagesDuringLibraryScan=false`` — plugin
+        # absence means nothing ever registers the tiles and previews
+        # never render in the player. In that state the row is a real
+        # failure, not advisory.
+        plugin_ok = plugin_installed or not plugin_required
+        if plugin_installed:
+            plugin_severity = "info"
+            plugin_reason = plugin.get("error") or ""
+            plugin_current = plugin.get("version") or "installed"
+        elif plugin_required:
+            plugin_severity = "critical"
+            libs = ", ".join(mode_a_library_names)
+            probe_error = plugin.get("error") or ""
+            plugin_reason = (
+                f"Plugin required for library(ies) in Mode A: {libs}. "
+                f"Without it, published tiles never get adopted by Jellyfin and "
+                f"scrubbing previews will not render. Either install the plugin "
+                f"or enable scan-extraction on the listed libraries (Mode B)."
+                + (f" Probe: {probe_error}" if probe_error else "")
+            )
+            plugin_current = "not installed"
+        else:
+            plugin_severity = "info"
+            plugin_reason = plugin.get("error") or ""
+            plugin_current = "not installed"
         sections.append(
             {
                 "id": "plugin",
                 "title": "Media Preview Bridge plugin",
                 "docs_anchor": "plugin",
-                "ok": True,  # plugin absence is a Mode B choice, not a failure
-                "severity": "info",
+                "ok": plugin_ok,
+                "severity": plugin_severity,
                 "checks": [
                     {
                         "id": "plugin_installed",
@@ -1493,32 +1554,36 @@ class JellyfinServer(EmbyApiClient):
                             "its next library scan (usually within minutes) or at worst on the 3 AM "
                             "scheduled 'Refresh Trickplay Images' task. Fully functional — just slower.</li>"
                             "</ul>"
+                            "<p><strong>When the plugin is required:</strong> if any library has "
+                            "<code>ExtractTrickplayImagesDuringLibraryScan</code> set to <em>false</em> "
+                            "(the app's recommended Mode A configuration), plugin absence is a hard "
+                            "failure — nothing registers our tiles and the scrubber stays blank. "
+                            "Either install the plugin or enable scan-extraction on those libraries.</p>"
                             "<p><strong>Install / uninstall:</strong> both require a Jellyfin restart "
                             "(~30 seconds). Published tiles stay on disk either way — switching modes "
                             "is non-destructive and reversible.</p>"
                         ),
-                        "ok": True,
-                        "severity": "info",
-                        "current": (plugin.get("version") or "installed") if plugin_installed else "not installed",
-                        "recommended": "installed (optional)",
+                        "ok": plugin_ok,
+                        "severity": plugin_severity,
+                        "current": plugin_current,
+                        "recommended": "installed" if plugin_required else "installed (optional)",
                         "actions": plugin_actions,
-                        "reason": plugin.get("error") or "",
-                        "meta": {"version": plugin.get("version") or ""},
+                        "reason": plugin_reason,
+                        "meta": {
+                            "version": plugin.get("version") or "",
+                            "mode_a_libraries": list(mode_a_library_names),
+                            "plugin_required": plugin_required,
+                        },
                     }
                 ],
             }
         )
 
         # --- Library settings — per-library per-flag rows ------------
+        # ``folders`` was fetched above (needed for the plugin section's
+        # Mode A detection). Reuse it here instead of hitting Jellyfin twice.
         recommended = self._recommended_settings()
         library_checks: list[dict[str, Any]] = []
-        try:
-            response = self._request("GET", "/Library/VirtualFolders")
-            response.raise_for_status()
-            folders = response.json()
-        except Exception as exc:
-            logger.debug("Library flags probe failed for {!r}: {}", self.name, exc)
-            folders = []
 
         library_section_ok = True
         library_severity = "info"
@@ -1648,22 +1713,33 @@ class JellyfinServer(EmbyApiClient):
         )
 
         # --- Vendor-side extraction (advisory for Jellyfin) ----------
+        vendor_probe_ok = True
+        vendor_probe_reason = ""
         try:
             extraction_status = self.get_vendor_extraction_status()
         except Exception as exc:
             logger.debug("Vendor-extraction status probe failed for {!r}: {}", self.name, exc)
             extraction_status = {"extracting_count": 0, "stopped_count": 0, "skipped_count": 0, "total": 0}
+            vendor_probe_ok = False
+            vendor_probe_reason = f"Could not read library extraction state: {exc}"
         stopped = extraction_status.get("stopped_count", 0)
         extracting = extraction_status.get("extracting_count", 0)
-        vendor_current = f"stopped on {stopped}/{stopped + extracting}" if (stopped + extracting) else "unknown"
+        if not vendor_probe_ok:
+            vendor_current = "unknown (probe failed)"
+        elif stopped + extracting:
+            vendor_current = f"stopped on {stopped}/{stopped + extracting}"
+        else:
+            vendor_current = "unknown"
         sections.append(
             {
                 "id": "vendor_extraction",
                 "title": "Vendor-side preview generation",
                 "docs_anchor": "vendor-extraction",
                 # Advisory only — Jellyfin re-enabling its own extraction is
-                # wasteful (dup work) but never breaks playback.
-                "ok": True,
+                # wasteful (dup work) but never breaks playback. When the
+                # probe itself fails we surface that (ok=False, info) so
+                # the UI doesn't lie about state we couldn't read.
+                "ok": vendor_probe_ok,
                 "severity": "info",
                 "checks": [
                     {
@@ -1689,7 +1765,7 @@ class JellyfinServer(EmbyApiClient):
                             "same <code>.trickplay/</code> directory structure, and whichever "
                             "gets registered first wins.</p>"
                         ),
-                        "ok": True,
+                        "ok": vendor_probe_ok,
                         "severity": "info",
                         "current": vendor_current,
                         "recommended": "stopped",
@@ -1726,14 +1802,14 @@ class JellyfinServer(EmbyApiClient):
                                 },
                             },
                         },
-                        "reason": None,
+                        "reason": vendor_probe_reason or None,
                         "meta": extraction_status,
                     }
                 ],
             }
         )
 
-        overall_ok = connection_ok and version_ok and library_section_ok and server_ok
+        overall_ok = connection_ok and version_ok and plugin_ok and library_section_ok and server_ok
         return {
             "vendor": "jellyfin",
             "overall_ok": overall_ok,

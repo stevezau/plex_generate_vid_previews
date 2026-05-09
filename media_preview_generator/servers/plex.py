@@ -1024,20 +1024,29 @@ class PlexServer(MediaServer):
         )
 
         # --- Vendor-side extraction ---------------------------------
+        vendor_probe_ok = True
+        vendor_probe_reason = ""
         try:
             extraction_status = self.get_vendor_extraction_status()
         except Exception as exc:
             logger.debug("Vendor-extraction status probe failed for {!r}: {}", self.name, exc)
             extraction_status = {"extracting_count": 0, "stopped_count": 0, "skipped_count": 0, "total": 0}
+            vendor_probe_ok = False
+            vendor_probe_reason = f"Could not read library extraction state: {exc}"
         stopped = extraction_status.get("stopped_count", 0)
         extracting = extraction_status.get("extracting_count", 0)
-        vendor_current = f"stopped on {stopped}/{stopped + extracting}" if (stopped + extracting) else "unknown"
+        if not vendor_probe_ok:
+            vendor_current = "unknown (probe failed)"
+        elif stopped + extracting:
+            vendor_current = f"stopped on {stopped}/{stopped + extracting}"
+        else:
+            vendor_current = "unknown"
         sections.append(
             {
                 "id": "vendor_extraction",
                 "title": "Vendor-side preview generation",
                 "docs_anchor": "vendor-extraction",
-                "ok": True,
+                "ok": vendor_probe_ok,
                 "severity": "info",
                 "checks": [
                     {
@@ -1066,7 +1075,7 @@ class PlexServer(MediaServer):
                             "be toggled via the API — Plex's section-edit endpoint rejects "
                             "the change for those; they show as 'skipped' in the result.</p>"
                         ),
-                        "ok": True,
+                        "ok": vendor_probe_ok,
                         "severity": "info",
                         "current": vendor_current,
                         "recommended": "stopped",
@@ -1103,7 +1112,7 @@ class PlexServer(MediaServer):
                                 },
                             },
                         },
-                        "reason": None,
+                        "reason": vendor_probe_reason or None,
                         "meta": extraction_status,
                     }
                 ],
