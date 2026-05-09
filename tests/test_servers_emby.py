@@ -1130,7 +1130,12 @@ class TestEmbySettingsHealth:
         # ExtractTrickplayImagesDuringLibraryScan is Emby 4.8+; if the
         # field isn't present the audit must NOT flag it (older Emby
         # uses ExtractChapterImagesDuringLibraryScan instead).
+        # EnableChapterImageExtraction must be True — it's the master gate
+        # for Emby reading our sidecar BIFs (the recommendation that was
+        # added in 2026-05-09 after the EmbyTest live test showed Emby was
+        # silently ignoring our published BIFs because this flag was off).
         good = {
+            "EnableChapterImageExtraction": True,
             "ExtractChapterImagesDuringLibraryScan": False,
             "EnableRealtimeMonitor": True,
         }
@@ -1142,9 +1147,11 @@ class TestEmbySettingsHealth:
             assert emby.check_settings_health() == []
 
     def test_reports_misset_flags_per_library(self, emby):
-        # Emby 4.8+ shape: trickplay flag present and wrongly on; both
-        # other flags also wrong → 3 issues for the single library.
+        # Emby 4.8+ shape: trickplay flag present and wrongly on; all
+        # other flags also wrong → 4 issues for the single library
+        # (master + scan-extract + trickplay-extract + realtime-monitor).
         bad = {
+            "EnableChapterImageExtraction": False,  # master gate OFF — sidecars invisible
             "ExtractTrickplayImagesDuringLibraryScan": True,
             "ExtractChapterImagesDuringLibraryScan": True,
             "EnableRealtimeMonitor": False,
@@ -1157,17 +1164,24 @@ class TestEmbySettingsHealth:
             issues = emby.check_settings_health()
         flags = {i.flag for i in issues}
         assert flags == {
+            "EnableChapterImageExtraction",
             "ExtractTrickplayImagesDuringLibraryScan",
             "ExtractChapterImagesDuringLibraryScan",
             "EnableRealtimeMonitor",
         }
         assert all(i.library_id == "1" and i.fixable for i in issues)
+        # Master gate is critical — without it our sidecars never get read.
+        master = next(i for i in issues if i.flag == "EnableChapterImageExtraction")
+        assert master.severity == "critical"
 
     def test_skips_trickplay_flag_on_older_emby(self, emby):
         # Older Emby's LibraryOptions doesn't include
         # ExtractTrickplayImagesDuringLibraryScan at all. The audit
         # must NOT surface a "false != False" issue from a missing key.
+        # EnableChapterImageExtraction IS present even on older Emby
+        # (it's the legacy chapter pipeline gate) — must still be checked.
         legacy_bad = {
+            "EnableChapterImageExtraction": True,
             "ExtractChapterImagesDuringLibraryScan": True,  # only this is wrong
             "EnableRealtimeMonitor": True,
         }
@@ -1220,6 +1234,7 @@ class TestEmbyPreviewsReadiness:
 
     def test_unified_envelope_shape(self, emby):
         good_options = {
+            "EnableChapterImageExtraction": True,  # master gate ON so BIF sidecars are read
             "ExtractTrickplayImagesDuringLibraryScan": False,
             "ExtractChapterImagesDuringLibraryScan": False,
             "EnableRealtimeMonitor": True,
@@ -1266,12 +1281,17 @@ class TestEmbyPreviewsReadiness:
         library_ids=null, silently flipping every library when the
         user meant just one."""
         # Emby has EnableRealtimeMonitor recommended=True.
-        # Sim: Movies has it on, TV has it off.
+        # Sim: Movies has it on, TV has it off. Both libraries have the
+        # master EnableChapterImageExtraction gate ON so the test isolates
+        # the recommended-only mis-set scenario (this test asserts the
+        # recommended-tier per-library wiring; the critical-tier rollup
+        # is exercised by test_critical_misset_flips_overall_ok).
         folders = [
             {
                 "Name": "Movies",
                 "ItemId": "m",
                 "LibraryOptions": {
+                    "EnableChapterImageExtraction": True,
                     "ExtractTrickplayImagesDuringLibraryScan": False,
                     "ExtractChapterImagesDuringLibraryScan": False,
                     "EnableRealtimeMonitor": True,
@@ -1281,9 +1301,10 @@ class TestEmbyPreviewsReadiness:
                 "Name": "TV",
                 "ItemId": "t",
                 "LibraryOptions": {
+                    "EnableChapterImageExtraction": True,
                     "ExtractTrickplayImagesDuringLibraryScan": False,
                     "ExtractChapterImagesDuringLibraryScan": False,
-                    "EnableRealtimeMonitor": False,  # mis-set
+                    "EnableRealtimeMonitor": False,  # mis-set (recommended severity)
                 },
             },
         ]
@@ -1327,10 +1348,97 @@ class TestEmbyPreviewsReadiness:
             "library_ids": ["t"],
         }
 
+    def test_critical_misset_flips_overall_ok_and_section_severity(self, emby):
+        """Regression for live EmbyTest 2026-05-09: when the master
+        EnableChapterImageExtraction gate is OFF, every BIF this app
+        publishes is invisible to Emby — the user has no idea anything
+        is wrong. The previews-readiness probe MUST surface this as:
+          - section.severity = "critical" (not the default "recommended")
+          - overall_ok = False (so the UI badge goes red, not green)
+
+        Without this test we shipped weeks with EmbyTest reporting
+        overall_ok=True while previews were silently broken.
+        """
+        bad_options = {
+            "EnableChapterImageExtraction": False,  # critical-tier mis-set
+            "ExtractTrickplayImagesDuringLibraryScan": False,
+            "ExtractChapterImagesDuringLibraryScan": False,
+            "EnableRealtimeMonitor": True,
+        }
+
+        def fake_request(method, url, **kwargs):
+            if url == "/System/Info":
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value={"Version": "4.9.0.0"}),
+                    raise_for_status=MagicMock(),
+                )
+            if url == "/Library/VirtualFolders":
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value=[{"Name": "Movies", "ItemId": "m", "LibraryOptions": bad_options}]),
+                    raise_for_status=MagicMock(),
+                )
+            raise AssertionError(f"unexpected {method} {url}")
+
+        with patch.object(EmbyServer, "_request", side_effect=fake_request):
+            payload = emby.previews_readiness()
+
+        assert payload["overall_ok"] is False, (
+            "Critical-tier library mis-set MUST flip overall_ok to False so the "
+            "UI badge goes red. EmbyTest 2026-05-09 lived with overall_ok=True "
+            "for weeks while every published BIF was invisible to Emby."
+        )
+        library_section = next(s for s in payload["sections"] if s["id"] == "library_settings")
+        assert library_section["severity"] == "critical", (
+            f"Section severity must escalate to 'critical' when a critical row fails; "
+            f"got {library_section['severity']!r}."
+        )
+
+    def test_recommended_misset_keeps_overall_ok_true(self, emby):
+        """Counterpart to the critical test: a recommended-tier mis-set
+        (e.g. EnableRealtimeMonitor=False — Sonarr imports have a bit
+        more latency, but previews still work) must NOT flip overall_ok
+        to False. Section severity rolls up to 'recommended', not
+        'critical', so the UI shows an advisory chip rather than red.
+        """
+        bad_options = {
+            "EnableChapterImageExtraction": True,  # critical gate is OK
+            "ExtractTrickplayImagesDuringLibraryScan": False,
+            "ExtractChapterImagesDuringLibraryScan": False,
+            "EnableRealtimeMonitor": False,  # recommended-tier mis-set
+        }
+
+        def fake_request(method, url, **kwargs):
+            if url == "/System/Info":
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value={"Version": "4.9.0.0"}),
+                    raise_for_status=MagicMock(),
+                )
+            if url == "/Library/VirtualFolders":
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value=[{"Name": "Movies", "ItemId": "m", "LibraryOptions": bad_options}]),
+                    raise_for_status=MagicMock(),
+                )
+            raise AssertionError(f"unexpected {method} {url}")
+
+        with patch.object(EmbyServer, "_request", side_effect=fake_request):
+            payload = emby.previews_readiness()
+
+        assert payload["overall_ok"] is True, (
+            "Recommended-tier mis-set is advisory; previews still work. overall_ok "
+            "must stay True so users aren't alarmed about non-blocking issues."
+        )
+        library_section = next(s for s in payload["sections"] if s["id"] == "library_settings")
+        assert library_section["severity"] == "recommended"
+
 
 class TestEmbyApplyRecommended:
     def test_writes_only_misset_flags(self, emby):
         bad = {
+            "EnableChapterImageExtraction": True,  # already correct
             "ExtractTrickplayImagesDuringLibraryScan": True,
             "ExtractChapterImagesDuringLibraryScan": False,  # already correct
             "EnableRealtimeMonitor": False,
@@ -1355,8 +1463,42 @@ class TestEmbyApplyRecommended:
         sent_options = next(c for c in req.call_args_list if c.args[0] == "POST").kwargs["json_body"]["LibraryOptions"]
         assert sent_options["ExtractTrickplayImagesDuringLibraryScan"] is False
         assert sent_options["EnableRealtimeMonitor"] is True
-        # Already-correct field stays at its original value.
+        # Already-correct fields stay at their original values.
+        assert sent_options["EnableChapterImageExtraction"] is True
         assert sent_options["ExtractChapterImagesDuringLibraryScan"] is False
+
+    def test_flips_master_chapter_extraction_when_off(self, emby):
+        """Regression for live EmbyTest 2026-05-09: the master gate
+        EnableChapterImageExtraction was OFF by default → Emby silently
+        ignored every BIF this app published. Once added to
+        _RECOMMENDED_SETTINGS as recommended=True, apply_recommended_settings
+        MUST flip it on.
+        """
+        bad = {
+            "EnableChapterImageExtraction": False,  # the load-bearing flag
+            "ExtractTrickplayImagesDuringLibraryScan": False,
+            "ExtractChapterImagesDuringLibraryScan": False,
+            "EnableRealtimeMonitor": True,
+        }
+        get_resp = MagicMock(
+            json=MagicMock(return_value=[{"Name": "Movies", "ItemId": "1", "LibraryOptions": bad}]),
+            raise_for_status=MagicMock(),
+        )
+        post_resp = MagicMock(raise_for_status=MagicMock())
+
+        def fake(method, url, **kwargs):
+            return get_resp if method == "GET" else post_resp
+
+        with patch.object(EmbyServer, "_request", side_effect=fake) as req:
+            results = emby.apply_recommended_settings()
+
+        assert set(results.keys()) == {"1:EnableChapterImageExtraction"}
+        assert results["1:EnableChapterImageExtraction"] == "ok"
+        sent_options = next(c for c in req.call_args_list if c.args[0] == "POST").kwargs["json_body"]["LibraryOptions"]
+        assert sent_options["EnableChapterImageExtraction"] is True, (
+            "Master gate must be flipped to True so Emby actually reads our sidecar BIFs. "
+            "Without this, every BIF the publisher writes is invisible to Emby."
+        )
 
 
 class TestRegistryWiring:
