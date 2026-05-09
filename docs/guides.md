@@ -56,10 +56,10 @@ After setup completes, you'll land on the dashboard. You can add additional serv
 
 ### Dashboard Features
 
-**Connection Status** — shows your Plex connection status:
+**Connection Status** — shows every configured server (Plex, Emby, Jellyfin):
 
-- **Connected** — server name and available GPUs displayed
-- **Not configured** — link to setup wizard
+- **Connected** — server name, vendor, and available GPUs displayed
+- **Not configured** — link to the setup wizard or **Servers** page to add one
 
 **Job Management:**
 
@@ -69,7 +69,11 @@ After setup completes, you'll land on the dashboard. You can add additional serv
 - **Job history** — view completed/failed jobs
 
 > [!NOTE]
-> Only one job runs at a time. If a job is triggered (manually, by a schedule, or by a webhook) while another is already running, the incoming job is immediately marked **Cancelled** and a warning is logged. This prevents concurrent FFmpeg workloads and temp-folder conflicts.
+> Jobs queue with priority (1 = high, 2 = normal, 3 = low). The dispatcher runs
+> up to the configured concurrent-job cap; extra jobs sit in **Pending** and the
+> gate releases them in priority order as slots free up. Manual, webhook, and
+> scheduled jobs all share the same gate. To hard-stop everything, use
+> **Pause Processing** — the global pause is persisted and survives restarts.
 
 **Pause / Resume (global):**
 
@@ -96,6 +100,11 @@ Access settings at `/settings` to manage:
 - **Libraries** — select which libraries to process
 - **Path Mappings** — media path, Plex videos path, local videos path
 - **Processing Options** — per-GPU settings (enable/disable, workers, FFmpeg threads), CPU threads, thumbnail interval and quality
+
+> For per-server settings audits (Plex FSEvent flags, Jellyfin trickplay flags,
+> Media Preview Bridge plugin presence, Plex config folder writability, path
+> mappings), open **Servers → Edit → Setup Health**. Full per-check reference:
+> [Previews Readiness guide](guides/previews-readiness.md).
 
 The Settings page and the Automation page's **Triggers** tab **save automatically as you edit** — there's no Save button. Toggles, sliders, and dropdowns commit immediately; text fields commit on blur (or ~1 s after you stop typing). A small status indicator in the page header shows `Saving…` / `Saved at HH:MM` so you can tell the change landed. If a save fails (e.g. the backend is down), the indicator shows an error and you can click it to retry.
 
@@ -247,13 +256,14 @@ Automatically generate preview thumbnails when Radarr or Sonarr imports new medi
 1. Radarr/Sonarr imports a file (or an external tool sends a custom webhook) and a POST is sent to this app.
 2. The app **queues** the file and starts (or resets) a timer. Imports from the same source (Radarr, Sonarr, or Custom) are batched together.
 3. A batch is processed only after the **delay** (e.g. 60s) has passed with **no new** imports from that source. So if another file arrives 1 second before the batch would run, it is added to the queue and the timer resets — the batch runs 60 seconds after that file. Every file gets at least 60 seconds before we process it.
-4. This delay is important because **Plex needs time to add the new file to its library**. If we process too soon, Plex may not have indexed the file yet and the job can fail or skip the item.
-5. When the timer fires, the app resolves each queued path to a Plex item and processes only those items (no full-library scan), limited to libraries selected in Settings. Items that already have preview thumbnails are skipped automatically.
+4. This delay is important because **your media servers need time to add the new file to their library**. If we process too soon, the file may not be indexed yet (regardless of vendor) and the job can fail or skip the item. Not-yet-indexed files are automatically re-queued on a 5-step backoff (30 s → 2 m → 5 m → 15 m → 60 m), so transient indexing lag doesn't drop work.
+5. When the timer fires, the app resolves each queued path against every configured server that owns it, processes it once, and publishes to each in its native format — Plex BIF bundle, Emby sidecar BIF, Jellyfin trickplay tiles. Items that already have a fresh preview are skipped automatically (source-aware dedup).
 
 ### Prerequisites
 
 - Media Preview Generator running with the web UI accessible
 - Radarr and/or Sonarr installed and managing your media (for Radarr/Sonarr webhooks)
+- At least one media server configured in **Servers** (Plex, Emby, or Jellyfin — any combination). The app publishes webhook-triggered work to every server that owns the file.
 
 ### Configure Radarr
 
@@ -541,11 +551,11 @@ Use this table to diagnose common failures quickly.
 
 | Symptom | Likely Cause | Fix |
 |---------|--------------|-----|
-| `Skipping as file not found` | Path mapping mismatch between Plex and this container | Verify mappings in [Path Mappings](reference.md#path-mappings). |
+| `Skipping as file not found` | Path mapping mismatch between a media server and this container | Verify the server's per-entry mappings in [Path Mappings](reference.md#path-mappings) (each Plex/Emby/Jellyfin entry has its own list). |
 | `GPU permission denied` | Container user cannot access GPU device files | Set `PUID`/`PGID` to a user with GPU access; on Unraid use `PUID=99`, `PGID=100`. |
-| `PLEX_CONFIG_FOLDER does not exist` | Incorrect mount or Plex config path | Confirm mounted path contains `Cache`, `Media`, and `Metadata`. |
-| `Connection failed to Plex` | Bad Plex URL, unreachable host, or invalid token | Use server IP (not `localhost` in Docker), verify Plex is running, and test token with curl. |
-| Webhook job shows as **Cancelled** in history | Another job was already running when the webhook delay expired | Wait for the active job to finish; webhooks fired while idle will run normally. To avoid this, increase the webhook delay so imports do not fire during long processing runs. |
+| `Plex config folder does not exist` / unwritable | Incorrect mount or wrong `plex_config_folder` | Confirm the mounted `/plex` path contains `Cache`, `Media`, and `Metadata`. Previews Readiness surfaces this per-Plex-server. |
+| `Connection failed` on a server card | Bad URL, unreachable host, or invalid token | Use server IP (not `localhost` in Docker), verify the server is running, and test the URL + token with curl. |
+| Webhook job sits in **Pending** for a long time | The concurrent-job gate is full — active jobs are running at capacity | Wait for a slot to free up (priority-ordered), raise the cap in **Settings → Processing Options**, or check the global **Pause Processing** toggle isn't on. Pausing ≠ cancelling — paused jobs stay in Pending. |
 | Webhook returns `401` | Invalid or missing authentication | In Sonarr/Radarr webhook settings, leave **Username** empty and set **Password** to your API token or webhook secret. |
 | Webhook test passes but imports do not trigger jobs | Wrong webhook events or webhooks disabled | Enable **On Import** in Radarr/Sonarr and verify `webhook_enabled=true`. |
 | New files are imported but previews are not generated | Plex indexing delay or wrong library mapping | Increase webhook delay and verify Radarr/Sonarr library mapping in Webhooks settings. |

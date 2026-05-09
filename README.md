@@ -53,29 +53,25 @@ Generates video preview thumbnails for **Plex, Emby, and Jellyfin**. These are t
 
 ## Features
 
-| Feature | Description |
-|---------|-------------|
-| **Multi-Vendor** | Plex, Emby, and Jellyfin — any combination, any number of each ([guide](docs/multi-server.md)) |
-| **One Pass, Many Servers** | A single FFmpeg pass produces output for every server that owns the file |
-| **Multi-GPU** | NVIDIA, AMD, Intel, and Windows GPUs |
-| **Parallel Processing** | Configurable GPU and CPU worker threads |
-| **GPU to CPU Fallback** | If a file fails on the GPU (unsupported codec, driver hiccup), the same worker automatically retries it on the CPU — no extra config |
-| **Hardware Acceleration** | CUDA, VAAPI, D3D11VA, VideoToolbox |
-| **Library Filtering** | Per-library enable/disable per server |
-| **Quality Control** | Adjustable thumbnail quality (1-10) |
-| **Docker Ready** | Pre-built images with GPU support |
-| **Web Dashboard** | Manage jobs, schedules, and status |
-| **Scheduling** | Cron and interval-based automation |
-| **Smart Skipping** | Automatically skips files that already have thumbnails |
-| **Source-Aware Dedup** | Skips re-processing when the same file is requested again, but detects when a file has been swapped (e.g. Sonarr/Radarr quality upgrade) and regenerates automatically |
-| **Automatic Retry on Slow Indexing** | If your media server hasn't finished scanning a new file yet, the app retries automatically (30 s → 2 m → 5 m → 15 m → 60 m). No manual re-runs. |
-| **Universal Webhooks** | One URL handles Plex / Emby / Jellyfin / Sonarr / Radarr — vendor auto-detected |
-| **Plex direct webhook** | Auto-trigger on `library.new` (Plex Pass) for media added without Sonarr/Radarr |
-| **Plex multi-server discovery** | One Plex.tv OAuth sign-in lists every server your account can access — tick multiple to add them all at once |
-| **Jellyfin Quick Connect** | Friendliest auth — no password ever leaves the user's browser |
-| **Jellyfin trickplay one-click fix** | Detects + auto-flips Jellyfin's library settings so the previews you publish actually appear in Jellyfin's web UI (the most common Jellyfin gotcha) |
-| **Multi-Server Preview Viewer** | Inspect published previews per-server in the browser — works for Plex, Emby, and Jellyfin |
-| **Recently Added scanner** | Polling fallback that catches manually-added items without needing Plex Pass |
+**One FFmpeg pass, every server.** Point it at Plex, Emby, Jellyfin — any mix,
+any number — and a single generation run writes the right output format to each
+(Plex BIF bundle, Emby sidecar BIF, Jellyfin trickplay tiles). See the
+[multi-server guide](docs/multi-server.md) for how the dispatcher routes one
+file to every server that owns it.
+
+**Automation that just works.** Radarr / Sonarr / Tdarr / FileFlows webhooks,
+Plex direct (Plex Pass), Recently Added polling, cron & interval schedules —
+all share one universal inbound URL with vendor auto-detection. A 5-step
+backoff retry (30 s → 2 m → 5 m → 15 m → 60 m) handles files your server
+hasn't indexed yet. Source-aware dedup re-runs automatically when a file is
+swapped (e.g. a Sonarr/Radarr quality upgrade) and skips when nothing changed.
+
+**Hardware you already have.** NVIDIA, AMD, Intel — per-GPU worker counts and
+FFmpeg threads, automatic in-place CPU retry if a codec fails on the GPU, and
+HDR / Dolby Vision tone mapping (including Profile 5 via libplacebo). A
+**Previews Readiness** panel on each server audits every flag that affects
+whether your previews actually show up, with one-click toggles and typed
+confirmation for destructive changes.
 
 ---
 

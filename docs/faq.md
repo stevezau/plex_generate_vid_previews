@@ -30,7 +30,12 @@ Generates video preview thumbnails for **Plex, Emby, and Jellyfin** — alone or
 
 - **Plex**: In Settings → Library, set **"Generate video preview thumbnails"** to **Never**.
 - **Emby**: Emby has no built-in trickplay generation, so no setting to change.
-- **Jellyfin**: In each library's settings, **enable "Trickplay image extraction"** (Jellyfin reads this app's published manifests only when this is on). The Servers page in this app surfaces a one-click "Fix trickplay" button when any library is missing the toggle.
+- **Jellyfin**: In each library's settings, **enable "Trickplay image extraction"** (Jellyfin reads this app's published manifests only when this is on).
+
+The **Previews Readiness** card on the Edit Server modal audits every required
+flag across all three vendors and offers one-click toggles — see the
+[Previews Readiness guide](guides/previews-readiness.md). Destructive flips
+(like disabling Jellyfin's trickplay extraction) require typed confirmation.
 
 Disabling each vendor's built-in generation avoids duplicate work and prevents the server from using CPU for thumbnails when you want this app to handle them.
 
@@ -50,13 +55,25 @@ Yes. In **Settings** → **Processing Options**, disable all GPUs (or set worker
 
 Docker is the recommended and supported way to run this tool. There is no standalone executable. Advanced users can install from source on Linux (requires Python 3.10+, FFmpeg, and mediainfo), but this is not officially supported. See [Getting Started](getting-started.md) for Docker setup.
 
-**Does Plex need to run in Docker too?**
+**Does my media server need to run in Docker too?**
 
-No. Plex can run bare-metal, in Docker, or any other way. This tool just needs network access to the Plex API and read/write access to the Plex application data directory (where BIF files are stored).
+No. Plex, Emby, and Jellyfin can all run bare-metal, in Docker, or any other
+way. This tool just needs:
 
-**Can I run this on a different machine than my Plex server?**
+- **Network access** to each server's API (port 32400 for Plex, 8096 for
+  Emby/Jellyfin by default).
+- **For Plex specifically**: read/write access to the Plex application data
+  directory (where BIF bundles are stored — mounted as `/plex`).
+- **For Emby and Jellyfin**: read access to the media files (where trickplay
+  tiles / sidecar BIFs are written, next to the media). No server-config
+  mount needed.
 
-Yes, as long as the tool can reach the Plex API over the network and both machines have access to the media files and Plex config directory (e.g. via NFS or SMB mounts). See [Networking](getting-started.md#networking) for setup details.
+**Can I run this on a different machine than my media server(s)?**
+
+Yes. The tool can run anywhere that can reach your servers' APIs over the
+network. For Plex you also need access to the Plex config directory (NFS,
+SMB, shared volume, etc.); for Emby/Jellyfin you just need the media files
+visible. See [Networking](getting-started.md#networking) for setup details.
 
 **Does this work with Jellyfin or Emby?**
 
@@ -180,17 +197,22 @@ The ETA calculation is designed to be **accurate, not fast**:
 
 Early ETA guesses based on incomplete data are wildly inaccurate. The "Calculating…" phase filters out this noise.
 
-**What is the Sonarr/Radarr path column for?**
+**What is the webhook / Sonarr / Radarr path column for?**
 
-Only relevant if you use [webhook integration](guides.md#webhook-integration). When Sonarr/Radarr fire a webhook, they include the file path as *they* see it inside their container, which may differ from the path inside this tool's container. The path column translates between them. For example:
+Only relevant if you use [webhook integration](guides.md#webhook-integration).
+When Sonarr, Radarr, or Tdarr fire a webhook, they include the file path as
+*they* see it inside their container, which may differ from how your media
+server sees it and how this app sees it. The webhook column in each server's
+path-mapping row translates between them. For example:
 
 | Container | Might see the file as |
 |-----------|----------------------|
-| Plex | `/data/tv/Show/episode.mkv` |
+| Plex (or Emby, or Jellyfin) | `/data/tv/Show/episode.mkv` |
 | Sonarr | `/tv/Show/episode.mkv` |
 | This tool | `/mnt/media/tv/Show/episode.mkv` |
 
-If you are not using webhooks, or all containers use the same media paths, leave it blank.
+If you are not using webhooks, or every container uses the same media paths,
+leave the webhook column blank.
 
 ---
 

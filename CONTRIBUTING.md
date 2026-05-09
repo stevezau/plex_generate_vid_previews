@@ -190,19 +190,19 @@ media_preview_generator/
     ├── recent_added_scanner.py  # Periodic recently-added scan helper
     ├── notifications.py     # In-app notification surface
     └── routes/              # Modular HTTP + REST API blueprints
-        ├── api_settings.py     # Settings GET/POST + path validators
-        ├── api_servers.py      # media_servers CRUD + per-vendor probes
-        ├── api_server_auth.py  # Emby/Jellyfin password + Quick Connect
-        ├── api_jobs.py         # Job CRUD + worker scaling
-        ├── api_schedules.py    # Schedule CRUD
-        ├── api_system.py       # /system/status, browse, log history
-        ├── api_libraries.py    # Aggregated library list across servers
-        ├── api_plex.py         # Plex OAuth PIN flow
-        ├── api_plex_webhook.py # Plex Direct webhook register/test
-        ├── api_bif.py          # BIF + Jellyfin trickplay viewer
-        ├── api_vulkan.py       # Vulkan ICD probing diagnostics
-        ├── job_runner.py       # Background job execution thread
-        ├── pages.py            # HTML page routes
+        ├── api_settings.py       # Settings GET/POST + path validators + setup wizard state
+        ├── api_servers.py        # media_servers CRUD + per-vendor probes + readiness/health-check + plugin install
+        ├── api_server_auth.py    # Emby/Jellyfin password + Jellyfin Quick Connect
+        ├── api_jobs.py           # Job CRUD + worker scaling + global pause
+        ├── api_schedules.py      # Schedule CRUD + quiet-hours policy
+        ├── api_system.py         # /system/status, browse, version, notifications, whats-new, log history
+        ├── api_libraries.py      # Aggregated library list across all configured servers
+        ├── api_plex.py           # Plex OAuth PIN flow
+        ├── api_plex_webhook.py   # Plex Direct webhook register/unregister/test
+        ├── api_bif.py            # BIF + Jellyfin trickplay viewer
+        ├── api_vulkan.py         # Vulkan ICD probing diagnostics
+        ├── job_runner.py         # Background job execution thread
+        ├── pages.py              # HTML page routes
         └── socketio_handlers.py  # Socket.IO connect/disconnect
 ```
 
@@ -312,11 +312,11 @@ Check detected GPUs in the web UI (**Settings** or **Setup**).
 
 ## Release Process
 
-1. Update version in `media_preview_generator/_version.py`
-2. Update `CHANGELOG.md`
-3. Create PR and merge to main
-4. Tag release: `git tag vX.Y.Z && git push --tags`
-5. GitHub Actions builds and pushes Docker image
+1. Version comes from the git tag via `setuptools-scm` — no manual file edit.
+2. Create PR and merge to `main`.
+3. Tag release: `git tag X.Y.Z && git push --tags`.
+4. GitHub Actions builds and pushes the Docker image.
+5. Write release notes on the [GitHub Releases](https://github.com/stevezau/media_preview_generator/releases) page for the new tag (this replaces the old in-repo `CHANGELOG.md`).
 
 ---
 

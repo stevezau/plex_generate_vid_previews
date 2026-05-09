@@ -12,7 +12,7 @@ Complete reference for all configuration options and REST API endpoints.
 ## Contents
 
 - [Configuration Priority](#configuration-priority)
-- [Plex Connection](#plex-connection)
+- [Media Servers](#media-servers)
 - [Processing Options](#processing-options)
 - [Environment Variables](#environment-variables)
 - [Web Interface Settings](#web-interface-settings)
@@ -39,18 +39,59 @@ Complete reference for all configuration options and REST API endpoints.
 
 ---
 
-## Plex Connection
+## Media Servers
 
-Configured via the **Setup Wizard** (Plex OAuth) or the **Settings** page. Values are stored in settings.json (seeded from env vars on first start).
+Every server the app talks to — any number of Plex, Emby, and Jellyfin entries
+— is stored as an array under `media_servers` in `settings.json`. Managed from
+the **Servers** page (or via the REST API below). Each entry has the shape:
 
-| Setting | Web UI | Description |
-|---------|--------|-------------|
-| `plex_url` | Yes | Plex server URL (e.g., `http://192.168.1.100:32400`) |
-| `plex_token` | Yes | Plex authentication token (auto-set via OAuth) |
-| `plex_config_folder` | Yes | Path to Plex config folder |
+```json
+{
+  "id": "plex-household",
+  "type": "plex",
+  "name": "Household Plex",
+  "url": "http://192.168.1.100:32400",
+  "enabled": true,
+  "auth": {
+    "method": "token",
+    "token": "..."
+  },
+  "libraries": [
+    {"id": "1", "name": "Movies", "enabled": true},
+    {"id": "2", "name": "TV Shows", "enabled": true}
+  ],
+  "path_mappings": [
+    {"remote_prefix": "/data", "local_prefix": "/media", "webhook_prefixes": []}
+  ],
+  "plex_config_folder": "/plex"
+}
+```
+
+Per-vendor notes:
+
+| Vendor | `auth.method` values | Extra fields |
+|---|---|---|
+| Plex | `token` (OAuth is the *acquisition* flow — the result is stored as `auth.token`) | `plex_config_folder` (where BIF bundles are written), `server_identity` (Plex's `clientIdentifier`, used to disambiguate webhooks) |
+| Emby | `password`, `api_key` | `auth.user_id`, `auth.access_token` |
+| Jellyfin | `password`, `quick_connect`, `api_key` | `auth.user_id`, `auth.access_token` |
+
+> **Runtime state, not persisted.** Jellyfin's Media Preview Bridge plugin
+> presence is probed live via `JellyfinServer.check_plugin_installed()` and
+> surfaced in the `/previews-readiness` payload — it isn't stored on the
+> server entry.
+
+**Legacy flat keys.** Older single-Plex installs had top-level `plex_url`,
+`plex_token`, `plex_config_folder`, and `selected_libraries`. These are
+migrated into the first enabled Plex entry of `media_servers[]` on first
+boot. Reads still work via a compatibility shim, so existing scripts that
+query `GET /api/settings` and look at `plex_url` keep working — but new
+writes should use `media_servers[]` via `/api/servers`.
 
 > [!TIP]
-> Use the Setup Wizard to sign in with Plex OAuth. Your token is obtained securely without manually copying it.
+> Use the Setup Wizard to sign in. Plex OAuth, Jellyfin Quick Connect, and
+> Emby username/password exchange all happen through the wizard without you
+> pasting tokens by hand. Exactly one "first server" is configured via the
+> wizard; add more from the Servers page.
 
 ---
 
@@ -202,55 +243,72 @@ The **Recently Added Scanner** is not configured via settings keys any more — 
 ## Path Mappings
 
 > [!IMPORTANT]
-> Essential for Docker deployments where Plex sees files at different paths.
+> Essential for Docker deployments where your media server sees files at
+> different paths than this container does. Path mappings are stored
+> **per-server** — each Plex / Emby / Jellyfin entry in `media_servers[]`
+> carries its own list — because different servers can mount the same media
+> at different paths.
 
 ### Why Path Mappings?
 
-| Component | Sees Files At |
+| Component | Sees files at |
 |-----------|---------------|
-| Plex Container | `/data/media/Movies/film.mkv` |
+| Media server (Plex / Emby / Jellyfin) | `/data/media/Movies/film.mkv` |
 | This Container | `/media/Movies/film.mkv` |
 
 Without mapping, you'll see "Skipping as file not found" errors.
 
 ### Configuration (Web UI)
 
-In **Settings** and **Setup**, you add mapping rows. Each row has:
+Open **Servers → Edit** on the server that needs mapping, and add rows in the
+Path Mappings section. Each row has:
 
-- **Path in Plex** — The folder path Plex uses for the media (e.g. `/data`).
-- **Path in this app** — The folder path this app uses for the same files (e.g. `/mnt/data`).
-- **Webhook path (if different)** — Only needed when Sonarr, Radarr, Tdarr, etc. use a different path than Plex (e.g. they use `/data` while Plex uses `/data_disk1`). Leave blank if they match.
+- **Path on server** — The folder path the media server reports for the file
+  (e.g. `/data`). Called `remote_prefix` in the API.
+- **Path in this app** — The folder path this app uses for the same files
+  (e.g. `/mnt/data`). Called `local_prefix` in the API.
+- **Webhook path (if different)** — Only needed when Sonarr, Radarr, Tdarr,
+  etc. use a different path than the media server (e.g. they use `/data`
+  while Plex uses `/data_disk1`). Leave blank if they match. Called
+  `webhook_prefixes` in the API.
 
-Add as many rows as you need (e.g. one per disk when Plex uses multiple roots).
+Add as many rows as you need (e.g. one per disk when the server has multiple
+roots). Each server manages its own list independently.
 
 ### Legacy env (semicolon pair)
 
 | Variable | Description |
 |----------|-------------|
-| `PLEX_VIDEOS_PATH_MAPPING` | Path(s) as Plex sees it; semicolon-separated for multiple roots (seed value) |
-| `PLEX_LOCAL_VIDEOS_PATH_MAPPING` | Path as this app sees it (seed value) |
+| `PLEX_VIDEOS_PATH_MAPPING` | Path(s) as Plex sees them; semicolon-separated for multiple roots (seed value, first-boot only) |
+| `PLEX_LOCAL_VIDEOS_PATH_MAPPING` | Path as this app sees them (seed value, first-boot only) |
 
-The saved **path_mappings** in settings.json take precedence. Existing semicolon-based values are converted to mapping rows when migrated.
+The saved `path_mappings` on each `media_servers[]` entry take precedence.
+Existing semicolon-based values are converted into mapping rows on the first
+enabled Plex entry at migration time.
 
-### When Plex uses multiple roots (e.g. mergerfs)
+### When a server uses multiple roots (e.g. mergerfs)
 
-If Plex has several roots (e.g. `/data_disk1`, `/data_disk2`) but Sonarr/Radarr see one path (`/data`):
+If a server has several roots (e.g. `/data_disk1`, `/data_disk2`) but
+Sonarr/Radarr see one path (`/data`):
 
-- Add one row per Plex root, each with the same **Path in this app** (e.g. `/data`).
-- In **Path from Sonarr/Radarr**, enter `/data` on one of the rows so imports from Sonarr/Radarr still match.
+- Add one row per server root, each with the same **Path in this app** (e.g. `/data`).
+- In **Webhook path**, enter `/data` on one of the rows so imports from
+  Sonarr/Radarr still match.
 
 ### Examples
 
-| Situation | Path in Plex | Path in this app | Path from Sonarr/Radarr |
-|-----------|--------------|------------------|--------------------------|
+| Situation | Path on server | Path in this app | Webhook path |
+|-----------|----------------|------------------|--------------|
 | Different paths in Docker | `/data` | `/mnt/data` | *(blank)* |
 | Multiple disks, Sonarr sees one path | `/data_disk1` | `/data` | `/data` |
 | Same (second disk) | `/data_disk2` | `/data` | *(blank)* |
 
 ### How to Find Your Paths
 
-1. **Plex path**: Plex Web → Settings → Libraries → Edit → Folders
-2. **Container path**: Check your `-v` volume mount
+1. **Plex path**: Plex Web → Settings → Libraries → Edit → Folders.
+2. **Emby path**: Emby Dashboard → Libraries → Edit → Folders.
+3. **Jellyfin path**: Jellyfin Dashboard → Libraries → Edit → Folders.
+4. **Container path**: Check your `-v` volume mount.
 
 ### No Mapping Needed
 
@@ -603,7 +661,7 @@ Test Plex connection. Request: `{"url": "...", "token": "..."}`. Returns `{"succ
 | GET | `/api/health` | No | Health check |
 | GET | `/api/system/status` | Yes | System status (GPUs, workers, job counts) |
 | GET | `/api/system/config` | Yes | Current configuration |
-| GET | `/api/libraries` | Yes | Plex libraries |
+| GET | `/api/libraries` | Yes | Aggregated library list across every configured server |
 
 ### Multi-Media-Server Endpoints
 
@@ -872,6 +930,97 @@ Example payload:
   }
 }
 ```
+
+---
+
+## Complete Endpoint Index
+
+The sections above cover the endpoints most integrations need. This index
+catalogues the remaining routes — mostly internal APIs the web UI calls, but
+documented here so you can drive them from scripts if you want. All require
+the same `X-Auth-Token` / `Authorization: Bearer` auth as the rest of the API
+unless noted.
+
+### Auth & token management
+
+| Method | Endpoint | Description |
+|---|---|---|
+| GET | `/api/auth/status` | Session auth state — used by the UI on page load |
+| POST | `/api/auth/login` · `/api/auth/logout` | Session login/logout (cookie-based) |
+| POST | `/api/token/regenerate` | Rotate the stored API token (disabled when `WEB_AUTH_TOKEN` is set) |
+| POST | `/api/token/set` | Set a custom token — min 8 chars; returns `{success: false, error: ...}` on validation failure |
+
+### Jobs (beyond the basics in [Jobs Endpoints](#jobs-endpoints))
+
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/api/jobs/manual` | Submit one or more absolute file paths — `{"file_paths": ["/a.mkv", "/b.mkv"], "force_regenerate": false, "priority": 2, "server_id": "..."}`. Bypasses library scan. |
+| POST | `/api/jobs/{id}/priority` | Change a pending/running job's priority (`{"priority": 1\|2\|3}`; 1 = high) |
+| POST | `/api/jobs/{id}/reprocess` | Re-run a finished job with the same config |
+| GET | `/api/jobs/{id}/logs` | Paginated log stream — `?offset=&limit=` (limit capped at 5000); or legacy `?last=N` for the tail |
+| GET | `/api/jobs/{id}/files` | Per-file outcomes — paginated `?page=&per_page=` (per_page capped at 500), plus optional `?outcome=` and `?search=` filters. The underlying per-job JSONL is itself soft-capped at 5000 rows; past that, a `truncated` marker row appears and aggregate counts remain in `progress.outcome`. |
+| POST | `/api/jobs/clear` | Delete completed/failed jobs from the queue |
+| GET | `/api/jobs/stats` | Totals grouped by status |
+| GET | `/api/jobs/workers` | Current worker-pool snapshot (type, state, current item) |
+| POST | `/api/workers/add` · `/api/workers/remove` | Spawn/shutdown pool workers live (`{"type": "gpu"\|"cpu", "count": N}`) |
+| POST | `/api/jobs/{id}/workers/add` · `/api/jobs/{id}/workers/remove` | Per-job worker adjustment while the job runs |
+
+### Schedules
+
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/api/schedules/{id}/enable` · `/api/schedules/{id}/disable` | Toggle a schedule without deleting it |
+| GET · POST | `/api/quiet-hours` | Read / write the multi-window quiet-hours policy (days of week + start/stop times) |
+
+### Settings & setup
+
+| Method | Endpoint | Description |
+|---|---|---|
+| PUT | `/api/settings/log-level` | Change runtime log verbosity (`{"level": "DEBUG"\|"INFO"\|...}`) |
+| POST | `/api/settings/validate-local-path` | Pre-flight a mount/volume path before saving (exists + readable) |
+| POST | `/api/settings/validate-plex-config-folder` | Pre-flight a Plex config folder (looks for `Cache/Media/Metadata`) |
+| GET | `/api/settings/backups` | List rolling settings.json backup snapshots |
+| POST | `/api/settings/backups/restore` | Restore a prior settings.json snapshot |
+| POST | `/api/setup/skip` | Skip the setup wizard (advanced — saves `setup_complete=true` with minimal state) |
+| POST | `/api/setup/validate-paths` | Pre-flight wizard path fields in bulk |
+
+### Servers (beyond the basics in [Multi-Media-Server Endpoints](#multi-media-server-endpoints))
+
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/api/servers/{id}/test-connection` | Re-test a saved server's live connection |
+| PATCH | `/api/servers/{id}/enabled` | Enable/disable a server entry without deleting (`{"enabled": true\|false}`) |
+| POST | `/api/servers/{id}/vendor-extraction` | Toggle vendor-side preview generation (Plex `enableBIFGeneration`, Emby/Jellyfin trickplay extraction) |
+| GET | `/api/servers/{id}/vendor-extraction/status` | Current aggregate state (e.g. "stopped on 3/5 libraries") |
+| GET | `/api/servers/{id}/trickplay-readiness` | *(Jellyfin)* Legacy audit endpoint — kept for scripts. New integrations should use [`/previews-readiness`](#multi-media-server-endpoints). |
+| POST | `/api/servers/{id}/trickplay-fix-all` | *(Jellyfin)* Apply all recommended trickplay flags |
+
+### Webhooks (beyond the basics in [Webhook Endpoints](#webhook-endpoints))
+
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/api/webhooks/sportarr` | Sonarr-compatible feed for [Sportarr](https://github.com/Sportarr/Sportarr) (falls back to flat `filePath`) |
+| GET | `/api/webhooks/pending` | Batches currently debouncing — per-source key, countdown, and queued paths |
+| POST | `/api/webhooks/pending/{debounce_key}/fire-now` | Skip the debounce timer and dispatch the batch immediately |
+
+### System & diagnostics
+
+| Method | Endpoint | Description |
+|---|---|---|
+| GET | `/api/system/timezone` | Container TZ + source (env var vs `/etc/localtime`) |
+| GET | `/api/system/media-servers` | Multi-server aggregate health (per-vendor connection + library counts) |
+| GET | `/api/system/vulkan` | Vulkan ICD probe result (device, driver version, ICD files loaded) |
+| GET | `/api/system/vulkan/debug` | Plain-text diagnostic bundle for attaching to GitHub issues (DV Profile 5 troubleshooting) |
+| POST | `/api/system/rescan-gpus` | Re-probe all GPUs (refreshes `gpu_config` candidate list) |
+| GET | `/api/system/version` | App version + commit SHA + build date |
+| GET | `/api/system/notifications` | In-app notification list (health checks, deprecations, warnings) |
+| POST | `/api/system/notifications/{id}/dismiss` | Session-only dismiss |
+| POST | `/api/system/notifications/{id}/dismiss-permanent` | Persistent dismiss (stored in settings) |
+| POST | `/api/system/notifications/reset-dismissed` | Clear all permanent dismissals |
+| GET | `/api/system/whats-new` | Release-notes viewer payload (version + changes since last-seen) |
+| POST | `/api/system/whats-new/dismiss` | Mark the current version's notes as seen |
+| GET | `/api/system/browse` | Safe filesystem browser, scoped to `MEDIA_ROOT` / `PLEX_DATA_ROOT` (used by path pickers) |
+| GET | `/api/logs/history` | Persisted log history — `?limit=` (default 500, max 2000), `?level=` (minimum level filter), `?before=` (ISO-8601 timestamp cursor for older-than paging) |
 
 ---
 

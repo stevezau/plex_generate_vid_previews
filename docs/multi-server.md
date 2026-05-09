@@ -270,40 +270,39 @@ when the publish has already succeeded through some other path
 
 ---
 
-## Jellyfin trickplay extraction flag (the most common gotcha)
+## Previews Readiness — the unified "is everything set up right?" panel
 
-**Symptom:** every publish reports success, the trickplay tile sheets
-land on disk in the right format at the right path, but Jellyfin's
-web client shows no scrubbing thumbnails.
+Each server has its own settings that can quietly break previews — a Jellyfin
+flag off that silently deletes published tiles, a Plex FSEvent toggle that
+stops the library noticing new files, a plugin the Media Preview Bridge needs
+to register results instantly, a Plex config mount that's accidentally
+read-only. **Previews Readiness** is the single place the UI surfaces — and
+fixes — all of them.
 
-**Cause:** Jellyfin libraries default `EnableTrickplayImageExtraction`
-to `false`. With that flag off, Jellyfin **ignores sidecar trickplay
-files** in the media folder.
+**How to open it**
 
-**Fix:** Connect to Jellyfin's web UI → *Dashboard → Libraries →
-edit each library → enable "Trickplay image extraction"*.
+1. Go to **Servers** in the top nav.
+2. Each server card shows a coloured glyph next to its name when the audit
+   finds issues (❗ = critical, ⚠ = recommended). Click the glyph.
+3. The Edit Server modal opens directly on the **Setup Health** tab — every
+   check grouped by section (Server status → Library settings → Advanced),
+   each with an ⓘ explanation, a direct link to the detailed doc, and
+   Enable/Disable toggles where they apply.
 
-Or use the **one-click auto-fix** built into this tool:
+**Destructive toggles.** A handful of flips are data-destructive — the most
+important one is Jellyfin's `EnableTrickplayImageExtraction`. Turning it off
+makes Jellyfin delete every tile this app has written on the next library
+refresh. The UI requires you to type `disable trickplay` to confirm.
 
-* Servers list page shows a coloured **"N issue(s)"** pill on every card
-  whose live audit finds mis-set settings (red = critical, yellow =
-  recommended). Clicking the pill opens the **Edit Server → Server
-  health check** panel.
-* The panel lists every misconfigured flag with current → recommended
-  values, an ⓘ tooltip explaining why each setting matters, and an
-  **"Apply recommended"** button that flips them via the appropriate
-  vendor API call.
-* Or call the API directly:
-  ```
-  GET  /api/servers/<server_id>/health-check          # audit
-  POST /api/servers/<server_id>/health-check/apply    # fix
-  {
-    "flags": ["EnableTrickplayImageExtraction", ...]  # optional; omit to fix every issue
-  }
-  ```
+**Per-check reference:** full list of every audit with "what it checks / why
+it matters / how to fix" lives in the
+[Previews Readiness guide](guides/previews-readiness.md).
 
-The endpoint is idempotent — running it on an already-correctly-configured
-server is a no-op.
+**Scripting it.** For the underlying REST surface
+(`GET /api/servers/{id}/previews-readiness`,
+`POST /api/servers/{id}/health-check/apply`,
+`POST /api/servers/{id}/install-plugin`), see
+[Reference — Multi-Media-Server Endpoints](reference.md#multi-media-server-endpoints).
 
 ---
 

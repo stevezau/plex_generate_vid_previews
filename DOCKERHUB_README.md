@@ -18,31 +18,23 @@ GPU-accelerated video preview thumbnail generation for **Plex, Emby, and Jellyfi
 
 ## Features
 
-| Feature | Description |
-|---------|-------------|
-| **Multi-Vendor** | Plex, Emby, and Jellyfin in any combination, any number of each |
-| **One Pass, Many Servers** | When two or more servers contain the same file, FFmpeg runs only once — result is written in each server's expected format |
-| **Universal Webhook URL** | One inbound URL handles Plex / Emby / Jellyfin / Sonarr / Radarr — vendor auto-detected |
-| **Multi-Plex** | Multiple Plex servers configured side by side, routed automatically |
-| **Plex OAuth** | One sign-in lists every Plex server your account can reach; tick which ones to add |
-| **Jellyfin Quick Connect** | Friendliest auth — no password ever leaves your browser |
-| **Jellyfin trickplay one-click fix** | Detects + auto-flips Jellyfin's library settings so the previews you publish actually appear in Jellyfin's web UI (the most common Jellyfin gotcha) |
-| **Smart Caching** | If two servers contain the same file, the second one reuses the result of the first instead of running FFmpeg again. Cache size and timeout are configurable. |
-| **Automatic Retry on Slow Indexing** | If your media server hasn't finished scanning a new file yet, the app retries automatically (30 s → 2 m → 5 m → 15 m → 60 m) instead of giving up |
-| **Multi-Server Preview Viewer** | Inspect published previews for any file across any server from one viewer |
-| **Multi-GPU** | NVIDIA, AMD, Intel — per-GPU enable/disable and worker count |
-| **Parallel Processing** | Configurable GPU and CPU worker threads |
-| **GPU to CPU Fallback** | If a file fails on the GPU, the same worker automatically retries it on the CPU — no extra config |
-| **Hardware Acceleration** | CUDA, VAAPI, QuickSync, plus Vulkan support for Dolby Vision colour handling |
-| **Per-Server Filtering** | Library toggles, path mappings, and exclude rules scoped per server |
-| **Quality Control** | Adjustable thumbnail quality (1-10) and frame interval (1-60 s) |
-| **Docker Ready** | Pre-built images with GPU support |
-| **Web Dashboard** | Manage jobs, schedules, status, and recent-webhook history |
-| **Scheduling** | Cron and interval-based automation |
-| **Smart Skipping** | Skips files that already have a fresh preview, but detects when a file has been swapped (e.g. Sonarr/Radarr quality upgrade) and regenerates automatically |
-| **Radarr/Sonarr Webhooks** | Auto-process new content on import |
-| **Plex Direct Webhook** | Auto-trigger on `library.new` (requires Plex Pass) for media added outside Sonarr/Radarr |
-| **Recently Added Scanner** | Polling fallback that catches manually-added items without needing Plex Pass |
+**One FFmpeg pass, every server.** Point it at Plex, Emby, Jellyfin — any mix,
+any number — and a single generation run writes the right output format to each
+(Plex BIF bundle, Emby sidecar BIF, Jellyfin trickplay tiles).
+
+**Automation that just works.** Radarr / Sonarr / Tdarr / FileFlows webhooks,
+Plex direct (Plex Pass), Recently Added polling, cron & interval schedules —
+all share one universal inbound URL with vendor auto-detection. A 5-step
+backoff retry (30 s → 2 m → 5 m → 15 m → 60 m) handles files your server hasn't
+indexed yet. Source-aware dedup re-runs automatically when a file is swapped
+(e.g. a Sonarr/Radarr quality upgrade) and skips when nothing changed.
+
+**Hardware you already have.** NVIDIA, AMD, Intel — per-GPU worker counts and
+FFmpeg threads, automatic in-place CPU retry if a codec fails on the GPU, and
+HDR / Dolby Vision tone mapping (including Profile 5 via libplacebo). A
+**Previews Readiness** panel on each server audits every flag that affects
+whether your previews actually show up, with one-click toggles and typed
+confirmation for destructive changes.
 
 ## Quick Start
 
@@ -71,9 +63,11 @@ Then open `http://YOUR_IP:8080`, retrieve the authentication token from containe
 
 | Tag | Source | Use for |
 |---|---|---|
-| `:latest` | Latest release (e.g. `3.7.2`) | **Recommended.** Stable. |
-| `:3.7.2` (version) | A specific release | Pinning to a known-good version |
+| `:latest` | Latest GitHub release | **Recommended.** Stable. |
+| `:X.Y.Z` (version) | A specific release (e.g. `:3.7.5`) | Pinning to a known-good version |
 | `:dev` | Every push to `dev` | Bleeding edge — may break |
+
+See the [releases page](https://github.com/stevezau/media_preview_generator/releases) for version history and per-release notes.
 
 ## Volume Mounts
 

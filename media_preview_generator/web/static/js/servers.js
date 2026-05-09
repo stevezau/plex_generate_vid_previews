@@ -1858,7 +1858,7 @@
         }
 
         const anchor = check.docs_anchor
-            ? `/docs/guides/previews-readiness.html#${encodeURIComponent(check.docs_anchor)}`
+            ? `https://github.com/stevezau/media_preview_generator/blob/main/docs/guides/previews-readiness.md#${encodeURIComponent(check.docs_anchor)}`
             : '';
         const tooltip = check.tooltip || '';
         const explanationHtml = check.explanation || '';
@@ -2109,7 +2109,7 @@
         heading.appendChild(label);
         if (docsAnchor) {
             const link = document.createElement('a');
-            link.href = `/docs/guides/previews-readiness.html#${encodeURIComponent(docsAnchor)}`;
+            link.href = `https://github.com/stevezau/media_preview_generator/blob/main/docs/guides/previews-readiness.md#${encodeURIComponent(docsAnchor)}`;
             link.target = '_blank';
             link.rel = 'noopener';
             link.className = 'text-muted';
