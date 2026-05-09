@@ -1,0 +1,146 @@
+{#
+    Shared <template> bodies for ⓘ info-icons that appear on multiple
+    pages (server URL, webhook path mapping, auth method). Included
+    once from base.html so every page that lands on the base layout
+    can reference `data-explain-template="<template-id>"` on an
+    info-icon button and reuse the same rich explanation.
+
+    Contract with app.js _openGlobalInfoModal: innerHTML of the
+    template is rendered verbatim into the modal body, so content
+    here MUST be server-controlled literals only (no Jinja-
+    interpolated user / library / path data).
+
+    Keep bodies focused: what-the-field-is → why-it-matters →
+    common-failure-modes → how-to-fix. Match the tone established
+    by the Setup Health explanations.
+#}
+
+<template id="infoServerUrlTpl">
+    <p><strong>What to enter:</strong> the URL this app uses to talk to your
+    media server — typically the host's LAN IP plus the server's port, e.g.
+    <code>http://192.168.1.100:32400</code> (Plex), <code>http://192.168.1.100:8096</code>
+    (Emby/Jellyfin).</p>
+
+    <p><strong>Why <code>localhost</code> usually doesn't work:</strong> this
+    app runs inside a Docker container. "localhost" inside the container
+    means <em>the container itself</em>, not your host machine. If your
+    media server runs in a different container or on the host, the URL
+    needs to reach outside this container — typically via the host's LAN
+    IP or a Docker network alias.</p>
+
+    <p><strong>Docker network shortcuts:</strong></p>
+    <ul>
+        <li><strong>Host IP</strong> (most portable): <code>http://192.168.1.100:32400</code></li>
+        <li><strong>Same Docker network</strong> as the media server:
+            use the service name, e.g. <code>http://plex:32400</code></li>
+        <li><strong>Host network mode</strong> (both containers on host):
+            <code>http://127.0.0.1:32400</code> works</li>
+        <li><strong>Cloudflare tunnel / reverse proxy</strong>: use the
+            LAN URL this app reaches directly — public URLs add latency
+            and may break with upstream caching</li>
+    </ul>
+
+    <p><strong>HTTPS &amp; self-signed certs:</strong> use <code>https://</code>
+    only if your media server has a real TLS endpoint. For self-signed
+    certs (Jellyfin behind your own reverse proxy), leave HTTPS on and
+    uncheck "Verify SSL certificate" below — the connection stays
+    encrypted but skips cert validation.</p>
+
+    <p><strong>When it fails:</strong> the Test Connection button will
+    show one of these:</p>
+    <ul>
+        <li><em>Connection refused / timeout</em> — wrong IP, wrong port,
+            or network isolation. Try the host's actual LAN IP.</li>
+        <li><em>SSL certificate verification failed</em> — turn off
+            "Verify SSL certificate".</li>
+        <li><em>401 / 403</em> — URL is correct but credentials are wrong.
+            Re-authenticate in the credentials section.</li>
+    </ul>
+</template>
+
+<template id="infoWebhookPathTpl">
+    <p><strong>What this is:</strong> when Sonarr, Radarr, Tdarr, or another
+    automation tool posts a webhook to this app, the payload includes a
+    file path. That path is from the <em>automation tool's</em>
+    perspective — not necessarily what this app sees on its filesystem,
+    and not necessarily what the media server sees either. Path mappings
+    translate between the three views.</p>
+
+    <p><strong>The three perspectives:</strong></p>
+    <ul>
+        <li><strong>Remote prefix</strong> — what the media server shows in
+            its admin UI or database (e.g. <code>/data/Movies</code>).</li>
+        <li><strong>Local prefix</strong> — the path this app can read inside
+            its container (e.g. <code>/mnt/media/Movies</code>, wherever
+            you've mounted the library volume).</li>
+        <li><strong>Webhook prefix (optional)</strong> — what the automation
+            tool uses, if it differs from both of the above.</li>
+    </ul>
+
+    <p><strong>When the webhook prefix matters:</strong></p>
+    <ul>
+        <li><strong>Sonarr/Radarr on the host, app in a container</strong> —
+            Sonarr sends <code>/tank/tv/Show/S01E01.mkv</code>; this app sees
+            <code>/mnt/media/tv/Show/S01E01.mkv</code>. The webhook prefix
+            maps Sonarr's view onto the app's.</li>
+        <li><strong>Union / merged mounts (MergerFS, overlayfs)</strong> —
+            your automation may report the merged path while the media
+            server's library has the individual-disk path. Webhook prefix
+            bridges the two.</li>
+        <li><strong>Different containers</strong> — if Sonarr uses
+            <code>/downloads</code> and your media server expects
+            <code>/data/Movies</code>, map the webhook-side
+            <code>/downloads</code> onto the shared local prefix.</li>
+    </ul>
+
+    <p><strong>When it's not needed:</strong> if all three tools share the
+    same filesystem paths (most home setups), leave the webhook column
+    blank — the app falls back to the remote/local mapping.</p>
+
+    <p><strong>Diagnosing mismatches:</strong> watch the logs when a
+    webhook fires. If the app logs
+    <code>file not found on disk: /X/Y.mkv</code>, the webhook's path
+    needs a prefix mapping to rewrite it to something the app can
+    actually read.</p>
+</template>
+
+<template id="infoAuthMethodTpl">
+    <p><strong>What this is:</strong> how this app authenticates with your
+    media server. The right choice depends on your server type, whether
+    you have UI access, and how long-lived you want the credential to be.</p>
+
+    <p><strong>For Plex:</strong> OAuth is the only option. Click
+    <em>Connect with Plex</em> and the app redirects to plex.tv for a
+    one-time authorization. The returned token is long-lived — no
+    password is ever stored.</p>
+
+    <p><strong>For Emby:</strong></p>
+    <ul>
+        <li><strong>API Key</strong> (recommended) — create one in Emby
+            Dashboard → Advanced → API Keys. Copy-paste it here. Long-
+            lived, revocable, doesn't require your password.</li>
+        <li><strong>Username + Password</strong> — sent ONCE to get a
+            session token; only the token is persisted. Useful for
+            headless setups where you can't open the Emby UI to make
+            an API key.</li>
+    </ul>
+
+    <p><strong>For Jellyfin:</strong></p>
+    <ul>
+        <li><strong>Quick Connect</strong> (recommended) — the app shows a
+            short code; you type it into Jellyfin's Quick Connect screen
+            on any logged-in device. No password typed here, and
+            Jellyfin shows you the approval in its own UI.</li>
+        <li><strong>API Key</strong> — created in Dashboard → API Keys.
+            Long-lived, revocable, doesn't require your password.</li>
+        <li><strong>Username + Password</strong> — same flow as Emby:
+            sent once, exchanged for a token, only the token stored.</li>
+    </ul>
+
+    <p><strong>Which to pick:</strong> Quick Connect on Jellyfin for
+    anyone with UI access — fastest, no typing credentials on a screen
+    you may not control. API Key is the right call for headless / CI /
+    automation environments. Username + Password works everywhere but
+    is the heaviest — you're trusting this app to not persist the
+    password (it doesn't, but that's a trust you're making).</p>
+</template>

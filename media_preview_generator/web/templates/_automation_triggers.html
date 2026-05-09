@@ -311,13 +311,63 @@
                 <div class="mb-3">
                     <label for="webhookDelay" class="form-label">
                         Delay before processing: <strong><span id="delayValue">60</span>s</strong>
-                        <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="How long to wait after the last import before running a batch. Gives your media server time to finish indexing the new file before we try to process it. If more imports arrive during the wait, they join the batch and the timer restarts."><i class="bi bi-info-circle"></i></button>
+                        <button type="button" class="info-icon info-icon-more ms-1" tabindex="0"
+                                data-bs-toggle="tooltip" data-bs-placement="top"
+                                title="Debounce window + batching — click for details"
+                                data-explain-title="Webhook batching delay"
+                                data-explain-template="infoBatchDelayTpl"
+                                aria-label="Explain batching delay">
+                            <i class="bi bi-info-circle"></i>
+                        </button>
                     </label>
                     <input type="range" class="form-range" id="webhookDelay" min="10" max="300" step="10" value="60">
                     <div class="form-text">
                         Imports are queued and processed in batches once this much time passes without new imports.
                     </div>
                 </div>
+
+                <!-- Inline <template> for the batching-delay ⓘ modal. Rendered
+                     into the shared #globalInfoModal via data-explain-template. -->
+                <template id="infoBatchDelayTpl">
+                    <p><strong>What it does:</strong> when a webhook arrives, this app
+                    doesn't process the file immediately — it waits this many seconds.
+                    If another webhook arrives during the wait, its file joins the same
+                    batch AND the timer restarts from zero. Processing only begins
+                    once the timer ticks all the way down with no new webhooks.</p>
+
+                    <p><strong>Why the wait exists:</strong> Sonarr / Radarr / Tdarr
+                    fire webhooks the moment they finish writing a file, but your
+                    media server hasn't indexed it yet. Trying to generate a preview
+                    immediately usually fails with "file not yet in library" — the
+                    app then has to retry, slowing everything down. A 30–60s wait
+                    lets the media server catch up, so the first attempt succeeds.</p>
+
+                    <p><strong>Why the timer restarts:</strong> Sonarr imports a
+                    whole season in a burst — 10 webhooks in 5 seconds. Without the
+                    restart, this app would kick off processing 30 seconds after the
+                    FIRST webhook arrived, missing episodes 9 and 10 that came in
+                    during that window. Restarting the timer means the whole season
+                    ends up in one batch, which is both correct and more efficient.</p>
+
+                    <p><strong>Tuning guidance:</strong></p>
+                    <ul>
+                        <li><strong>10–30s</strong> — fast responses, risk of
+                            processing starting before the server has indexed the
+                            file (falls back to slow-backoff retry).</li>
+                        <li><strong>60s (default)</strong> — reliable on most setups.
+                            Covers Plex + Jellyfin indexing latency comfortably.</li>
+                        <li><strong>120–300s</strong> — very large libraries, slow
+                            disk, or network-mounted media. Gives the server ample
+                            time. Cost: previews take several minutes to appear
+                            after a Sonarr/Radarr import.</li>
+                    </ul>
+
+                    <p><strong>Race with retries:</strong> if the file IS still
+                    indexing when the batch runs, the app's slow-backoff retry
+                    queue takes over — so there's no data loss at any setting.
+                    Lower values just mean more retries; higher values mean fewer
+                    retries but longer time-to-visible.</p>
+                </template>
 
                 <div class="mb-3">
                     <label for="webhookRetryCount" class="form-label">Retry count
@@ -390,7 +440,14 @@
                 <div class="mb-0">
                     <label for="maxConcurrentJobs" class="form-label">
                         Max concurrent jobs: <strong><span id="maxConcurrentJobsValue">3</span></strong>
-                        <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Cap on how many jobs can actively work at once (config load, library enumeration, server API calls, FFmpeg dispatch). Additional jobs queue as Pending and take slots as peers finish. Priority-aware: High-priority jobs jump the queue. Prevents webhook bursts from overwhelming media-server APIs."><i class="bi bi-info-circle"></i></button>
+                        <button type="button" class="info-icon info-icon-more ms-1" tabindex="0"
+                                data-bs-toggle="tooltip" data-bs-placement="top"
+                                title="What counts + tuning guidance — click for details"
+                                data-explain-title="Max concurrent jobs"
+                                data-explain-template="infoMaxConcurrentJobsTpl"
+                                aria-label="Explain max concurrent jobs">
+                            <i class="bi bi-info-circle"></i>
+                        </button>
                     </label>
                     <input type="range" class="form-range" id="maxConcurrentJobs" min="1" max="10" step="1" value="3">
                     <div class="form-text">
@@ -399,6 +456,53 @@
                         only if your servers + disks can handle it.
                     </div>
                 </div>
+
+                <!-- Inline <template> for the concurrency ⓘ modal. -->
+                <template id="infoMaxConcurrentJobsTpl">
+                    <p><strong>What counts as a "job":</strong> any top-level work
+                    unit this app runs — a webhook-triggered processing run, a
+                    scheduled scan, a manual "Process selection" click, a catchup
+                    enumeration. Each one goes through the same pipeline: config
+                    load → library enumeration → per-file dispatch.</p>
+
+                    <p><strong>What the cap controls:</strong> how many jobs can be
+                    in the <em>active</em> phase at the same time. Jobs beyond the
+                    cap go into the Pending queue and promote to Active one-by-one
+                    as slots free up. The cap is priority-aware: High-priority jobs
+                    jump to the front of the Pending queue (but don't interrupt an
+                    already-running job).</p>
+
+                    <p><strong>What the cap does NOT control:</strong></p>
+                    <ul>
+                        <li><strong>FFmpeg workers within a job</strong> — per-GPU
+                            worker counts configured separately under
+                            Settings → Processing. A single job can still use all
+                            your GPU workers; the cap limits concurrent <em>jobs</em>,
+                            not concurrent FFmpegs.</li>
+                        <li><strong>Webhook reception</strong> — incoming webhooks
+                            are debounced and batched regardless of this setting.
+                            Even at cap=1 webhooks still arrive; they just wait
+                            longer to become Active.</li>
+                    </ul>
+
+                    <p><strong>Why the default is 3:</strong> webhook bursts
+                    (e.g. Sonarr importing a season pack) can produce 20+ jobs in
+                    seconds. Without a cap, each job's library-enumeration pass
+                    hits your media server's API simultaneously, causing 429 /
+                    rate-limit errors and flaky preview generation. Cap=3 keeps
+                    API pressure manageable for most home setups while still
+                    covering typical webhook bursts within a few minutes.</p>
+
+                    <p><strong>When to increase:</strong> large multi-server
+                    installs (e.g. 4+ configured media servers) where each job's
+                    API work is spread across different servers. Cap can safely
+                    go to 5–10 since each job hits a different server.</p>
+
+                    <p><strong>When to decrease:</strong> underpowered media
+                    server (RPi host, slow disk, network-mounted library) where
+                    even 3 concurrent scans cause the server's CPU to max out
+                    and webhooks start timing out. Cap=1 serialises everything.</p>
+                </template>
             </div>
         </div>
 

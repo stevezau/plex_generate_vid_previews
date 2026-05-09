@@ -281,7 +281,14 @@
                         </div>
                         <div class="flex-grow-1 flex-shrink-1" style="flex-basis: 0;">
                             <span class="form-label small mb-0 text-muted">Path in webhooks (rare)
-                                <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Optional. Only fill in if Sonarr/Radarr/Tdarr send yet a third path (e.g. /data union mount sitting on top of /data_16tb1, /data_16tb2)."><i class="bi bi-info-circle"></i></button>
+                                <button type="button" class="info-icon info-icon-more ms-1" tabindex="0"
+                                        data-bs-toggle="tooltip" data-bs-placement="top"
+                                        title="For union mounts / multi-source webhooks — click for details"
+                                        data-explain-title="Webhook path mapping"
+                                        data-explain-template="infoWebhookPathTpl"
+                                        aria-label="Explain webhook path mapping">
+                                    <i class="bi bi-info-circle"></i>
+                                </button>
                             </span>
                         </div>
                         <div class="flex-shrink-0" style="width: 38px;"></div>

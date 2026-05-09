@@ -214,6 +214,12 @@
         </div>
     </div>
 
+    <!-- Shared <template> bodies for ⓘ info-icons that appear on
+         multiple pages (Server URL, webhook paths, auth method).
+         Referenced by data-explain-template="<id>" on info-icon
+         buttons; #globalInfoModal below reads their innerHTML on open. -->
+    {% include "_shared_info_templates.html" %}
+
     <!-- Unified ⓘ info-icon explanation modal. Every `.info-icon` button
          across the app opens this same modal on click when a rich
          explanation is available. Hover shows the Bootstrap tooltip

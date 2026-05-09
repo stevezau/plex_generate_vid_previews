@@ -104,7 +104,14 @@
                         </div>
                         <div class="mb-3">
                             <label class="form-label">Server URL
-                                <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="The address this app uses to talk to your media server. Use the host's IP (e.g. http://192.168.1.100:32400), not 'localhost' — 'localhost' inside this container does NOT mean your host."><i class="bi bi-info-circle"></i></button>
+                                <button type="button" class="info-icon info-icon-more ms-1" tabindex="0"
+                                        data-bs-toggle="tooltip" data-bs-placement="top"
+                                        title="How this app reaches your media server — click for details"
+                                        data-explain-title="Server URL — Docker &amp; networking"
+                                        data-explain-template="infoServerUrlTpl"
+                                        aria-label="Explain Server URL">
+                                    <i class="bi bi-info-circle"></i>
+                                </button>
                             </label>
                             <input type="text" id="editServerUrl" class="form-control" autocomplete="off">
                         </div>
@@ -249,8 +256,90 @@
                                             title="Re-probe the server (e.g. after you've changed something in Jellyfin/Emby admin)">
                                         <i class="bi bi-arrow-clockwise"></i>
                                     </button>
-                                    <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Every setting this app needs to generate and activate previews on your media server: version compatibility, library settings, server-wide tile geometry, plus (for Jellyfin) the optional Media Preview Bridge plugin. Each row has its own Enable/Disable toggle."><i class="bi bi-info-circle"></i></button>
+                                    <button type="button" class="info-icon info-icon-more ms-1" tabindex="0"
+                                            data-bs-toggle="tooltip" data-bs-placement="top"
+                                            title="What Setup Health checks + how the toggles work — click for details"
+                                            data-explain-title="Setup Health overview"
+                                            data-explain-template="infoSetupHealthTpl"
+                                            aria-label="Explain Setup Health overview">
+                                        <i class="bi bi-info-circle"></i>
+                                    </button>
                                 </h6>
+
+                                <!-- Rich explanation for the Setup Health overview ⓘ. -->
+                                <template id="infoSetupHealthTpl">
+                                    <p><strong>What it checks:</strong> everything on
+                                    your media server that affects whether this app's
+                                    previews generate correctly, get activated, and
+                                    stay visible over time. The card groups checks
+                                    into sections:</p>
+
+                                    <ul>
+                                        <li><strong>Connection</strong> — can this
+                                            app reach the server? If not, every
+                                            other check is meaningless.</li>
+                                        <li><strong>Server version</strong> —
+                                            Jellyfin 10.10+ is required; Plex / Emby
+                                            are informational.</li>
+                                        <li><strong>Plugin</strong> (Jellyfin only) —
+                                            Media Preview Bridge plugin for instant
+                                            activation (Mode A) vs. scan-nudge
+                                            fallback (Mode B).</li>
+                                        <li><strong>Library settings</strong> — per-
+                                            library flags that gate whether published
+                                            previews are actually served to clients.</li>
+                                        <li><strong>Server trickplay options</strong>
+                                            (Jellyfin only) — tile geometry the
+                                            server uses for scrubber rendering must
+                                            match what this app writes.</li>
+                                        <li><strong>Vendor-side preview generation</strong>
+                                            — whether the media server is ALSO
+                                            generating its own previews on top of
+                                            this app's (wasteful; disable recommended).</li>
+                                        <li><strong>Plex config folder / Path mappings</strong>
+                                            (Plex only) — filesystem state the BIF
+                                            publisher depends on.</li>
+                                    </ul>
+
+                                    <p><strong>Badge colour at the top:</strong></p>
+                                    <ul>
+                                        <li><strong>Green "ready (instant)" / "ready
+                                            (next scan)" / "ready"</strong> —
+                                            everything's fine; sub-label reflects
+                                            Jellyfin plugin state.</li>
+                                        <li><strong>Amber "recommendations"</strong>
+                                            — only non-critical issues (e.g. a
+                                            real-time-monitor flag that's off but
+                                            doesn't break anything).</li>
+                                        <li><strong>Red "action needed"</strong> —
+                                            at least one critical issue blocking
+                                            previews from working correctly.</li>
+                                    </ul>
+
+                                    <p><strong>Per-row toggles:</strong> each check
+                                    that has a toggleable state shows <em>Enable</em>
+                                    or <em>Disable</em> inline. Clicking opens a
+                                    confirmation explaining exactly what the flip
+                                    will do. Destructive flips (the one case on
+                                    Jellyfin that deletes published preview tiles)
+                                    require typing a phrase to confirm — the UI
+                                    guard and the backend enforcement are both
+                                    in place, so there's no way to accidentally
+                                    destroy data.</p>
+
+                                    <p><strong>ⓘ icons</strong> next to each
+                                    check row open a detailed explanation of that
+                                    specific setting — hover for the one-liner,
+                                    click for the what/why/impact walk-through
+                                    plus a link to the full docs page.</p>
+
+                                    <p><strong>The refresh icon 🔄</strong> re-runs
+                                    the probe. Useful after changing something in
+                                    the media server's own admin UI — the card
+                                    caches state for the duration of the modal
+                                    open, so a manual re-probe picks up external
+                                    changes.</p>
+                                </template>
 
                                 <!-- Rendered list of checks. Each row is a ✓ / ⚠ / ✗ line. -->
                                 <div id="editReadinessBody" class="d-flex flex-column gap-2 mb-2 small"></div>
@@ -329,7 +418,14 @@
                                     <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="The path the same file appears at INSIDE this app's container — i.e. the volume mount target."><i class="bi bi-info-circle"></i></button>
                                 </th>
                                 <th>Path the webhook sends
-                                    <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Optional. Only needed if Sonarr / Radarr / Plex Direct posts a third different path (e.g. a MergerFS union mount). Leave blank otherwise."><i class="bi bi-info-circle"></i></button>
+                                    <button type="button" class="info-icon info-icon-more ms-1" tabindex="0"
+                                            data-bs-toggle="tooltip" data-bs-placement="top"
+                                            title="Only for union mounts / multi-source webhooks — click for details"
+                                            data-explain-title="Webhook path mapping"
+                                            data-explain-template="infoWebhookPathTpl"
+                                            aria-label="Explain webhook path mapping">
+                                        <i class="bi bi-info-circle"></i>
+                                    </button>
                                 </th>
                                 <th></th>
                             </tr></thead>

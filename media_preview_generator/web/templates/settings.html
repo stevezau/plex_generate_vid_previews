@@ -186,8 +186,62 @@
                      ⓘ tooltips so the form scans cleanly. -->
                 <hr>
                 <h6 class="mb-2">Smart caching across servers
-                    <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="When two or more servers contain the same file and a webhook for one fires shortly after the other, the second one reuses the already-extracted frames instead of running FFmpeg again."><i class="bi bi-info-circle"></i></button>
+                    <button type="button" class="info-icon info-icon-more ms-1" tabindex="0"
+                            data-bs-toggle="tooltip" data-bs-placement="top"
+                            title="How cache reuse works across servers — click for details"
+                            data-explain-title="Smart caching across servers"
+                            data-explain-template="infoSmartCachingTpl"
+                            aria-label="Explain smart caching">
+                        <i class="bi bi-info-circle"></i>
+                    </button>
                 </h6>
+
+                <!-- Rich explanation for the Smart Caching ⓘ modal. -->
+                <template id="infoSmartCachingTpl">
+                    <p><strong>What it does:</strong> when this app extracts video
+                    frames for a file, it can cache the result. If another of your
+                    media servers later sends a webhook for <em>the same file on
+                    disk</em> (identified by inode + file size, not path), the
+                    cache is reused instead of running FFmpeg from scratch.</p>
+
+                    <p><strong>When it matters:</strong> multi-server setups where
+                    the same media is visible to Plex AND Jellyfin AND Emby. Each
+                    server fires its own webhook when the library scan picks up
+                    the new file; without caching, you'd run FFmpeg 3× for the
+                    same file. With caching, FFmpeg runs once and the other two
+                    reuse the frames — typically a 10–30× speedup on GPU and
+                    ~100× on CPU-only setups.</p>
+
+                    <p><strong>How "same file" is detected:</strong> the cache key
+                    is the file's inode + size (not its path), so differently-
+                    mounted views of the same underlying file all share a cache
+                    entry. Bind mounts, bind-propagated volumes, hard links —
+                    all match. Network mounts may not (inode stability varies
+                    by filesystem); in that case each server re-processes even
+                    with caching enabled, so the feature is a no-op rather than
+                    a correctness risk.</p>
+
+                    <p><strong>The three tunables:</strong></p>
+                    <ul>
+                        <li><strong>Enabled</strong> — master switch. Off: every
+                            webhook runs FFmpeg fresh (simple but slow on
+                            multi-server installs).</li>
+                        <li><strong>TTL</strong> — how long cache entries stay
+                            valid. Longer = more cache hits (especially for
+                            bursty webhooks). Shorter = entries age out faster.
+                            The right value depends on how close in time your
+                            servers fire their webhooks — default 1 hour covers
+                            the common case.</li>
+                        <li><strong>Disk cap</strong> — maximum size on disk.
+                            When full, oldest entries are deleted first to make
+                            room. 2 GB handles ~50–200 movies' frame caches.</li>
+                    </ul>
+
+                    <p><strong>Cache invalidation:</strong> entries auto-expire
+                    at TTL. Manual purge isn't needed — if a file is re-encoded
+                    (different inode on Linux filesystems), the cache miss is
+                    transparent and FFmpeg runs fresh.</p>
+                </template>
                 <div class="alert alert-info py-2 small d-none" id="frameReuseMultiServerHint">
                     <i class="bi bi-info-circle me-1"></i>
                     You have <span id="frameReuseServerCount"></span> servers configured —
