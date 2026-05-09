@@ -375,6 +375,257 @@ class TestSkipIfExistsBranchPromotesPending:
 # ---------------------------------------------------------------------------
 
 
+class TestAllFreshFastPathRegistrationRetry:
+    """Regression: the all-fresh fast path in ``process_canonical_path``
+    short-circuits when every publisher's outputs are already on disk
+    and source-fresh — but it constructs ``PublisherResult`` rows
+    DIRECTLY (not through ``_publish_one``). Pre-fix, every row was
+    hardcoded to ``SKIPPED_OUTPUT_EXISTS``, so on the retry attempt of
+    a PENDING_REGISTRATION dispatch the fast path would silently report
+    "complete" while never firing the per-item registration calls.
+
+    Reproduced live 2026-05-09: Bering Sea Gold S17E10 — Sonarr
+    upgrade webhook fired, attempt #0 returned PENDING for both Emby
+    and Jellyfin (item not yet indexed). Attempt #1 (30s later) hit
+    the all-fresh fast path → all SKIPPED → "Retry chain complete on
+    attempt #1" → trickplay never registered with Jellyfin until the
+    3 AM scheduled scan.
+
+    Fix: the fast path applies the same PENDING vs SKIPPED branching
+    as ``_publish_one``'s skip-if-exists branch, fires
+    ``trigger_refresh`` for registration-tier servers (so when
+    item_id eventually resolves, the registration completes), and
+    re-arms the retry queue when any row is PENDING.
+    """
+
+    def test_fast_path_returns_PENDING_for_jellyfin_with_unresolved_item_id(self, tmp_path, mock_config):
+        """All-fresh fast path with Jellyfin + item_id=None → PENDING (not SKIPPED).
+
+        End-to-end via process_canonical_path so the real fast-path
+        code path is exercised.
+        """
+        from media_preview_generator.output.journal import write_meta
+        from media_preview_generator.processing.multi_server import (
+            MultiServerStatus,
+            process_canonical_path,
+        )
+        from media_preview_generator.servers import ServerRegistry
+        from media_preview_generator.servers.jellyfin import JellyfinServer
+
+        media_dir = tmp_path / "Movie (2024)"
+        media_dir.mkdir()
+        live_mkv = media_dir / "Movie (2024) -REL.mkv"
+        live_mkv.write_bytes(b"fake")
+        # Pre-existing trickplay tile + journal so outputs_fresh_for_source returns True.
+        sheet = media_dir / "Movie (2024) -REL.trickplay" / "320 - 10x10" / "0.jpg"
+        sheet.parent.mkdir(parents=True)
+        sheet.write_bytes(b"\xff\xd8\xff")
+        write_meta([sheet], str(live_mkv), publisher="jellyfin_trickplay")
+
+        registry = ServerRegistry.from_settings(
+            [
+                {
+                    "id": "jelly-1",
+                    "type": "jellyfin",
+                    "name": "JellyTest",
+                    "enabled": True,
+                    "url": "http://jelly:8096",
+                    "auth": {"method": "api_key", "api_key": "k"},
+                    "libraries": [
+                        {
+                            "id": "1",
+                            "name": "Movies",
+                            "remote_paths": [str(tmp_path)],
+                            "enabled": True,
+                        }
+                    ],
+                    "exclude_paths": [],
+                    "output": {"adapter": "jellyfin_trickplay", "width": 320, "frame_interval": 10},
+                }
+            ],
+        )
+
+        from unittest.mock import patch as _patch
+
+        with (
+            _patch.object(JellyfinServer, "trigger_refresh") as refresh_mock,
+            _patch.object(JellyfinServer, "resolve_remote_path_to_item_id", return_value=None),
+        ):
+            mock_config.working_tmp_folder = str(tmp_path / "tmp")
+            result = process_canonical_path(
+                canonical_path=str(live_mkv),
+                registry=registry,
+                config=mock_config,
+                schedule_retry_on_not_indexed=False,
+            )
+
+        # Aggregate status reflects PENDING (treated as published-shaped).
+        assert result.status is MultiServerStatus.PUBLISHED
+        # Per-publisher: PENDING, NOT SKIPPED_OUTPUT_EXISTS.
+        assert len(result.publishers) == 1
+        assert result.publishers[0].status is PublisherStatus.PUBLISHED_PENDING_REGISTRATION, (
+            "Fast path with item_id=None on a registration-tier server MUST return "
+            "PENDING_REGISTRATION so the retry queue re-arms — not SKIPPED_OUTPUT_EXISTS, "
+            "which would silently mark the retry chain complete while the trickplay row "
+            "never gets registered with Jellyfin."
+        )
+        # trigger_refresh fired so the registration call chain runs
+        # (item_id may resolve on a future retry; this attempt was None).
+        refresh_mock.assert_called_once()
+        call = refresh_mock.call_args
+        assert call.kwargs["item_id"] is None
+        assert call.kwargs["remote_path"] == str(live_mkv)
+
+    def test_fast_path_promotes_to_PUBLISHED_when_item_id_now_resolves(self, tmp_path, mock_config):
+        """On a follow-up retry where item_id NOW resolves, fast path
+        fires trigger_refresh with the resolved id (so the plugin-bridge
+        + /Items/{id}/Refresh actually run) and returns SKIPPED_OUTPUT_EXISTS
+        (no further retry needed)."""
+        from media_preview_generator.output.journal import write_meta
+        from media_preview_generator.processing.multi_server import (
+            process_canonical_path,
+        )
+        from media_preview_generator.servers import ServerRegistry
+        from media_preview_generator.servers.jellyfin import JellyfinServer
+
+        media_dir = tmp_path / "Movie (2024)"
+        media_dir.mkdir()
+        live_mkv = media_dir / "Movie (2024).mkv"
+        live_mkv.write_bytes(b"fake")
+        sheet = media_dir / "Movie (2024).trickplay" / "320 - 10x10" / "0.jpg"
+        sheet.parent.mkdir(parents=True)
+        sheet.write_bytes(b"\xff\xd8\xff")
+        write_meta([sheet], str(live_mkv), publisher="jellyfin_trickplay")
+
+        registry = ServerRegistry.from_settings(
+            [
+                {
+                    "id": "jelly-1",
+                    "type": "jellyfin",
+                    "name": "JellyTest",
+                    "enabled": True,
+                    "url": "http://jelly:8096",
+                    "auth": {"method": "api_key", "api_key": "k"},
+                    "libraries": [
+                        {
+                            "id": "1",
+                            "name": "Movies",
+                            "remote_paths": [str(tmp_path)],
+                            "enabled": True,
+                        }
+                    ],
+                    "exclude_paths": [],
+                    "output": {"adapter": "jellyfin_trickplay", "width": 320, "frame_interval": 10},
+                }
+            ],
+        )
+
+        from unittest.mock import patch as _patch
+
+        with (
+            _patch.object(JellyfinServer, "trigger_refresh") as refresh_mock,
+            _patch.object(
+                JellyfinServer,
+                "resolve_remote_path_to_item_id",
+                return_value="resolved-item-id-42",
+            ),
+            # Pretend the plugin is installed so the resolver actually
+            # calls resolve_remote_path_to_item_id (otherwise the
+            # vendor-branching short-circuit returns None for Jellyfin
+            # without plugin — see _make_item_id_resolver).
+            _patch(
+                "media_preview_generator.processing.multi_server._jellyfin_plugin_cached_installed",
+                return_value=True,
+            ),
+        ):
+            mock_config.working_tmp_folder = str(tmp_path / "tmp")
+            result = process_canonical_path(
+                canonical_path=str(live_mkv),
+                registry=registry,
+                config=mock_config,
+                schedule_retry_on_not_indexed=False,
+            )
+
+        assert result.publishers[0].status is PublisherStatus.SKIPPED_OUTPUT_EXISTS
+        # Critical: trigger_refresh fired WITH the resolved item_id so
+        # the plugin-bridge + /Items/{id}/Refresh registration completes.
+        refresh_mock.assert_called_once()
+        call = refresh_mock.call_args
+        assert call.kwargs["item_id"] == "resolved-item-id-42", (
+            "Fast path on retry promotion MUST forward the resolved item_id to "
+            "trigger_refresh — without this, the plugin-bridge / /Items/{id}/Refresh "
+            "calls never fire and Jellyfin's library row stays un-registered."
+        )
+
+    def test_fast_path_plain_skip_for_plex_no_extra_calls(self, tmp_path, mock_config):
+        """Plex doesn't use per-item registration — fast path should
+        return plain SKIPPED_OUTPUT_EXISTS without firing trigger_refresh
+        (saves an HTTP round-trip on every duplicate webhook for Plex)."""
+        from media_preview_generator.output.journal import write_meta
+        from media_preview_generator.processing.multi_server import process_canonical_path
+        from media_preview_generator.servers import ServerRegistry
+        from media_preview_generator.servers.plex import PlexServer
+
+        # Build a Plex sidecar layout that mimics real Plex bundle BIF
+        # so outputs_fresh_for_source returns True.
+        plex_cfg = tmp_path / "plex_cfg"
+        plex_cfg.mkdir()
+        (plex_cfg / "Media" / "localhost").mkdir(parents=True)
+
+        media_dir = tmp_path / "Movies"
+        media_dir.mkdir()
+        live_mkv = media_dir / "Movie.mkv"
+        live_mkv.write_bytes(b"fake")
+
+        # Plex's adapter needs server metadata, so we patch the resolution
+        # to return an item id and patch compute_output_paths so the
+        # bundle hash lookup doesn't need a real Plex.
+        registry = ServerRegistry.from_settings(
+            [
+                {
+                    "id": "plex-1",
+                    "type": "plex",
+                    "name": "PlexTest",
+                    "enabled": True,
+                    "url": "http://plex:32400",
+                    "auth": {"token": "tok"},
+                    "libraries": [{"id": "1", "name": "Movies", "remote_paths": [str(media_dir)], "enabled": True}],
+                    "exclude_paths": [],
+                    "output": {"adapter": "plex_bundle", "plex_config_folder": str(plex_cfg)},
+                }
+            ],
+        )
+
+        # Fake Plex bundle BIF on disk.
+        bundle_dir = plex_cfg / "Media" / "localhost" / "x" / "fakebundle.bundle" / "Contents" / "Indexes"
+        bundle_dir.mkdir(parents=True)
+        bif = bundle_dir / "index-sd.bif"
+        bif.write_bytes(b"fake-bif")
+        write_meta([bif], str(live_mkv), publisher="plex_bundle")
+
+        from unittest.mock import patch as _patch
+
+        from media_preview_generator.output.plex_bundle import PlexBundleAdapter
+
+        with (
+            _patch.object(PlexServer, "trigger_refresh") as refresh_mock,
+            _patch.object(PlexServer, "resolve_remote_path_to_item_id", return_value="ratingKey-99"),
+            _patch.object(PlexBundleAdapter, "compute_output_paths", return_value=[bif]),
+        ):
+            mock_config.working_tmp_folder = str(tmp_path / "tmp")
+            result = process_canonical_path(
+                canonical_path=str(live_mkv),
+                registry=registry,
+                config=mock_config,
+                schedule_retry_on_not_indexed=False,
+            )
+
+        assert result.publishers[0].status is PublisherStatus.SKIPPED_OUTPUT_EXISTS
+        # No trigger_refresh on Plex from the fast path (Plex isn't in
+        # the registration tier; saving the HTTP call on duplicate webhooks).
+        refresh_mock.assert_not_called()
+
+
 class TestPendingRegistrationCountsAsPublished:
     """The PublishersResult counters and aggregate MultiServerStatus
     treat PENDING_REGISTRATION the same as PUBLISHED so the file-level

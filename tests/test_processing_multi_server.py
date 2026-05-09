@@ -1000,7 +1000,15 @@ class TestSkipIfExists:
                 config=mock_config_for_processing,
             )
 
-        assert result.publishers[0].status is PublisherStatus.SKIPPED_OUTPUT_EXISTS
+        # SKIPPED_OUTPUT_EXISTS for plain skips, PUBLISHED_PENDING_REGISTRATION
+        # when the server uses per-item registration and item_id wasn't
+        # resolved (so the registration calls need a retry to fire). Both
+        # share the "didn't re-publish" semantics — covered by checking
+        # the file wasn't rewritten + frame_source is output_existed.
+        assert result.publishers[0].status in (
+            PublisherStatus.SKIPPED_OUTPUT_EXISTS,
+            PublisherStatus.PUBLISHED_PENDING_REGISTRATION,
+        )
         # Existing file untouched — content unchanged.
         assert existing_sidecar.read_bytes() == b"already here"
         # Frame provenance: the all-fresh short-circuit means FFmpeg never
@@ -1126,14 +1134,21 @@ class TestPartialSuccessRetryIdempotency:
         assert first_statuses["emby-1"] in _PUBLISHED_LIKE_STATUSES, first_statuses
         assert first_statuses["jelly-1"] in _PUBLISHED_LIKE_STATUSES, first_statuses
 
-        # Second call (the retry): both outputs exist + fresh.
+        # Second call (the retry): both outputs exist + fresh. Either
+        # SKIPPED_OUTPUT_EXISTS (item_id resolved on this attempt) or
+        # PUBLISHED_PENDING_REGISTRATION (still no item_id; retry queue
+        # re-arms). Both share the load-bearing semantic this test pins:
+        # neither runs FFmpeg or rewrites the output. The frame_source
+        # check below catches any regression that would re-extract.
         second_statuses = {p.server_id: p.status for p in second.publishers}
-        assert second_statuses["emby-1"] is PublisherStatus.SKIPPED_OUTPUT_EXISTS, (
-            f"Emby's already-published BIF must short-circuit on retry — got {second_statuses['emby-1']}."
-        )
-        assert second_statuses["jelly-1"] is PublisherStatus.SKIPPED_OUTPUT_EXISTS, (
-            f"Jellyfin's already-published tiles must short-circuit on retry — got {second_statuses['jelly-1']}."
-        )
+        assert second_statuses["emby-1"] in (
+            PublisherStatus.SKIPPED_OUTPUT_EXISTS,
+            PublisherStatus.PUBLISHED_PENDING_REGISTRATION,
+        ), f"Emby's already-published BIF must short-circuit on retry — got {second_statuses['emby-1']}."
+        assert second_statuses["jelly-1"] in (
+            PublisherStatus.SKIPPED_OUTPUT_EXISTS,
+            PublisherStatus.PUBLISHED_PENDING_REGISTRATION,
+        ), f"Jellyfin's already-published tiles must short-circuit on retry — got {second_statuses['jelly-1']}."
 
         # Headline: FFmpeg ran exactly once across both invocations.
         assert gen.call_count == 1, (

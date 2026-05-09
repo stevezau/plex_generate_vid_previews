@@ -1336,39 +1336,67 @@ def process_canonical_path(
             for server, adapter, item_id_hint in publishers:
                 item_id = resolve_item_id(server, item_id_hint)
                 paths = adapter.compute_output_paths(_probe_bundle(server.id), server, item_id)
-                results.append(
-                    PublisherResult(
-                        server_id=server.id,
-                        server_name=server.name,
-                        adapter_name=adapter.name,
-                        status=PublisherStatus.SKIPPED_OUTPUT_EXISTS,
-                        output_paths=paths,
-                        message="Output already exists (source unchanged)",
-                        frame_source="output_existed",
-                    )
-                )
-                # Forward the deleted-path signal even on the fast path.
-                # The webhook just told us about an upgrade; even though
-                # outputs for the new file are already on disk, the
-                # server-side library row for the OLD file still needs
-                # the ``UpdateType:"Deleted"`` nudge. Without this the
-                # fast path silently swallowed the deletion signal — see
-                # smoke test 2026-05-09 where No Ordinary Heist's old
-                # release lingered in Jellyfin's library after the
-                # webhook fired.
-                if deleted_paths:
+                # Mirror ``_publish_one``'s skip-if-exists branch
+                # exactly: if the server activates trickplay via per-item
+                # API and item_id still hasn't resolved, return
+                # PUBLISHED_PENDING_REGISTRATION so the retry queue
+                # re-arms. Without this, the fast path on attempt #1 of
+                # a PENDING retry would silently return SKIPPED_OUTPUT_EXISTS
+                # for every publisher (registration never fires), and
+                # the retry chain would mark itself "complete" while
+                # Jellyfin still has no trickplay row for the file.
+                # Reproduced live 2026-05-09 against Bering Sea Gold
+                # S17E10 — every retry attempt #1 short-circuited here
+                # without ever firing the plugin-bridge or
+                # /Items/{id}/Refresh registration calls.
+                needs_registration = item_id is None and _server_needs_item_registration(server)
+                # Always fire trigger_refresh for servers in the
+                # registration tier — when item_id IS now resolved
+                # (later retry attempt), this is what completes the
+                # plugin-bridge / /Items/{id}/Refresh registration.
+                # Cheap and idempotent: per-path nudge is a single POST
+                # with no rate limit, /Items/{id}/Refresh is a no-op
+                # when the item's metadata is current.
+                if _server_needs_item_registration(server) or deleted_paths:
                     try:
                         server.trigger_refresh(
-                            item_id=None,
-                            remote_path=None,
+                            item_id=item_id,
+                            remote_path=canonical_path if _server_needs_item_registration(server) else None,
                             deleted_paths=deleted_paths,
                         )
                     except Exception as exc:
                         logger.debug(
-                            "Deleted-path nudge on all-fresh fast path failed for {}: {}",
+                            "trigger_refresh on all-fresh fast path failed for {}: {}",
                             server.name,
                             exc,
                         )
+                if needs_registration:
+                    results.append(
+                        PublisherResult(
+                            server_id=server.id,
+                            server_name=server.name,
+                            adapter_name=adapter.name,
+                            status=PublisherStatus.PUBLISHED_PENDING_REGISTRATION,
+                            output_paths=paths,
+                            message=(
+                                f"Output already on disk for {server.name}, but the server hasn't indexed "
+                                f"this file yet — will retry to register the trickplay row."
+                            ),
+                            frame_source="output_existed",
+                        )
+                    )
+                else:
+                    results.append(
+                        PublisherResult(
+                            server_id=server.id,
+                            server_name=server.name,
+                            adapter_name=adapter.name,
+                            status=PublisherStatus.SKIPPED_OUTPUT_EXISTS,
+                            output_paths=paths,
+                            message="Output already exists (source unchanged)",
+                            frame_source="output_existed",
+                        )
+                    )
             # Even on the all-fresh fast path, run the orphan cleanup —
             # an upgrade webhook with deletedFiles[] arriving for a file
             # whose new outputs are already on disk (e.g. duplicate-fire,
@@ -1390,12 +1418,49 @@ def process_canonical_path(
                     canonical_path,
                     exc,
                 )
+            # Aggregate status: when at least one publisher returned
+            # PENDING_REGISTRATION (server hasn't indexed yet), treat
+            # the dispatch as PUBLISHED so the retry-scheduling block
+            # below re-arms. Otherwise everything is genuinely SKIPPED.
+            any_pending = any(r.status is PublisherStatus.PUBLISHED_PENDING_REGISTRATION for r in results)
+            fast_status = MultiServerStatus.PUBLISHED if any_pending else MultiServerStatus.SKIPPED
+            fast_message = (
+                "All outputs fresh; awaiting server-side trickplay registration"
+                if any_pending
+                else "All outputs fresh; FFmpeg skipped"
+            )
+            # Re-arm retry queue when any publisher is still PENDING.
+            # Mirrors the slow-path retry-scheduling block at line ~1700;
+            # without this, the fast path on attempt #1 of a PENDING
+            # retry would mark the chain "complete" while the
+            # registration step never ran. Reproduced live 2026-05-09
+            # against Bering Sea Gold S17E10 (Sonarr) — every PENDING
+            # retry's attempt #1 fast-pathed and stopped silently.
+            if schedule_retry_on_not_indexed and any(
+                r.status
+                in (
+                    PublisherStatus.SKIPPED_NOT_INDEXED,
+                    PublisherStatus.SKIPPED_NOT_IN_LIBRARY,
+                    PublisherStatus.PUBLISHED_PENDING_REGISTRATION,
+                )
+                for r in results
+            ):
+                from .retry_queue import schedule_retry_for_unindexed
+
+                schedule_retry_for_unindexed(
+                    canonical_path,
+                    registry=registry,
+                    config=config,
+                    item_id_by_server=item_id_by_server,
+                    attempt=retry_attempt + 1,
+                    server_id_filter=server_id_filter,
+                )
             return MultiServerResult(
                 canonical_path=canonical_path,
-                status=MultiServerStatus.SKIPPED,
+                status=fast_status,
                 publishers=results,
                 frame_count=0,
-                message="All outputs fresh; FFmpeg skipped",
+                message=fast_message,
             )
     else:
         # Regenerate: drop stale ``.meta`` sidecars so a partial failure
