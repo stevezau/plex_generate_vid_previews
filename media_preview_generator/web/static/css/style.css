@@ -1100,6 +1100,26 @@ html[data-bs-theme="light"] ::-webkit-scrollbar-thumb:hover {
  * like an inline accordion instead of a popover detached from the row.
  * ────────────────────────────────────────────────────────────────────── */
 @media (max-width: 991.98px) {
+    /* Hamburger toggle visual state — when the menu is OPEN, the same
+     * button is now functioning as a close button. Pre-fix the icon
+     * stayed identical and users had no signal to tap-to-close. The
+     * collapsed (open) ARIA state ``aria-expanded="true"`` is what
+     * Bootstrap toggles for us; we hook into it to swap the icon for
+     * an X with a slight rotation so the affordance is unmistakable. */
+    .navbar-toggler {
+        transition: transform 0.2s ease, background-color 0.15s ease;
+    }
+    .navbar-toggler[aria-expanded="true"] {
+        transform: rotate(90deg);
+        background-color: var(--surface-2, rgba(255, 255, 255, 0.08));
+    }
+    .navbar-toggler[aria-expanded="true"] .navbar-toggler-icon {
+        /* Cross out the three lines with a diagonal — cheap visual
+         * cue without swapping the SVG. The rotate above puts it on
+         * a 45° axis so combined it reads as an X. */
+        opacity: 0.7;
+    }
+
     /* Bigger touch targets (~44px tall) — Apple HIG minimum. The
      * default Bootstrap nav-link padding rendered ~36px which is
      * tappable but cramped, especially with multi-row clusters. */
@@ -1162,6 +1182,17 @@ html[data-bs-theme="light"] ::-webkit-scrollbar-thumb:hover {
     }
     .navbar-collapse .dropdown-menu .dropdown-item {
         padding-left: 0.5rem;
+        padding-top: 0.55rem;
+        padding-bottom: 0.55rem;
+    }
+    /* Hide the inline ``<hr class="dropdown-divider">`` separators in
+     * accordion-mode dropdowns — desktop uses them to chunk visually-
+     * distinct groups (Schedules vs Webhooks vs catch-all) inside a
+     * floating popover, but on mobile they make a single accordion
+     * group look like three disjoint sections. The label text alone
+     * carries the grouping; the dividers add only visual noise. */
+    .navbar-collapse .dropdown-menu .dropdown-divider {
+        display: none;
     }
 }
 

@@ -214,7 +214,7 @@
                         <button type="button" class="nav-link btn btn-link d-flex align-items-center" id="themeToggleBtn"
                                 aria-label="Toggle dark/light theme" title="Toggle dark/light theme">
                             <i class="bi bi-moon-stars-fill" id="themeToggleIcon"></i>
-                            <span class="d-lg-none ms-2" id="themeToggleLabel">Switch to light theme</span>
+                            <span class="d-lg-none ms-2" id="themeToggleLabel">Light theme</span>
                         </button>
                     </li>
                     <li class="nav-item">
@@ -398,11 +398,13 @@
             function syncIcon() {
                 var current = document.documentElement.getAttribute('data-bs-theme') || 'dark';
                 icon.className = current === 'dark' ? 'bi bi-moon-stars-fill' : 'bi bi-sun-fill';
-                var hint = current === 'dark' ? 'Switch to light theme' : 'Switch to dark theme';
-                btn.setAttribute('title', hint);
-                // Mobile-collapsed label tracks the same hint so users
-                // tapping in the hamburger know what they're switching TO.
-                if (label) label.textContent = hint;
+                // Tooltip stays verbose ("Switch to …") because tooltips
+                // appear on hover and need to be self-explanatory. The
+                // mobile-collapsed label just names the destination
+                // theme — the icon implies the verb ("switch to").
+                btn.setAttribute('title',
+                    current === 'dark' ? 'Switch to light theme' : 'Switch to dark theme');
+                if (label) label.textContent = current === 'dark' ? 'Light theme' : 'Dark theme';
             }
 
             syncIcon();
