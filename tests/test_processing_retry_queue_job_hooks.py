@@ -331,6 +331,205 @@ class TestPerAttemptJobSpawn:
         assert attempt.config["retry_attempt"] == 1
         assert attempt.config["retry_chain_for"] == "/data/Foo.mkv"
 
+    def test_attempt_config_carries_chip_aliases_so_app_js_renders_chip(self, tmp_path):
+        """app.js's retry-chip renderer (line ~1682) gates on
+        ``config.is_retry && config.max_retries > 0``. Per-attempt
+        Jobs MUST carry both aliases so the chip renders cleanly
+        when the user opts into ``?include_retry_attempts=1`` —
+        otherwise the prefix lands awkwardly in ``library_name``
+        text (the exact UX bug the user reported pre-collapse).
+        """
+        import media_preview_generator.web.jobs as jobs_mod
+        from media_preview_generator.processing.multi_server import (
+            MultiServerResult,
+            MultiServerStatus,
+            PublisherResult,
+            PublisherStatus,
+        )
+        from media_preview_generator.web.jobs import JobManager
+
+        with jobs_mod._job_lock:
+            jobs_mod._job_manager = JobManager(config_dir=str(tmp_path / "config"))
+
+        done = threading.Event()
+
+        def fake_process(**kwargs):
+            done.set()
+            return MultiServerResult(
+                canonical_path=kwargs["canonical_path"],
+                status=MultiServerStatus.PUBLISHED,
+                publishers=[
+                    PublisherResult(
+                        server_id="jelly-1",
+                        server_name="jelly-1",
+                        adapter_name="jellyfin_trickplay",
+                        status=PublisherStatus.PUBLISHED,
+                        message="ok",
+                    )
+                ],
+                frame_count=1,
+                message="ok",
+            )
+
+        with (
+            patch(
+                "media_preview_generator.processing.retry_queue._BACKOFF",
+                (0.05,) + tuple([0.05] * (len(_BACKOFF) - 1)),
+            ),
+            patch(
+                "media_preview_generator.processing.multi_server.process_canonical_path",
+                side_effect=fake_process,
+            ),
+        ):
+            schedule_retry_for_unindexed(
+                "/data/Foo.mkv",
+                registry=MagicMock(),
+                config=MagicMock(),
+                item_id_by_server=None,
+                attempt=1,
+            )
+            assert done.wait(timeout=2)
+            time.sleep(0.1)
+
+        attempt = next(j for j in jobs_mod._job_manager.get_all_jobs() if j.config.get("is_retry_attempt"))
+        assert attempt.config.get("is_retry") is True, "is_retry alias missing — app.js retry-chip renderer won't fire"
+        assert attempt.config.get("max_retries") == len(_BACKOFF), (
+            f"max_retries alias missing or wrong — got {attempt.config.get('max_retries')!r}, expected {len(_BACKOFF)}"
+        )
+
+    def test_attempt_library_name_is_clean_no_retry_prefix(self, tmp_path):
+        """library_name must be the CLEAN title — no
+        ``"Retry attempt N/M: …"`` prefix and no raw ``.mkv`` extension
+        leak. The chip carries the retry-count info now; the title slot
+        should read just like the parent dispatch row's title.
+        """
+        import media_preview_generator.web.jobs as jobs_mod
+        from media_preview_generator.processing.multi_server import (
+            MultiServerResult,
+            MultiServerStatus,
+            PublisherResult,
+            PublisherStatus,
+        )
+        from media_preview_generator.web.jobs import JobManager
+
+        with jobs_mod._job_lock:
+            jobs_mod._job_manager = JobManager(config_dir=str(tmp_path / "config"))
+
+        # Pre-seed the chain row with a clean human-readable title so
+        # ``_create_retry_attempt_job`` can inherit it (matching the
+        # real webhook flow where the parent dispatch's library_name
+        # is already cleaned by ``upsert_retry_chain_job``).
+        jobs_mod._job_manager.upsert_retry_chain_job(
+            canonical_path="/data/Movies/Standout (2026).mkv",
+            basename="Standout The Ben Kjar Story (2026)",
+            attempt=1,
+            max_attempts=5,
+            next_run_at=None,
+            wait_seconds=30,
+            outcome="scheduled",
+            # Pass display_name explicitly so when the retry-queue
+            # callback later re-upserts the chain row from inside
+            # ``schedule_retry_for_unindexed``, it doesn't clobber
+            # our clean basename with ``os.path.basename(canonical_path)``
+            # via the "prefer shorter title" heuristic
+            # (``upsert_retry_chain_job:1138``).
+        )
+
+        done = threading.Event()
+
+        def fake_process(**kwargs):
+            done.set()
+            return MultiServerResult(
+                canonical_path=kwargs["canonical_path"],
+                status=MultiServerStatus.PUBLISHED,
+                publishers=[
+                    PublisherResult(
+                        server_id="jelly-1",
+                        server_name="jelly-1",
+                        adapter_name="jellyfin_trickplay",
+                        status=PublisherStatus.PUBLISHED,
+                        message="ok",
+                    )
+                ],
+                frame_count=1,
+                message="ok",
+            )
+
+        with (
+            patch(
+                "media_preview_generator.processing.retry_queue._BACKOFF",
+                (0.05,) + tuple([0.05] * (len(_BACKOFF) - 1)),
+            ),
+            patch(
+                "media_preview_generator.processing.multi_server.process_canonical_path",
+                side_effect=fake_process,
+            ),
+        ):
+            # Pass display_name explicitly — without it the retry-queue
+            # callback's internal ``_upsert_retry_chain_job`` would
+            # re-upsert the chain row with ``basename=os.path.basename(...)``
+            # = "Standout (2026).mkv", and the "prefer shorter title"
+            # heuristic at ``upsert_retry_chain_job:1138`` would clobber
+            # our seeded clean title with the .mkv-bearing basename.
+            # Real webhook flows propagate display_name from the worker.
+            schedule_retry_for_unindexed(
+                "/data/Movies/Standout (2026).mkv",
+                registry=MagicMock(),
+                config=MagicMock(),
+                item_id_by_server=None,
+                attempt=1,
+                display_name="Standout The Ben Kjar Story (2026)",
+            )
+            assert done.wait(timeout=2)
+            time.sleep(0.1)
+
+        attempt = next(j for j in jobs_mod._job_manager.get_all_jobs() if j.config.get("is_retry_attempt"))
+        assert "Retry attempt" not in attempt.library_name, (
+            f"library_name must NOT include the 'Retry attempt N/M:' prefix — the "
+            f"chip carries that. Got {attempt.library_name!r}."
+        )
+        assert ".mkv" not in attempt.library_name, (
+            f"library_name must not leak the .mkv extension; got {attempt.library_name!r}"
+        )
+        assert attempt.library_name == "Standout The Ben Kjar Story (2026)", (
+            f"library_name should inherit the chain row's cleaned title; got {attempt.library_name!r}"
+        )
+
+    def test_attempt_title_falls_back_to_splitext_basename_when_chain_missing(self, tmp_path):
+        """When neither a chain row nor a display_name is available
+        (CLI smoke test, headless retry from a path-only context),
+        the fallback is ``os.path.splitext(os.path.basename(...))``
+        — strips the ``.mkv`` so the title still reads better than
+        the raw filename.
+        """
+        # Use schedule_retry_for_unindexed's lower-level helper to
+        # exercise the no-chain-row path directly without dealing
+        # with the timer thread.
+        import media_preview_generator.web.jobs as jobs_mod
+        from media_preview_generator.processing.retry_queue import _create_retry_attempt_job
+        from media_preview_generator.web.jobs import JobManager
+
+        with jobs_mod._job_lock:
+            jobs_mod._job_manager = JobManager(config_dir=str(tmp_path / "config"))
+
+        job_id = _create_retry_attempt_job(
+            canonical_path="/data/Movies/Show [1080p][x264]-RELEASE.mkv",
+            chain_id="retry-doesnotexist",
+            attempt=1,
+            max_attempts=5,
+            server_id=None,
+            server_name=None,
+            server_type=None,
+            display_name=None,
+            source=None,
+        )
+        assert job_id is not None
+        job = jobs_mod._job_manager.get_job(job_id)
+        assert job is not None
+        assert job.library_name == "Show [1080p][x264]-RELEASE", (
+            f"Fallback must strip .mkv extension from basename; got {job.library_name!r}"
+        )
+
     def test_chain_row_lists_child_job_ids_after_firings(self, tmp_path):
         """After each firing, the chain row's ``child_job_ids`` config
         list grows by one — the synthesized chain log uses that list to
@@ -687,15 +886,14 @@ class TestPerAttemptJobSpawn:
         chain_jobs = [j for j in jobs_mod._job_manager.get_all_jobs() if j.id.startswith("retry-")]
         assert chain_jobs and chain_jobs[0].status == JobStatus.FAILED
 
-    def test_per_attempt_jobs_are_not_persisted_to_disk(self, tmp_path):
-        """Per-attempt Jobs are EPHEMERAL the same way chain rows are.
-        Pre-review they were going through ``create_job`` →
-        ``_persist_job`` (and again on every ``complete_job`` /
-        ``update_job_config``), which on a busy install (~88
-        firings/hour × 5 BACKOFF stages) would accumulate thousands of
-        orphaned rows in ``jobs.db`` — the same row-explosion pathology
-        the chain-row skip already documents (2026-05-09 incident,
-        5,387 rows).
+    def test_completed_per_attempt_jobs_persist_across_restart(self, tmp_path):
+        """Per-attempt Jobs PERSIST so the Job Details modal's Attempts
+        dropdown can show history. A TERMINAL (completed/failed)
+        attempt loads as-is — its log file on disk is the authoritative
+        record of what happened in that firing. Pre-PLAN-collapse this
+        contract was inverted (ephemeral); the row-count bound now
+        comes from the `is_retry_attempt` filter in /api/jobs that
+        hides children from the main list.
         """
         import media_preview_generator.web.jobs as jobs_mod
         from media_preview_generator.processing.multi_server import (
@@ -704,7 +902,7 @@ class TestPerAttemptJobSpawn:
             PublisherResult,
             PublisherStatus,
         )
-        from media_preview_generator.web.jobs import JobManager
+        from media_preview_generator.web.jobs import JobManager, JobStatus
 
         config_dir = tmp_path / "config"
         with jobs_mod._job_lock:
@@ -750,21 +948,58 @@ class TestPerAttemptJobSpawn:
             assert done.wait(timeout=2)
             time.sleep(0.2)
 
-        # Per-attempt Job IS visible in this JobManager instance...
+        # Per-attempt Job is visible AND terminal in this JobManager instance.
         live_attempts = [j for j in jobs_mod._job_manager.get_all_jobs() if j.config.get("is_retry_attempt")]
         assert len(live_attempts) == 1
+        assert live_attempts[0].status == JobStatus.COMPLETED
 
-        # ...but a brand-new JobManager loading the same config dir
-        # (simulating a container restart) MUST NOT see it. The retry
-        # chain's threading.Timer is gone after restart, so the
-        # per-attempt row would be orphaned with nothing to drive it.
+        # Restart simulation: a brand-new JobManager loading the same
+        # config dir DOES see the terminal attempt unchanged. Modal's
+        # Attempts dropdown reads this list to populate its options.
         with jobs_mod._job_lock:
             jobs_mod._job_manager = None
         jm2 = JobManager(config_dir=str(config_dir))
         survivors = [j for j in jm2.get_all_jobs() if j.config.get("is_retry_attempt")]
-        assert survivors == [], (
-            f"Per-attempt retry Jobs MUST NOT survive a JobManager restart — they "
-            f"are ephemeral by design (the chain timer driving them is gone). "
-            f"Found {len(survivors)} orphaned attempt row(s); accumulating these "
-            f"is the row-explosion pathology the chain-row skip documents."
+        assert len(survivors) == 1, (
+            f"Per-attempt retry Jobs MUST survive restart so the modal can show history. "
+            f"Got {len(survivors)} survivor(s)."
         )
+        assert survivors[0].status == JobStatus.COMPLETED, (
+            f"Terminal attempt Jobs must load as-is; got {survivors[0].status}"
+        )
+
+    def test_inflight_per_attempt_jobs_marked_failed_on_restart(self, tmp_path):
+        """Counterpoint: a PENDING/RUNNING attempt Job recovered from
+        disk at restart MUST be marked FAILED with the interruption
+        reason — its parent chain's ``threading.Timer`` is gone, so
+        leaving it PENDING would show a row counting down to a Timer
+        that will never fire.
+        """
+        import media_preview_generator.web.jobs as jobs_mod
+        from media_preview_generator.web.jobs import Job, JobManager, JobStatus, JobStorage
+
+        with jobs_mod._job_lock:
+            jobs_mod._job_manager = None
+
+        config_dir = tmp_path / "config_inflight"
+        config_dir.mkdir()
+        storage = JobStorage(str(config_dir / "jobs.db"))
+        inflight_attempt = Job(
+            id="abc-uuid-pending",
+            library_name="In flight at crash",
+            status=JobStatus.RUNNING,
+            config={
+                "is_retry_attempt": True,
+                "parent_chain_id": "retry-aaa",
+                "retry_attempt": 2,
+                "retry_max_attempts": 5,
+            },
+        )
+        storage.upsert(inflight_attempt)
+        storage.close()
+
+        jm = JobManager(config_dir=str(config_dir))
+        recovered = next((j for j in jm.get_all_jobs() if j.id == "abc-uuid-pending"), None)
+        assert recovered is not None
+        assert recovered.status == JobStatus.FAILED
+        assert recovered.error and "interrupted" in recovered.error.lower()

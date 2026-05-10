@@ -2,6 +2,7 @@
 
 import math
 import os
+from datetime import datetime
 
 from flask import jsonify, request, session
 from loguru import logger
@@ -249,6 +250,11 @@ def get_jobs():
     Query params:
         page: Page number (default 1). Use 0 to return all jobs unpaginated.
         per_page: Items per page (default 50, max 200).
+        include_retry_attempts: Set to ``1`` to include per-attempt retry
+            Jobs (``config.is_retry_attempt``) in the response. Default
+            is to hide them so the dashboard shows ONE row per file
+            (the chain row); per-attempt drill-down is accessible from
+            the chain row's modal via ``/jobs/<chain_id>/attempts``.
 
     Returns:
         JSON with ``jobs`` list and pagination metadata (``total``, ``page``,
@@ -258,6 +264,10 @@ def get_jobs():
     try:
         job_manager = get_job_manager()
         all_jobs = job_manager.get_all_jobs()
+
+        include_attempts = request.args.get("include_retry_attempts") == "1"
+        if not include_attempts:
+            all_jobs = [j for j in all_jobs if not j.config.get("is_retry_attempt")]
 
         running = [j for j in all_jobs if j.status == JobStatus.RUNNING]
         pending = sorted(
@@ -321,6 +331,67 @@ def get_job(job_id):
     if job:
         return jsonify(job.to_dict())
     return jsonify({"error": "Job not found"}), 404
+
+
+@api.route("/jobs/<chain_id>/attempts")
+@api_token_required
+def get_chain_attempts(chain_id):
+    """Return per-attempt child Jobs for a retry-chain row.
+
+    Powers the Job Details modal's Attempts dropdown so the user can
+    flip between each firing's real log without those rows cluttering
+    the main /jobs list (which hides them by default — see the
+    ``include_retry_attempts`` flag).
+
+    Returns:
+        ``{"chain_id": str, "attempts": [{...metadata}], "max_attempts": int}``
+        with attempts sorted by ``retry_attempt`` ascending (Attempt 1
+        first). 404 if ``chain_id`` is not a retry-chain row.
+    """
+    job_manager = get_job_manager()
+    chain = job_manager.get_job(chain_id)
+    if chain is None or not chain.config.get("is_retry_chain"):
+        return jsonify({"error": "Not a retry-chain job"}), 404
+
+    children = [
+        j
+        for j in job_manager.get_all_jobs()
+        if j.config.get("is_retry_attempt") and j.config.get("parent_chain_id") == chain_id
+    ]
+    children.sort(key=lambda j: (j.config.get("retry_attempt", 0), j.created_at or ""))
+
+    def _duration_sec(j) -> float | None:
+        # Wall-clock time from job creation to terminal state. Used
+        # in the dropdown option label so the user can see at a glance
+        # which attempt was a 30s nope vs a 5min real publish.
+        if not j.completed_at or not j.created_at:
+            return None
+        try:
+            start = datetime.fromisoformat(j.created_at)
+            end = datetime.fromisoformat(j.completed_at)
+            return max(0.0, (end - start).total_seconds())
+        except (TypeError, ValueError):
+            return None
+
+    return jsonify(
+        {
+            "chain_id": chain_id,
+            "max_attempts": int(chain.config.get("retry_max_attempts") or 0),
+            "attempts": [
+                {
+                    "id": j.id,
+                    "retry_attempt": int(j.config.get("retry_attempt", 0)),
+                    "status": j.status.value if hasattr(j.status, "value") else str(j.status),
+                    "created_at": j.created_at,
+                    "started_at": j.started_at,
+                    "completed_at": j.completed_at,
+                    "error": j.error,
+                    "duration_sec": _duration_sec(j),
+                }
+                for j in children
+            ],
+        }
+    )
 
 
 @api.route("/jobs", methods=["POST"])

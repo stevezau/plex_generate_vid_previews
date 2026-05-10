@@ -612,25 +612,31 @@ class JobManager:
             return
 
         needs_resave: list[Job] = []
-        retry_chain_orphans: list[str] = []
+        retry_interrupted_count = 0
         for job in stored_jobs:
-            # Retry-chain Jobs (id prefix ``retry-``) are EPHEMERAL by
-            # design — the underlying ``threading.Timer`` instances in
-            # the in-process retry queue do not survive a container
-            # restart, so a persisted retry-chain Job is meaningless
-            # (the chain it was tracking is gone). Pre-fix these would
-            # be loaded back into ``_jobs`` and "revived" by the
-            # interrupted-jobs logic below, accumulating thousands of
-            # orphaned rows that hammer the dashboard. Drop them at
-            # load time AND remove them from the SQLite store so the
-            # next graceful exit doesn't re-write them.
+            # Retry-chain rows AND their per-attempt children persist
+            # across restart so the Job Details modal's Attempts
+            # dropdown can show full history. The in-process
+            # ``threading.Timer`` driving the chain is GONE after a
+            # restart, though — so any chain/attempt that was still
+            # in-flight is now dead work. Mark them FAILED with a
+            # human-readable reason so the dashboard surfaces the
+            # interruption instead of leaving stale PENDING rows
+            # counting down to a Timer that will never fire.
             #
-            # Same rule for per-attempt retry-firing rows
-            # (``config["is_retry_attempt"]``): the parent chain's
-            # timer is gone, so an attempt row recovered from disk is
-            # an orphan with no live work to attribute to.
-            if job.id.startswith("retry-") or job.config.get("is_retry_attempt"):
-                retry_chain_orphans.append(job.id)
+            # Pre-PLAN-collapse this branch DROPPED these rows
+            # entirely. That kept the dashboard clean but meant the
+            # modal could never show historical attempts after a
+            # restart — incompatible with the "single chain row +
+            # in-modal attempts dropdown" design.
+            is_chain_or_attempt = job.id.startswith("retry-") or job.config.get("is_retry_attempt")
+            if is_chain_or_attempt and job.status in (JobStatus.PENDING, JobStatus.RUNNING):
+                job.status = JobStatus.FAILED
+                job.error = "Retry interrupted by container restart — re-trigger the source webhook to resume."
+                job.completed_at = datetime.now(timezone.utc).isoformat()
+                needs_resave.append(job)
+                retry_interrupted_count += 1
+                self._jobs[job.id] = job
                 continue
             # Mark any "running" jobs as failed on startup (interrupted by
             # restart/crash). Same policy as the legacy JSON loader had.
@@ -650,20 +656,13 @@ class JobManager:
                 self._interrupted_jobs.append(job)
             self._jobs[job.id] = job
 
-        # Best-effort delete of any orphaned retry-chain rows. Failures
-        # don't block startup — the upsert path now skips persistence,
-        # so even if delete fails the store stops growing.
-        if retry_chain_orphans and self._storage is not None:
+        if retry_interrupted_count:
             logger.info(
-                "Dropping {} orphaned retry-chain Job(s) from previous run "
-                "(retry chains are ephemeral; persistence was a regression in 9fc29dd)",
-                len(retry_chain_orphans),
+                "Marked {} interrupted retry-chain/attempt Job(s) as failed "
+                "(their threading.Timer didn't survive restart; history kept "
+                "for the modal Attempts dropdown).",
+                retry_interrupted_count,
             )
-            for chain_id in retry_chain_orphans:
-                try:
-                    self._storage.delete(chain_id)
-                except Exception as exc:
-                    logger.debug("Could not delete orphaned retry-chain {}: {}", chain_id, exc)
 
         for job in needs_resave:
             self._persist_job(job)
@@ -738,27 +737,25 @@ class JobManager:
     def _persist_job(self, job: "Job") -> None:
         """Upsert a single job's row to disk. No-op if storage couldn't open.
 
-        Both shapes of retry-chain Jobs are EPHEMERAL — they each live
-        only as long as the in-process ``threading.Timer`` driving the
-        chain, which does NOT survive a container restart. Persisting
-        them produces orphans on the next boot. Centralising the skip
-        here means every persist call site (``create_job``,
-        ``complete_job``, ``update_job_config``, …) honours the rule
-        without each having to add a ``config.is_retry_*`` check:
+        Retry-chain rows AND their per-attempt child Jobs DO persist so
+        that the Job Details modal's Attempts dropdown can show the
+        full history of a chain across container restarts (the in-
+        memory ``threading.Timer`` driving the chain is gone after a
+        restart, so on boot ``_load_jobs`` marks any non-terminal
+        chain/attempt row as FAILED with a 'Retry interrupted by
+        restart' reason — see ``_load_jobs`` for the recovery path).
 
-          * ``is_retry_chain`` — the parent rollup row. ``upsert_retry_chain_job``
-            already declines to call this method, but other paths
-            (``update_job_config`` from ``_link_attempt_to_chain``, etc.)
-            would otherwise persist it as a side-effect.
-          * ``is_retry_attempt`` — each per-firing child Job. A busy
-            install (e.g. JellyTest backfill at ~88 firings/hour ×
-            5 BACKOFF stages) would otherwise accumulate thousands of
-            dead rows in ``jobs.db``, the same row-explosion pathology
-            that motivated the chain-row skip in 2026-05-09.
+        Pre-PLAN-collapse this method skipped both ``is_retry_chain``
+        and ``is_retry_attempt`` outright because the design then was
+        "many visible rows per chain, all ephemeral, drop on restart."
+        That accumulated thousands of dashboard rows during JellyTest
+        backfill (~600/day) so the design flipped to "one chain row
+        per file, attempts only visible inside the modal dropdown".
+        With attempts hidden from the main list by default
+        (``api_jobs.py`` opt-in flag) row count is bounded by the
+        number of in-flight chains — typically tens, not thousands.
         """
         if self._storage is None:
-            return
-        if job.config.get("is_retry_chain") or job.config.get("is_retry_attempt"):
             return
         try:
             self._storage.upsert(job)
@@ -1221,25 +1218,19 @@ class JobManager:
             # display.
             job.created_at = now_iso
 
-            # Retry-chain Jobs are EPHEMERAL by design — they exist
-            # only to surface the in-process retry timers to the user-
-            # visible Jobs panel. The underlying timers
-            # (RetryScheduler in retry_queue.py) live in
-            # ``threading.Timer`` instances that DO NOT survive a
-            # container restart, so persisting these Job rows leaves
-            # orphaned entries that:
-            #   * Get "revived" by the interrupted-jobs logic on
-            #     startup, hammering the dashboard with stale rows.
-            #   * Accumulate without bound — full library scan
-            #     produced 5,387 stale rows in production 2026-05-09
-            #     before this fix landed.
-            #   * Slow Plex readiness probes to 30+ seconds because
-            #     the dashboard rendered 50+ orphaned chains.
-            #
-            # Skip persistence: the chain Job lives only in the
-            # in-memory ``_jobs`` dict, broadcasts via SocketIO, and
-            # disappears with the container. The retry chain itself is
-            # a transient signal, not a durable workload.
+            # Persist the chain row so the Job Details modal's Attempts
+            # dropdown can show its history across container restarts.
+            # The 5,387-row-explosion incident (2026-05-09) that the
+            # pre-PLAN-collapse skip-persist guarded against came from
+            # showing EVERY chain in the dashboard's main list. Now
+            # chain rows are bounded by the number of in-flight files
+            # (typically tens) and per-attempt children are hidden
+            # from the main list by default (see api_jobs.py's
+            # ``include_retry_attempts`` opt-in), so persistence is
+            # safe. Interrupted non-terminal chains are marked FAILED
+            # at load time by ``_load_jobs`` so they don't masquerade
+            # as live work after restart.
+            self._persist_job(job)
             self._emit_event("job_updated", job.to_dict())
         return job
 
@@ -1473,6 +1464,8 @@ class JobManager:
         so nothing else will ever poll it.
         """
         cancelled = False
+        cancel_chain_path: str | None = None
+        cancel_children_of_chain: str | None = None
         with self._lock:
             job = self._jobs.get(job_id)
             if job and job.status in (JobStatus.PENDING, JobStatus.RUNNING):
@@ -1485,6 +1478,53 @@ class JobManager:
                 self._persist_job(job)
                 self._emit_event("job_cancelled", job.to_dict())
                 cancelled = True
+                # Cascade for retry-chain rows: cancel the in-process
+                # ``threading.Timer`` that drives the chain AND mark
+                # any still-in-flight per-attempt child Jobs as
+                # CANCELLED. Pre-fix the chain row turned red but the
+                # Timer kept counting down — the next firing executed
+                # ``process_canonical_path`` regardless. Captured here
+                # for use outside the lock (the scheduler has its own
+                # lock; nesting them is asking for a deadlock).
+                if job.config.get("is_retry_chain"):
+                    cancel_chain_path = job.config.get("retry_chain_for")
+                    cancel_children_of_chain = job.id
+        # Outside the JobManager lock: tear down the retry queue + child
+        # attempt rows. Both touch other locks (RetryScheduler._lock,
+        # the JobManager lock re-entered via cancel_job) so they MUST
+        # run after we've released self._lock.
+        if cancel_chain_path:
+            try:
+                from ..processing.retry_queue import get_retry_scheduler
+
+                get_retry_scheduler().cancel(cancel_chain_path)
+            except Exception as exc:
+                logger.debug("Could not cancel retry Timer for {}: {}", cancel_chain_path, exc)
+        if cancel_children_of_chain:
+            child_jobs: list[Job] = []
+            with self._lock:
+                for j in self._jobs.values():
+                    if (
+                        j.config.get("is_retry_attempt")
+                        and j.config.get("parent_chain_id") == cancel_children_of_chain
+                        and j.status in (JobStatus.PENDING, JobStatus.RUNNING)
+                    ):
+                        child_jobs.append(j)
+            for child in child_jobs:
+                with self._lock:
+                    # Re-check inside the lock — a concurrent worker
+                    # might have completed the child between snapshot
+                    # and cancel, in which case respect the terminal
+                    # state instead of overwriting it.
+                    if child.status not in (JobStatus.PENDING, JobStatus.RUNNING):
+                        continue
+                    child.status = JobStatus.CANCELLED
+                    child.error = "Parent retry chain was cancelled."
+                    child.completed_at = datetime.now(timezone.utc).isoformat()
+                    self._running_job_ids.discard(child.id)
+                    self.clear_pause_flag(child.id)
+                    self._persist_job(child)
+                    self._emit_event("job_cancelled", child.to_dict())
         if cancelled:
             logger.info("Cancelled job {}", job_id)
         return job

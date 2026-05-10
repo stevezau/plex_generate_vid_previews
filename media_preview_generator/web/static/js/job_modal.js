@@ -28,15 +28,33 @@ let logsRefreshInterval = null;
 // Logs Functions
 let _rawLogs = [];
 let _logsModalJobId = null;
+// When the modal's target Job is a retry-chain row, ``_logsModalAttemptId``
+// holds the UUID of the per-attempt child Job currently selected in the
+// Attempts dropdown. The three log-fetch functions (``refreshLogs``,
+// ``pollNewLogs``, ``loadEarlierLogs``) route their API calls to this
+// ID instead of ``_logsModalJobId`` so the user sees that attempt's
+// real INFO/WARNING-coloured log instead of the chain row's synthesized
+// status text.
+let _logsModalAttemptId = null;
 let _logsTotalLines = 0;
 let _logsLoadedOffset = 0;
 let _logsKnownCount = 0;
 const _LOGS_CHUNK_SIZE = 500;
 
+// ID the log-fetch functions should target. For non-chain rows this is
+// just ``_logsModalJobId``; for chain rows it's the dropdown's
+// currently-selected per-attempt UUID. Centralised so every API call
+// site reads from one place — pre-fix this was duplicated and one
+// branch forgot to consult the dropdown.
+function _logsTargetId() {
+    return _logsModalAttemptId || _logsModalJobId;
+}
+
 function showLogsModal(jobId) {
     const targetId = jobId || _lastNotifiedJobId;
     if (!targetId) return;
     _logsModalJobId = targetId;
+    _logsModalAttemptId = null;
 
     document.getElementById('logsJobId').textContent = `Job ID: ${targetId}`;
     document.getElementById('logsSearchInput').value = '';
@@ -45,6 +63,27 @@ function showLogsModal(jobId) {
     const _job = jobs.find(j => j.id === targetId);
     const _hdr = document.getElementById('logsModalPublishers');
     if (_hdr) _hdr.innerHTML = _job ? _renderPublishersBlock(_job) : '';
+
+    // Retry-chain rows show the Attempts dropdown so the user can flip
+    // between per-firing logs (each is a real Job with its own log
+    // file on disk, hidden from the main list — see
+    // ``api_jobs.py``'s ``include_retry_attempts`` opt-in). Populating
+    // the dropdown sets ``_logsModalAttemptId``, which the log-fetch
+    // functions then target.
+    const _attemptsWrap = document.getElementById('attemptsDropdownWrap');
+    if (_attemptsWrap) {
+        const isChainRow = !!(_job && _job.config && _job.config.is_retry_chain);
+        if (isChainRow) {
+            _attemptsWrap.classList.remove('d-none');
+            _attemptsWrap.classList.add('d-flex');
+            _loadAttemptsDropdown(targetId);
+        } else {
+            _attemptsWrap.classList.add('d-none');
+            _attemptsWrap.classList.remove('d-flex');
+            document.getElementById('attemptsDropdown').innerHTML = '';
+            document.getElementById('attemptsHint').textContent = '';
+        }
+    }
 
     _rawLogs = [];
     _logsTotalLines = 0;
@@ -103,6 +142,7 @@ function showLogsModal(jobId) {
             logsRefreshInterval = null;
         }
         _logsModalJobId = null;
+        _logsModalAttemptId = null;
     }, { once: true });
 }
 
@@ -143,7 +183,7 @@ function colorizeLogLine(line) {
 }
 
 async function refreshLogs() {
-    const targetId = _logsModalJobId;
+    const targetId = _logsTargetId();
     if (!targetId) return;
 
     try {
@@ -209,7 +249,7 @@ async function refreshLogs() {
 }
 
 async function pollNewLogs() {
-    const targetId = _logsModalJobId;
+    const targetId = _logsTargetId();
     if (!targetId) return;
 
     try {
@@ -268,7 +308,7 @@ async function pollNewLogs() {
 }
 
 async function loadEarlierLogs() {
-    const targetId = _logsModalJobId;
+    const targetId = _logsTargetId();
     if (!targetId || _logsLoadedOffset <= 0) return;
 
     const btn = document.getElementById('logsLoadEarlierBtn');
@@ -325,7 +365,7 @@ async function loadEarlierLogs() {
 }
 
 async function loadAllLogs() {
-    const targetId = _logsModalJobId;
+    const targetId = _logsTargetId();
     if (!targetId) return;
 
     const btn = document.getElementById('logsLoadAllBtn');
@@ -354,6 +394,104 @@ async function loadAllLogs() {
     } finally {
         if (btn) { btn.disabled = false; btn.textContent = 'Load all'; }
     }
+}
+
+// ========================================================================
+// Attempts dropdown — chain-row drill-down
+// ========================================================================
+//
+// Retry-chain rows surface as ONE row in the dashboard (commit
+// f0f08a6 introduced per-firing Jobs but they're hidden from the
+// main list by default — see api_jobs.py's ``include_retry_attempts``
+// flag). Drilling into a chain row's modal must let the user flip
+// between each firing's real log. This pair of helpers does the
+// fetch (``_loadAttemptsDropdown``) and the on-change redirect
+// (``onAttemptSelected``).
+//
+// The countdown timer (next-attempt-in-Ns) on the chain row is
+// rendered by the existing data-scheduled-at tick loop in app.js
+// (see ``_updateElapsedTimers``); the modal header doesn't need its
+// own — the user can glance back at the row for that.
+
+const _ATTEMPT_STATUS_GLYPH = {
+    'completed': '✓',
+    'failed':    '✗',
+    'cancelled': '⊘',
+    'running':   '⏳',
+    'pending':   '·',
+};
+
+function _formatAttemptDuration(secs) {
+    if (secs === null || secs === undefined) return '';
+    const s = Math.max(0, Math.round(secs));
+    if (s < 60) return s + 's';
+    const m = Math.floor(s / 60);
+    const rem = s % 60;
+    return rem ? (m + 'm' + rem + 's') : (m + 'm');
+}
+
+async function _loadAttemptsDropdown(chainId) {
+    const select = document.getElementById('attemptsDropdown');
+    const hint = document.getElementById('attemptsHint');
+    if (!select) return;
+    select.innerHTML = '<option disabled>Loading attempts…</option>';
+    try {
+        const data = await apiGet('/api/jobs/' + encodeURIComponent(chainId) + '/attempts');
+        const attempts = data.attempts || [];
+        if (attempts.length === 0) {
+            // No firings recorded yet — fall back to viewing the chain
+            // row's own synthesized status log so the modal isn't blank.
+            select.innerHTML = '<option value="" selected>No attempts yet — showing chain status</option>';
+            _logsModalAttemptId = null;
+            if (hint) hint.textContent = '';
+            refreshLogs();
+            return;
+        }
+        const max = data.max_attempts || attempts[attempts.length - 1].retry_attempt;
+        let options = '';
+        for (let i = 0; i < attempts.length; i++) {
+            const a = attempts[i];
+            const glyph = _ATTEMPT_STATUS_GLYPH[a.status] || '?';
+            const dur = _formatAttemptDuration(a.duration_sec);
+            const durLabel = dur ? ' · ' + dur : '';
+            const label = glyph + ' Attempt ' + a.retry_attempt + ' of ' + max
+                + ' — ' + a.status + durLabel;
+            options += '<option value="' + escapeHtml(a.id) + '">'
+                + escapeHtml(label) + '</option>';
+        }
+        select.innerHTML = options;
+        // Default-select the LATEST attempt (the one the user most likely
+        // wants to see). Attempts are sorted ascending by retry_attempt,
+        // so the last option is newest.
+        select.selectedIndex = attempts.length - 1;
+        _logsModalAttemptId = attempts[attempts.length - 1].id;
+        if (hint) {
+            hint.textContent = attempts.length === max
+                ? attempts.length + ' of ' + max + ' attempts'
+                : attempts.length + ' attempts so far (max ' + max + ')';
+        }
+        refreshLogs();
+    } catch (error) {
+        console.error('Failed to load attempts dropdown:', error);
+        select.innerHTML = '<option disabled>Could not load attempts</option>';
+        if (hint) hint.textContent = 'Error loading attempts — see console.';
+        _logsModalAttemptId = null;
+    }
+}
+
+function onAttemptSelected(select) {
+    if (!select || !select.value) return;
+    _logsModalAttemptId = select.value;
+    // Reset log state so refreshLogs() loads from offset 0 for the
+    // newly-selected attempt instead of continuing the previous
+    // attempt's pagination.
+    _rawLogs = [];
+    _logsTotalLines = 0;
+    _logsLoadedOffset = 0;
+    _logsKnownCount = 0;
+    document.getElementById('logsContent').innerHTML = '<span class="text-muted">Loading…</span>';
+    _updateEarlierLogsButton();
+    refreshLogs();
 }
 
 function _updateEarlierLogsButton() {
@@ -405,7 +543,7 @@ async function copyLogs() {
 }
 
 async function downloadLogs() {
-    const targetId = _logsModalJobId;
+    const targetId = _logsTargetId();
     if (!targetId) {
         showToast('Warning', 'No logs to download', 'warning');
         return;

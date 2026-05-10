@@ -275,23 +275,71 @@ def _create_retry_attempt_job(
     try:
         from ..web.jobs import get_job_manager
 
-        basename = display_name or os.path.basename(canonical_path) or canonical_path
+        jm = get_job_manager()
+
+        # Build a clean library_name with this fallback chain — the
+        # "Retry attempt N/M:" prefix is gone (the chip in app.js carries
+        # it now via ``is_retry`` + ``max_retries``), and the .mkv extension
+        # is stripped so the title reads like the parent dispatch row's
+        # title. Walked in order, first non-empty wins:
+        #
+        #   1. The chain row's existing library_name — it accumulates
+        #      the cleanest title via upsert_retry_chain_job's length-
+        #      comparison heuristic, so subsequent attempts inherit
+        #      the parent dispatch's cleaned Sonarr/Radarr title.
+        #   2. ``display_name`` parameter — set when the calling worker
+        #      had a clean title in scope.
+        #   3. ``os.path.splitext(os.path.basename(canonical_path))[0]``
+        #      — at least drop the .mkv noise from the raw filename.
+        #   4. ``canonical_path`` — last-ditch.
+        chain_library_name: str | None = None
+        try:
+            chain_row = jm.get_job(chain_id)
+            if chain_row and chain_row.library_name:
+                chain_library_name = chain_row.library_name
+        except Exception:
+            pass
+        clean_title = (
+            chain_library_name
+            or display_name
+            or os.path.splitext(os.path.basename(canonical_path))[0]
+            or canonical_path
+        )
+        # Keep the legacy ``retry_basename`` config field aligned with
+        # ``library_name`` so anywhere downstream reads it (e.g. the
+        # synthesized chain log) the value stays in sync.
         attempt_config: dict[str, Any] = {
             "is_retry_attempt": True,
             "parent_chain_id": chain_id,
             "retry_chain_for": canonical_path,
             "retry_attempt": attempt,
             "retry_max_attempts": int(max_attempts),
-            "retry_basename": basename,
+            "retry_basename": clean_title,
+            # Aliases the existing app.js retry-chip renderer reads
+            # (app.js:1682). Without these the chip doesn't render and
+            # the attempt row falls back to plain library_name text —
+            # the UX the user reported as "feels like the retry should
+            # be a chip".
+            "is_retry": True,
+            "max_retries": int(max_attempts),
         }
         if source:
             attempt_config["source"] = source
-        job = get_job_manager().create_job(
-            library_name=f"Retry attempt {attempt}/{max_attempts}: {basename}",
+        # Coerce non-string server attribution to None — defensive
+        # against callers (and tests) passing MagicMock-shaped Config
+        # objects whose ``server_display_name`` attribute returns a
+        # MagicMock instead of a real string. Without this guard the
+        # MagicMock leaks into ``server_name`` and crashes the SQLite
+        # bind when ``_persist_job`` runs.
+        _server_name = server_name if isinstance(server_name, str) else None
+        _server_type = server_type if isinstance(server_type, str) else None
+        _server_id = server_id if isinstance(server_id, str) else None
+        job = jm.create_job(
+            library_name=clean_title,
             config=attempt_config,
-            server_id=server_id,
-            server_name=server_name,
-            server_type=server_type,
+            server_id=_server_id,
+            server_name=_server_name,
+            server_type=_server_type,
         )
         return job.id
     except Exception as exc:
@@ -669,5 +717,20 @@ def schedule_retry_for_unindexed(
             outcome="scheduled",
             wait_seconds=wait_seconds,
             server_id=server_id_filter,
+            # Forward display_name + source so the schedule-time
+            # chain-row upsert uses the cleaned title — without this
+            # ``_upsert_retry_chain_job`` falls back to
+            # ``os.path.basename(canonical_path)`` (e.g.
+            # ``"Foo.mkv"``), which is shorter than the parent
+            # dispatch's cleaned ``library_name`` (e.g. ``"Foo (2026)"``)
+            # and the "prefer shorter title" heuristic in
+            # ``upsert_retry_chain_job:1138`` would CLOBBER the clean
+            # title with the .mkv-bearing basename. Pre-PLAN-collapse
+            # this didn't matter because chain rows were ephemeral
+            # and per-attempt children didn't exist; now the modal's
+            # Attempts dropdown inherits this title and a regression
+            # would surface as ".mkv" in every attempt row's title.
+            display_name=display_name,
+            source=source,
         )
     return scheduled
