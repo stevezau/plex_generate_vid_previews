@@ -38,8 +38,10 @@ Design choices:
 
 from __future__ import annotations
 
+import os
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from typing import Any
 
 from loguru import logger
@@ -238,6 +240,183 @@ def _upsert_retry_chain_job(
         logger.debug("Retry-chain Job upsert failed for {!r}: {}", canonical_path, exc)
 
 
+def _create_retry_attempt_job(
+    *,
+    canonical_path: str,
+    chain_id: str,
+    attempt: int,
+    max_attempts: int,
+    server_id: str | None,
+    server_name: str | None,
+    server_type: str | None,
+    display_name: str | None,
+    source: str | None,
+) -> str | None:
+    """Create a real per-attempt Job for one retry firing.
+
+    Each retry firing used to run ``process_canonical_path`` directly
+    inside the timer thread with no Job context — meaning the only
+    "log" the user could see for that attempt was the synthesized
+    status text on the parent retry-chain row, which had no
+    DEBUG/INFO/WARNING prefixes and so rendered without the colour
+    coding ``colorizeLogLine`` applies to every other job's logs.
+
+    By creating a real Job here (and attaching a loguru sink filtered
+    to the firing thread, see :func:`_capture_attempt_logs`), every
+    ``logger.info`` call inside ``process_canonical_path`` lands in the
+    Job's log file with a proper level prefix — so the per-attempt
+    log looks identical to a webhook-dispatch job's log.
+
+    Returns the new Job's UUID, or ``None`` when the JobManager isn't
+    available (CLI smoke tests, unit tests that didn't bootstrap the
+    web layer). The retry still proceeds in that case — log capture
+    is best-effort and must not break the retry chain.
+    """
+    try:
+        from ..web.jobs import get_job_manager
+
+        basename = display_name or os.path.basename(canonical_path) or canonical_path
+        attempt_config: dict[str, Any] = {
+            "is_retry_attempt": True,
+            "parent_chain_id": chain_id,
+            "retry_chain_for": canonical_path,
+            "retry_attempt": attempt,
+            "retry_max_attempts": int(max_attempts),
+            "retry_basename": basename,
+        }
+        if source:
+            attempt_config["source"] = source
+        job = get_job_manager().create_job(
+            library_name=f"Retry attempt {attempt}/{max_attempts}: {basename}",
+            config=attempt_config,
+            server_id=server_id,
+            server_name=server_name,
+            server_type=server_type,
+        )
+        return job.id
+    except Exception as exc:
+        logger.debug("Per-attempt Job creation failed for {!r}: {}", canonical_path, exc)
+        return None
+
+
+@contextmanager
+def _capture_attempt_logs(child_job_id: str | None) -> Iterator[None]:
+    """Pipe ``logger.*`` calls in this thread into the child Job's log file.
+
+    Mirrors the per-job log capture in ``web/routes/job_runner.py``
+    (``log_sink`` + ``job_thread_filter``) so the user opens the
+    attempt Job from the Jobs panel and sees the same ``INFO -``,
+    ``WARNING -``, ``ERROR -`` level prefixes the dashboard already
+    knows how to colourise. Without this, ``process_canonical_path``'s
+    INFO output would only land in the global container log, not the
+    per-attempt Job log.
+
+    Setup errors (JobManager unavailable in CLI / test contexts,
+    ``logger.add`` failing, …) are caught BEFORE the yield so the body
+    still runs without log capture. The yield itself is wrapped in a
+    bare ``try / finally`` — wrapping it in ``try / except`` would
+    swallow exceptions that the contextmanager protocol re-raises at
+    the yield point via ``gen.throw``, hiding the body's real failure
+    and tripping a "generator didn't stop after throw" RuntimeError.
+    """
+    if not child_job_id:
+        yield
+        return
+
+    sink_id: int | None = None
+    registered = False
+
+    try:
+        from ..jobs.worker import is_job_thread_for, register_job_thread
+        from ..web.jobs import get_job_manager
+
+        job_manager = get_job_manager()
+        register_job_thread(child_job_id)
+        registered = True
+
+        def _sink(message: Any) -> None:
+            record = message.record
+            log_text = f"{record['level'].name} - {record['message']}"
+            try:
+                job_manager.add_log(child_job_id, log_text)
+            except Exception:
+                pass
+
+        def _filter(record: dict) -> bool:
+            return is_job_thread_for(record["thread"].id, child_job_id)
+
+        sink_id = logger.add(_sink, level="INFO", format="{message}", filter=_filter, enqueue=True)
+    except Exception as exc:
+        logger.debug("Attempt log capture setup failed for {!r}: {}", child_job_id, exc)
+
+    try:
+        yield
+    finally:
+        # ``logger.remove`` on an enqueue=True sink synchronously waits
+        # for the worker thread to drain its queue, so the closure
+        # capturing ``job_manager`` is released before the context
+        # manager exits — no per-firing leak.
+        if sink_id is not None:
+            try:
+                logger.remove(sink_id)
+            except (ValueError, KeyError):
+                pass
+        if registered:
+            try:
+                from ..jobs.worker import unregister_job_thread
+
+                unregister_job_thread()
+            except Exception:
+                pass
+
+
+def _complete_retry_attempt_job(
+    child_job_id: str | None,
+    *,
+    error: str | None = None,
+    warning: str | None = None,
+) -> None:
+    """Mark the per-attempt Job done. Best-effort — ignored when missing."""
+    if not child_job_id:
+        return
+    try:
+        from ..web.jobs import get_job_manager
+
+        get_job_manager().complete_job(child_job_id, error=error, warning=warning)
+    except Exception as exc:
+        logger.debug("Per-attempt Job completion failed for {!r}: {}", child_job_id, exc)
+
+
+def _link_attempt_to_chain(canonical_path: str, attempt_job_id: str | None) -> None:
+    """Append ``attempt_job_id`` to the parent chain's ``child_job_ids`` config.
+
+    The chain row's synthesized log uses this list to hand the user
+    direct UUIDs they can paste into the Jobs panel filter to find the
+    real per-attempt log file. Without it the chain is a dead-end
+    summary with no way back to the actual retry execution.
+    """
+    if not attempt_job_id:
+        return
+    try:
+        import hashlib
+
+        from ..web.jobs import get_job_manager
+
+        chain_id = "retry-" + hashlib.sha256(canonical_path.encode("utf-8")).hexdigest()[:16]
+        jm = get_job_manager()
+        chain = jm.get_job(chain_id)
+        if chain is None:
+            return
+        existing = list(chain.config.get("child_job_ids") or [])
+        if attempt_job_id not in existing:
+            existing.append(attempt_job_id)
+            new_cfg = dict(chain.config)
+            new_cfg["child_job_ids"] = existing
+            jm.update_job_config(chain_id, new_cfg)
+    except Exception as exc:
+        logger.debug("Link attempt {!r} → chain failed: {}", attempt_job_id, exc)
+
+
 def schedule_retry_for_unindexed(
     canonical_path: str,
     *,
@@ -279,6 +458,8 @@ def schedule_retry_for_unindexed(
     scheduler = get_retry_scheduler()
 
     def _callback(path: str, fired_attempt: int) -> None:
+        import hashlib
+
         # Imported lazily to break the import cycle:
         # multi_server -> retry_queue (here) -> multi_server.
         from .generator import failure_scope
@@ -289,10 +470,6 @@ def schedule_retry_for_unindexed(
         # legacy config.server_display_name when emitting the log tag.
         _retry_pin_id = server_id_filter or None
         _retry_server_tag = _retry_pin_id or getattr(config, "server_display_name", None)
-        if _retry_server_tag:
-            logger.info("Retry #{} firing for {} (server={})", fired_attempt, path, _retry_server_tag)
-        else:
-            logger.info("Retry #{} firing for {}", fired_attempt, path)
 
         # Surface the retry to the user-visible Jobs panel — countdown
         # ends, status flips to "running" so the row no longer shows
@@ -306,18 +483,50 @@ def schedule_retry_for_unindexed(
             source=source,
         )
 
-        # Bind a synthetic failure scope for the retry. The original
-        # job has long completed by the time this APScheduler timer
-        # fires, so there's no active job_id to attribute failures to.
-        # A synthetic ``retry:<path>`` scope keeps ``record_failure``
-        # from logging the "Internal bookkeeping bug" warning every
-        # time a retry hits an FFmpeg failure (e.g. file deleted
-        # between scan and retry, codec gone unsupported after a
-        # driver update). The recorded failures are detached from
-        # any user-visible job summary — that's correct: retries
-        # are headless from the JobManager's perspective.
+        # Spawn a real per-attempt Job so the user sees a normal job
+        # row (with proper INFO/WARNING-coloured logs) for THIS firing
+        # — instead of the synthesized status text on the parent chain
+        # row, which had no level prefixes and so rendered without the
+        # log-line colour every other job has. Best-effort: when the
+        # JobManager isn't available (CLI / test contexts) the firing
+        # still proceeds with no per-attempt Job, matching the legacy
+        # headless behaviour.
+        chain_id = "retry-" + hashlib.sha256(path.encode("utf-8")).hexdigest()[:16]
+        attempt_job_id = _create_retry_attempt_job(
+            canonical_path=path,
+            chain_id=chain_id,
+            attempt=fired_attempt,
+            max_attempts=len(_BACKOFF),
+            server_id=_retry_pin_id,
+            server_name=getattr(config, "server_display_name", None),
+            server_type=None,
+            display_name=display_name,
+            source=source,
+        )
+        _link_attempt_to_chain(path, attempt_job_id)
+
+        # Bind a synthetic failure scope for the retry. The ORIGINATING
+        # job (the dispatch row that first hit SKIPPED_NOT_INDEXED) has
+        # long completed by the time this Timer fires, so its job_id is
+        # gone from the live failure_scope stack. The per-attempt Job
+        # we just spawned IS user-visible, but ``record_failure`` keys
+        # on the active scope rather than the per-attempt Job — without
+        # a synthetic scope it would log the "Internal bookkeeping bug"
+        # warning every time a retry hits an FFmpeg failure (file
+        # deleted between scan and retry, codec gone unsupported after
+        # a driver update). The synthetic ``retry:<path>`` scope makes
+        # those failures attributable to "the retry chain for this
+        # path" without polluting ``record_failure``'s warning channel.
         retry_scope_id = f"retry:{path}"
-        with failure_scope(retry_scope_id):
+        with _capture_attempt_logs(attempt_job_id), failure_scope(retry_scope_id):
+            # First user-visible line in the per-attempt Job log so the
+            # operator opening it sees what triggered the firing — the
+            # rest comes from process_canonical_path's own INFO calls.
+            if _retry_server_tag:
+                logger.info("Retry #{} firing for {} (server={})", fired_attempt, path, _retry_server_tag)
+            else:
+                logger.info("Retry #{} firing for {}", fired_attempt, path)
+
             try:
                 result = process_canonical_path(
                     canonical_path=path,
@@ -345,6 +554,10 @@ def schedule_retry_for_unindexed(
                     path,
                     type(exc).__name__,
                     exc,
+                )
+                _complete_retry_attempt_job(
+                    attempt_job_id,
+                    error=f"Retry firing crashed: {type(exc).__name__}: {exc}",
                 )
                 schedule_retry_for_unindexed(
                     path,
@@ -405,6 +618,15 @@ def schedule_retry_for_unindexed(
                     source=source,
                 )
                 if not rescheduled:
+                    exhausted_reason = (
+                        f"Server still hasn't indexed this file after "
+                        f"{fired_attempt} retry attempt(s). The publisher's "
+                        f"output is on disk but the server-side trickplay "
+                        f"row never registered — likely the file is outside "
+                        f"every configured library root, or the server's "
+                        f"realtime monitor is disabled."
+                    )
+                    logger.warning("Retry chain exhausted for {}: {}", path, exhausted_reason)
                     _upsert_retry_chain_job(
                         canonical_path=path,
                         attempt=fired_attempt,
@@ -412,14 +634,17 @@ def schedule_retry_for_unindexed(
                         server_id=_retry_pin_id,
                         display_name=display_name,
                         source=source,
-                        reason=(
-                            f"Server still hasn't indexed this file after "
-                            f"{fired_attempt} retry attempt(s). The publisher's "
-                            f"output is on disk but the server-side trickplay "
-                            f"row never registered — likely the file is outside "
-                            f"every configured library root, or the server's "
-                            f"realtime monitor is disabled."
-                        ),
+                        reason=exhausted_reason,
+                    )
+                    _complete_retry_attempt_job(attempt_job_id, error=exhausted_reason)
+                else:
+                    # Mark the firing job as done-with-warning so the
+                    # row reads "completed (amber)" rather than green —
+                    # this attempt didn't finish the chain, more work
+                    # is queued.
+                    _complete_retry_attempt_job(
+                        attempt_job_id,
+                        warning=f"Attempt {fired_attempt} still pending; next retry queued",
                     )
             else:
                 logger.info("Retry chain for {} complete on attempt #{}", path, fired_attempt)
@@ -431,6 +656,7 @@ def schedule_retry_for_unindexed(
                     display_name=display_name,
                     source=source,
                 )
+                _complete_retry_attempt_job(attempt_job_id)
 
     scheduled = scheduler.schedule(canonical_path, _callback, attempt=attempt)
     if scheduled:

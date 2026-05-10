@@ -589,8 +589,12 @@ class TestUpsertRetryChainJobSourceAndDisplay:
 class TestRetryChainSynthesizedLogs:
     """The chain Job's ``View Logs`` modal used to show the misleading
     "Log file was cleared due to log retention policy." sentinel because
-    chain Jobs never write a per-attempt log file (they're UI-only).
-    Synthesize a meaningful status block instead.
+    chain Jobs themselves never write a per-attempt log file. Each retry
+    firing now spawns a real per-attempt Job (with a properly-levelled
+    log file the user can drill into) and the synthesized chain log
+    references those child Job IDs and uses ``INFO -`` / ``WARNING -``
+    prefixes so the dashboard's ``colorizeLogLine`` paints it the same
+    teal/amber as every other Job log.
     """
 
     def test_get_logs_returns_synthesized_status_for_chain_job(self, jm):
@@ -610,14 +614,45 @@ class TestRetryChainSynthesizedLogs:
 
         assert logs, "Synthesized log lines must not be empty for a chain Job"
         joined = "\n".join(logs)
-        assert "no per-attempt logs" in joined.lower(), (
-            "Synthesized log must explain to the user why per-attempt logs are missing here."
+        assert "real Job with its own log" in joined, (
+            "Synthesized log must point users to the per-attempt child Jobs (which DO have line-by-line logs)."
         )
         assert "X.mkv" in joined, "Synthesized log must surface the source file name"
         assert "2 of 5" in joined, "Synthesized log must surface attempt N of M"
         assert "Log file was cleared" not in joined, (
             "Pre-fix the retention sentinel was returned — that's misleading; "
             "no log was ever written for a chain Job to clear."
+        )
+        # Every emitted line MUST carry a level prefix the dashboard can
+        # colorize — otherwise the chain row's log renders without the
+        # teal/amber tint every other Job log has, which is exactly the
+        # "different colour" UX bug the user reported.
+        for line in logs:
+            assert " INFO - " in line or " WARNING - " in line or " ERROR - " in line, (
+                f"Synthesized log line missing level prefix — colorizeLogLine won't paint it: {line!r}"
+            )
+
+    def test_get_logs_lists_child_attempt_job_ids_when_present(self, jm):
+        """When per-attempt Jobs have been spawned, the chain row's log
+        must list them — without that the user has no way to navigate
+        from the chain summary to the actual coloured per-attempt logs.
+        """
+        path = "/data/Z.mkv"
+        chain = jm.upsert_retry_chain_job(
+            canonical_path=path,
+            basename="Z.mkv",
+            attempt=1,
+            max_attempts=5,
+            next_run_at=None,
+            wait_seconds=30,
+            outcome="scheduled",
+        )
+        new_cfg = dict(chain.config)
+        new_cfg["child_job_ids"] = ["aaa-1111", "bbb-2222"]
+        jm.update_job_config(chain.id, new_cfg)
+        joined = "\n".join(jm.get_logs(chain.id))
+        assert "aaa-1111" in joined and "bbb-2222" in joined, (
+            "Per-attempt Job UUIDs must surface in the chain log so users can find the real coloured logs."
         )
 
     def test_get_logs_paginated_returns_synthesized_status_for_chain_job(self, jm):

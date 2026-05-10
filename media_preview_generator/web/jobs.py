@@ -32,14 +32,17 @@ LOG_RETENTION_CLEARED_MESSAGE = "Log file was cleared due to log retention polic
 def _synthesize_retry_chain_log_lines(job: "Job") -> list[str]:
     """Render a retry-chain Job's state as readable log-style lines.
 
-    Retry-chain rows (``config["is_retry_chain"]``) never write a per-
-    attempt log file — they're a UI surface for the headless retry
-    queue. Returning the literal "Log file was cleared..." message here
-    misleads users into thinking real logs were pruned, when no log
-    ever existed for this row in the first place.
+    Retry-chain rows (``config["is_retry_chain"]``) are the parent
+    rollup for the headless retry queue — they don't run themselves.
+    Each firing inside the chain spawns a real per-attempt Job (UUID
+    in ``config["child_job_ids"]``) that writes its own properly-
+    levelled log file, so the user has somewhere with INFO/WARNING
+    colour-coded lines to drill into.
 
-    Each per-attempt dispatch is a SEPARATE Job with its own log file
-    (look it up by basename in the Jobs panel).
+    The lines below are prefixed with ``INFO -`` / ``WARNING -`` so
+    ``colorizeLogLine`` in ``job_modal.js`` paints them the same teal
+    /amber as every other Job log — without prefixes the chain row's
+    log was the one un-coloured surface in the dashboard.
     """
 
     def _ts(iso_value: str | None) -> str:
@@ -58,21 +61,32 @@ def _synthesize_retry_chain_log_lines(job: "Job") -> list[str]:
     attempt = cfg.get("retry_attempt", 0)
     max_attempts = cfg.get("retry_max_attempts", 0)
     last_outcome = cfg.get("last_outcome") or "(unknown)"
+    status_text = job.status.value if hasattr(job.status, "value") else job.status
 
     lines = [
-        f"[{started_ts}] Retry-chain status row (no per-attempt logs are written here).",
-        f"[{started_ts}] Each retry attempt is a separate Job with its own log file —",
-        f"[{started_ts}] look up '{basename}' in the Jobs panel to see the dispatched logs.",
-        f"[{started_ts}] Source path: {canonical}",
-        f"[{started_ts}] Chain status: {job.status.value if hasattr(job.status, 'value') else job.status}",
-        f"[{started_ts}] Attempt: {attempt} of {max_attempts}",
-        f"[{started_ts}] Last outcome: {last_outcome}",
+        f"[{started_ts}] INFO - Retry-chain summary row for '{basename}'.",
+        f"[{started_ts}] INFO - Each attempt below is a real Job with its own log "
+        "(open it from the Jobs panel for line-by-line dispatch output).",
+        f"[{started_ts}] INFO - Source path: {canonical}",
+        f"[{started_ts}] INFO - Chain status: {status_text}",
+        f"[{started_ts}] INFO - Attempt: {attempt} of {max_attempts}",
+        f"[{started_ts}] INFO - Last outcome: {last_outcome}",
     ]
+
+    child_ids = list(cfg.get("child_job_ids") or [])
+    if child_ids:
+        lines.append(f"[{started_ts}] INFO - Per-attempt Job IDs (newest last): " + ", ".join(child_ids))
+    else:
+        lines.append(
+            f"[{started_ts}] INFO - No per-attempt Jobs recorded yet — the first firing "
+            "will spawn one and link it here."
+        )
+
     if job.progress and job.progress.retry_eta:
         eta_ts = _ts(job.progress.retry_eta)
-        lines.append(f"[{started_ts}] Next attempt scheduled at: {eta_ts}")
+        lines.append(f"[{started_ts}] INFO - Next attempt scheduled at: {eta_ts}")
     if job.error:
-        lines.append(f"[{started_ts}] Reason: {job.error}")
+        lines.append(f"[{started_ts}] WARNING - Reason: {job.error}")
     return lines
 
 
@@ -610,7 +624,12 @@ class JobManager:
             # orphaned rows that hammer the dashboard. Drop them at
             # load time AND remove them from the SQLite store so the
             # next graceful exit doesn't re-write them.
-            if job.id.startswith("retry-"):
+            #
+            # Same rule for per-attempt retry-firing rows
+            # (``config["is_retry_attempt"]``): the parent chain's
+            # timer is gone, so an attempt row recovered from disk is
+            # an orphan with no live work to attribute to.
+            if job.id.startswith("retry-") or job.config.get("is_retry_attempt"):
                 retry_chain_orphans.append(job.id)
                 continue
             # Mark any "running" jobs as failed on startup (interrupted by
@@ -717,8 +736,29 @@ class JobManager:
         )
 
     def _persist_job(self, job: "Job") -> None:
-        """Upsert a single job's row to disk. No-op if storage couldn't open."""
+        """Upsert a single job's row to disk. No-op if storage couldn't open.
+
+        Both shapes of retry-chain Jobs are EPHEMERAL — they each live
+        only as long as the in-process ``threading.Timer`` driving the
+        chain, which does NOT survive a container restart. Persisting
+        them produces orphans on the next boot. Centralising the skip
+        here means every persist call site (``create_job``,
+        ``complete_job``, ``update_job_config``, …) honours the rule
+        without each having to add a ``config.is_retry_*`` check:
+
+          * ``is_retry_chain`` — the parent rollup row. ``upsert_retry_chain_job``
+            already declines to call this method, but other paths
+            (``update_job_config`` from ``_link_attempt_to_chain``, etc.)
+            would otherwise persist it as a side-effect.
+          * ``is_retry_attempt`` — each per-firing child Job. A busy
+            install (e.g. JellyTest backfill at ~88 firings/hour ×
+            5 BACKOFF stages) would otherwise accumulate thousands of
+            dead rows in ``jobs.db``, the same row-explosion pathology
+            that motivated the chain-row skip in 2026-05-09.
+        """
         if self._storage is None:
+            return
+        if job.config.get("is_retry_chain") or job.config.get("is_retry_attempt"):
             return
         try:
             self._storage.upsert(job)
