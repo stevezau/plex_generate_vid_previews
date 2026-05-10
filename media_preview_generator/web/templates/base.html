@@ -60,10 +60,39 @@
                             <i class="bi bi-hdd-stack me-1"></i>Servers
                         </a>
                     </li>
-                    <li class="nav-item">
-                        <a class="nav-link {% if request.endpoint == 'main.automation_page' %}active{% endif %}" href="{{ url_for('main.automation_page') }}">
+                    <li class="nav-item dropdown">
+                        <a class="nav-link dropdown-toggle {% if request.endpoint == 'main.automation_page' %}active{% endif %}" href="{{ url_for('main.automation_page') }}" id="navAutomationDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
                             <i class="bi bi-magic me-1"></i>Automation
                         </a>
+                        <ul class="dropdown-menu" aria-labelledby="navAutomationDropdown">
+                            <li>
+                                <a class="dropdown-item" href="{{ url_for('main.automation_page') }}#section-schedules-list">
+                                    <i class="bi bi-calendar-event me-2"></i>Schedules
+                                </a>
+                            </li>
+                            <li>
+                                <a class="dropdown-item" href="{{ url_for('main.automation_page') }}#section-schedules-quiet-hours">
+                                    <i class="bi bi-moon-stars me-2"></i>Quiet Hours
+                                </a>
+                            </li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li>
+                                <a class="dropdown-item" href="{{ url_for('main.automation_page') }}#section-webhooks-overview">
+                                    <i class="bi bi-lightning-charge me-2"></i>Triggers / Webhooks
+                                </a>
+                            </li>
+                            <li>
+                                <a class="dropdown-item" href="{{ url_for('main.automation_page') }}#section-webhooks-activity">
+                                    <i class="bi bi-clock-history me-2"></i>Activity Log
+                                </a>
+                            </li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li>
+                                <a class="dropdown-item" href="{{ url_for('main.automation_page') }}">
+                                    <i class="bi bi-grid me-2"></i>All automation
+                                </a>
+                            </li>
+                        </ul>
                     </li>
                     <li class="nav-item">
                         <a class="nav-link {% if request.endpoint == 'main.settings' %}active{% endif %}" href="{{ url_for('main.settings') }}">
