@@ -1100,6 +1100,18 @@ html[data-bs-theme="light"] ::-webkit-scrollbar-thumb:hover {
  * like an inline accordion instead of a popover detached from the row.
  * ────────────────────────────────────────────────────────────────────── */
 @media (max-width: 991.98px) {
+    /* Bigger touch targets (~44px tall) — Apple HIG minimum. The
+     * default Bootstrap nav-link padding rendered ~36px which is
+     * tappable but cramped, especially with multi-row clusters. */
+    .navbar-collapse .navbar-nav .nav-link {
+        padding-top: 0.7rem;
+        padding-bottom: 0.7rem;
+    }
+    .navbar-collapse .navbar-nav .nav-link .bi {
+        width: 1.2rem;
+        text-align: center;
+        flex-shrink: 0;
+    }
     /* Stretch every utility button to fill the menu row so the inline
      * label can lay out alongside the icon without wrapping. Without
      * ``width: 100%`` Bootstrap's ``btn`` styling keeps the button at
@@ -1109,13 +1121,25 @@ html[data-bs-theme="light"] ::-webkit-scrollbar-thumb:hover {
         display: flex !important;
         align-items: center;
         width: 100%;
-        padding: 0.55rem 0;
+        padding: 0.7rem 0;
         text-align: left;
     }
     .navbar-nav-utility .nav-link .bi {
         width: 1.2rem;
         text-align: center;
         flex-shrink: 0;
+    }
+    /* Logout: visually demote so it doesn't compete with primary nav.
+     * Smaller font, lighter weight, muted by default — still highly
+     * tappable but reads as a footer / account-level action. */
+    .navbar-nav-utility .nav-item:last-child .nav-link {
+        font-size: 0.875rem;
+        opacity: 0.75;
+    }
+    .navbar-nav-utility .nav-item:last-child .nav-link:hover,
+    .navbar-nav-utility .nav-item:last-child .nav-link:focus-visible {
+        opacity: 1;
+        color: var(--bs-danger);
     }
     /* Notification badge sits AFTER the icon+label row on desktop (top-right
      * of the bell). On mobile we move it inline with the label instead of

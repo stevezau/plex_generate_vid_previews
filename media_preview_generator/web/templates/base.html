@@ -104,17 +104,10 @@
                             <i class="bi bi-terminal me-1"></i>Logs
                         </a>
                     </li>
-                    <li class="nav-item dropdown">
-                        <a class="nav-link dropdown-toggle {% if request.endpoint == 'main.bif_viewer' %}active{% endif %}" href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">
-                            <i class="bi bi-tools me-1"></i>Tools
+                    <li class="nav-item">
+                        <a class="nav-link {% if request.endpoint == 'main.bif_viewer' %}active{% endif %}" href="{{ url_for('main.bif_viewer') }}">
+                            <i class="bi bi-film me-1"></i>Preview Inspector
                         </a>
-                        <ul class="dropdown-menu">
-                            <li>
-                                <a class="dropdown-item {% if request.endpoint == 'main.bif_viewer' %}active{% endif %}" href="{{ url_for('main.bif_viewer') }}">
-                                    <i class="bi bi-film me-2"></i>Preview Inspector
-                                </a>
-                            </li>
-                        </ul>
                     </li>
                 </ul>
                 <ul class="navbar-nav navbar-nav-utility">
@@ -183,32 +176,36 @@
                         </button>
                         <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="helpMenuBtn">
                             <li>
-                                <a class="dropdown-item"
+                                <a class="dropdown-item d-flex align-items-center"
                                    href="https://github.com/stevezau/plex_generate_vid_previews/issues/new/choose"
                                    target="_blank" rel="noopener noreferrer">
                                     <i class="bi bi-bug me-2"></i>Report an issue
+                                    <i class="bi bi-box-arrow-up-right ms-auto small text-muted" aria-label="Opens in a new tab"></i>
                                 </a>
                             </li>
                             <li>
-                                <a class="dropdown-item"
+                                <a class="dropdown-item d-flex align-items-center"
                                    href="https://github.com/stevezau/plex_generate_vid_previews/discussions"
                                    target="_blank" rel="noopener noreferrer">
                                     <i class="bi bi-chat-dots me-2"></i>Ask a question
+                                    <i class="bi bi-box-arrow-up-right ms-auto small text-muted" aria-label="Opens in a new tab"></i>
                                 </a>
                             </li>
                             <li>
-                                <a class="dropdown-item"
+                                <a class="dropdown-item d-flex align-items-center"
                                    href="https://github.com/stevezau/plex_generate_vid_previews#readme"
                                    target="_blank" rel="noopener noreferrer">
                                     <i class="bi bi-book me-2"></i>Documentation
+                                    <i class="bi bi-box-arrow-up-right ms-auto small text-muted" aria-label="Opens in a new tab"></i>
                                 </a>
                             </li>
                             <li><hr class="dropdown-divider"></li>
                             <li>
-                                <a class="dropdown-item"
+                                <a class="dropdown-item d-flex align-items-center"
                                    href="https://github.com/stevezau/plex_generate_vid_previews"
                                    target="_blank" rel="noopener noreferrer">
                                     <i class="bi bi-github me-2"></i>GitHub repository
+                                    <i class="bi bi-box-arrow-up-right ms-auto small text-muted" aria-label="Opens in a new tab"></i>
                                 </a>
                             </li>
                         </ul>
@@ -355,6 +352,38 @@
     <script src="{{ url_for('static', filename='js/autosave.js') }}"></script>
     <script src="{{ url_for('static', filename='js/folder_picker.js') }}"></script>
     <script src="{{ url_for('static', filename='js/stepper.js') }}"></script>
+
+    <!-- Mobile navbar auto-close — when a user taps a real navigation
+         link (one that takes them somewhere) inside the collapsed
+         hamburger menu, the menu used to stay open behind the new page
+         until they tapped the toggle again. Close the collapse on tap
+         so the navigation feels instant. Excludes dropdown toggles
+         (which need to keep the menu open to expand the accordion)
+         and external-link items handled below. -->
+    <script>
+        (function () {
+            var collapseEl = document.getElementById('navbarNav');
+            if (!collapseEl || !window.bootstrap || !window.bootstrap.Collapse) return;
+            collapseEl.addEventListener('click', function (event) {
+                var link = event.target.closest('a.nav-link, a.dropdown-item');
+                if (!link) return;
+                // Skip dropdown toggles (they expand the accordion in
+                // place; closing the menu would defeat the click).
+                if (link.matches('[data-bs-toggle="dropdown"]')) return;
+                // Skip the no-op anchor used by some legacy toggles.
+                var href = link.getAttribute('href') || '';
+                if (href === '' || href === '#') return;
+                // Only close on viewports where the navbar IS collapsed
+                // (matches Bootstrap navbar-expand-lg breakpoint at
+                // 992px). Above that the navbar is always horizontal
+                // and there's nothing to close.
+                if (window.innerWidth >= 992) return;
+                var instance = window.bootstrap.Collapse.getInstance(collapseEl)
+                    || new window.bootstrap.Collapse(collapseEl, { toggle: false });
+                instance.hide();
+            });
+        })();
+    </script>
 
     <!-- Theme toggle — flips data-bs-theme on <html> and persists to
          localStorage.  The pre-paint script in <head> reads the saved
