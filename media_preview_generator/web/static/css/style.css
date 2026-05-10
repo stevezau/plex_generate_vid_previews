@@ -1100,14 +1100,23 @@ html[data-bs-theme="light"] ::-webkit-scrollbar-thumb:hover {
  * like an inline accordion instead of a popover detached from the row.
  * ────────────────────────────────────────────────────────────────────── */
 @media (max-width: 991.98px) {
-    /* Hamburger toggle icon swap — show the list (≡) glyph when the
-     * menu is closed and the x-lg (✕) glyph when open. Pre-fix we
-     * tried rotating the default 3-bar SVG by 90°; that just looked
-     * like three vertical bars and users couldn't read it as "close".
-     * Bootstrap toggles ``aria-expanded`` for us, so we drive the
-     * swap purely from CSS. The button gains a subtle background
-     * tint when open as a secondary affordance.
-     */
+    /* The navbar uses ``backdrop-filter: saturate(1.8) blur(14px)``
+     * for the frosted-glass look on desktop, but ``backdrop-filter``
+     * establishes a fixed-positioning containing block — meaning any
+     * ``position: fixed`` child (like our offcanvas drawer) gets
+     * clipped to the navbar's 56px height instead of spanning the
+     * full viewport. Strip the filter on mobile so the offcanvas
+     * slides over the whole screen as it should. The visual loss is
+     * minimal because the drawer covers the navbar anyway. */
+    nav.navbar.sticky-top {
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
+    }
+
+    /* Hamburger toggle — opens the offcanvas drawer. Single ≡ glyph;
+     * the ✕ close button lives inside the drawer header (where it has
+     * room and reads as a proper dismiss). Tint the toggler in the
+     * brand colour as a subtle press-state cue. */
     .navbar-toggler {
         transition: background-color 0.15s ease, color 0.15s ease;
         line-height: 1;
@@ -1118,28 +1127,23 @@ html[data-bs-theme="light"] ::-webkit-scrollbar-thumb:hover {
         display: inline-block;
         line-height: 1;
     }
-    .navbar-toggler .navbar-toggler-glyph-close {
-        display: none;
-    }
-    .navbar-toggler[aria-expanded="true"] .navbar-toggler-glyph-open {
-        display: none;
-    }
-    .navbar-toggler[aria-expanded="true"] .navbar-toggler-glyph-close {
-        display: inline-block;
-    }
-    .navbar-toggler[aria-expanded="true"] {
+    .navbar-toggler:hover,
+    .navbar-toggler:focus-visible {
         background-color: var(--surface-2, rgba(255, 255, 255, 0.08));
         color: var(--plex-orange);
     }
 
     /* Bigger touch targets (~44px tall) — Apple HIG minimum. The
      * default Bootstrap nav-link padding rendered ~36px which is
-     * tappable but cramped, especially with multi-row clusters. */
-    .navbar-collapse .navbar-nav .nav-link {
+     * tappable but cramped, especially with multi-row clusters. The
+     * mobile menu lives inside an offcanvas drawer (#navbarNav with
+     * .offcanvas class below lg), so all selectors target the
+     * offcanvas surface. */
+    #navbarNav.offcanvas .navbar-nav .nav-link {
         padding-top: 0.7rem;
         padding-bottom: 0.7rem;
     }
-    .navbar-collapse .navbar-nav .nav-link .bi {
+    #navbarNav.offcanvas .navbar-nav .nav-link .bi {
         width: 1.2rem;
         text-align: center;
         flex-shrink: 0;
@@ -1181,10 +1185,10 @@ html[data-bs-theme="light"] ::-webkit-scrollbar-thumb:hover {
         transform: none !important;
         margin-left: auto;
     }
-    /* Dropdown menus inside the collapsed navbar render full-width and
+    /* Dropdown menus inside the offcanvas drawer render full-width and
      * borderless so they read as nested rows of the accordion, not as a
      * floating popover. */
-    .navbar-collapse .dropdown-menu {
+    #navbarNav.offcanvas .dropdown-menu {
         position: static;
         float: none;
         border: 0;
@@ -1192,7 +1196,7 @@ html[data-bs-theme="light"] ::-webkit-scrollbar-thumb:hover {
         background: transparent;
         padding-left: 1.25rem;
     }
-    .navbar-collapse .dropdown-menu .dropdown-item {
+    #navbarNav.offcanvas .dropdown-menu .dropdown-item {
         padding-left: 0.5rem;
         padding-top: 0.55rem;
         padding-bottom: 0.55rem;
@@ -1203,8 +1207,25 @@ html[data-bs-theme="light"] ::-webkit-scrollbar-thumb:hover {
      * floating popover, but on mobile they make a single accordion
      * group look like three disjoint sections. The label text alone
      * carries the grouping; the dividers add only visual noise. */
-    .navbar-collapse .dropdown-menu .dropdown-divider {
+    #navbarNav.offcanvas .dropdown-menu .dropdown-divider {
         display: none;
+    }
+
+    /* Offcanvas drawer surface — slide in from the right with a comfy
+     * width that matches typical iOS app drawers (75-85% of viewport).
+     * Pre-fix the default Bootstrap offcanvas was ~400px which on a
+     * 390px iPhone equalled the entire screen. */
+    #navbarNav.offcanvas-end {
+        width: min(82vw, 360px);
+        background-color: var(--bs-body-bg);
+    }
+    /* Drawer header — title + close button. Already styled by Bootstrap;
+     * just make sure the close button is large enough to tap reliably. */
+    #navbarNav .offcanvas-header .btn-close {
+        padding: 0.85rem;
+    }
+    #navbarNav .offcanvas-body {
+        padding-top: 0.5rem;
     }
 }
 

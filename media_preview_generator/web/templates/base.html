@@ -46,17 +46,30 @@
                 <i class="bi bi-film me-2"></i>Media Preview Generator
             </a>
             <!-- The standard ``.navbar-toggler-icon`` SVG is just three
-                 horizontal bars; rotating it 90° on open still reads as
-                 "three lines" not "X / close". Use Bootstrap Icons —
-                 ``list`` for the closed (hamburger) state and ``x-lg``
-                 for the open (close) state — and toggle visibility via
-                 the ``aria-expanded`` attribute Bootstrap manages for us. -->
-            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav"
-                    aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
-                <i class="bi bi-list navbar-toggler-glyph navbar-toggler-glyph-open" aria-hidden="true"></i>
-                <i class="bi bi-x-lg navbar-toggler-glyph navbar-toggler-glyph-close" aria-hidden="true"></i>
+                 horizontal bars; the close affordance got muddled when
+                 it was just a rotated hamburger. Use Bootstrap Icons —
+                 ``list`` for the closed (hamburger) state. The
+                 corresponding "close" glyph lives inside the offcanvas
+                 header (where it has more room and reads as a proper
+                 dismiss-X). -->
+            <button class="navbar-toggler" type="button" data-bs-toggle="offcanvas" data-bs-target="#navbarNav"
+                    aria-controls="navbarNav" aria-expanded="false" aria-label="Open navigation menu">
+                <i class="bi bi-list navbar-toggler-glyph" aria-hidden="true"></i>
             </button>
-            <div class="collapse navbar-collapse" id="navbarNav">
+            <!-- ``offcanvas offcanvas-end offcanvas-lg`` makes this menu
+                 slide in from the right (like a native iOS drawer) on
+                 viewports below ``lg``, while staying as a regular
+                 inline navbar at ``lg`` and up. Bootstrap 5.2+ handles
+                 the responsive switch for us. -->
+            <div class="offcanvas offcanvas-end offcanvas-lg" tabindex="-1" id="navbarNav"
+                 aria-labelledby="navbarOffcanvasLabel">
+                <div class="offcanvas-header border-bottom">
+                    <h5 class="offcanvas-title" id="navbarOffcanvasLabel">
+                        <i class="bi bi-film me-2 text-warning"></i>Menu
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="Close menu"></button>
+                </div>
+                <div class="offcanvas-body">
                 <ul class="navbar-nav me-auto">
                     <li class="nav-item">
                         <a class="nav-link {% if request.endpoint == 'main.index' %}active{% endif %}" href="{{ url_for('main.index') }}">
@@ -231,7 +244,8 @@
                         </a>
                     </li>
                 </ul>
-            </div>
+                </div>{# /.offcanvas-body #}
+            </div>{# /#navbarNav #}
         </div>
     </nav>
     {% endif %}
@@ -362,32 +376,28 @@
     <script src="{{ url_for('static', filename='js/stepper.js') }}"></script>
 
     <!-- Mobile navbar auto-close — when a user taps a real navigation
-         link (one that takes them somewhere) inside the collapsed
-         hamburger menu, the menu used to stay open behind the new page
-         until they tapped the toggle again. Close the collapse on tap
-         so the navigation feels instant. Excludes dropdown toggles
-         (which need to keep the menu open to expand the accordion)
-         and external-link items handled below. -->
+         link inside the offcanvas drawer, dismiss the drawer so the
+         page navigation feels instant (otherwise the drawer would
+         stay slid in over the destination page until they tapped X).
+         Excludes dropdown toggles (which need to keep the drawer open
+         to expand the accordion) and no-op anchors. -->
     <script>
         (function () {
-            var collapseEl = document.getElementById('navbarNav');
-            if (!collapseEl || !window.bootstrap || !window.bootstrap.Collapse) return;
-            collapseEl.addEventListener('click', function (event) {
+            var offcanvasEl = document.getElementById('navbarNav');
+            if (!offcanvasEl || !window.bootstrap || !window.bootstrap.Offcanvas) return;
+            offcanvasEl.addEventListener('click', function (event) {
                 var link = event.target.closest('a.nav-link, a.dropdown-item');
                 if (!link) return;
-                // Skip dropdown toggles (they expand the accordion in
-                // place; closing the menu would defeat the click).
                 if (link.matches('[data-bs-toggle="dropdown"]')) return;
-                // Skip the no-op anchor used by some legacy toggles.
                 var href = link.getAttribute('href') || '';
                 if (href === '' || href === '#') return;
-                // Only close on viewports where the navbar IS collapsed
-                // (matches Bootstrap navbar-expand-lg breakpoint at
-                // 992px). Above that the navbar is always horizontal
-                // and there's nothing to close.
+                // Only dismiss on viewports below the navbar-expand-lg
+                // breakpoint (992px). At lg+ the offcanvas isn't really
+                // an offcanvas — it renders inline as a regular navbar
+                // and there's nothing to hide.
                 if (window.innerWidth >= 992) return;
-                var instance = window.bootstrap.Collapse.getInstance(collapseEl)
-                    || new window.bootstrap.Collapse(collapseEl, { toggle: false });
+                var instance = window.bootstrap.Offcanvas.getInstance(offcanvasEl)
+                    || new window.bootstrap.Offcanvas(offcanvasEl);
                 instance.hide();
             });
         })();
