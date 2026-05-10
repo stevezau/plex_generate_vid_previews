@@ -235,3 +235,236 @@ class TestChainCancelCancelsChildren:
         assert jm.get_job(child_b.id).status == JobStatus.PENDING, (
             "Cancelling chain A must NOT cancel chain B's children — the cascade must filter by parent_chain_id."
         )
+
+
+class TestCancelDuringFiringRace:
+    """TOCTOU race between user clicking Cancel and the Timer's
+    ``_fire`` callback executing.
+
+    Pre-PLAN-collapse the chain row's Cancel was unwired entirely
+    (commit before f0f08a6) so this race didn't matter — the next
+    firing would still execute. With the cascade wired in 5dea715,
+    the architecture review flagged a remaining hole: if the user
+    cancels at the EXACT instant a Timer's ``_fire`` pops the timer
+    from the dict but hasn't yet run the callback,
+    ``RetryScheduler.cancel`` becomes a no-op (the Timer is no longer
+    in the dict to cancel). The callback then proceeds to spawn a
+    "ghost" attempt under a CANCELLED chain.
+
+    These tests force that exact ordering — Timer mid-fire, then
+    cancel — and pin the cascade's protective behavior: even if a
+    ghost attempt slips through, it must be marked CANCELLED so the
+    modal Attempts dropdown doesn't show stale "running" rows under
+    a cancelled chain.
+    """
+
+    def test_attempt_created_during_cancel_window_gets_cancelled_by_cascade(self, tmp_path):
+        """Force the race: pause the Timer's callback so it's mid-
+        execution when cancel runs. The cascade re-snapshots child
+        Jobs INSIDE the JobManager lock after releasing it once for
+        the scheduler call, so any attempt spawned between snapshot
+        and cancel must still get caught.
+
+        Pattern: monkey-patch ``process_canonical_path`` to wait on
+        an event before returning. While it's waiting, we issue the
+        cancel from the test thread. After we release the event, the
+        callback proceeds to spawn its attempt + record file_result.
+        We then assert the spawned attempt was cancelled — either by
+        the cascade catching it on a SECOND pass, or by an explicit
+        race-protective re-snap.
+        """
+        import threading
+        import time
+        from unittest.mock import patch
+
+        from media_preview_generator.processing.multi_server import (
+            MultiServerResult,
+            MultiServerStatus,
+            PublisherResult,
+            PublisherStatus,
+        )
+        from media_preview_generator.processing.retry_queue import (
+            _BACKOFF,
+            schedule_retry_for_unindexed,
+        )
+        from media_preview_generator.web.jobs import JobStatus
+
+        jm = _make_jm(tmp_path)
+
+        # Used to block process_canonical_path mid-execution so we can
+        # issue the cancel before the callback finishes spawning the
+        # attempt Job + recording its file_result.
+        callback_running = threading.Event()
+        release_callback = threading.Event()
+
+        def slow_process(**kwargs):
+            callback_running.set()
+            # Block until the test releases us (cancel happens here).
+            release_callback.wait(timeout=3)
+            return MultiServerResult(
+                canonical_path=kwargs["canonical_path"],
+                status=MultiServerStatus.PUBLISHED,
+                publishers=[
+                    PublisherResult(
+                        server_id="jelly-1",
+                        server_name="JellyTest",
+                        adapter_name="jellyfin_trickplay",
+                        status=PublisherStatus.PUBLISHED,
+                        message="ok",
+                    )
+                ],
+                frame_count=1,
+                message="ok",
+            )
+
+        with (
+            patch(
+                "media_preview_generator.processing.retry_queue._BACKOFF",
+                (0.05,) + tuple([0.05] * (len(_BACKOFF) - 1)),
+            ),
+            patch(
+                "media_preview_generator.processing.multi_server.process_canonical_path",
+                side_effect=slow_process,
+            ),
+        ):
+            schedule_retry_for_unindexed(
+                "/data/Race.mkv",
+                registry=MagicMock(),
+                config=MagicMock(),
+                item_id_by_server=None,
+                attempt=1,
+            )
+            # Wait until the Timer has fired and process_canonical_path
+            # is in flight. At this point the attempt Job has been
+            # created (it happens before process_canonical_path is
+            # called inside _callback) and the chain row was upserted
+            # to "running" — but the callback is BLOCKED.
+            assert callback_running.wait(timeout=2), "Timer should have fired"
+
+            # Find the chain id from the live state.
+            chain = next(j for j in jm.get_all_jobs() if j.id.startswith("retry-"))
+            inflight_attempt = next(
+                (j for j in jm.get_all_jobs() if j.config.get("is_retry_attempt")),
+                None,
+            )
+            assert inflight_attempt is not None, "Attempt Job should have been created before process_canonical_path"
+
+            # Issue cancel WHILE the callback is mid-execution.
+            jm.cancel_job(chain.id)
+
+            # Chain is now CANCELLED. Release the callback to finish.
+            release_callback.set()
+            # Give the callback time to record file_result + try to
+            # mark itself completed (it will hit the
+            # already-cancelled short-circuit in complete_job).
+            time.sleep(0.3)
+
+        # Post-race state:
+        chain_final = jm.get_job(chain.id)
+        assert chain_final.status == JobStatus.CANCELLED, (
+            f"Chain row must stay CANCELLED after race; got {chain_final.status}"
+        )
+        attempt_final = jm.get_job(inflight_attempt.id)
+        assert attempt_final.status == JobStatus.CANCELLED, (
+            f"In-flight attempt caught by the cascade must be CANCELLED, not "
+            f"COMPLETED by the post-callback complete_job. Got {attempt_final.status} "
+            f"error={attempt_final.error!r}. If this test fails the race is real: "
+            f"the callback's complete_job ran AFTER cancel and resurrected the "
+            f"attempt as COMPLETED — modal Attempts dropdown then shows a "
+            f"completed attempt under a cancelled chain."
+        )
+
+    def test_no_new_firings_after_cancel(self, tmp_path):
+        """After a chain is cancelled, no further attempt Jobs may
+        be spawned regardless of where the in-flight callback was.
+        Even if a Timer slipped through the cancel window and its
+        callback re-schedules (the existing _callback re-arms the
+        chain via schedule_retry_for_unindexed for PENDING outcomes),
+        that re-armed Timer's CALLBACK must short-circuit when it
+        sees the chain is CANCELLED — otherwise we get an infinite
+        cascade of cancel-then-resurrect.
+
+        Currently the retry_queue does NOT short-circuit on
+        already-cancelled chains. This test pins the desired
+        behavior: count attempt Jobs before vs 500ms after cancel.
+        Pre-fix this can FAIL because nothing in retry_queue checks
+        whether the chain row is still alive before spawning the
+        next attempt.
+        """
+        import threading
+        import time
+        from unittest.mock import patch
+
+        from media_preview_generator.processing.multi_server import (
+            MultiServerResult,
+            MultiServerStatus,
+            PublisherResult,
+            PublisherStatus,
+        )
+        from media_preview_generator.processing.retry_queue import (
+            schedule_retry_for_unindexed,
+        )
+
+        jm = _make_jm(tmp_path)
+
+        first_fired = threading.Event()
+        fires = []
+
+        def fake_process(**kwargs):
+            fires.append(kwargs.get("retry_attempt"))
+            first_fired.set()
+            return MultiServerResult(
+                canonical_path=kwargs["canonical_path"],
+                status=MultiServerStatus.PUBLISHED,
+                publishers=[
+                    PublisherResult(
+                        server_id="jelly-1",
+                        server_name="JellyTest",
+                        adapter_name="jellyfin_trickplay",
+                        status=PublisherStatus.PUBLISHED_PENDING_REGISTRATION,
+                        message="awaiting",
+                    )
+                ],
+                frame_count=0,
+                message="pending",
+            )
+
+        with (
+            patch(
+                "media_preview_generator.processing.retry_queue._BACKOFF",
+                (0.05, 0.5, 0.5, 0.5, 0.5),
+            ),
+            patch(
+                "media_preview_generator.processing.multi_server.process_canonical_path",
+                side_effect=fake_process,
+            ),
+        ):
+            schedule_retry_for_unindexed(
+                "/data/Race.mkv",
+                registry=MagicMock(),
+                config=MagicMock(),
+                item_id_by_server=None,
+                attempt=1,
+            )
+            # Wait for the first firing.
+            assert first_fired.wait(timeout=2)
+            time.sleep(0.1)  # let it record file_result + complete
+
+            # Cancel BEFORE the next Timer fires (next backoff is 0.5s).
+            chain = next(j for j in jm.get_all_jobs() if j.id.startswith("retry-"))
+            attempts_at_cancel = len([j for j in jm.get_all_jobs() if j.config.get("is_retry_attempt")])
+            jm.cancel_job(chain.id)
+
+            # Wait past the next would-be firing window.
+            time.sleep(0.8)
+
+            attempts_after_cancel = len([j for j in jm.get_all_jobs() if j.config.get("is_retry_attempt")])
+
+        assert attempts_after_cancel == attempts_at_cancel, (
+            f"No new attempts may spawn after cancel. Before cancel: "
+            f"{attempts_at_cancel} attempts; after 0.8s wait past next-fire "
+            f"window: {attempts_after_cancel}. Fires recorded: {fires}. "
+            f"If this fails, a Timer scheduled BEFORE cancel kept firing "
+            f"and the cascade only protected the in-flight callback, not "
+            f"the re-armed one."
+        )

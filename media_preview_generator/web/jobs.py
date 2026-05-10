@@ -1159,6 +1159,17 @@ class JobManager:
                 )
                 self._jobs[chain_id] = job
             else:
+                # CANCELLED is the user's explicit terminal state — never
+                # let a late callback or in-flight Timer flip it back to
+                # RUNNING/COMPLETED/PENDING. Without this guard a TOCTOU
+                # race between ``cancel_job`` and a Timer's ``_fire``
+                # produces a "ghost resurrection": the cascade marks the
+                # chain CANCELLED, then the mid-flight callback's
+                # post-process upsert (``_upsert_retry_chain_job(outcome=
+                # 'completed')``) silently overwrites it.
+                if job.status == JobStatus.CANCELLED:
+                    self._persist_job(job)
+                    return job
                 # Late-arriving server attribution wins over an empty one.
                 if not job.server_id and server_id:
                     job.server_id = server_id
