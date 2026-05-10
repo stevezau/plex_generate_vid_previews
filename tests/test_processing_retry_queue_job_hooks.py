@@ -968,6 +968,104 @@ class TestPerAttemptJobSpawn:
             f"Terminal attempt Jobs must load as-is; got {survivors[0].status}"
         )
 
+    def test_attempt_files_tab_gets_file_result_per_firing(self, tmp_path):
+        """The Job Details modal's Files tab reads from
+        ``record_file_result`` JSONL keyed by Job UUID. Pre-fix the
+        retry queue's ``_callback`` ran ``process_canonical_path``
+        directly in the timer thread with no wiring to
+        ``record_file_result`` (that hook lives in ``job_runner.py``'s
+        completion handler, which retries bypass). The result: Files
+        tab for every per-attempt Job rendered an empty
+        "No file results available" message.
+
+        Fix: ``_record_attempt_file_result`` after each firing writes
+        a per-canonical-path row with the aggregate ``MultiServerStatus``
+        and a publisher breakdown.
+        """
+        import media_preview_generator.web.jobs as jobs_mod
+        from media_preview_generator.processing.multi_server import (
+            MultiServerResult,
+            MultiServerStatus,
+            PublisherResult,
+            PublisherStatus,
+        )
+        from media_preview_generator.web.jobs import JobManager
+
+        with jobs_mod._job_lock:
+            jobs_mod._job_manager = JobManager(config_dir=str(tmp_path / "config"))
+
+        done = threading.Event()
+
+        def fake_process(**kwargs):
+            done.set()
+            return MultiServerResult(
+                canonical_path=kwargs["canonical_path"],
+                status=MultiServerStatus.PUBLISHED,
+                publishers=[
+                    PublisherResult(
+                        server_id="jelly-1",
+                        server_name="JellyTest",
+                        adapter_name="jellyfin_trickplay",
+                        status=PublisherStatus.PUBLISHED,
+                        message="ok",
+                    ),
+                    PublisherResult(
+                        server_id="plex-default",
+                        server_name="Plex",
+                        adapter_name="plex_bundle",
+                        status=PublisherStatus.PUBLISHED_PENDING_REGISTRATION,
+                        message="awaiting",
+                    ),
+                ],
+                frame_count=1,
+                message="Published with 1 pending registration",
+            )
+
+        with (
+            patch(
+                "media_preview_generator.processing.retry_queue._BACKOFF",
+                (0.05,) + tuple([0.05] * (len(_BACKOFF) - 1)),
+            ),
+            patch(
+                "media_preview_generator.processing.multi_server.process_canonical_path",
+                side_effect=fake_process,
+            ),
+        ):
+            schedule_retry_for_unindexed(
+                "/data/Foo.mkv",
+                registry=MagicMock(),
+                config=MagicMock(),
+                item_id_by_server=None,
+                attempt=1,
+            )
+            assert done.wait(timeout=2)
+            time.sleep(0.2)
+
+        # Pick attempt #1 specifically — subsequent firings may fall
+        # through to the REAL process_canonical_path once the
+        # context-manager-bounded patch exits (BACKOFF=0.05s means
+        # retries fire so fast they outrun the with-block), and those
+        # would record different file_result rows.
+        attempts = [j for j in jobs_mod._job_manager.get_all_jobs() if j.config.get("is_retry_attempt")]
+        first = next((j for j in attempts if j.config["retry_attempt"] == 1), None)
+        assert first is not None, "First-firing attempt Job must exist"
+        results = jobs_mod._job_manager.get_file_results(first.id)
+        assert len(results) == 1, (
+            f"Per-attempt Job MUST have exactly one file_result for the canonical path; "
+            f"got {len(results)}. Files tab would render empty without this."
+        )
+        r = results[0]
+        assert r["file"] == "/data/Foo.mkv", f"file_result keyed on canonical path; got {r['file']!r}"
+        assert r["outcome"] == "published", f"outcome must reflect MultiServerStatus.PUBLISHED; got {r['outcome']!r}"
+        assert "Published" in (r.get("reason") or ""), (
+            f"reason must surface MultiServerResult.message; got {r.get('reason')!r}"
+        )
+        servers = r.get("servers") or []
+        assert len(servers) == 2, f"Per-server pills should map 1:1 with PublisherResult entries; got {len(servers)}"
+        # Vendor-type derivation runs on adapter_name substring.
+        types = {s.get("type") for s in servers}
+        assert types == {"jellyfin", "plex"}, f"Vendor types must derive from adapter names; got {types}"
+
     def test_inflight_per_attempt_jobs_marked_failed_on_restart(self, tmp_path):
         """Counterpoint: a PENDING/RUNNING attempt Job recovered from
         disk at restart MUST be marked FAILED with the interruption

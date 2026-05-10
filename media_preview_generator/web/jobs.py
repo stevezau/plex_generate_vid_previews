@@ -1169,12 +1169,33 @@ class JobManager:
                 # When the cleaned title arrives later (e.g. first attempt
                 # was scheduled with the raw basename, second attempt's
                 # caller has the dispatcher's library_name) prefer the
-                # cleaner one — tested by length-comparing rather than
-                # blindly overwriting, since "Show S01E01" is shorter
-                # AND cleaner than "Show.Name.S01E01.…-RELEASE.mkv".
-                if basename and basename != job.library_name and len(basename) < len(job.library_name or ""):
-                    job.library_name = basename
-                    job.config["retry_basename"] = basename
+                # cleaner one. Cleanliness rule:
+                #   * Titles that end in a media extension (.mkv, .mp4,
+                #     .avi, etc.) ALWAYS lose to titles that don't,
+                #     regardless of length. ``"Show.Name.S01E01...-RELEASE.mkv"``
+                #     is dirtier than ``"Show S01E01"`` even when the
+                #     latter is shorter, but a length tiebreak alone
+                #     gets the wrong answer when the dirty basename is
+                #     coincidentally shorter (live regression seen
+                #     2026-05-11 on ``Ruqyah.mkv`` vs the parent
+                #     dispatch's cleaned ``"Ruqyah The Exorcism (2017)"``).
+                #   * Otherwise: shorter wins (preserves the original
+                #     "prefer the dispatcher's cleaned title" intent).
+                _MEDIA_EXTS = (".mkv", ".mp4", ".m4v", ".avi", ".mov", ".wmv", ".ts")
+                if basename and basename != job.library_name:
+                    cur = job.library_name or ""
+                    new_dirty = basename.lower().endswith(_MEDIA_EXTS)
+                    cur_dirty = cur.lower().endswith(_MEDIA_EXTS)
+                    prefer_new = False
+                    if cur_dirty and not new_dirty:
+                        prefer_new = True
+                    elif not new_dirty and not cur_dirty and len(basename) < len(cur):
+                        prefer_new = True
+                    elif new_dirty and cur_dirty and len(basename) < len(cur):
+                        prefer_new = True
+                    if prefer_new:
+                        job.library_name = basename
+                        job.config["retry_basename"] = basename
 
             job.config["retry_attempt"] = int(attempt)
             job.config["retry_max_attempts"] = int(max_attempts)

@@ -521,6 +521,79 @@ class TestUpsertRetryChainJobSourceAndDisplay:
         )
         assert job.config["source"] == "sonarr"
 
+    def test_extension_bearing_basename_loses_to_clean_title_regardless_of_length(self, jm):
+        """Live regression caught 2026-05-11 in production on
+        ``retry-550b9f7fa83bd575``: the chain row's library_name was
+        ``"Ruqyah The Exorcism (2017) [imdb-...][WEBDL-1080p][AAC 2.0][x264]-MooMa.mkv"``
+        (the raw ``.mkv``-bearing filename) instead of the cleaner
+        ``"Ruqyah The Exorcism (2017)"`` the parent dispatch had. The
+        pre-fix "shorter wins" heuristic picked the dirty filename
+        because, in this case, the basename was BOTH dirty AND shorter
+        than the dispatcher's verbose title in the same upsert sequence.
+
+        Rule: titles ending in a media file extension (``.mkv``,
+        ``.mp4`` etc.) ALWAYS lose to non-extension-bearing titles.
+        """
+        path = "/data/Foo.mkv"
+        # First seed with a clean title that's LONGER than the raw filename.
+        jm.upsert_retry_chain_job(
+            canonical_path=path,
+            basename="Ruqyah The Exorcism (2017)",  # 26 chars, clean
+            attempt=1,
+            max_attempts=5,
+            next_run_at=None,
+            wait_seconds=30,
+            outcome="scheduled",
+        )
+        # Now upsert with a SHORTER dirty basename. Pre-fix would clobber.
+        job = jm.upsert_retry_chain_job(
+            canonical_path=path,
+            basename="Foo.mkv",  # 7 chars, dirty
+            attempt=2,
+            max_attempts=5,
+            next_run_at=None,
+            wait_seconds=120,
+            outcome="scheduled",
+        )
+        assert job.library_name == "Ruqyah The Exorcism (2017)", (
+            f"Extension-bearing basename must NOT win even when shorter. Got {job.library_name!r}."
+        )
+
+    def test_clean_basename_wins_over_existing_dirty_title(self, jm):
+        """Inverse direction: when the existing library_name has a
+        media extension and a CLEAN replacement arrives (even if
+        longer), the clean one must win — that's the upgrade path
+        for a chain row whose first upsert happened with the raw
+        filename (no display_name in scope yet) and a later upsert
+        from the worker has the dispatcher's cleaned title.
+        """
+        path = "/data/Foo.mkv"
+        # Seed with dirty title (would happen if display_name was None at
+        # first call and basename fell back to os.path.basename).
+        jm.upsert_retry_chain_job(
+            canonical_path=path,
+            basename="Foo.mkv",  # dirty
+            attempt=1,
+            max_attempts=5,
+            next_run_at=None,
+            wait_seconds=30,
+            outcome="scheduled",
+        )
+        # Worker subsequently passes the cleaned title — even though
+        # it's LONGER, it should win because the existing is dirty.
+        job = jm.upsert_retry_chain_job(
+            canonical_path=path,
+            basename="A Very Long Clean Movie Title (2024)",  # 36 chars, clean
+            attempt=2,
+            max_attempts=5,
+            next_run_at=None,
+            wait_seconds=120,
+            outcome="scheduled",
+        )
+        assert job.library_name == "A Very Long Clean Movie Title (2024)", (
+            f"A clean longer title must win over an existing dirty .mkv basename. Got {job.library_name!r}."
+        )
+
     def test_cleaner_title_replaces_raw_basename_on_subsequent_upsert(self, jm):
         """Live regression (2026-05-10): retry-queue's first call comes
         from a path-only context and uses ``os.path.basename`` (raw

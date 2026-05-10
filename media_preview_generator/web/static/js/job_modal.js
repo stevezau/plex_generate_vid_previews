@@ -115,6 +115,7 @@ function showLogsModal(jobId) {
 
     const job = jobs.find(j => j.id === targetId);
     const isRunning = job && job.status === 'running';
+    const isChainRow = !!(job && job.config && job.config.is_retry_chain);
     const autoScrollEl = document.getElementById('logsAutoScroll');
     autoScrollEl.checked = isRunning;
 
@@ -124,15 +125,25 @@ function showLogsModal(jobId) {
     refreshLogs();
 
     if (logsRefreshInterval) clearInterval(logsRefreshInterval);
-    if (isRunning) {
+    // Chain rows poll regardless of their current status because a
+    // PENDING chain can transition to RUNNING (mid-firing) and back to
+    // PENDING (next backoff) repeatedly while the modal is open. The
+    // poll also refreshes the Attempts dropdown so new firings appear
+    // as options without forcing the user to close+reopen. Pre-fix
+    // this gated only on ``isRunning`` captured at modal-open time,
+    // meaning a modal opened during a PENDING window never saw later
+    // attempts spawn.
+    if (isRunning || isChainRow) {
         logsRefreshInterval = setInterval(function() {
             pollNewLogs();
             // D27 — always refresh files (not just when the Files tab is
             // active) so switching to the tab mid-run shows current
-            // data instantly, not a 5s-stale snapshot. Loading the
-            // file list when invisible is cheap; the JSONL parser is
-            // O(filtered+page) thanks to the cap + pagination work.
+            // data instantly, not a 5s-stale snapshot.
             if (_fileResultsLoaded) refreshFileResults();
+            // For chain rows: re-fetch the attempts list so new firings
+            // appear in the dropdown without user intervention. Preserves
+            // the currently-selected option (no auto-switch).
+            if (isChainRow) _refreshAttemptsDropdown(targetId);
         }, 5000);
     }
 
@@ -479,6 +490,57 @@ async function _loadAttemptsDropdown(chainId) {
     }
 }
 
+async function _refreshAttemptsDropdown(chainId) {
+    // Poll-driven refresh: re-fetch /attempts, append any NEW attempt
+    // UUIDs to the dropdown, and update each option's status/duration
+    // label so an attempt mid-flight (running → completed) shows the
+    // updated glyph without the user re-opening the modal. Preserves
+    // the currently-selected option (no auto-switch on new attempts).
+    const select = document.getElementById('attemptsDropdown');
+    if (!select) return;
+    try {
+        const data = await apiGet('/api/jobs/' + encodeURIComponent(chainId) + '/attempts');
+        const attempts = data.attempts || [];
+        if (attempts.length === 0) return;
+        const max = data.max_attempts || attempts[attempts.length - 1].retry_attempt;
+        const existingIds = new Set(Array.from(select.options).map(o => o.value));
+        const previouslySelected = select.value;
+        let html = '';
+        for (let i = 0; i < attempts.length; i++) {
+            const a = attempts[i];
+            const glyph = _ATTEMPT_STATUS_GLYPH[a.status] || '?';
+            const dur = _formatAttemptDuration(a.duration_sec);
+            const durLabel = dur ? ' · ' + dur : '';
+            const label = glyph + ' Attempt ' + a.retry_attempt + ' of ' + max
+                + ' — ' + a.status + durLabel;
+            html += '<option value="' + escapeHtml(a.id) + '">' + escapeHtml(label) + '</option>';
+        }
+        select.innerHTML = html;
+        // Restore previously-selected option if it still exists; otherwise
+        // select the newest (last in the sorted list).
+        const wasInList = existingIds.has(previouslySelected);
+        let pickedIdx = attempts.length - 1;
+        if (wasInList) {
+            for (let i = 0; i < attempts.length; i++) {
+                if (attempts[i].id === previouslySelected) { pickedIdx = i; break; }
+            }
+        }
+        select.selectedIndex = pickedIdx;
+        _logsModalAttemptId = attempts[pickedIdx].id;
+        const hint = document.getElementById('attemptsHint');
+        if (hint) {
+            hint.textContent = attempts.length === max
+                ? attempts.length + ' of ' + max + ' attempts'
+                : attempts.length + ' attempts so far (max ' + max + ')';
+        }
+    } catch (error) {
+        // Silent on poll-driven refresh failures — the user has the
+        // last-good dropdown state and the next tick will retry.
+        console.debug('Attempts dropdown poll-refresh failed:', error);
+    }
+}
+
+
 function onAttemptSelected(select) {
     if (!select || !select.value) return;
     _logsModalAttemptId = select.value;
@@ -492,6 +554,20 @@ function onAttemptSelected(select) {
     document.getElementById('logsContent').innerHTML = '<span class="text-muted">Loading…</span>';
     _updateEarlierLogsButton();
     refreshLogs();
+    // Refresh the Files tab too: per-file results are written per
+    // dispatch Job (each retry firing has its own JSONL), so the user
+    // sees DIFFERENT files for attempt 1 vs attempt 5 (the latter
+    // recorded the final publish, the former a pending_registration).
+    // Only re-fetch if the Files tab has been opened at least once
+    // this modal lifetime — otherwise wait for ``onFilesTabActivated``.
+    _filePage = 1;
+    _fileResultsLoaded = false;
+    document.getElementById('fileResultsBody').innerHTML =
+        '<tr><td colspan="4" class="text-muted text-center">Loading…</td></tr>';
+    var filesTabBtn = document.getElementById('filesTab');
+    if (filesTabBtn && filesTabBtn.classList.contains('active')) {
+        refreshFileResults();
+    }
 }
 
 function _updateEarlierLogsButton() {
@@ -611,7 +687,12 @@ function onFilesTabActivated() {
 }
 
 async function refreshFileResults() {
-    var targetId = _logsModalJobId;
+    // Scope to the selected attempt when the modal target is a chain
+    // row — the per-file results JSONL is written per dispatch Job, so
+    // each retry firing has its own. The dropdown sets
+    // ``_logsModalAttemptId`` which ``_logsTargetId`` returns. For
+    // non-chain jobs this collapses to ``_logsModalJobId`` as before.
+    var targetId = _logsTargetId();
     if (!targetId) return;
     try {
         var params = 'page=' + _filePage + '&per_page=' + _filePerPage;

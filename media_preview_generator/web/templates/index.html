@@ -457,6 +457,25 @@
                      user diagnosing a multi-server job sees "Plex ✓, Emby ✗"
                      before having to scan the log stream. Empty for legacy jobs. -->
                 <div id="logsModalPublishers" class="mb-2"></div>
+                <!-- Attempts switcher for retry-chain rows — sits ABOVE
+                     the tabs strip so it scopes BOTH the Logs and Files
+                     panes to the selected attempt. Hidden by default
+                     (display:none); ``showLogsModal`` flips it to
+                     display:flex only when the modal's target Job is
+                     a chain row (``is_retry_chain``). Powered by
+                     GET /api/jobs/<chain_id>/attempts; selecting an
+                     option sets ``_logsModalAttemptId`` and re-renders
+                     whichever tab is active. -->
+                <div id="attemptsDropdownWrap" class="d-none align-items-center mb-2 gap-2"
+                     role="region" aria-label="Retry attempts">
+                    <label class="form-label small mb-0 text-muted" for="attemptsDropdown">
+                        <i class="bi bi-arrow-clockwise me-1"></i>Attempt
+                    </label>
+                    <select class="form-select form-select-sm" id="attemptsDropdown"
+                            style="width: 280px;" onchange="onAttemptSelected(this)"
+                            aria-label="Switch between retry attempts"></select>
+                    <small class="text-muted" id="attemptsHint"></small>
+                </div>
                 <!-- Tabs -->
                 <ul class="nav nav-tabs mb-3" id="jobDetailTabs" role="tablist">
                     <li class="nav-item" role="presentation">
@@ -473,22 +492,6 @@
                 <div class="tab-content" id="jobDetailTabContent">
                     <!-- Logs Tab Pane -->
                     <div class="tab-pane fade show active" id="logsTabPane" role="tabpanel">
-                        <!-- Attempts switcher for retry-chain rows. Only
-                             rendered (display:flex) when the modal's
-                             target Job is a chain row (is_retry_chain).
-                             Powered by GET /api/jobs/<chain_id>/attempts;
-                             selecting an option redirects the log
-                             fetch functions to that attempt's UUID. -->
-                        <div id="attemptsDropdownWrap" class="d-none align-items-center mb-2 gap-2"
-                             role="region" aria-label="Retry attempts">
-                            <label class="form-label small mb-0 text-muted" for="attemptsDropdown">
-                                <i class="bi bi-arrow-clockwise me-1"></i>Attempt
-                            </label>
-                            <select class="form-select form-select-sm" id="attemptsDropdown"
-                                    style="width: 280px;" onchange="onAttemptSelected(this)"
-                                    aria-label="Switch between retry attempts"></select>
-                            <small class="text-muted" id="attemptsHint"></small>
-                        </div>
                         <div class="d-flex justify-content-end align-items-center mb-2">
                             <div class="d-flex align-items-center gap-3">
                                 <div class="input-group input-group-sm" style="width: 250px;">

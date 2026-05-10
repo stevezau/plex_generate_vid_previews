@@ -435,6 +435,69 @@ def _complete_retry_attempt_job(
         logger.debug("Per-attempt Job completion failed for {!r}: {}", child_job_id, exc)
 
 
+def _record_attempt_file_result(child_job_id: str | None, canonical_path: str, result: Any) -> None:
+    """Write the canonical path's per-server publish breakdown into
+    the per-attempt Job's file_results JSONL so the modal's Files tab
+    has something to render when the user switches between attempts.
+
+    Pre-fix the Files tab for any per-attempt Job was empty because
+    ``record_file_result`` is only wired through ``job_runner.py``'s
+    completion handler; the retry callback bypasses that machinery
+    entirely (it calls ``process_canonical_path`` directly). The
+    Files tab then showed the placeholder "No file results available"
+    for every attempt row, which broke the "see per-attempt files"
+    UX the dashboard collapse was designed for.
+
+    The recorded outcome is the aggregate ``MultiServerStatus``; the
+    per-server pills come from each ``PublisherResult`` mapped to the
+    flat ``{id, name, type, status, frame_source}`` shape the existing
+    file-row renderer (``_renderFileServerPills``) consumes.
+    """
+    if not child_job_id:
+        return
+    try:
+        from ..web.jobs import get_job_manager
+
+        outcome = (result.status.value if hasattr(result.status, "value") else str(result.status)).lower()
+        reason = getattr(result, "message", "") or ""
+        servers = []
+        for p in getattr(result, "publishers", []) or []:
+            server_type = ""
+            adapter = (getattr(p, "adapter_name", "") or "").lower()
+            if "plex" in adapter:
+                server_type = "plex"
+            elif "emby" in adapter:
+                server_type = "emby"
+            elif "jelly" in adapter:
+                server_type = "jellyfin"
+            status_str = p.status.value if hasattr(p.status, "value") else str(p.status)
+            # Use the key names ``record_file_result`` reads via
+            # ``.get(...)`` (``server_id``, ``server_name``,
+            # ``server_type``) — not the slim post-write shape
+            # (``id``, ``name``, ``type``) that file_results.jsonl
+            # ultimately stores. Mixing them silently drops the
+            # vendor type to '' and the Files-tab per-server pills
+            # render colourless and unlabeled.
+            servers.append(
+                {
+                    "server_id": getattr(p, "server_id", "") or "",
+                    "server_name": getattr(p, "server_name", "") or "",
+                    "server_type": server_type,
+                    "status": status_str.lower(),
+                    "frame_source": getattr(p, "frame_source", None),
+                }
+            )
+        get_job_manager().record_file_result(
+            child_job_id,
+            canonical_path,
+            outcome,
+            reason=reason,
+            servers=servers,
+        )
+    except Exception as exc:
+        logger.debug("Per-attempt file_result record failed for {!r}: {}", child_job_id, exc)
+
+
 def _link_attempt_to_chain(canonical_path: str, attempt_job_id: str | None) -> None:
     """Append ``attempt_job_id`` to the parent chain's ``child_job_ids`` config.
 
@@ -593,6 +656,7 @@ def schedule_retry_for_unindexed(
                     display_name=display_name,
                     source=source,
                 )
+                _record_attempt_file_result(attempt_job_id, path, result)
             except Exception as exc:
                 logger.exception(
                     "Retry #{} for {} could not be dispatched ({}: {}). "
