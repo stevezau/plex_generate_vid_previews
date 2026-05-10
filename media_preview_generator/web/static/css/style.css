@@ -707,29 +707,37 @@ html[data-bs-theme="light"] .navbar {
 /* Top-right utility icons (notification bell + theme toggle) — give them a
  * unified circular hover affordance so they read as first-class controls
  * instead of bare text links. Matches the .icon-btn-group treatment used
- * inside tables. */
-.navbar .nav-item > #notificationBellBtn,
-.navbar .nav-item > #themeToggleBtn {
-    width: 38px;
-    height: 38px;
-    display: inline-flex !important;
-    align-items: center;
-    justify-content: center;
-    padding: 0;
-    border-radius: 50%;
-    color: var(--bs-body-color) !important;
-    transition: background-color 0.15s ease, color 0.15s ease;
-}
-.navbar .nav-item > #notificationBellBtn:hover,
-.navbar .nav-item > #themeToggleBtn:hover,
-.navbar .nav-item > #notificationBellBtn:focus-visible,
-.navbar .nav-item > #themeToggleBtn:focus-visible {
-    background-color: var(--surface-2, rgba(255, 255, 255, 0.08));
-    color: var(--plex-orange) !important;
-}
-.navbar .nav-item > #notificationBellBtn .bi,
-.navbar .nav-item > #themeToggleBtn .bi {
-    font-size: 1.05rem;
+ * inside tables.
+ *
+ * Desktop-only — on mobile (≤ 991.98px) the same buttons collapse INTO
+ * the hamburger menu and take full-row treatment with text labels (see
+ * the ``.navbar-nav-utility`` block in the mobile media query below). The
+ * 38×38 circle is the wrong shape for an accordion row.
+ */
+@media (min-width: 992px) {
+    .navbar .nav-item > #notificationBellBtn,
+    .navbar .nav-item > #themeToggleBtn {
+        width: 38px;
+        height: 38px;
+        display: inline-flex !important;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+        border-radius: 50%;
+        color: var(--bs-body-color) !important;
+        transition: background-color 0.15s ease, color 0.15s ease;
+    }
+    .navbar .nav-item > #notificationBellBtn:hover,
+    .navbar .nav-item > #themeToggleBtn:hover,
+    .navbar .nav-item > #notificationBellBtn:focus-visible,
+    .navbar .nav-item > #themeToggleBtn:focus-visible {
+        background-color: var(--surface-2, rgba(255, 255, 255, 0.08));
+        color: var(--plex-orange) !important;
+    }
+    .navbar .nav-item > #notificationBellBtn .bi,
+    .navbar .nav-item > #themeToggleBtn .bi {
+        font-size: 1.05rem;
+    }
 }
 
 /* Notification bell dropdown in the top-right navbar. */
@@ -1076,6 +1084,61 @@ html[data-bs-theme="light"] ::-webkit-scrollbar-thumb:hover {
 
 [data-bs-theme="dark"] .active-job-card.retry-waiting {
     background-color: rgba(255, 193, 7, 0.08);
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Mobile navbar polish — when the hamburger collapses the navbar into a
+ * vertical stack, the right-side utility cluster (Notifications / Help /
+ * Theme / Logout) used to render as bare icons with no labels. Pre-fix
+ * the user opened the menu and saw 3 mystery glyphs in a row before
+ * Logout. The template now ships a ``d-lg-none`` text label inside each
+ * utility button; this CSS makes those rows align with the primary nav
+ * (Dashboard / Servers / …) so everything reads as one consistent menu.
+ *
+ * The Bootstrap dropdown menus inside the collapsed navbar (Automation,
+ * Tools, Help, Notifications) render flush to the left so they look
+ * like an inline accordion instead of a popover detached from the row.
+ * ────────────────────────────────────────────────────────────────────── */
+@media (max-width: 991.98px) {
+    /* Stretch every utility button to fill the menu row so the inline
+     * label can lay out alongside the icon without wrapping. Without
+     * ``width: 100%`` Bootstrap's ``btn`` styling keeps the button at
+     * ``inline-block`` width — about 38px (just the icon) — and the
+     * label gets squeezed to one character per line. */
+    .navbar-nav-utility .nav-link {
+        display: flex !important;
+        align-items: center;
+        width: 100%;
+        padding: 0.55rem 0;
+        text-align: left;
+    }
+    .navbar-nav-utility .nav-link .bi {
+        width: 1.2rem;
+        text-align: center;
+        flex-shrink: 0;
+    }
+    /* Notification badge sits AFTER the icon+label row on desktop (top-right
+     * of the bell). On mobile we move it inline with the label instead of
+     * floating absolutely so it sits next to "Notifications" cleanly. */
+    .navbar-nav-utility .notification-bell-wrapper #notificationBellBadge {
+        position: static !important;
+        transform: none !important;
+        margin-left: auto;
+    }
+    /* Dropdown menus inside the collapsed navbar render full-width and
+     * borderless so they read as nested rows of the accordion, not as a
+     * floating popover. */
+    .navbar-collapse .dropdown-menu {
+        position: static;
+        float: none;
+        border: 0;
+        box-shadow: none;
+        background: transparent;
+        padding-left: 1.25rem;
+    }
+    .navbar-collapse .dropdown-menu .dropdown-item {
+        padding-left: 0.5rem;
+    }
 }
 
 /* Responsive adjustments */

@@ -117,10 +117,19 @@
                         </ul>
                     </li>
                 </ul>
-                <ul class="navbar-nav">
+                <ul class="navbar-nav navbar-nav-utility">
+                    <!-- Mobile-only divider — separates primary nav (Dashboard /
+                         Servers / …) from utility actions (Notifications / Help /
+                         Theme / Logout). Without this the user sees one long
+                         column of unlabelled icons after the primary links and
+                         can't tell which is what. Hidden on desktop where the
+                         right-aligned cluster naturally separates them. -->
+                    <li class="nav-item d-lg-none">
+                        <hr class="dropdown-divider my-2">
+                    </li>
                     <li class="nav-item dropdown notification-bell-wrapper">
                         <button type="button"
-                                class="nav-link btn btn-link position-relative"
+                                class="nav-link btn btn-link position-relative d-flex align-items-center"
                                 id="notificationBellBtn"
                                 data-bs-toggle="dropdown"
                                 data-bs-auto-close="outside"
@@ -128,6 +137,13 @@
                                 aria-label="System notifications"
                                 title="System notifications">
                             <i class="bi bi-bell-fill" id="notificationBellIcon"></i>
+                            <!-- Mobile-collapsed label: when the navbar is
+                                 stacked under the hamburger, an icon-only
+                                 button reads as a mystery glyph. Render the
+                                 label inline below `lg` so it matches the rest
+                                 of the menu. Desktop hides it (icon + tooltip
+                                 is enough where horizontal space is tight). -->
+                            <span class="d-lg-none ms-2">Notifications</span>
                             <span class="position-absolute translate-middle badge rounded-pill bg-danger d-none"
                                   id="notificationBellBadge"
                                   style="top: 35%; left: 70%; font-size: 0.65rem;">
@@ -156,13 +172,14 @@
                     </li>
                     <li class="nav-item dropdown">
                         <button type="button"
-                                class="nav-link btn btn-link"
+                                class="nav-link btn btn-link d-flex align-items-center"
                                 id="helpMenuBtn"
                                 data-bs-toggle="dropdown"
                                 aria-expanded="false"
                                 aria-label="Help and report an issue"
                                 title="Help / Report an issue">
                             <i class="bi bi-question-circle"></i>
+                            <span class="d-lg-none ms-2">Help &amp; feedback</span>
                         </button>
                         <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="helpMenuBtn">
                             <li>
@@ -197,9 +214,10 @@
                         </ul>
                     </li>
                     <li class="nav-item">
-                        <button type="button" class="nav-link btn btn-link" id="themeToggleBtn"
+                        <button type="button" class="nav-link btn btn-link d-flex align-items-center" id="themeToggleBtn"
                                 aria-label="Toggle dark/light theme" title="Toggle dark/light theme">
                             <i class="bi bi-moon-stars-fill" id="themeToggleIcon"></i>
+                            <span class="d-lg-none ms-2" id="themeToggleLabel">Switch to light theme</span>
                         </button>
                     </li>
                     <li class="nav-item">
@@ -347,11 +365,15 @@
             var icon = document.getElementById('themeToggleIcon');
             if (!btn || !icon) return;
 
+            var label = document.getElementById('themeToggleLabel');
             function syncIcon() {
                 var current = document.documentElement.getAttribute('data-bs-theme') || 'dark';
                 icon.className = current === 'dark' ? 'bi bi-moon-stars-fill' : 'bi bi-sun-fill';
-                btn.setAttribute('title',
-                    current === 'dark' ? 'Switch to light theme' : 'Switch to dark theme');
+                var hint = current === 'dark' ? 'Switch to light theme' : 'Switch to dark theme';
+                btn.setAttribute('title', hint);
+                // Mobile-collapsed label tracks the same hint so users
+                // tapping in the hamburger know what they're switching TO.
+                if (label) label.textContent = hint;
             }
 
             syncIcon();
