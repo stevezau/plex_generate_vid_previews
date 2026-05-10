@@ -1116,11 +1116,18 @@ html[data-bs-theme="light"] ::-webkit-scrollbar-thumb:hover {
     /* Hamburger toggle — opens the offcanvas drawer. Single ≡ glyph;
      * the ✕ close button lives inside the drawer header (where it has
      * room and reads as a proper dismiss). Tint the toggler in the
-     * brand colour as a subtle press-state cue. */
+     * brand colour as a subtle press-state cue.
+     *
+     * Padding sized so the rendered button is ≥44px tall (Apple HIG
+     * minimum touch target). Smaller and thumb taps land on the wrong
+     * area on a moving phone.
+     */
     .navbar-toggler {
         transition: background-color 0.15s ease, color 0.15s ease;
         line-height: 1;
-        padding: 0.4rem 0.6rem;
+        padding: 0.6rem 0.75rem;
+        min-height: 44px;
+        min-width: 44px;
     }
     .navbar-toggler .navbar-toggler-glyph {
         font-size: 1.4rem;
