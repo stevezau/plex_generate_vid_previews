@@ -1100,24 +1100,36 @@ html[data-bs-theme="light"] ::-webkit-scrollbar-thumb:hover {
  * like an inline accordion instead of a popover detached from the row.
  * ────────────────────────────────────────────────────────────────────── */
 @media (max-width: 991.98px) {
-    /* Hamburger toggle visual state — when the menu is OPEN, the same
-     * button is now functioning as a close button. Pre-fix the icon
-     * stayed identical and users had no signal to tap-to-close. The
-     * collapsed (open) ARIA state ``aria-expanded="true"`` is what
-     * Bootstrap toggles for us; we hook into it to swap the icon for
-     * an X with a slight rotation so the affordance is unmistakable. */
+    /* Hamburger toggle icon swap — show the list (≡) glyph when the
+     * menu is closed and the x-lg (✕) glyph when open. Pre-fix we
+     * tried rotating the default 3-bar SVG by 90°; that just looked
+     * like three vertical bars and users couldn't read it as "close".
+     * Bootstrap toggles ``aria-expanded`` for us, so we drive the
+     * swap purely from CSS. The button gains a subtle background
+     * tint when open as a secondary affordance.
+     */
     .navbar-toggler {
-        transition: transform 0.2s ease, background-color 0.15s ease;
+        transition: background-color 0.15s ease, color 0.15s ease;
+        line-height: 1;
+        padding: 0.4rem 0.6rem;
+    }
+    .navbar-toggler .navbar-toggler-glyph {
+        font-size: 1.4rem;
+        display: inline-block;
+        line-height: 1;
+    }
+    .navbar-toggler .navbar-toggler-glyph-close {
+        display: none;
+    }
+    .navbar-toggler[aria-expanded="true"] .navbar-toggler-glyph-open {
+        display: none;
+    }
+    .navbar-toggler[aria-expanded="true"] .navbar-toggler-glyph-close {
+        display: inline-block;
     }
     .navbar-toggler[aria-expanded="true"] {
-        transform: rotate(90deg);
         background-color: var(--surface-2, rgba(255, 255, 255, 0.08));
-    }
-    .navbar-toggler[aria-expanded="true"] .navbar-toggler-icon {
-        /* Cross out the three lines with a diagonal — cheap visual
-         * cue without swapping the SVG. The rotate above puts it on
-         * a 45° axis so combined it reads as an X. */
-        opacity: 0.7;
+        color: var(--plex-orange);
     }
 
     /* Bigger touch targets (~44px tall) — Apple HIG minimum. The

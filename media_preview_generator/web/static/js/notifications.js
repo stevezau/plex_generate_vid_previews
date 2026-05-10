@@ -39,6 +39,8 @@ function renderNotifications(notifications) {
     var list = document.getElementById('notificationList');
     var empty = document.getElementById('notificationEmpty');
     var badge = document.getElementById('notificationBellBadge');
+    var bellBtn = document.getElementById('notificationBellBtn');
+    var mobileLabel = bellBtn ? bellBtn.querySelector('.d-lg-none') : null;
     if (!list) return;
 
     // Wipe previous entries but keep the 'empty' placeholder at the top.
@@ -50,6 +52,12 @@ function renderNotifications(notifications) {
             badge.textContent = '0';
             badge.classList.add('d-none');
         }
+        // Mobile-collapsed bell row: when there's nothing to show,
+        // rename the inline label to "No new notifications" so the
+        // user doesn't waste a tap discovering an empty card. Desktop
+        // keeps the icon-only treatment with tooltip — the dropdown's
+        // own "you're all caught up" state is enough there.
+        if (mobileLabel) mobileLabel.textContent = 'No new notifications';
         return;
     }
 
@@ -57,6 +65,13 @@ function renderNotifications(notifications) {
     if (badge) {
         badge.textContent = notifications.length.toString();
         badge.classList.remove('d-none');
+    }
+    // Mobile-collapsed label includes the count so users see "Notifications (3)"
+    // at a glance without expanding the dropdown.
+    if (mobileLabel) {
+        mobileLabel.textContent = notifications.length === 1
+            ? '1 notification'
+            : notifications.length + ' notifications';
     }
 
     notifications.forEach(function (notif) {

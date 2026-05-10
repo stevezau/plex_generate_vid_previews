@@ -45,8 +45,16 @@
             <a class="navbar-brand" href="{{ url_for('main.index') }}">
                 <i class="bi bi-film me-2"></i>Media Preview Generator
             </a>
-            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
-                <span class="navbar-toggler-icon"></span>
+            <!-- The standard ``.navbar-toggler-icon`` SVG is just three
+                 horizontal bars; rotating it 90° on open still reads as
+                 "three lines" not "X / close". Use Bootstrap Icons —
+                 ``list`` for the closed (hamburger) state and ``x-lg``
+                 for the open (close) state — and toggle visibility via
+                 the ``aria-expanded`` attribute Bootstrap manages for us. -->
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav"
+                    aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+                <i class="bi bi-list navbar-toggler-glyph navbar-toggler-glyph-open" aria-hidden="true"></i>
+                <i class="bi bi-x-lg navbar-toggler-glyph navbar-toggler-glyph-close" aria-hidden="true"></i>
             </button>
             <div class="collapse navbar-collapse" id="navbarNav">
                 <ul class="navbar-nav me-auto">
