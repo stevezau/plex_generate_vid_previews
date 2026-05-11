@@ -26,9 +26,10 @@ Design choices:
 * One pending retry per canonical path. Subsequent webhooks for the
   same file while a retry is pending coalesce into the existing timer
   rather than piling up.
-* Backoff schedule: 30s, 2m, 5m, 15m, 60m. Five attempts, then give up
-  and log. Caps at ~80 minutes which covers slow Plex scans without
-  turning into a runaway loop.
+* Backoff schedule: 1m, 2m, 5m, 15m, 60m. Five attempts, then give up
+  and log. Caps at ~83 minutes which covers slow Plex/Jellyfin scans
+  without turning into a runaway loop. First attempt is 1m (not 30s)
+  to clear Jellyfin's hard-coded 45s ``LibraryMonitor`` settle delay.
 * The retry callback calls back into ``process_canonical_path`` —
   which means the journal short-circuit, frame cache, owning-server
   resolution, and per-publisher skip-if-exists all still apply on
@@ -48,14 +49,21 @@ from loguru import logger
 
 #: Backoff schedule in seconds for each attempt (1-indexed: ``BACKOFF_SCHEDULE[0]``
 #: is the delay before attempt #2). Five entries → up to five retries
-#: before giving up. Total wall time is ~82 minutes, deliberately past
+#: before giving up. Total wall time is ~83 minutes, deliberately past
 #: typical Plex full-scan duration on a small library.
+#:
+#: First attempt is 60s — Jellyfin's ``LibraryMonitor`` has a hard-coded
+#: ~45s file-event settle delay before processing the refresh, so anything
+#: under 45s is a guaranteed miss. Starting at 60s gives Jellyfin a real
+#: chance to have indexed the file on attempt 1 instead of wasting it.
+#: Subsequent gaps (2m / 5m / 15m / 1h) preserve the prior schedule's
+#: density in the 2-5min window where Jellyfin typically lands.
 #:
 #: Public so the resolution-step retry-job spawner in
 #: ``web/routes/job_runner.py`` can match this cadence (D15) — both code
 #: paths are fundamentally "wait for Plex to finish indexing", so they
 #: should pace identically and not race each other.
-BACKOFF_SCHEDULE: tuple[int, ...] = (30, 120, 300, 900, 3600)
+BACKOFF_SCHEDULE: tuple[int, ...] = (60, 120, 300, 900, 3600)
 _BACKOFF = BACKOFF_SCHEDULE  # backwards-compat alias
 
 

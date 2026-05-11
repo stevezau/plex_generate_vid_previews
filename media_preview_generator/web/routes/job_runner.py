@@ -1033,7 +1033,7 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                                     f"{not_indexed_count} file(s) waiting for the media server to scan / "
                                     "analyse them (the media server hasn't finished its own analysis pass "
                                     "for these files, so we don't have the bundle hash needed to publish the "
-                                    "BIF). They'll be retried automatically — slow backoff: 30s → 2m → 5m "
+                                    "BIF). They'll be retried automatically — slow backoff: 1m → 2m → 5m "
                                     "→ 15m → 60m."
                                 )
                                 job_manager.add_log(job_id, f"INFO - {msg}")

@@ -1457,7 +1457,7 @@ const STATUS_META = {
     // time so the per-item registration call (Jellyfin Media Preview Bridge plugin or
     // /Items/{id}/Refresh) was skipped. The retry queue picks this back up — once the
     // server indexes the file, the registration fires and the row promotes to "Generated".
-    published_pending_registration: { label: 'Generated (auto-retrying)', cls: 'bg-success', tip: 'Tiles are on disk; the server has not indexed the file yet so trickplay registration is pending. The row shows a "Retry N/M" chip while attempts back off 30s → 2m → 5m → 15m → 1h until the server catches up.' },
+    published_pending_registration: { label: 'Generated (auto-retrying)', cls: 'bg-success', tip: 'Tiles are on disk; the server has not indexed the file yet so trickplay registration is pending. The row shows a "Retry N/M" chip while attempts back off 1m → 2m → 5m → 15m → 1h until the server catches up.' },
 
     // Output already on disk; source unchanged — nothing to redo.
     skipped_bif_exists:     { label: 'Already Existed', cls: 'bg-info text-dark', tip: 'Output already on disk and source unchanged' },
@@ -1581,7 +1581,7 @@ function _renderRetryChip(job) {
     if (!activelyRetrying) return '';
     const attempt = typeof cfg.retry_attempt === 'number' ? cfg.retry_attempt : 0;
     return ' <span class="badge bg-warning text-dark ms-1" '
-        + 'title="The destination server hadn\'t indexed this file when we first published — auto-retrying until it catches up. Backoff: 30s → 2m → 5m → 15m → 1h.">'
+        + 'title="The destination server hadn\'t indexed this file when we first published — auto-retrying until it catches up. Backoff: 1m → 2m → 5m → 15m → 1h.">'
         + '<i class="bi bi-arrow-clockwise me-1"></i>Retry ' + attempt + '/' + max + '</span>';
 }
 

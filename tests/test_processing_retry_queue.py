@@ -27,16 +27,28 @@ def _reset_singleton():
 
 
 class TestBackoffSchedule:
-    def test_schedule_grows_geometrically(self):
-        # 30s → 2m → 5m → 15m → 60m. Each gap should be larger than the
-        # previous one — protects against accidental re-tuning to a flat
-        # schedule.
+    def test_schedule_is_monotonically_non_decreasing(self):
+        # 1m → 2m → 5m → 15m → 60m. Each gap should be ≥ the previous
+        # one — protects against accidental re-tuning to a flat or
+        # backwards-going schedule. (≥ not > because two equal entries
+        # would still be a valid backoff curve; a tuned schedule with
+        # 1m → 1m would just be redundant, not broken.)
         for prev, nxt in zip(_BACKOFF, _BACKOFF[1:], strict=False):
-            assert nxt > prev, _BACKOFF
+            assert nxt >= prev, _BACKOFF
 
-    def test_first_delay_under_a_minute(self):
-        """First retry must fire fast — Plex scans usually complete in seconds."""
-        assert _BACKOFF[0] <= 60
+    def test_first_delay_is_at_or_above_jellyfin_settle_floor(self):
+        """First retry must NOT fire under Jellyfin's hard-coded ~45s
+        LibraryMonitor settle delay — anything below that is a
+        guaranteed-miss attempt because Jellyfin can't possibly have
+        the file in its items DB yet. 60s is the minimum that gives
+        Jellyfin a real chance on attempt 1.
+
+        See ``Emby.Server.Implementations/IO/LibraryMonitor.cs`` in the
+        Jellyfin source — the 45s value is intentional ("long delays in
+        some situations, especially over the network, sometimes up to
+        45 seconds").
+        """
+        assert _BACKOFF[0] >= 60, _BACKOFF
 
     def test_public_alias_is_same_object(self):
         """D15 — BACKOFF_SCHEDULE is the public name; _BACKOFF is the
@@ -46,7 +58,7 @@ class TestBackoffSchedule:
         from media_preview_generator.processing.retry_queue import BACKOFF_SCHEDULE
 
         assert BACKOFF_SCHEDULE is _BACKOFF
-        assert BACKOFF_SCHEDULE == (30, 120, 300, 900, 3600)
+        assert BACKOFF_SCHEDULE == (60, 120, 300, 900, 3600)
 
 
 @pytest.mark.slow
