@@ -1575,6 +1575,15 @@ class TestScheduledTrickplayTaskReadiness:
         # Mode A row's recommended copy must mention the plugin so users
         # understand why disabling is safe for them specifically.
         assert "Bridge plugin" in (check["recommended"] or "")
+        # The explicit fix_action hint MUST point at "disable" so the
+        # JS direction-picker picks the right action key. The truthy
+        # string ``recommended`` would otherwise trigger the boolean
+        # fallback at the JS side and pick "enable" — silently doing
+        # the OPPOSITE of the row's recommendation. Pin the contract
+        # so a regression that drops the hint fails this test.
+        assert check["fix_action"] == "disable", (
+            f"Mode A + armed row must declare fix_action='disable'; got {check.get('fix_action')!r}"
+        )
 
     def test_mode_a_without_triggers_is_all_good(self, jelly):
         """Plugin installed + task disabled → info severity, ok=True."""
@@ -1626,6 +1635,10 @@ class TestScheduledTrickplayTaskReadiness:
         assert check["ok"] is False
         # The enable action must be present so the user can fix this.
         assert check["actions"]["enable"]["args"] == {"enabled": True}
+        # Explicit fix_action hint = re-enable (Mode B + no triggers).
+        assert check["fix_action"] == "enable", (
+            f"Mode B + disabled row must declare fix_action='enable'; got {check.get('fix_action')!r}"
+        )
         assert payload["overall_ok"] is False, (
             "Critical-severity scheduled-task row must trip overall_ok so the badge surfaces the breakage."
         )

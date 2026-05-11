@@ -1424,6 +1424,12 @@ class TestEmbyScheduledTrickplayReadiness:
         assert check["severity"] == "critical"
         assert check["ok"] is False
         assert check["actions"]["enable"]["args"] == {"enabled": True}
+        # Explicit fix_action hint so the JS direction-picker doesn't
+        # rely on lucky truthiness of the descriptive ``recommended``
+        # string. The fix on Emby is always re-enable.
+        assert check["fix_action"] == "enable", (
+            f"Emby disabled-task row must declare fix_action='enable'; got {check.get('fix_action')!r}"
+        )
         # The critical severity must bubble up to overall_ok so the badge
         # shows the breakage prominently. Without this, a user could have
         # trickplay totally broken and see a green Setup Health badge.

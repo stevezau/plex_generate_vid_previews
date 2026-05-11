@@ -1934,6 +1934,15 @@ class JellyfinServer(EmbyApiClient):
                         "severity": "recommended",
                         "current": f"enabled ({triggers_count} active trigger{'s' if triggers_count != 1 else ''}){task_running_note}",
                         "recommended": "disabled (Bridge plugin handles registration)",
+                        # Explicit hint for both the per-row "Apply
+                        # recommended" button and the bulk fix-plan:
+                        # use the ``disable`` action key. Required
+                        # because ``recommended`` is a descriptive
+                        # string (truthy) — the JS direction-picker's
+                        # boolean fallback would otherwise pick
+                        # ``enable`` and do the OPPOSITE of the
+                        # recommendation.
+                        "fix_action": "disable",
                         "actions": {
                             "disable": {
                                 "action": "set_scheduled_trickplay",
@@ -1986,6 +1995,10 @@ class JellyfinServer(EmbyApiClient):
                         "severity": "info",
                         "current": "disabled (no triggers)",
                         "recommended": "disabled (Bridge plugin handles registration)",
+                        # ok=True row has no "fix" — the row is already
+                        # in the recommended state. The enable action is
+                        # an opt-out (override the recommendation), not
+                        # the fix; no fix_action hint needed.
                         "actions": {
                             "enable": {
                                 "action": "set_scheduled_trickplay",
@@ -2053,6 +2066,8 @@ class JellyfinServer(EmbyApiClient):
                         "severity": "critical",
                         "current": "disabled (no triggers)",
                         "recommended": "enabled (no Bridge plugin → this is the only registration path)",
+                        # Mode B + no triggers: the fix is to re-enable.
+                        "fix_action": "enable",
                         "actions": {
                             "enable": {
                                 "action": "set_scheduled_trickplay",

@@ -2242,8 +2242,18 @@
         // opposite is low-emphasis grey-outline; passing rows hide the
         // fix (no-op) and keep only the opt-out as a quiet outline.
         const actions = check.actions || {};
-        const fixDir = check.recommended ? 'enable' : 'disable';
-        const breakDir = check.recommended ? 'disable' : 'enable';
+        // ``check.fix_action`` is an explicit hint from the backend
+        // (string: "enable" or "disable") that names which action key
+        // is the recommended fix. Required for rows whose ``recommended``
+        // is a descriptive string (e.g. the scheduled-trickplay row's
+        // "disabled (Bridge plugin handles registration)") because the
+        // boolean fallback below treats any truthy ``recommended`` as
+        // "enable" and would pick the wrong action — silently doing the
+        // OPPOSITE of what the row recommends.
+        const fixDir = (typeof check.fix_action === 'string' && (check.fix_action === 'enable' || check.fix_action === 'disable'))
+            ? check.fix_action
+            : (check.recommended ? 'enable' : 'disable');
+        const breakDir = fixDir === 'enable' ? 'disable' : 'enable';
         const fixAction = actions[fixDir];
         const breakAction = actions[breakDir];
         const btnWrap = document.createElement('div');
@@ -2438,7 +2448,12 @@
         const submitBtn = document.getElementById('readinessConfirmSubmit');
 
         if (titleEl) titleEl.textContent = 'Confirm action';
-        if (bodyEl) bodyEl.textContent = confirm.body || '';
+        // ``confirm.body`` is server-emitted HTML (Python code in the
+        // readiness probes). Render it as HTML so ``<code>``,
+        // ``<strong>``, ``<br>`` etc. format correctly — pre-fix this
+        // used ``textContent`` and users saw literal tag markup in
+        // the confirmation modal.
+        if (bodyEl) bodyEl.innerHTML = confirm.body || '';
         const kind = confirm.kind || 'button';
         const phrase = confirm.phrase || '';
 
@@ -2770,10 +2785,18 @@
     // burn duplicate CPU on every library scan.
     function _pickFixAction(check) {
         const a = check.actions || {};
-        // If the recommended state is a boolean (most apply_flag /
-        // set_vendor_extraction rows), pick the action whose args
-        // match. args.value covers apply_flag; args.scan_extraction
-        // covers set_vendor_extraction.
+        // Explicit backend hint wins. Required for rows where
+        // ``recommended`` is a descriptive string (e.g. the
+        // scheduled-trickplay row) and the boolean fallback would
+        // pick the wrong direction. Same hint that ``_renderCheckRow``
+        // reads so the per-row "Apply recommended" button and the
+        // bulk "Apply all" button always agree.
+        if (typeof check.fix_action === 'string' && a[check.fix_action]) {
+            return a[check.fix_action];
+        }
+        // Boolean-recommended fallback for legacy rows (apply_flag,
+        // set_vendor_extraction). args.value covers apply_flag;
+        // args.scan_extraction covers set_vendor_extraction.
         const direction = check.recommended ? 'enable' : 'disable';
         const matched = a[direction];
         if (matched) {

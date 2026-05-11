@@ -899,6 +899,12 @@ class EmbyServer(EmbyApiClient):
                     "severity": "critical",
                     "current": "disabled (no triggers)",
                     "recommended": "enabled (Emby has no other registration path)",
+                    # Recommended fix on Emby = re-enable. Without the
+                    # explicit hint, the JS direction-picker would treat
+                    # the string ``recommended`` as truthy and pick the
+                    # ``enable`` action by accident — same outcome in
+                    # this case but lucky, not principled. Pin it.
+                    "fix_action": "enable",
                     "actions": {
                         "enable": {
                             "action": "set_scheduled_trickplay",
