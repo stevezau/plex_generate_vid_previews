@@ -2260,8 +2260,27 @@ class JobManager:
 _job_manager: JobManager | None = None
 _job_lock = threading.Lock()
 
-# Default config directory from environment
+# Default config directory from environment. Kept as a module-level
+# constant for backwards compatibility — any caller already importing
+# this name keeps the import working. The actual resolution inside
+# ``get_job_manager`` uses ``_resolve_default_config_dir()`` below so
+# tests that do ``monkeypatch.setenv("CONFIG_DIR", ...)`` get the
+# right path. (Frozen-at-import-time was causing CI's ``test`` job to
+# fail with ``PermissionError: '/config'`` because the env var was
+# set AFTER the module loaded; ``DEFAULT_CONFIG_DIR`` captured the
+# pre-fixture value.)
 DEFAULT_CONFIG_DIR = os.environ.get("CONFIG_DIR", "/config")
+
+
+def _resolve_default_config_dir() -> str:
+    """Re-read ``CONFIG_DIR`` on every call.
+
+    Lazy resolution so pytest fixtures that set ``CONFIG_DIR`` via
+    ``monkeypatch.setenv`` after the module is loaded still take
+    effect. The frozen ``DEFAULT_CONFIG_DIR`` constant above is kept
+    only as a backwards-compatible export.
+    """
+    return os.environ.get("CONFIG_DIR", "/config")
 
 
 def get_job_manager(config_dir: str | None = None, socketio=None) -> JobManager:
@@ -2286,7 +2305,7 @@ def get_job_manager(config_dir: str | None = None, socketio=None) -> JobManager:
     global _job_manager
     with _job_lock:
         if _job_manager is None:
-            _job_manager = JobManager(config_dir=config_dir or DEFAULT_CONFIG_DIR, socketio=socketio)
+            _job_manager = JobManager(config_dir=config_dir or _resolve_default_config_dir(), socketio=socketio)
         else:
             if config_dir and _job_manager.config_dir != config_dir:
                 _job_manager = JobManager(config_dir=config_dir, socketio=socketio)
