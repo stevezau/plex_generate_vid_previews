@@ -1457,7 +1457,7 @@ const STATUS_META = {
     // time so the per-item registration call (Jellyfin Media Preview Bridge plugin or
     // /Items/{id}/Refresh) was skipped. The retry queue picks this back up — once the
     // server indexes the file, the registration fires and the row promotes to "Generated".
-    published_pending_registration: { label: 'Generated (auto-retrying)', cls: 'bg-success', tip: 'Tiles are on disk; the server has not indexed the file yet so trickplay registration is pending. A retry-chain row was spawned (look for the matching title with a "Registering N/M" badge) and will keep trying every 30s → 2m → 5m → 15m → 1h until it lands.' },
+    published_pending_registration: { label: 'Generated (auto-retrying)', cls: 'bg-success', tip: 'Tiles are on disk; the server has not indexed the file yet so trickplay registration is pending. The row shows a "Retry N/M" chip while attempts back off 30s → 2m → 5m → 15m → 1h until the server catches up.' },
 
     // Output already on disk; source unchanged — nothing to redo.
     skipped_bif_exists:     { label: 'Already Existed', cls: 'bg-info text-dark', tip: 'Output already on disk and source unchanged' },
@@ -1555,6 +1555,34 @@ function _renderPublishersBlock(job) {
     // status row that the modal's Attempts block now renders directly
     // below this section. Removed — the publisher row stays compact.
     return `<div class="mt-3 pt-2 border-top"><strong class="me-2">Servers:</strong>${lines}</div>`;
+}
+
+// Retry chip rendered next to the title on retry-chain rows. Shows
+// ONLY while the chain is actually in flight — any other status
+// (completed / failed / cancelled / paused) falls through the
+// ``activelyRetrying`` guard and renders nothing. Critical invariant:
+// is_retry / max_retries / retry_attempt config flags survive on the
+// Job after termination, so gating on those alone would leave the
+// chip stuck on a green-Completed row.
+//
+// Word choice: "Retry N/M" reads as what's actually happening from
+// the user's perspective. The internal vocabulary (trickplay
+// registration / per-item Refresh API) is a Jellyfin/Emby
+// implementation detail surfaced via the tooltip if they hover.
+function _renderRetryChip(job) {
+    const cfg = job.config || {};
+    if (!cfg.is_retry_chain) return '';
+    const max = typeof cfg.max_retries === 'number' ? cfg.max_retries : 0;
+    if (max <= 0) return '';
+    const status = (job.status || '').toLowerCase();
+    const eta = job.progress && job.progress.retry_eta;
+    const activelyRetrying = status === 'running'
+        || (status === 'pending' && !!eta);
+    if (!activelyRetrying) return '';
+    const attempt = typeof cfg.retry_attempt === 'number' ? cfg.retry_attempt : 0;
+    return ' <span class="badge bg-warning text-dark ms-1" '
+        + 'title="The destination server hadn\'t indexed this file when we first published — auto-retrying until it catches up. Backoff: 30s → 2m → 5m → 15m → 1h.">'
+        + '<i class="bi bi-arrow-clockwise me-1"></i>Retry ' + attempt + '/' + max + '</span>';
 }
 
 let _jobQueueUpdatePending = false;
@@ -1680,15 +1708,7 @@ function updateJobQueue() {
                    <i class="bi ${isFilesExpanded ? 'bi-chevron-up' : 'bi-chevron-down'}"></i>
                  </button>`
             : '';
-        const isRetry = !!(job.config && job.config.is_retry);
-        const isRetryChain = !!(job.config && job.config.is_retry_chain);
-        const retryAttempt = job.config && typeof job.config.retry_attempt === 'number' ? job.config.retry_attempt : 0;
-        const maxRetries = job.config && typeof job.config.max_retries === 'number' ? job.config.max_retries : 0;
-        const retryLabel = isRetry && maxRetries > 0
-            ? (isRetryChain
-                ? ` <span class="badge bg-info text-dark ms-1" title="Background registration retry — Jellyfin/Emby hadn't indexed the file at publish time, so the per-item registration calls (plugin bridge / /Items/{id}/Refresh) are being retried until the server catches up. Tiles are already on disk."><i class="bi bi-arrow-clockwise me-1"></i>Registering ${retryAttempt}/${maxRetries}</span>`
-                : ` <span class="badge bg-warning text-dark ms-1" title="Retry attempt"><i class="bi bi-arrow-repeat me-1"></i>Retry ${retryAttempt}/${maxRetries}</span>`)
-            : '';
+        const retryLabel = _renderRetryChip(job);
         const priorityCell = renderPriorityCell(job);
         const scheduledAt = job.config && job.config.scheduled_at;
         // Two paths land in retry-wait: pending jobs awaiting their first
@@ -1700,7 +1720,8 @@ function updateJobQueue() {
         const retryEta = job.progress && job.progress.retry_eta;
         const inWorkerRetryWait = !!retryEta && new Date(retryEta).getTime() > Date.now() - 1500;
         const countdownTarget = inWorkerRetryWait ? retryEta : scheduledAt;
-        const isWaitingRetry = (job.status === 'pending' && isRetry && scheduledAt) || inWorkerRetryWait;
+        const _isRetryRow = !!(job.config && (job.config.is_retry || job.config.is_retry_chain));
+        const isWaitingRetry = (job.status === 'pending' && _isRetryRow && scheduledAt) || inWorkerRetryWait;
         let progressCell;
         if (isWaitingRetry) {
             const remaining = Math.max(0, Math.ceil((new Date(countdownTarget).getTime() - Date.now()) / 1000));
@@ -1904,15 +1925,7 @@ function updateActiveJobs(runningJobs) {
         // Worker has picked the job up but is sleeping out the retry
         // backoff — render this as its own state, not as "Running 0%."
         const isRetryWaiting = !isPaused && !!retryEta && new Date(retryEta).getTime() > Date.now() - 1500;
-        const isRetry = !!(job.config && job.config.is_retry);
-        const isRetryChain = !!(job.config && job.config.is_retry_chain);
-        const retryAttempt = job.config && typeof job.config.retry_attempt === 'number' ? job.config.retry_attempt : 0;
-        const maxRetries = job.config && typeof job.config.max_retries === 'number' ? job.config.max_retries : 0;
-        const retryChip = isRetry && maxRetries > 0
-            ? (isRetryChain
-                ? ` <span class="badge bg-info text-dark ms-1" title="Background registration retry"><i class="bi bi-arrow-clockwise me-1"></i>Registering ${retryAttempt}/${maxRetries}</span>`
-                : ` <span class="badge bg-warning text-dark ms-1" title="Retry attempt"><i class="bi bi-arrow-repeat me-1"></i>Retry ${retryAttempt}/${maxRetries}</span>`)
-            : (isRetry ? ' <span class="badge bg-warning text-dark ms-1"><i class="bi bi-arrow-repeat me-1"></i>Retry</span>' : '');
+        const retryChip = _renderRetryChip(job);
         let statusBadge;
         if (isPaused) {
             statusBadge = '<span class="badge bg-warning text-dark">Paused</span>';

@@ -1501,7 +1501,7 @@ html[data-bs-theme="light"] .jobs-table tbody tr:hover { background-color: rgba(
          * MULTi WEBDL-2160p][DV HDR10][EAC3 5.1][FR+EN][h265]-BONOBO.mkv"
          * used to break mid-word and steal 6+ rows of vertical space.
          * Clamp to 2 lines + word-wrap so they ellipsize cleanly and
-         * the badge row (Sonarr / Registering N/M) gets breathing room. */
+         * the badge row (Sonarr / Retry N/M) gets breathing room. */
         overflow: hidden;
         overflow-wrap: anywhere;
         word-break: normal;
