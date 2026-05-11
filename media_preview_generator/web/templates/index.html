@@ -458,32 +458,24 @@
                      before having to scan the log stream. Empty for legacy jobs. -->
                 <div id="logsModalPublishers" class="mb-2"></div>
                 <!-- Attempts switcher for retry-chain rows — sits ABOVE
-                     the tabs strip so it scopes BOTH the Logs and Files
-                     panes to the selected attempt. Hidden by default
-                     (display:none); ``showLogsModal`` flips it to
-                     display:flex only when the modal's target Job is
-                     a chain row (``is_retry_chain``). Powered by
-                     GET /api/jobs/<chain_id>/attempts; selecting an
-                     option sets ``_logsModalAttemptId`` and re-renders
-                     whichever tab is active. -->
-                <div id="attemptsDropdownWrap" class="d-none align-items-center mb-2 gap-2 flex-wrap"
-                     role="region" aria-label="Retry attempts">
-                    <label class="form-label small mb-0 text-muted" for="attemptsDropdown">
-                        <i class="bi bi-arrow-clockwise me-1"></i>Attempt
-                    </label>
-                    <!-- ``max-width: 100%`` lets the dropdown shrink on
-                         narrow viewports (iPhone, etc.) so it never
-                         overflows the modal-body's clientWidth. The
-                         flex-wrap on the parent lets the hint text drop
-                         to a new line when there isn't horizontal space
-                         for it. Without these, mobile users saw the
-                         modal scroll horizontally — a real bug caught
-                         in the verify_mobile.py Playwright test. -->
-                    <select class="form-select form-select-sm" id="attemptsDropdown"
-                            style="max-width: 100%; min-width: 220px;"
-                            onchange="onAttemptSelected(this)"
-                            aria-label="Switch between retry attempts"></select>
-                    <small class="text-muted" id="attemptsHint"></small>
+                     the tabs strip so it scopes BOTH Logs and Files.
+                     Hidden by default; ``showLogsModal`` un-hides
+                     only for chain rows (``is_retry_chain``). Renders
+                     as a row of compact, colour-coded pills (one per
+                     attempt + an Original) — much clearer than the
+                     prior native <select> which buried status behind
+                     a click. ``_renderAttemptOption`` in job_modal.js
+                     builds the <button> for each entry. -->
+                <div id="attemptsDropdownWrap" class="d-none mb-3"
+                     role="region" aria-label="Retry attempts timeline">
+                    <div class="d-flex align-items-center gap-2 mb-2 flex-wrap">
+                        <span class="small text-muted text-nowrap">
+                            <i class="bi bi-arrow-clockwise me-1"></i>Attempt:
+                        </span>
+                        <small class="text-muted" id="attemptsHint"></small>
+                    </div>
+                    <div id="attemptsDropdown" class="d-flex flex-wrap gap-1 attempts-pills"
+                         role="tablist" aria-label="Retry attempts"></div>
                 </div>
                 <!-- Tabs -->
                 <ul class="nav nav-tabs mb-3" id="jobDetailTabs" role="tablist">

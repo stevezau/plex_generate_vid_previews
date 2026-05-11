@@ -1282,6 +1282,43 @@ html[data-bs-theme="light"] .log-level-critical { color: #b02a37; }
 .log-nav-btn { padding: 0.15rem 0.35rem; line-height: 1; font-size: 0.8rem; backdrop-filter: blur(4px); }
 .log-nav-btn:hover { opacity: 1 !important; }
 
+/* ──────────────────────────────────────────────────────────────────────
+ * Retry-chain Attempts pill row (Job Details modal)
+ * ────────────────────────────────────────────────────────────────────── */
+.attempts-pill {
+    /* Compact pill: just the attempt number + status glyph. Status colour
+       comes from Bootstrap's btn-outline-{success,danger,...} classes
+       which the JS swaps to solid btn-* on the active pill. */
+    min-width: 2.5rem;
+    padding: 0.25rem 0.55rem;
+    font-size: 0.8rem;
+    font-weight: 500;
+    line-height: 1.2;
+    transition: transform 0.08s ease-out, box-shadow 0.08s ease-out;
+}
+.attempts-pill:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+}
+.attempts-pill.active {
+    /* Solid (filled) when active so the current selection is unmistakable
+       even amongst many same-coloured "completed" pills. */
+    font-weight: 600;
+    box-shadow: 0 0 0 2px rgba(var(--bs-primary-rgb, 13, 110, 253), 0.25);
+}
+/* The "Original" pill — distinct width + a divider after it so the eye
+   reads "first run | then retries" instead of a flat sequence. */
+.attempts-pills > .attempts-pill[data-is-originating="1"] {
+    min-width: 5rem;
+}
+.attempts-pills > .attempts-pill[data-is-originating="1"]::after {
+    content: "";
+    border-left: 1px solid var(--bs-border-color);
+    margin-left: 0.5rem;
+    padding-left: 0;
+    height: 1.2em;
+}
+
 /* Dropdown menus (dark theme only — light mode uses Bootstrap defaults) */
 html[data-bs-theme="dark"] .dropdown-menu {
     background-color: #1a1a2e;

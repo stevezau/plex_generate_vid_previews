@@ -442,144 +442,199 @@ function _formatAttemptDuration(secs) {
     return rem ? (m + 'm' + rem + 's') : (m + 'm');
 }
 
-// Build one <option> for the Attempts dropdown. Handles three shapes:
-//   1. Regular per-attempt firing — label "Attempt N of M — status · dur"
-//   2. Originating dispatch (a.is_originating === true) — label
-//      "Original dispatch — status · dur". Different label so the user
-//      sees the lifecycle distinction (initial FFmpeg + Plex/Emby
-//      publish vs each subsequent retry firing).
+// Status → Bootstrap badge class (background + text colour for the pill).
+const _ATTEMPT_STATUS_CLASS = {
+    'completed': 'btn-outline-success',
+    'failed':    'btn-outline-danger',
+    'cancelled': 'btn-outline-secondary',
+    'running':   'btn-outline-primary',
+    'pending':   'btn-outline-warning',
+    'deleted':   'btn-outline-secondary',
+};
+
+// Build one <button> pill for the Attempts row. Handles three shapes:
+//   1. Regular per-attempt firing — label "Attempt N" with status colour.
+//   2. Originating dispatch (a.is_originating === true) — label "Original"
+//      with a distinct style (bordered + icon) so the user reads it as the
+//      first run, not just another retry.
 //   3. Deleted-original sentinel (a.id === null AND a.is_originating)
-//      — disabled option so the user knows what's missing without the
-//      dropdown trying to fetch a non-existent log.
+//      — disabled pill labelled "Original (deleted)" with greyed-out styling.
+//
+// Each pill carries its status colour via Bootstrap btn-outline-* classes —
+// the user sees green/red/amber at a glance and can spot the failure point
+// without opening every attempt. Tooltip provides the full label
+// (status + duration + timestamp) on hover.
 function _renderAttemptOption(a, max) {
     const glyph = _ATTEMPT_STATUS_GLYPH[a.status] || '?';
+    const clsBase = _ATTEMPT_STATUS_CLASS[a.status] || 'btn-outline-secondary';
     const dur = _formatAttemptDuration(a.duration_sec);
-    const durLabel = dur ? ' · ' + dur : '';
+    const durSuffix = dur ? ' · ' + dur : '';
     if (a.is_originating && !a.id) {
-        // Sentinel — render as disabled, no value, can't be selected.
-        return '<option disabled>' + escapeHtml(glyph + ' Original dispatch (no longer available)') + '</option>';
+        // Sentinel — disabled pill, no value, can't be selected.
+        return '<button type="button" class="btn btn-sm btn-outline-secondary disabled" disabled'
+            + ' title="Original dispatch is no longer available (likely cleaned by retention policy)">'
+            + '<i class="bi bi-slash-circle me-1"></i>Original (deleted)</button>';
     }
     let label;
+    let tooltip;
     if (a.is_originating) {
-        label = glyph + ' Original dispatch — ' + a.status + durLabel;
+        // The originating dispatch — distinct icon (play-fill = "first
+        // run") + clear "Original" label so it reads differently from
+        // the numbered retry pills next to it.
+        label = '<i class="bi bi-play-fill me-1"></i>Original';
+        tooltip = 'Original dispatch — ' + a.status + durSuffix;
     } else {
-        label = glyph + ' Attempt ' + a.retry_attempt + ' of ' + max
-            + ' — ' + a.status + durLabel;
+        // Compact attempt pill: "1", "2", "3" with status glyph.
+        // Full "Attempt N of M — status · duration" lives in the tooltip
+        // so hover reveals it without bloating the pill itself.
+        label = glyph + ' ' + a.retry_attempt;
+        tooltip = 'Attempt ' + a.retry_attempt + ' of ' + max + ' — ' + a.status + durSuffix;
     }
-    return '<option value="' + escapeHtml(a.id) + '">' + escapeHtml(label) + '</option>';
+    return '<button type="button" class="btn btn-sm ' + clsBase + ' attempts-pill"'
+        + ' data-attempt-id="' + escapeHtml(a.id) + '"'
+        + ' data-is-originating="' + (a.is_originating ? '1' : '0') + '"'
+        + ' onclick="onAttemptSelected(this)"'
+        + ' title="' + escapeHtml(tooltip) + '"'
+        + ' aria-label="' + escapeHtml(tooltip) + '">' + label + '</button>';
+}
+
+// Apply the "selected" visual treatment to one pill button — fill the
+// background with its status colour so the active attempt is unmissable
+// in a sea of identical outlined pills. The btn-outline-* class flips
+// to its solid btn-* counterpart.
+function _setActivePill(button) {
+    const wrap = document.getElementById('attemptsDropdown');
+    if (!wrap) return;
+    // De-activate any previously-active pill.
+    wrap.querySelectorAll('button.attempts-pill').forEach(b => {
+        b.classList.remove('active');
+        b.setAttribute('aria-current', 'false');
+        // Flip solid back to outline (matched on token swap).
+        b.className = b.className.replace(/\bbtn-(success|danger|secondary|primary|warning)\b/g,
+            'btn-outline-$1');
+    });
+    if (button) {
+        button.classList.add('active');
+        button.setAttribute('aria-current', 'true');
+        // Outline → solid for the active pill so it visually pops.
+        button.className = button.className.replace(/\bbtn-outline-(success|danger|secondary|primary|warning)\b/g,
+            'btn-$1');
+    }
 }
 
 async function _loadAttemptsDropdown(chainId) {
-    const select = document.getElementById('attemptsDropdown');
+    const wrap = document.getElementById('attemptsDropdown');
     const hint = document.getElementById('attemptsHint');
-    if (!select) return;
-    select.innerHTML = '<option disabled>Loading attempts…</option>';
+    if (!wrap) return;
+    wrap.innerHTML = '<small class="text-muted">Loading attempts…</small>';
     try {
         const data = await apiGet('/api/jobs/' + encodeURIComponent(chainId) + '/attempts');
         const attempts = data.attempts || [];
         if (attempts.length === 0) {
-            // No firings recorded yet — fall back to viewing the chain
-            // row's own synthesized status log so the modal isn't blank.
-            select.innerHTML = '<option value="" selected>No attempts yet — showing chain status</option>';
+            wrap.innerHTML = '<small class="text-muted">No attempts yet — showing chain status</small>';
             _logsModalAttemptId = null;
             if (hint) hint.textContent = '';
             refreshLogs();
             return;
         }
         const max = data.max_attempts || attempts[attempts.length - 1].retry_attempt || 0;
-        let options = '';
+        let html = '';
         for (let i = 0; i < attempts.length; i++) {
-            options += _renderAttemptOption(attempts[i], max);
+            html += _renderAttemptOption(attempts[i], max);
         }
-        select.innerHTML = options;
-        // Default-select the LATEST attempt (the one the user most likely
-        // wants to see). Attempts are sorted ascending by retry_attempt
-        // with originating dispatch (retry_attempt=0) first, so the last
-        // option is newest. SKIP disabled options (deleted-original
-        // sentinel) so the default landing is always a selectable entry.
+        wrap.innerHTML = html;
+        // Default-select the LATEST selectable pill (skip the deleted
+        // sentinel which has no id). Attempts are sorted ascending so
+        // the last is newest.
         let defaultIdx = -1;
         for (let i = attempts.length - 1; i >= 0; i--) {
             if (attempts[i].id) { defaultIdx = i; break; }
         }
         if (defaultIdx >= 0) {
-            select.selectedIndex = defaultIdx;
-            _logsModalAttemptId = attempts[defaultIdx].id;
+            const buttons = wrap.querySelectorAll('button.attempts-pill[data-attempt-id]');
+            // The N'th button corresponds to the N'th attempt, but
+            // disabled sentinels don't have data-attempt-id so they're
+            // filtered out by the selector. Match by id instead of
+            // index to be safe.
+            const target = wrap.querySelector(`button[data-attempt-id="${CSS.escape(attempts[defaultIdx].id)}"]`);
+            if (target) {
+                _setActivePill(target);
+                _logsModalAttemptId = attempts[defaultIdx].id;
+            }
         } else {
             _logsModalAttemptId = null;
         }
         if (hint) {
-            // Count only real (non-sentinel) attempts for the "N of M" hint.
-            const real = attempts.filter(a => a.id).length;
+            // Count only real attempts (non-sentinel, non-originating)
+            // for "N of M" — the originating dispatch isn't an attempt.
+            const real = attempts.filter(a => a.id && !a.is_originating).length;
             hint.textContent = real === max
                 ? real + ' of ' + max + ' attempts'
-                : real + ' attempts so far (max ' + max + ')';
+                : real + ' attempt' + (real === 1 ? '' : 's') + ' so far (max ' + max + ')';
         }
         refreshLogs();
     } catch (error) {
-        console.error('Failed to load attempts dropdown:', error);
-        select.innerHTML = '<option disabled>Could not load attempts</option>';
-        if (hint) hint.textContent = 'Error loading attempts — see console.';
+        console.error('Failed to load attempts:', error);
+        wrap.innerHTML = '<small class="text-danger">Could not load attempts — see console.</small>';
+        if (hint) hint.textContent = '';
         _logsModalAttemptId = null;
     }
 }
 
 async function _refreshAttemptsDropdown(chainId) {
-    // Poll-driven refresh: re-fetch /attempts, append any NEW attempt
-    // UUIDs to the dropdown, and update each option's status/duration
-    // label so an attempt mid-flight (running → completed) shows the
-    // updated glyph without the user re-opening the modal. Preserves
-    // the currently-selected option (no auto-switch on new attempts).
-    const select = document.getElementById('attemptsDropdown');
-    if (!select) return;
+    // Poll-driven refresh: re-fetch /attempts, rebuild pill row, restore
+    // the currently-selected pill so the user's selection survives the
+    // refresh. New attempts appear as additional pills without losing
+    // the user's place.
+    const wrap = document.getElementById('attemptsDropdown');
+    if (!wrap) return;
     try {
         const data = await apiGet('/api/jobs/' + encodeURIComponent(chainId) + '/attempts');
         const attempts = data.attempts || [];
         if (attempts.length === 0) return;
         const max = data.max_attempts || attempts[attempts.length - 1].retry_attempt || 0;
-        const existingIds = new Set(Array.from(select.options).map(o => o.value));
-        const previouslySelected = select.value;
+        const previouslySelected = _logsModalAttemptId;
         let html = '';
         for (let i = 0; i < attempts.length; i++) {
             html += _renderAttemptOption(attempts[i], max);
         }
-        select.innerHTML = html;
-        // Restore previously-selected option if it still exists; otherwise
-        // select the newest selectable entry (last with a non-null id —
-        // SKIP the deleted-original sentinel which has id=null).
-        const wasInList = existingIds.has(previouslySelected);
-        let pickedIdx = -1;
-        if (wasInList) {
-            for (let i = 0; i < attempts.length; i++) {
-                if (attempts[i].id === previouslySelected) { pickedIdx = i; break; }
-            }
+        wrap.innerHTML = html;
+        // Restore previous selection, otherwise pick newest selectable.
+        let targetId = null;
+        if (previouslySelected) {
+            const found = attempts.find(a => a.id === previouslySelected);
+            if (found) targetId = found.id;
         }
-        if (pickedIdx < 0) {
+        if (!targetId) {
             for (let i = attempts.length - 1; i >= 0; i--) {
-                if (attempts[i].id) { pickedIdx = i; break; }
+                if (attempts[i].id) { targetId = attempts[i].id; break; }
             }
         }
-        if (pickedIdx >= 0) {
-            select.selectedIndex = pickedIdx;
-            _logsModalAttemptId = attempts[pickedIdx].id;
+        if (targetId) {
+            const target = wrap.querySelector(`button[data-attempt-id="${CSS.escape(targetId)}"]`);
+            if (target) _setActivePill(target);
+            _logsModalAttemptId = targetId;
         }
         const hint = document.getElementById('attemptsHint');
         if (hint) {
-            const real = attempts.filter(a => a.id).length;
+            const real = attempts.filter(a => a.id && !a.is_originating).length;
             hint.textContent = real === max
                 ? real + ' of ' + max + ' attempts'
-                : real + ' attempts so far (max ' + max + ')';
+                : real + ' attempt' + (real === 1 ? '' : 's') + ' so far (max ' + max + ')';
         }
     } catch (error) {
-        // Silent on poll-driven refresh failures — the user has the
-        // last-good dropdown state and the next tick will retry.
-        console.debug('Attempts dropdown poll-refresh failed:', error);
+        // Silent — user has last-good UI; next tick will retry.
+        console.debug('Attempts poll-refresh failed:', error);
     }
 }
 
 
-function onAttemptSelected(select) {
-    if (!select || !select.value) return;
-    _logsModalAttemptId = select.value;
+function onAttemptSelected(button) {
+    const attemptId = button?.dataset?.attemptId;
+    if (!attemptId) return;
+    if (attemptId === _logsModalAttemptId) return;  // already selected — no-op
+    _logsModalAttemptId = attemptId;
+    _setActivePill(button);
     // Reset log state so refreshLogs() loads from offset 0 for the
     // newly-selected attempt instead of continuing the previous
     // attempt's pagination.
@@ -594,8 +649,6 @@ function onAttemptSelected(select) {
     // dispatch Job (each retry firing has its own JSONL), so the user
     // sees DIFFERENT files for attempt 1 vs attempt 5 (the latter
     // recorded the final publish, the former a pending_registration).
-    // Only re-fetch if the Files tab has been opened at least once
-    // this modal lifetime — otherwise wait for ``onFilesTabActivated``.
     _filePage = 1;
     _fileResultsLoaded = false;
     document.getElementById('fileResultsBody').innerHTML =
