@@ -54,7 +54,11 @@
      Submits via PUT /api/servers/<id>; the Add wizard above stays focused on
      first-time onboarding. -->
 <div class="modal fade" id="editServerModal" tabindex="-1" aria-hidden="true">
-    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <!-- modal-xl + a generous custom max-width because "Webhook & Scanner"
+         used to wrap onto two lines at modal-lg. Wider also gives the
+         readiness card more horizontal room for the Current → Recommended
+         pill pair. -->
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title d-flex align-items-center gap-2 flex-grow-1" style="min-width: 0;">
@@ -69,7 +73,11 @@
                 <input type="hidden" id="editServerType">
 
                 <ul class="nav nav-tabs mb-3" role="tablist">
-                    <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#edit-tab-general" type="button">General</button></li>
+                    <li class="nav-item">
+                        <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#edit-tab-general" type="button">
+                            <i class="bi bi-sliders me-1"></i>General
+                        </button>
+                    </li>
                     <li class="nav-item">
                         <button class="nav-link" data-bs-toggle="tab" data-bs-target="#edit-tab-health" type="button">
                             <i class="bi bi-clipboard-check me-1"></i>Setup Health
@@ -80,15 +88,27 @@
                             <span class="ms-1 d-none" id="editHealthTabMarker" aria-hidden="true"></span>
                         </button>
                     </li>
-                    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#edit-tab-libraries" type="button">Libraries</button></li>
-                    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#edit-tab-paths" type="button">Path mappings</button></li>
-                    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#edit-tab-excludes" type="button">Exclude paths</button></li>
+                    <li class="nav-item">
+                        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#edit-tab-libraries" type="button">
+                            <i class="bi bi-collection-play me-1"></i>Libraries
+                        </button>
+                    </li>
+                    <li class="nav-item">
+                        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#edit-tab-paths" type="button">
+                            <i class="bi bi-signpost-split me-1"></i>Path mappings
+                        </button>
+                    </li>
+                    <li class="nav-item">
+                        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#edit-tab-excludes" type="button">
+                            <i class="bi bi-slash-circle me-1"></i>Exclude paths
+                        </button>
+                    </li>
                     <!-- Plex-only: hidden via JS for non-Plex servers. Surfaces the
                          existing global Plex Direct webhook + Recently Added Scanner
                          controls without duplicating their full implementation. -->
                     <li class="nav-item d-none" id="editTabAutomationLi">
                         <button class="nav-link" data-bs-toggle="tab" data-bs-target="#edit-tab-automation" type="button">
-                            Webhook &amp; Scanner
+                            <i class="bi bi-lightning-charge me-1"></i>Webhook &amp; Scanner
                         </button>
                     </li>
                 </ul>
@@ -283,8 +303,8 @@
                                             are informational.</li>
                                         <li><strong>Plugin</strong> (Jellyfin only) —
                                             Media Preview Bridge plugin for instant
-                                            activation (Mode A) vs. scan-nudge
-                                            fallback (Mode B).</li>
+                                            preview activation, vs. waiting for the
+                                            next library scan when absent.</li>
                                         <li><strong>Library settings</strong> — per-
                                             library flags that gate whether published
                                             previews are actually served to clients.</li>
@@ -597,18 +617,23 @@
                             </div>
                         </div>
 
-                        <!-- Recently Added Scanner (Plex-only, hidden via JS for non-Plex servers) -->
-                        <div class="card mb-3" id="editPlexRecentlyAddedCard">
+                        <!-- Recently Added Scanner — universal across vendors.
+                             Polls the server's "recently added" API on a schedule
+                             so files this app's webhook missed (server down,
+                             plugin not configured, etc.) still get picked up.
+                             Pre-fix this card was Plex-only and Emby/Jellyfin
+                             users had no equivalent safety net surfaced. -->
+                        <div class="card mb-3" id="editRecentlyAddedCard">
                             <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
                                 <div>
-                                    <i class="bi bi-arrow-repeat me-2"></i>Plex Recently Added Scanner
-                                    <span class="badge bg-success ms-2">No Plex Pass needed</span>
+                                    <i class="bi bi-arrow-repeat me-2"></i>Recently Added Scanner
+                                    <span class="badge bg-success ms-2" id="editRecentlyAddedSafetyNetBadge">Safety net</span>
                                 </div>
                                 <span class="badge badge-status bg-secondary" id="recentlyAddedStatusBadge">Loading…</span>
                             </div>
                             <div class="card-body">
-                                <p class="mb-3">
-                                    Polls Plex on a schedule. Use this without Plex Pass, or alongside the Direct webhook as a safety net. Customise intervals, lookback windows, and libraries on the <a href="/schedules">Schedules</a> page.
+                                <p class="mb-3" id="editRecentlyAddedBlurb">
+                                    Polls this server's recently-added list on a schedule. Use it on its own (no webhook required) or alongside the live webhook as a safety net for events the app missed. Customise intervals, lookback windows, and libraries on the <a href="/schedules">Schedules</a> page.
                                 </p>
 
                                 <div id="recentlyAddedNoScanners" class="alert alert-secondary small d-none">

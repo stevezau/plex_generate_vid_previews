@@ -1296,13 +1296,16 @@
         // _renderVendorWebhookSection() below.
         const automationTabLi = document.getElementById('editTabAutomationLi');
         if (automationTabLi) automationTabLi.classList.remove('d-none');
-        // Plex-specific cards stay hidden for non-Plex servers; the
-        // Emby/Jellyfin info card (#editVendorWebhookCard) is the only
-        // thing that should render for them.
+        // Plex Direct Webhook card stays Plex-only (the registration
+        // API is Plex-specific). The Recently Added Scanner card
+        // applies to every vendor — it just polls the server's
+        // recently-added API and dispatches per-item jobs.
         const plexWebhookCard = document.getElementById('editPlexWebhookCard');
-        const plexRecentlyAddedCard = document.getElementById('editPlexRecentlyAddedCard');
+        const recentlyAddedCard = document.getElementById('editRecentlyAddedCard');
         if (plexWebhookCard) plexWebhookCard.classList.toggle('d-none', !isPlex);
-        if (plexRecentlyAddedCard) plexRecentlyAddedCard.classList.toggle('d-none', !isPlex);
+        // The Recently Added Scanner card is universal — show it
+        // for every vendor.
+        if (recentlyAddedCard) recentlyAddedCard.classList.remove('d-none');
         _renderVendorWebhookSection(server);
         // Always force the General tab active on open. Without this, opening a
         // Plex server, clicking "Webhook & Scanner", closing, then opening a
@@ -1338,18 +1341,24 @@
             }
             if (cfgInput.value) _validateLocalPathInput(cfgInput);
 
-            // Webhook & Scanner panel: scope all panel calls to this Plex
-            // server (Phase I5), then load status + scanner list so the user
-            // sees current state without needing to open the tab first.
+            // Plex-only: load the Plex Direct webhook registration status.
             try {
-                if (typeof setPlexWebhookPanelServerId === 'function') setPlexWebhookPanelServerId(server.id);
-                if (typeof _wirePlexWebhookPanel === 'function') _wirePlexWebhookPanel();
                 if (typeof loadPlexWebhookStatus === 'function') loadPlexWebhookStatus();
-                if (typeof loadRecentlyAddedScanners === 'function') loadRecentlyAddedScanners();
                 const caption = document.getElementById('editPlexWebhookServerCaption');
                 if (caption) caption.innerHTML = `This webhook will be registered with <strong>${escapeHtml(server.name || 'this Plex server')}</strong> using its own Plex token.`;
             } catch (_e) { }
         }
+
+        // Recently Added Scanner panel applies to every vendor. Scope
+        // the panel's server-id state so list-filter + create-default
+        // target THIS server, then wire buttons + load the list. Pre-
+        // fix this lived inside the ``if (isPlex)`` block which is why
+        // Emby/Jellyfin users saw an empty "Loading scanners…" spinner.
+        try {
+            if (typeof setPlexWebhookPanelServerId === 'function') setPlexWebhookPanelServerId(server.id);
+            if (typeof _wirePlexWebhookPanel === 'function') _wirePlexWebhookPanel();
+            if (typeof loadRecentlyAddedScanners === 'function') loadRecentlyAddedScanners();
+        } catch (_e) { }
 
         renderEditLibraries(server.libraries || []);
         renderEditPathMappings(server.path_mappings || []);

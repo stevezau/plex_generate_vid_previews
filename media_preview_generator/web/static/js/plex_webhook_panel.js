@@ -213,8 +213,17 @@ async function loadRecentlyAddedScanners() {
     try {
         const data = await apiGet('/api/schedules');
         const all = (data && data.schedules) || [];
+        // Filter to recently_added scanners that target the server
+        // currently being edited (or have no server pin → "all servers"
+        // legacy schedules; included so users see the global one if it
+        // exists). Without this filter, opening Edit-Server-A would
+        // show scanners that belong to Server B, which is misleading
+        // when each server's modal has its own Create-default button.
         recentlyAddedScanners = all.filter(function(s) {
-            return s.config && s.config.job_type === 'recently_added';
+            if (!s.config || s.config.job_type !== 'recently_added') return false;
+            if (!_pwpServerId) return true;
+            const sid = s.server_id || '';
+            return sid === '' || sid === _pwpServerId;
         });
 
         if (recentlyAddedScanners.length === 0) {
@@ -284,7 +293,13 @@ async function createDefaultRecentlyAddedScanner() {
     result.textContent = '';
     result.className = 'small mt-2';
     try {
-        await apiPost('/api/schedules', {
+        // Scope the scanner to the currently-edited server so its
+        // dispatches target that server's recently-added API only.
+        // ``server_id`` is honoured by ``_run_recently_added_multi_server``
+        // — without this, the scanner would fan out to every configured
+        // server which is surprising scope creep when the user clicks
+        // "Create default scanner" inside one specific server's modal.
+        const body = {
             name: 'Recently Added Scanner',
             interval_minutes: 15,
             library_id: null,
@@ -292,7 +307,9 @@ async function createDefaultRecentlyAddedScanner() {
             enabled: true,
             priority: 2,
             config: { job_type: 'recently_added', lookback_hours: 1 },
-        });
+        };
+        if (_pwpServerId) body.server_id = _pwpServerId;
+        await apiPost('/api/schedules', body);
         result.className = 'small mt-2 text-success';
         result.innerHTML = '<i class="bi bi-check-circle me-1"></i>Scanner created — runs every 15 minutes with a 1 hour lookback. Customize it on the Schedules page.';
         showToast('Scanner created', 'Recently Added scanner is now running every 15 minutes.', 'success');
