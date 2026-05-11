@@ -200,23 +200,29 @@ jobs:
         run: playwright install chromium
 
       - name: Run e2e tests
-        # ``-n 2`` for GH runners. -n 4 reproducibly produces xdist
-        # "node down: Not properly terminated" crashes on GH's
-        # 4-vCPU/16GB ubuntu-latest — workers SIGKILL during the
-        # subprocess+browser+Flask boot wave (Playwright Chromium
-        # + multiple Flask subprocesses + xdist worker pressure
-        # all colliding within the first ~30s). Each crash flips
-        # an unrelated test to FAIL. Locally on 32 cores -n 4..8
-        # is clean; on GH's smaller runner the same level over-
-        # commits and the workers die. -n 2 trades ~25s of wall
-        # time (86s vs 61s) for green CI.
-        # Local parallelism sweep results (2026-05-11):
-        #   -n 2  → 86s, 0 errors
-        #   -n 4  → 61s, 0 errors (locally; 9 crashed workers on GH)
-        #   -n 8  → 62s, 0 errors (32-core dev box only)
-        #   -n 16 → 93s, 114 errors (resource exhaustion)
-        run: pytest -m e2e -n 2 --no-cov --tb=short
-        timeout-minutes: 8
+        # GH ubuntu-latest is 4-vCPU. Two distinct things misbehave:
+        #
+        # 1. xdist worker churn at -n >= 2 on a small runner: workers
+        #    SIGKILL'd silently, "node down: Not properly terminated".
+        #    The cause was a real Flask-side leak (APScheduler thread
+        #    not drained between test-resets), fixed in 20c42cf. With
+        #    that fix the boot wave is survivable, but #2 still applies.
+        # 2. Chromium SIGSEGV on the same small runner after ~30 tests
+        #    per browser. Memory accumulation in the long-lived Chromium
+        #    process eventually crashes the page, which kills the
+        #    Playwright session, which kills the xdist worker. This is
+        #    inherent to Playwright + Chromium on memory-constrained
+        #    CI and not fixable at the test-fixture layer.
+        #
+        # Mitigation: serial (`-n 0`) + auto-retry. Serial keeps the
+        # peak resource pressure low so the Chromium process survives
+        # longer; ``--reruns 2 --reruns-delay 5`` catches the residual
+        # flake when it still fires. 3 consecutive failures still
+        # surface a real regression. Locally (32-core box) this command
+        # is unused — the default `pyproject.toml` pytest invocation
+        # excludes the e2e marker.
+        run: pytest -m e2e -n 0 --no-cov --tb=short --timeout=120 --reruns 2 --reruns-delay 5
+        timeout-minutes: 20
 
       - name: Upload Playwright traces on failure
         if: failure()
