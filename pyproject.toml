@@ -64,6 +64,14 @@ test = [
     "pytest-xdist>=3.0.0",
     "pytest-timeout>=2.3.0",
     "pytest-playwright>=0.4.0",
+    # Auto-retry flaky tests on CI only. GH ubuntu-latest is slow
+    # enough that Playwright's element-stability check intermittently
+    # fires (100+ retries on "element is not stable" inside its 60s
+    # budget) on the wizard-step tests even when no real bug exists.
+    # Locally these always pass. CI uses ``--reruns 2 --reruns-delay 5``;
+    # the e2e job's flake budget is documented next to the pytest
+    # invocation in .github/workflows/ci.yml.
+    "pytest-rerunfailures>=14.0",
     "playwright>=1.40.0",
     "flask-cors>=6.0.0,<7",
     # vcrpy + pytest-recording for vendor-API contract cassettes.
