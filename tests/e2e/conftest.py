@@ -191,6 +191,10 @@ def complete_setup(app_url: str) -> None:
 def authed_page(page: Page, context: BrowserContext, app_url: str, session_cookie: dict) -> Page:
     """Page on the main app with the session cookie injected. Caller `page.goto(...)` to navigate."""
     context.add_cookies([session_cookie])
+    # Same 30s → 60s timeout bump as wizard_page — see that fixture's
+    # comment for the rationale.
+    page.set_default_timeout(60_000)
+    page.set_default_navigation_timeout(60_000)
     return page
 
 
@@ -206,6 +210,17 @@ def wizard_page(page: Page, context: BrowserContext, app_url_wizard: str, sessio
 
     context.add_cookies([session_cookie_wizard])
     mock_setup_state(page, current_step=1)
+    # Bump Playwright's internal locator/navigation timeout from the
+    # 30s default to 60s. Each wizard test cold-boots a Flask
+    # subprocess (~2s) + spins up a Chromium page that has to load
+    # JS + Bootstrap + render the multi-step wizard. On GH's
+    # ubuntu-latest runners this can take 20+ seconds for the first
+    # click target to become interactable; the default 30s budget
+    # was leaving zero slack and tests intermittently timed out at
+    # ``Locator.click: Timeout 30000ms exceeded``. 60s gives generous
+    # headroom while still failing on real hangs.
+    page.set_default_timeout(60_000)
+    page.set_default_navigation_timeout(60_000)
     return page
 
 
