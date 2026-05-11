@@ -1362,16 +1362,8 @@ class ScheduleManager:
 _schedule_manager: ScheduleManager | None = None
 _schedule_lock = threading.Lock()
 
-# Default config directory from environment. Mirrors the lazy-resolver
-# pattern in jobs.py: re-read on every get_schedule_manager() call so
-# tests using monkeypatch.setenv("CONFIG_DIR", …) get the right path.
-# Frozen module-level constant kept as a public alias for backwards
-# compatibility — actual resolution happens in the helper below.
+# Default config directory from environment
 DEFAULT_CONFIG_DIR = os.environ.get("CONFIG_DIR", "/config")
-
-
-def _resolve_default_config_dir() -> str:
-    return os.environ.get("CONFIG_DIR", "/config")
 
 
 def get_schedule_manager(config_dir: str | None = None, run_job_callback: Callable | None = None) -> ScheduleManager:
@@ -1380,7 +1372,7 @@ def get_schedule_manager(config_dir: str | None = None, run_job_callback: Callab
     with _schedule_lock:
         if _schedule_manager is None:
             _schedule_manager = ScheduleManager(
-                config_dir=config_dir or _resolve_default_config_dir(),
+                config_dir=config_dir or DEFAULT_CONFIG_DIR,
                 run_job_callback=run_job_callback,
             )
         elif run_job_callback and _schedule_manager.run_job_callback is None:
