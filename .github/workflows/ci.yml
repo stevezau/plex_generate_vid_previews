@@ -200,29 +200,22 @@ jobs:
         run: playwright install chromium
 
       - name: Run e2e tests
-        # ``-n 0`` (serial) — was ``-n auto`` then ``-n 2``; both crashed
-        # workers silently with ``[gwN] node down: Not properly terminated``.
-        # Root cause: the wizard test fixture ``app_url_wizard`` in
-        # tests/e2e/conftest.py is FUNCTION-scoped — every wizard test
-        # spawns its own Flask subprocess (intentional, for setup-state
-        # isolation). Under parallel xdist, multiple wizard tests run
-        # concurrently, each holding a Flask subprocess + a Chromium
-        # page. On GH's 4-vCPU ubuntu-latest runner, the per-test
-        # subprocess churn + Chromium memory tipped the runner into
-        # OOM-kill territory.
-        #
-        # 2 workers wasn't enough headroom because Flask boot + Chromium
-        # page reload happen FAST relative to subprocess teardown — at
-        # peak you can have 4 Flask processes live (2 ending + 2 starting)
-        # plus 2 Chromiums.
-        #
-        # Going fully serial is the smallest-blast-radius fix. e2e wall-
-        # clock: ~3 min (was theoretically ~80-100s with -n 2 when it
-        # didn't crash; 200-266s in practice with crashes + restarts).
-        # A follow-up could split wizard tests into a separate serial
-        # job and keep the non-wizard ones at -n 2, but most of the
-        # e2e suite IS wizard tests, so the gain would be ~30s.
-        run: pytest -m e2e -n 0 --no-cov --tb=short
+        # ``-n 2`` (was ``-n auto``): GitHub upgraded ubuntu-latest to
+        # 4-vCPU runners in late 2024, which made ``-n auto`` resolve
+        # to 4 workers. Combined with Playwright + Chromium + the test
+        # app server, 4 workers were silently OOM-killed by the runner
+        # — symptoms in the logs were ``[gwN] node down: Not properly
+        # terminated`` with no Python traceback (classic OOM signature:
+        # the OS kills the process so there's no chance for stderr).
+        # Failures were spread across whichever tests happened to run
+        # when memory peaked (folder picker + wizard step 2/3/4/5 most
+        # often, but the assignment was random).
+        # 2 workers gives Chromium enough headroom, takes ~3 min on CI
+        # (vs theoretical ~2 min with 4 workers when they don't crash),
+        # and is deterministic. tests/e2e/conftest.py uses
+        # ``get_free_port()`` so port conflicts aren't a concern at
+        # any worker count.
+        run: pytest -m e2e -n 2 --no-cov --tb=short
         timeout-minutes: 10
 
       - name: Upload Playwright traces on failure
