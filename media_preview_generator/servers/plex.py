@@ -1553,55 +1553,85 @@ class PlexServer(MediaServer):
         ranked = filter_and_rank(sq, candidates, limit=limit * 2)
 
         items: list[MediaItem] = []
+
+        def _project_to_media_item(plex_obj, metadata_type: str) -> MediaItem | None:
+            """Convert a plexapi item into a MediaItem, or None if unprojectable."""
+            try:
+                locations = _extract_item_locations(plex_obj)
+            except Exception:
+                locations = []
+            if not locations:
+                # Show / parent-level matches with no MediaPart of their own —
+                # the inspector needs an actual media file.
+                return None
+            try:
+                if metadata_type == "episode":
+                    title = _build_episode_title(plex_obj)
+                else:
+                    title = getattr(plex_obj, "title", "") or ""
+                return MediaItem(
+                    id=_plex_item_id(plex_obj),
+                    title=title,
+                    remote_path=locations[0],
+                    library_id=str(getattr(plex_obj, "librarySectionID", "") or ""),
+                )
+            except Exception as exc:
+                logger.debug("Skipping Plex search hit due to projection error: {}", exc)
+                return None
+
         for m in ranked:
             if len(items) >= limit:
                 break
-            metadata_type = getattr(m, "METADATA_TYPE", "") or getattr(m, "type", "")
+            # Prefer .type over METADATA_TYPE: plexapi's plex.search() can
+            # return Show items whose METADATA_TYPE is "episode" (the type
+            # of items inside the search hub) while .type is "show" (the
+            # actual object kind). Trusting METADATA_TYPE first leaks Show
+            # rows into the episode-projection branch and produces an
+            # un-loadable result with the show's title and bundle path
+            # rather than expanding into the show's episodes.
+            metadata_type = getattr(m, "type", "") or getattr(m, "METADATA_TYPE", "")
 
-            # When the user typed S##E## and we've matched a Series,
-            # drill into it for the specific episode rather than
-            # surfacing the un-clickable Show row.
-            if sq.has_episode and metadata_type == "show":
+            if metadata_type == "show":
+                if sq.has_episode:
+                    # User typed S##E## — drill straight to the specific episode.
+                    try:
+                        ep = retry_plex_call(m.episode, season=sq.season, episode=sq.episode)
+                    except Exception as exc:
+                        logger.debug(
+                            "Plex episode lookup S{}E{} on {!r} failed: {}",
+                            sq.season,
+                            sq.episode,
+                            getattr(m, "title", "?"),
+                            exc,
+                        )
+                        continue
+                    projected = _project_to_media_item(ep, "episode")
+                    if projected is not None:
+                        items.append(projected)
+                    continue
+                # Plain show-name query (no S##E##) — expand into every episode
+                # so the inspector lets the user browse the whole show. Mirrors
+                # what the legacy /bif/search did for show hubs (api_bif.py:408).
                 try:
-                    ep = retry_plex_call(m.episode, season=sq.season, episode=sq.episode)
+                    episodes = retry_plex_call(m.episodes)
                 except Exception as exc:
                     logger.debug(
-                        "Plex episode lookup S{}E{} on {!r} failed: {}",
-                        sq.season,
-                        sq.episode,
+                        "Plex episode expansion for {!r} failed: {}",
                         getattr(m, "title", "?"),
                         exc,
                     )
                     continue
-                m = ep
-                metadata_type = "episode"
+                for ep in episodes or []:
+                    if len(items) >= limit:
+                        break
+                    projected = _project_to_media_item(ep, "episode")
+                    if projected is not None:
+                        items.append(projected)
+                continue
 
-            try:
-                locations = _extract_item_locations(m)
-            except Exception:
-                locations = []
-            if not locations:
-                # Plex may return parent-level matches (a Show row whose
-                # individual Episodes carry the file paths) — skip those
-                # since the inspector needs an actual media file to load
-                # the BIF.
-                continue
-            try:
-                if metadata_type == "episode":
-                    title = _build_episode_title(m)
-                else:
-                    title = getattr(m, "title", "") or ""
-                items.append(
-                    MediaItem(
-                        id=_plex_item_id(m),
-                        title=title,
-                        remote_path=locations[0] if locations else "",
-                        library_id=str(getattr(m, "librarySectionID", "") or ""),
-                    )
-                )
-            except Exception as exc:
-                logger.debug("Skipping Plex search hit due to projection error: {}", exc)
-                continue
+            projected = _project_to_media_item(m, str(metadata_type or ""))
+            if projected is not None:
+                items.append(projected)
 
         if not items:
             logger.info(

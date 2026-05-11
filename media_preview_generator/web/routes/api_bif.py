@@ -191,6 +191,23 @@ def _resolve_bif_for_item(
 
     Returns:
         Tuple of (bif_path, bif_exists, bif_info_dict).
+
+        Returns ``("", False, {})`` on ANY failure path — network error,
+        malformed XML, missing ``hash`` attribute, or filesystem error
+        on the bundle path. This shape is intentional: the caller can't
+        distinguish "Plex hasn't analyzed this item yet" from "the
+        request failed" from the return value alone, but every branch
+        leaves the user in the same state (no preview to load) so the
+        downstream UX is the same. Failures are logged at DEBUG so
+        they're visible when troubleshooting.
+
+        Critical for the per-search-result loop in
+        ``_resolve_preview_for_item``: a single malformed ``/tree``
+        response must not poison the whole search (~15 invocations per
+        search). Pre-fix only ``RequestException`` was caught, so a
+        single ``ET.ParseError`` or ``OSError`` would propagate out
+        and the search route's top-level catch-all would turn the
+        whole search into the empty-fallback path.
     """
     bif_path = ""
     bif_exists = False
@@ -213,7 +230,10 @@ def _resolve_bif_for_item(
             if not bundle_hash or len(bundle_hash) < 2:
                 continue
             bif_path = _bif_path_for_hash(bundle_hash, plex_config)
-            bif_exists = os.path.isfile(bif_path)
+            try:
+                bif_exists = os.path.isfile(bif_path)
+            except OSError:
+                bif_exists = False
             if bif_exists:
                 try:
                     stat = os.stat(bif_path)
@@ -226,6 +246,17 @@ def _resolve_bif_for_item(
             break
     except http_mod.RequestException as e:
         logger.debug("BIF viewer: Failed to get tree for {}: {}", item_key, e)
+    except ET.ParseError as e:
+        # Malformed XML from Plex — observed in the wild as truncated /tree
+        # bodies under heavy library-scan load. Without this catch the
+        # per-item loop in _resolve_preview_for_item would 500 the whole
+        # search instead of degrading just the one offending row.
+        logger.debug("BIF viewer: Plex /tree returned malformed XML for {}: {}", item_key, e)
+    except OSError as e:
+        # Filesystem failure on the bundle path (permission, mount loss,
+        # NFS hiccup). Treated like an unanalysed item rather than a
+        # search-killing exception.
+        logger.debug("BIF viewer: filesystem error resolving BIF for {}: {}", item_key, e)
 
     return bif_path, bif_exists, bif_info
 
@@ -541,11 +572,16 @@ def bif_frame():
 
 
 def _validate_path_under_any_server(file_path: str, allowed_roots: list[str]) -> str | None:
-    """Validate ``file_path`` is a real file under one of ``allowed_roots``.
+    """Validate ``file_path`` exists under one of ``allowed_roots``.
 
     Multi-server analogue of ``_validate_bif_path`` that accepts any of
     several roots (Plex bundle dir, Emby/Jellyfin media folders).
-    Returns the normalised path or None.
+    Accepts either a file (Emby BIF sidecar, Plex bundle BIF) OR a
+    directory (Jellyfin's saved-with-media trickplay sheet folder
+    ``<basename>.trickplay/<width> - <tileW>x<tileH>``). The caller is
+    responsible for re-checking the kind it actually expected.
+
+    Returns the normalised path or ``None``.
     """
     if not file_path or "\x00" in file_path:
         return None
@@ -557,7 +593,7 @@ def _validate_path_under_any_server(file_path: str, allowed_roots: list[str]) ->
         if not root_n:
             continue
         if normalized == root_n or normalized.startswith(root_n + os.sep):
-            if os.path.isfile(normalized):
+            if os.path.isfile(normalized) or os.path.isdir(normalized):
                 return normalized
     return None
 
@@ -638,24 +674,55 @@ def bif_servers_search(server_id: str):
         # own server-side index — Plex /hubs/search via library.search(),
         # Emby/Jellyfin /Items?searchTerm=…
         #
-        # The vendor search API doesn't know which libraries the user has
-        # disabled in this app's settings, so post-filter the hits to drop
-        # results from libraries the user explicitly turned off (D4-FIX
-        # for the regression introduced by the brute-force-walk replacement).
-        enabled_library_ids: set[str] = set()
+        # The vendor search API doesn't know which libraries the user
+        # has disabled in this app's settings, so post-filter the hits
+        # to drop results from libraries the user explicitly turned off.
+        #
+        # Filter strategy: REMOTE_PATH prefix first, then library_id as
+        # a fallback. Pre-fix this matched only on item.library_id, but
+        # Emby/Jellyfin search responses carry the season/show ParentId
+        # (not the library's VirtualFolder ItemId) on episode rows, so
+        # the filter dropped every legitimate episode result. Path-
+        # prefix matching against each library's ``remote_paths`` is
+        # what ingestion uses for the same purpose and works for every
+        # vendor whose libraries have remote_paths configured.
+        #
+        # Some Plex/Emby/Jellyfin libraries may have an empty
+        # ``remote_paths`` (the user hasn't configured local mounts
+        # yet). We fall back to library_id matching for those — Plex
+        # populates Episode/Movie ``librarySectionID`` natively so the
+        # match works there even when the path filter can't.
+        disabled_remote_prefixes: list[str] = []
+        disabled_lib_ids_without_paths: set[str] = set()
         for lib in server_cfg.libraries or []:
             if getattr(lib, "enabled", True):
-                enabled_library_ids.add(str(getattr(lib, "id", "")))
+                continue
+            paths = [p for p in (getattr(lib, "remote_paths", ()) or ()) if str(p or "").strip()]
+            if paths:
+                for rp in paths:
+                    disabled_remote_prefixes.append(str(rp).rstrip("/") + "/")
+            else:
+                lid = str(getattr(lib, "id", "") or "")
+                if lid:
+                    disabled_lib_ids_without_paths.add(lid)
+
+        def _is_under_disabled_library(item) -> bool:
+            remote_path = item.remote_path or ""
+            if remote_path and disabled_remote_prefixes:
+                normalised = remote_path.rstrip("/") + "/"
+                if any(normalised.startswith(p) for p in disabled_remote_prefixes):
+                    return True
+            if disabled_lib_ids_without_paths:
+                lib_id = str(getattr(item, "library_id", "") or "")
+                if lib_id and lib_id in disabled_lib_ids_without_paths:
+                    return True
+            return False
 
         items = server.search_items(query, limit=_MAX_SEARCH_RESULTS)
         for item in items:
             if len(results) >= _MAX_SEARCH_RESULTS:
                 break
-            # Items without a library_id pass through (vendor APIs sometimes
-            # omit it on aggregate-search responses); only filter when we
-            # can confidently say the hit is from a disabled library.
-            item_lib_id = str(getattr(item, "library_id", "") or "")
-            if enabled_library_ids and item_lib_id and item_lib_id not in enabled_library_ids:
+            if _is_under_disabled_library(item):
                 continue
             results.append(_resolve_preview_for_item(item, server_cfg))
     except Exception as exc:
@@ -712,15 +779,49 @@ def _resolve_preview_for_item(item, server_cfg) -> dict:
     }
 
     if server_cfg.type is ServerType.PLEX:
-        # We can't compute the bundle-hash path without an API call —
-        # the viewer page can re-resolve via the existing /bif/info
-        # endpoint when the user clicks. Report unknown for now.
+        # Plex's bundle-hash → BIF path lookup needs a per-item /tree call.
+        # Pre-fix this returned preview_path="" with a "click to load" note
+        # and the frontend tried to send the .mkv media path to /bif/info,
+        # which only validates .bif paths — every Plex click ended in
+        # "Invalid or missing BIF file path". Now we resolve eagerly so the
+        # viewer's contract (preview_path is the BIF, not the media) holds
+        # for Plex too. Cost: one /tree call per result (~15/search).
+        import requests as _req
+
+        plex_url = server_cfg.url or ""
+        plex_token = str((server_cfg.auth or {}).get("token") or "")
+        plex_config = _get_plex_config_folder()
+        bif_path = ""
+        bif_exists = False
+        bif_info: dict = {}
+        try:
+            bif_path, bif_exists, bif_info = _resolve_bif_for_item(
+                f"/library/metadata/{item.id}",
+                plex_url,
+                plex_token,
+                plex_config,
+                bool(server_cfg.verify_ssl),
+                _req,
+            )
+        except Exception as exc:
+            # _resolve_bif_for_item already swallows the documented failure
+            # modes (RequestException, ParseError, OSError); this catch is
+            # the last-resort guard that prevents one row's unknown-unknown
+            # from breaking the other 14 search results. Pre-fix the loop
+            # had no defence and a single bad row poisoned the whole search.
+            logger.debug(
+                "BIF viewer: unexpected error resolving Plex BIF for item {}: {}",
+                item.id,
+                exc,
+            )
         base.update(
             preview_kind="bif",
-            preview_path="",
-            preview_exists=False,
-            note="Plex bundle path requires per-item API lookup; click to load.",
+            preview_path=bif_path,
+            preview_exists=bif_exists,
+            **bif_info,
         )
+        if not bif_path:
+            base["note"] = "Plex hasn't analyzed this item yet — no bundle hash returned."
     elif server_cfg.type is ServerType.EMBY:
         bif = EmbyBifAdapter.sidecar_path(canonical_local, width=width, frame_interval=interval)
         base.update(

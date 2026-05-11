@@ -75,11 +75,13 @@ class EmbyApiClient(MediaServer):
         # is also virtually free on the hot path (single attribute
         # read, no acquire) thanks to double-checked locking.
         self._session_lock = threading.Lock()
-        # Reverse-lookup cache: ``{remote_path: (expires_at, item_id_or_none)}``.
-        # Caches BOTH positive ("found item X") and negative ("not in library")
-        # results — the negative case is the dominant cost (Pass-2 enum is
-        # ~30s cold), and getting a stale negative is harmless because the
-        # SKIPPED_NOT_IN_LIBRARY retry queue picks the file up later anyway.
+        # Reverse-lookup cache: ``{remote_path: (expires_at, item_id)}``.
+        # Caches POSITIVE results only — see ``_resolve_one_path`` for the
+        # negative-cache regression (chain ``62e32c35``, 2026-05-11) that
+        # forced every early retry to short-circuit on stale ``None`` for
+        # the full TTL. Value type stays ``str | None`` for backwards-compat
+        # with any in-memory entry written by older code paths; the reader
+        # in ``_resolve_one_path`` defensively ignores ``None`` values.
         self._reverse_lookup_cache: dict[str, tuple[float, str | None]] = {}
         self._reverse_lookup_lock = threading.Lock()
 
@@ -467,21 +469,28 @@ class EmbyApiClient(MediaServer):
 
         Two-pass strategy:
 
-        1. **Series-first** (only when the query carries S##E##):
-           ``/Items?NameStartsWith=<title>&IncludeItemTypes=Series`` —
-           prefix-indexed lookup. If a Series matches AND the query has
-           an episode, follow up with ``/Shows/<series_id>/Episodes``
-           filtered by season + episode number. This is the precise
-           path that pre-fix produced zero hits because ``searchTerm``
-           returned only Movie + Episode types and the matched Series
-           had no Path field of its own.
+        1. **Series-first**: ``/Items?NameStartsWith=<title>&IncludeItemTypes=Series``
+           — prefix-indexed lookup. When a Series matches we always
+           follow up with ``/Shows/<series_id>/Episodes`` and either:
+
+           * narrow to the requested ``S##E##`` if the query had one, or
+           * emit every episode the show has (capped at ``limit``) so
+             the inspector lets the user browse the whole show.
+
+           Jellyfin requires a ``UserId`` query param on
+           ``/Shows/{id}/Episodes`` for any non-public catalogue; we
+           add it whenever auth captured one. Emby tolerates the
+           extra param.
 
         2. **Fallback**: ``/Items?searchTerm=<title>`` against
            Series + Movie + Episode, then client-side rank with the
            shared :func:`rank_score` so a 1.0 exact-title-match
            ("The Boys") sorts above a 0.2 single-token match
-           ("Wonder Boys"). The 0.3 floor inside ``filter_and_rank``
-           drops the substring-only noise.
+           ("Wonder Boys"). Series-type rows are dropped
+           unconditionally (Pass 1 already expanded them); when the
+           query carries ``S##E##`` only matching episodes are kept.
+           The 0.3 floor inside ``filter_and_rank`` drops the
+           substring-only noise.
 
         Empty query → empty list (caller-handled). Both passes together
         return at most ``limit`` items.
@@ -495,89 +504,145 @@ class EmbyApiClient(MediaServer):
 
         results: list[MediaItem] = []
         seen_ids: set[str] = set()
+        user_id = self._user_id()
+
+        def _maybe_add_user_id(params: dict[str, Any]) -> dict[str, Any]:
+            """Thread UserId into a /Items params dict when auth has one.
+
+            Jellyfin's /Items endpoints return empty lists (or 401) without
+            a UserId scope for any title that isn't in the public catalogue;
+            Emby is permissive and accepts the param either way. Same
+            vendor quirk documented at the /Items/{id} resolver below.
+            """
+            if user_id:
+                return {**params, "UserId": user_id}
+            return params
+
+        def _expand_series(series_id: str) -> bool:
+            """Drill into a Series via /Shows/{id}/Episodes and emit episodes.
+
+            Used by both passes to turn show-folder Series rows into the
+            actual media files the inspector can load. When ``sq.has_episode``
+            only the matching ``(season, episode)`` is kept; otherwise every
+            episode is emitted (capped at ``limit``).
+
+            Returns ``True`` when the caller has filled the result list to
+            ``limit`` and should stop. ``False`` to keep going.
+            """
+            ep_params: dict[str, Any] = {
+                "Fields": "Path,IndexNumber,ParentIndexNumber",
+                "Limit": "500",
+            }
+            if sq.has_episode:
+                ep_params["Season"] = str(sq.season)
+            ep_params = _maybe_add_user_id(ep_params)
+            try:
+                ep_response = self._request("GET", f"/Shows/{series_id}/Episodes", params=ep_params).json()
+            except Exception as exc:
+                logger.debug(
+                    "[{}] Episodes lookup for series {} failed: {}",
+                    self.name,
+                    series_id,
+                    exc,
+                )
+                return False
+            for ep in ep_response.get("Items", []) or []:
+                if not isinstance(ep, dict):
+                    continue
+                if sq.has_episode and ep.get("IndexNumber") != sq.episode:
+                    continue
+                path = str(ep.get("Path") or "")
+                if not path:
+                    continue
+                eid = str(ep.get("Id") or "")
+                if eid in seen_ids:
+                    continue
+                seen_ids.add(eid)
+                results.append(
+                    MediaItem(
+                        id=eid,
+                        library_id=str(ep.get("ParentId") or series_id),
+                        title=_format_emby_title(ep),
+                        remote_path=path,
+                    )
+                )
+                if len(results) >= limit:
+                    return True
+            return False
 
         # ---------------------------------------------------------------
-        # Pass 1: Series-first (only when episode hint present).
-        # NameStartsWith is server-indexed — fast and precise.
+        # Pass 1: Series-first via NameStartsWith.
+        #
+        # Fast prefix-indexed lookup on Emby. Jellyfin's NameStartsWith
+        # has a documented quirk where titles starting with stop-words
+        # like "The" don't match (verified against Jellyfin 10.11.8:
+        # NameStartsWith="The Neighbourhood" returns 0, NameStartsWith=
+        # "Neigh" returns the show). Pass 2's searchTerm fallback covers
+        # that case via the same _expand_series helper.
         # ---------------------------------------------------------------
-        if sq.has_episode:
-            series_params = {
+        series_params = _maybe_add_user_id(
+            {
                 "NameStartsWith": sq.title,
                 "IncludeItemTypes": "Series",
                 "Recursive": "true",
                 "Fields": "Path",
                 "Limit": "10",
             }
-            try:
-                series_hits = self.query_items(series_params)
-            except Exception as exc:
-                logger.debug(
-                    "[{}] Series-first NameStartsWith pass failed for {!r}: {}",
-                    self.name,
-                    sq.raw,
-                    exc,
-                )
-                series_hits = []
-            for series in series_hits or []:
-                if not isinstance(series, dict):
-                    continue
-                series_id = str(series.get("Id") or "")
-                if not series_id:
-                    continue
-                ep_params = {
-                    "Season": str(sq.season),
-                    "Fields": "Path",
-                    "Limit": "200",
-                }
-                try:
-                    ep_response = self._request("GET", f"/Shows/{series_id}/Episodes", params=ep_params).json()
-                except Exception as exc:
-                    logger.debug(
-                        "[{}] Episodes lookup for series {} failed: {}",
-                        self.name,
-                        series_id,
-                        exc,
-                    )
-                    continue
-                for ep in ep_response.get("Items", []) or []:
-                    if not isinstance(ep, dict):
-                        continue
-                    if ep.get("IndexNumber") != sq.episode:
-                        continue
-                    path = str(ep.get("Path") or "")
-                    if not path:
-                        continue
-                    eid = str(ep.get("Id") or "")
-                    if eid in seen_ids:
-                        continue
-                    seen_ids.add(eid)
-                    results.append(
-                        MediaItem(
-                            id=eid,
-                            library_id=str(ep.get("ParentId") or series_id),
-                            title=_format_emby_title(ep),
-                            remote_path=path,
-                        )
-                    )
-                    if len(results) >= limit:
-                        return results
+        )
+        try:
+            series_hits = self.query_items(series_params)
+        except Exception as exc:
+            logger.debug(
+                "[{}] Series-first NameStartsWith pass failed for {!r}: {}",
+                self.name,
+                sq.raw,
+                exc,
+            )
+            series_hits = []
+        for series in series_hits or []:
+            if not isinstance(series, dict):
+                continue
+            # NameStartsWith returns whatever matches the prefix; we asked
+            # for Series only via IncludeItemTypes but a defensive check
+            # protects against servers that ignore the filter (and tests
+            # that share the same query_items mock for both passes).
+            if str(series.get("Type") or "") != "Series":
+                continue
+            series_id = str(series.get("Id") or "")
+            if not series_id:
+                continue
+            if _expand_series(series_id):
+                return results
 
         # ---------------------------------------------------------------
         # Pass 2: searchTerm fallback with client-side rank.
-        # Covers movies + cases where the Series-first pass missed (the
-        # series isn't a NameStartsWith match, e.g. user typed "boys"
-        # for "The Boys").
+        #
+        # Covers movies, plain show-name queries on Jellyfin (where
+        # Pass 1's NameStartsWith silently misses on "The"-prefixed
+        # titles), and cases where the user typed a partial title
+        # ("boys" for "The Boys").
+        #
+        # Series rows are NOT dropped — they're expanded into their
+        # episodes via _expand_series so show-name queries always
+        # surface loadable media files. Pre-fix this dropped Series
+        # rows entirely, which left Jellyfin show searches with zero
+        # results because Pass 1 had also missed.
         # ---------------------------------------------------------------
-        fallback_params = {
-            "searchTerm": sq.title,
-            "IncludeItemTypes": "Series,Movie,Episode",
-            "Recursive": "true",
-            "Fields": "Path",
-            # Emby/Jellyfin servers cap at varying limits; ask for plenty
-            # so the rank pass has enough candidates to choose from
-            # without blowing the wire.
-            "Limit": str(min(int(limit) * 4, 200)),
-        }
+        fallback_params = _maybe_add_user_id(
+            {
+                "searchTerm": sq.title,
+                "IncludeItemTypes": "Series,Movie,Episode",
+                "Recursive": "true",
+                # IndexNumber/ParentIndexNumber feed the has_episode filter
+                # below; SeriesId is reserved for future show-grouping. Path
+                # stays for the existing path-filter.
+                "Fields": "Path,IndexNumber,ParentIndexNumber,SeriesId",
+                # Emby/Jellyfin servers cap at varying limits; ask for plenty
+                # so the rank pass has enough candidates to choose from
+                # without blowing the wire.
+                "Limit": str(min(int(limit) * 4, 200)),
+            }
+        )
         try:
             raw_items = self.query_items(fallback_params)
         except Exception as exc:
@@ -589,10 +654,6 @@ class EmbyApiClient(MediaServer):
             )
             raw_items = []
 
-        # Rank candidates by name + type before applying the path filter
-        # — a Series hit has no Path of its own, but if the user typed
-        # S##E## we already pulled its episodes in Pass 1, so we just
-        # need to drop unranked Series rows here.
         candidates: list[tuple[str, str, dict]] = []
         for raw in raw_items or []:
             if not isinstance(raw, dict):
@@ -603,10 +664,32 @@ class EmbyApiClient(MediaServer):
 
         ranked = filter_and_rank(sq, candidates, limit=limit * 2)
         for raw in ranked:
+            if len(results) >= limit:
+                break
+            raw_type = str(raw.get("Type") or "")
+            if raw_type == "Series":
+                # Show-folder row → expand into episodes via the same
+                # /Shows/{id}/Episodes helper Pass 1 uses. The seen_ids
+                # set inside _expand_series prevents double-emit when
+                # Pass 1 already covered this series.
+                series_id = str(raw.get("Id") or "")
+                if series_id and _expand_series(series_id):
+                    break
+                continue
+            # When the user typed S##E##, only let through episodes that
+            # match the requested season+episode. Pre-fix Pass 2 returned
+            # every matching episode regardless of S##E##, so a
+            # "S01E08" query for a show like "The Neighbourhood" surfaced
+            # S01E01–S01E08 instead of just S01E08.
+            if sq.has_episode:
+                if raw_type != "Episode":
+                    continue
+                if raw.get("ParentIndexNumber") != sq.season:
+                    continue
+                if raw.get("IndexNumber") != sq.episode:
+                    continue
             path = str(raw.get("Path") or "")
             if not path:
-                # Skip path-less Series rows — the inspector needs an
-                # actual media file to load the BIF.
                 continue
             rid = str(raw.get("Id") or "")
             if rid in seen_ids:
@@ -620,8 +703,6 @@ class EmbyApiClient(MediaServer):
                     remote_path=path,
                 )
             )
-            if len(results) >= limit:
-                break
 
         if not results:
             # Surface zero-result searches at INFO so users investigating
@@ -692,10 +773,26 @@ class EmbyApiClient(MediaServer):
 
         The base class loops mapped candidates through this hook (see
         :meth:`MediaServer.resolve_remote_path_to_item_id`). This
-        wrapper TTL-caches results — both positive AND negative —
-        because the dominant cost is a Pass-2 enumeration (~30s cold
-        on a 200K-item Jellyfin) and the same server is typically
-        asked about 200+ files in a row during a full-library scan.
+        wrapper TTL-caches **positive** results — the dominant cost
+        is a Pass-2 enumeration (~30s cold on a 200K-item Jellyfin)
+        and the same server is typically asked about 200+ files in a
+        row during a full-library scan.
+
+        **Negative** results are NOT cached. The retry queue
+        (``processing/retry_queue.py``) captures the registry — and
+        therefore this server instance — in a closure when it arms a
+        chain on ``PUBLISHED_PENDING_REGISTRATION``. The chain's
+        first two backoff intervals (60s + 120s) both sit inside the
+        300s positive-TTL window, so a cached ``None`` from the
+        originating dispatch would force every early retry to
+        short-circuit without re-querying — even after the server had
+        finished indexing the file seconds later. Live regression
+        (chain ``62e32c35``, Jonestown movie, 2026-05-11 22:30→22:38):
+        Jellyfin finished scanning within ~60s of the chain starting,
+        but the cached ``None`` lasted the full 300s TTL and wasted
+        attempts #1 and #2 (both returned in 0.0s instead of
+        re-hitting the Bridge plugin). The chain only recovered at
+        attempt #3 (T+480s) when the TTL expired.
 
         Best-effort match: ``_uncached_resolve_remote_path_to_item_id``
         does a basename + trailing-two-component path-tail check
@@ -708,15 +805,18 @@ class EmbyApiClient(MediaServer):
         if not basename:
             return None
 
-        # Cache check first.
         now = time.monotonic()
         with self._reverse_lookup_lock:
             cached = self._reverse_lookup_cache.get(server_view_path)
-            if cached is not None and cached[0] > now:
+            # ``cached[1] is not None`` guards against stale negatives
+            # left in the cache by older code paths (defence-in-depth
+            # for rolling deploys); current code never writes them.
+            if cached is not None and cached[0] > now and cached[1] is not None:
                 return cached[1]
         result = self._uncached_resolve_remote_path_to_item_id(server_view_path)
-        with self._reverse_lookup_lock:
-            self._reverse_lookup_cache[server_view_path] = (now + _REVERSE_LOOKUP_TTL_S, result)
+        if result is not None:
+            with self._reverse_lookup_lock:
+                self._reverse_lookup_cache[server_view_path] = (now + _REVERSE_LOOKUP_TTL_S, result)
         return result
 
     def _find_owning_library_id(self, remote_path: str) -> str | None:

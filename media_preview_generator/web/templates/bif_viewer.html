@@ -262,10 +262,10 @@
             a.href = '#';
             // Per-server search returns a uniform shape across vendors:
             // {preview_kind, preview_path, preview_exists, media_file, title}.
-            // Plex never knows up-front (bundle path needs a per-item lookup),
-            // so it always returns preview_exists:false with note \u2014 we still
-            // let the user click to trigger /api/bif/info.
-            const allowClick = r.preview_exists || (serverType || '').toLowerCase() === 'plex';
+            // The backend resolves the BIF/trickplay path eagerly for every
+            // vendor (including Plex's bundle-hash lookup), so preview_exists
+            // is the single source of truth for whether the row is loadable.
+            const allowClick = !!r.preview_exists;
             a.className = `list-group-item list-group-item-action result-item py-2 px-3${!allowClick ? ' opacity-50' : ''}`;
             a.dataset.previewPath = r.preview_path || '';
             a.dataset.previewKind = r.preview_kind || 'bif';
@@ -274,14 +274,9 @@
             a.dataset.serverType = (serverType || '').toLowerCase();
             a.dataset.title = r.title;
 
-            let statusBadge;
-            if ((serverType || '').toLowerCase() === 'plex') {
-                statusBadge = '<span class="badge bg-info text-dark">Click to load</span>';
-            } else {
-                statusBadge = r.preview_exists
-                    ? '<span class="badge bg-success">Preview</span>'
-                    : '<span class="badge bg-secondary">No preview</span>';
-            }
+            const statusBadge = r.preview_exists
+                ? '<span class="badge bg-success">Preview</span>'
+                : '<span class="badge bg-secondary">No preview</span>';
             const note = r.note ? `<div class="text-muted small mt-1">${escapeHtml(r.note)}</div>` : '';
 
             a.innerHTML = `<div class="d-flex align-items-start">
@@ -319,11 +314,10 @@
             await loadTrickplay(meta.previewPath, title);
             return;
         }
-        // BIF flow. For Plex, preview_path may be empty \u2014 fall back to the
-        // media_file the backend resolved; /api/bif/info will look up the
-        // bundle hash from the canonical local path.
-        const path = meta.previewPath || meta.mediaFile;
-        await loadBif(path, title);
+        // BIF flow \u2014 backend always resolves preview_path eagerly (Plex
+        // bundle hash, Emby sidecar). If it's empty the row was disabled
+        // up-front so we shouldn't be here.
+        await loadBif(meta.previewPath, title);
     }
 
     // --- Load BIF ---

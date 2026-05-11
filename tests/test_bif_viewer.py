@@ -527,6 +527,302 @@ class TestMultiServerBifSearch:
         resp = client.get("/api/bif/servers/anything/search?q=a", headers=_api_headers())
         assert resp.status_code == 400
 
+    def _configure_plex_server(self, app, plex_config_dir: str):
+        """Wire up a Plex server entry in settings + return its id."""
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        with app.app_context():
+            sm = get_settings_manager()
+            sm.set("plex_config_folder", plex_config_dir)
+            sm.set(
+                "media_servers",
+                [
+                    {
+                        "id": "plex-1",
+                        "type": "plex",
+                        "name": "PlexLocal",
+                        "enabled": True,
+                        "url": "http://plex.test:32400",
+                        "auth": {"token": "tok"},
+                        "verify_ssl": False,
+                        "libraries": [],
+                        "path_mappings": [],
+                    }
+                ],
+            )
+        return "plex-1"
+
+    def test_plex_search_resolves_bundle_path_eagerly(self, client, app, tmp_path):
+        """The 2026-05-12 user bug — pre-fix Plex returned preview_path=""
+        and the frontend fell back to media_file (.mkv path), which
+        /api/bif/info rejected as "Invalid or missing BIF file path".
+        Now the backend resolves the BIF path up-front via /tree.
+
+        Boundary-call assertion (.claude/rules/testing.md): we assert the
+        SUT-controlled output (preview_path ending in index-sd.bif), not
+        just that some path was returned.
+        """
+        from media_preview_generator.servers.base import MediaItem
+        from media_preview_generator.servers.plex import PlexServer
+
+        bundle_hash = "abcdef1234567890"
+        # Pre-create the BIF so preview_exists==True.
+        bif_dir = tmp_path / "plex" / "Media" / "localhost" / "a" / "bcdef1234567890.bundle" / "Contents" / "Indexes"
+        bif_dir.mkdir(parents=True)
+        bif_path = _write_test_bif(str(bif_dir / "index-sd.bif"))
+
+        self._configure_plex_server(app, str(tmp_path / "plex"))
+
+        item = MediaItem(
+            id="42",
+            library_id="1",
+            title="Breaking Bad S01E01",
+            remote_path="/data/TV/BB/S01E01.mkv",
+        )
+
+        tree_xml = (
+            f'<?xml version="1.0"?><MediaContainer>'
+            f'<MediaPart hash="{bundle_hash}" file="/data/TV/BB/S01E01.mkv"/>'
+            f"</MediaContainer>"
+        ).encode()
+
+        def fake_get(url, **_kwargs):
+            assert "/library/metadata/42/tree" in url
+            resp = MagicMock(content=tree_xml)
+            resp.raise_for_status = MagicMock()
+            return resp
+
+        with (
+            patch.object(PlexServer, "search_items", return_value=[item]),
+            patch("requests.get", side_effect=fake_get),
+        ):
+            resp = client.get("/api/bif/servers/plex-1/search?q=Breaking", headers=_api_headers())
+
+        assert resp.status_code == 200, resp.get_data(as_text=True)
+        body = resp.get_json()
+        results = body["results"]
+        assert len(results) == 1
+        assert results[0]["preview_kind"] == "bif"
+        assert results[0]["preview_path"].endswith("index-sd.bif"), (
+            f"preview_path must be the resolved BIF, not the .mkv. Got {results[0]['preview_path']!r}"
+        )
+        assert results[0]["preview_path"] == bif_path
+        assert results[0]["preview_exists"] is True
+
+    def test_plex_search_one_bad_tree_response_does_not_poison_other_results(self, client, app, tmp_path):
+        """One malformed /tree response (or per-item filesystem error)
+        must NOT take down the whole search — pre-fix only RequestException
+        was caught inside _resolve_bif_for_item, so a Plex 1.32-style
+        truncated XML body for one item turned the whole search into
+        the empty-fallback path. Now ParseError + OSError are caught
+        per-row and the offending row degrades to preview_path="" while
+        the others resolve normally.
+        """
+        from media_preview_generator.servers.base import MediaItem
+        from media_preview_generator.servers.plex import PlexServer
+
+        bundle_hash = "abcdef1234567890"
+        bif_dir = tmp_path / "plex" / "Media" / "localhost" / "a" / "bcdef1234567890.bundle" / "Contents" / "Indexes"
+        bif_dir.mkdir(parents=True)
+        good_bif = _write_test_bif(str(bif_dir / "index-sd.bif"))
+
+        self._configure_plex_server(app, str(tmp_path / "plex"))
+        items = [
+            MediaItem(id="42", library_id="1", title="Healthy", remote_path="/data/x.mkv"),
+            MediaItem(id="43", library_id="1", title="Broken XML", remote_path="/data/y.mkv"),
+        ]
+
+        good_xml = (
+            f'<?xml version="1.0"?><MediaContainer>'
+            f'<MediaPart hash="{bundle_hash}" file="/data/x.mkv"/>'
+            f"</MediaContainer>"
+        ).encode()
+
+        def fake_get(url, **_kwargs):
+            resp = MagicMock()
+            resp.raise_for_status = MagicMock()
+            if "/library/metadata/42/tree" in url:
+                resp.content = good_xml
+            elif "/library/metadata/43/tree" in url:
+                # Truncated body — ET.fromstring raises ParseError. Pre-fix
+                # this propagated out of the per-item loop and the route's
+                # top-level Exception handler turned the WHOLE search into
+                # a 502.
+                resp.content = b"<MediaContainer><MediaPart hash=trunc"
+            else:
+                raise AssertionError(f"unexpected url: {url}")
+            return resp
+
+        with (
+            patch.object(PlexServer, "search_items", return_value=items),
+            patch("requests.get", side_effect=fake_get),
+        ):
+            resp = client.get("/api/bif/servers/plex-1/search?q=anything", headers=_api_headers())
+
+        assert resp.status_code == 200, resp.get_data(as_text=True)
+        results = resp.get_json()["results"]
+        assert len(results) == 2, "Both rows must be returned even when one /tree response is malformed"
+        # Healthy row resolved normally.
+        healthy = next(r for r in results if r["title"] == "Healthy")
+        assert healthy["preview_path"] == good_bif
+        assert healthy["preview_exists"] is True
+        # Broken row degraded gracefully to "no preview yet" semantics.
+        broken = next(r for r in results if r["title"] == "Broken XML")
+        assert broken["preview_path"] == ""
+        assert broken["preview_exists"] is False
+
+    def test_disabled_library_with_remote_paths_filters_by_path_prefix(self, client, app, tmp_path):
+        """Disabled libraries with configured ``remote_paths`` are
+        filtered by path prefix — episode rows match because their
+        ``remote_path`` lives under the disabled library's folder.
+        Pre-fix this matched on ``library_id`` which Emby/Jellyfin
+        episodes don't carry.
+        """
+        from media_preview_generator.servers.base import MediaItem
+        from media_preview_generator.servers.plex import PlexServer
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        with app.app_context():
+            sm = get_settings_manager()
+            sm.set("plex_config_folder", str(tmp_path / "plex"))
+            sm.set(
+                "media_servers",
+                [
+                    {
+                        "id": "plex-1",
+                        "type": "plex",
+                        "name": "PlexLocal",
+                        "enabled": True,
+                        "url": "http://plex.test:32400",
+                        "auth": {"token": "tok"},
+                        "verify_ssl": False,
+                        "libraries": [
+                            {
+                                "id": "lib-tv",
+                                "name": "TV",
+                                "remote_paths": ["/data/TV"],
+                                "enabled": True,
+                            },
+                            {
+                                "id": "lib-blocked",
+                                "name": "Blocked",
+                                "remote_paths": ["/data/Blocked"],
+                                "enabled": False,
+                            },
+                        ],
+                        "path_mappings": [],
+                    }
+                ],
+            )
+
+        items = [
+            MediaItem(id="1", library_id="", title="Allowed", remote_path="/data/TV/x.mkv"),
+            MediaItem(id="2", library_id="", title="Blocked", remote_path="/data/Blocked/y.mkv"),
+        ]
+
+        with (
+            patch.object(PlexServer, "search_items", return_value=items),
+            patch(
+                "requests.get",
+                side_effect=lambda *a, **kw: MagicMock(content=b"<MediaContainer/>", raise_for_status=MagicMock()),
+            ),
+        ):
+            resp = client.get("/api/bif/servers/plex-1/search?q=any", headers=_api_headers())
+
+        assert resp.status_code == 200
+        titles = [r["title"] for r in resp.get_json()["results"]]
+        assert titles == ["Allowed"], f"Expected only Allowed (Blocked filtered by path-prefix), got {titles}"
+
+    def test_disabled_library_with_empty_remote_paths_falls_back_to_library_id(self, client, app, tmp_path):
+        """Disabled libraries with NO ``remote_paths`` (user hasn't
+        configured local mounts yet) fall back to ``library_id``
+        matching. Pin the matrix gap explicitly: items in such a
+        library MUST still be filtered out — silently leaking them
+        was the architecture-review MED finding.
+        """
+        from media_preview_generator.servers.base import MediaItem
+        from media_preview_generator.servers.plex import PlexServer
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        with app.app_context():
+            sm = get_settings_manager()
+            sm.set("plex_config_folder", str(tmp_path / "plex"))
+            sm.set(
+                "media_servers",
+                [
+                    {
+                        "id": "plex-1",
+                        "type": "plex",
+                        "name": "PlexLocal",
+                        "enabled": True,
+                        "url": "http://plex.test:32400",
+                        "auth": {"token": "tok"},
+                        "verify_ssl": False,
+                        "libraries": [
+                            {
+                                "id": "lib-blocked-no-paths",
+                                "name": "Blocked No Paths",
+                                "remote_paths": [],
+                                "enabled": False,
+                            }
+                        ],
+                        "path_mappings": [],
+                    }
+                ],
+            )
+
+        items = [
+            MediaItem(id="1", library_id="lib-other", title="Allowed", remote_path="/x.mkv"),
+            MediaItem(id="2", library_id="lib-blocked-no-paths", title="Blocked", remote_path="/y.mkv"),
+        ]
+
+        with (
+            patch.object(PlexServer, "search_items", return_value=items),
+            patch(
+                "requests.get",
+                side_effect=lambda *a, **kw: MagicMock(content=b"<MediaContainer/>", raise_for_status=MagicMock()),
+            ),
+        ):
+            resp = client.get("/api/bif/servers/plex-1/search?q=any", headers=_api_headers())
+
+        assert resp.status_code == 200
+        titles = [r["title"] for r in resp.get_json()["results"]]
+        assert "Blocked" not in titles, (
+            f"Item from disabled library without remote_paths leaked through (the MED). Titles: {titles}"
+        )
+        assert "Allowed" in titles
+
+    def test_plex_search_unanalyzed_item_marks_no_preview(self, client, app, tmp_path):
+        """When Plex hasn't analyzed the item yet, /tree returns no
+        MediaPart hash → preview_path stays empty + a `note` explains
+        why. The frontend must NOT mark the row as clickable.
+        """
+        from media_preview_generator.servers.base import MediaItem
+        from media_preview_generator.servers.plex import PlexServer
+
+        self._configure_plex_server(app, str(tmp_path / "plex"))
+        item = MediaItem(id="999", library_id="1", title="Unanalyzed", remote_path="/data/x.mkv")
+
+        tree_xml = b"<?xml version='1.0'?><MediaContainer></MediaContainer>"
+
+        def fake_get(url, **_kwargs):
+            resp = MagicMock(content=tree_xml)
+            resp.raise_for_status = MagicMock()
+            return resp
+
+        with (
+            patch.object(PlexServer, "search_items", return_value=[item]),
+            patch("requests.get", side_effect=fake_get),
+        ):
+            resp = client.get("/api/bif/servers/plex-1/search?q=Unanalyzed", headers=_api_headers())
+
+        assert resp.status_code == 200
+        results = resp.get_json()["results"]
+        assert len(results) == 1
+        assert results[0]["preview_path"] == ""
+        assert results[0]["preview_exists"] is False
+        assert "note" in results[0] and "analyzed" in results[0]["note"].lower()
+
 
 class TestBifSearchShowHubUsesRatingKey:
     """Hindsight for commit ``0a74c5b`` (use ``ratingKey`` not ``key`` for
