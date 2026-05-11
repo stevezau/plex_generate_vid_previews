@@ -1238,6 +1238,27 @@ class TestEmbyPreviewsReadiness:
                     json=MagicMock(return_value=[{"Name": "Movies", "ItemId": "m", "LibraryOptions": good_options}]),
                     raise_for_status=MagicMock(),
                 )
+            if url == "/ScheduledTasks":
+                # Healthy Emby: task armed with default daily trigger.
+                # On Emby (no Bridge plugin), the recommendation is
+                # ALWAYS "keep enabled" because the task is the only
+                # registration path for sidecar tiles this app writes.
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(
+                        return_value=[
+                            {
+                                "Name": "Generate Trickplay Images",
+                                "Key": "RefreshTrickplayImages",
+                                "Id": "sched-trickplay-id",
+                                "Triggers": [{"Type": "DailyTrigger", "TimeOfDayTicks": 108_000_000_000}],
+                                "State": "Idle",
+                                "Description": "Creates trickplay previews for videos.",
+                            }
+                        ]
+                    ),
+                    raise_for_status=MagicMock(),
+                )
             raise AssertionError(f"unexpected {method} {url}")
 
         with patch.object(EmbyServer, "_request", side_effect=fake_request):
@@ -1326,6 +1347,87 @@ class TestEmbyPreviewsReadiness:
             "value": True,
             "library_ids": ["t"],
         }
+
+
+class TestEmbyScheduledTrickplayReadiness:
+    """Emby has no Bridge-plugin equivalent — the daily Generate Trickplay
+    Images task is always the registration path for sidecar tiles this
+    app publishes. So the readiness check on Emby never offers a disable
+    button, and a disabled-no-triggers state is Critical (not Recommended
+    like on Jellyfin-with-plugin).
+    """
+
+    def _wire(self, emby, *, triggers_count: int):
+        good_options = {
+            "ExtractTrickplayImagesDuringLibraryScan": False,
+            "ExtractChapterImagesDuringLibraryScan": False,
+            "EnableRealtimeMonitor": True,
+        }
+        triggers = [{"Type": "DailyTrigger", "TimeOfDayTicks": 108_000_000_000}] * triggers_count
+
+        def fake_request(method, url, **kwargs):
+            if url == "/System/Info":
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value={"Version": "4.8.0.0"}),
+                    raise_for_status=MagicMock(),
+                )
+            if url == "/Library/VirtualFolders":
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value=[{"Name": "Movies", "ItemId": "m", "LibraryOptions": good_options}]),
+                    raise_for_status=MagicMock(),
+                )
+            if url == "/ScheduledTasks":
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(
+                        return_value=[
+                            {
+                                "Name": "Generate Trickplay Images",
+                                "Key": "RefreshTrickplayImages",
+                                "Id": "sched-trickplay-id",
+                                "Triggers": triggers,
+                                "State": "Idle",
+                            }
+                        ]
+                    ),
+                    raise_for_status=MagicMock(),
+                )
+            raise AssertionError(f"unexpected {method} {url}")
+
+        return fake_request
+
+    def test_with_triggers_is_informational_no_disable_action(self, emby):
+        """Pin the no-footgun contract: Emby NEVER offers a disable button
+        for this task because doing so silently breaks trickplay (no plugin
+        fallback path exists)."""
+        with patch.object(EmbyServer, "_request", side_effect=self._wire(emby, triggers_count=1)):
+            payload = emby.previews_readiness()
+
+        sched = next(s for s in payload["sections"] if s["id"] == "scheduled_trickplay")
+        check = sched["checks"][0]
+        assert check["severity"] == "info"
+        assert check["ok"] is True
+        assert "disable" not in check["actions"], (
+            "Emby has no plugin path — disabling the scheduled task breaks trickplay. "
+            "The readiness card must NEVER offer that button."
+        )
+
+    def test_without_triggers_is_critical(self, emby):
+        """Disabled task on Emby = trickplay never works."""
+        with patch.object(EmbyServer, "_request", side_effect=self._wire(emby, triggers_count=0)):
+            payload = emby.previews_readiness()
+
+        sched = next(s for s in payload["sections"] if s["id"] == "scheduled_trickplay")
+        check = sched["checks"][0]
+        assert check["severity"] == "critical"
+        assert check["ok"] is False
+        assert check["actions"]["enable"]["args"] == {"enabled": True}
+        # The critical severity must bubble up to overall_ok so the badge
+        # shows the breakage prominently. Without this, a user could have
+        # trickplay totally broken and see a green Setup Health badge.
+        assert payload["overall_ok"] is False
 
 
 class TestEmbyApplyRecommended:

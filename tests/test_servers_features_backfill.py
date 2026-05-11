@@ -193,6 +193,102 @@ class TestVendorExtractionToggle:
         assert body["results"]["1"] == "ok"
         assert "401" in body["results"]["2"]
 
+    def test_targeted_skipped_library_returns_ok_false(self, client, auth_headers):
+        """When the caller targets one library and the backend SKIPS it
+        (Plex's custom-agent sections raise 400 from editAdvanced — the
+        ``set_vendor_extraction`` method catches that and records the
+        result as ``"skipped: custom agent (toggle manually in Plex UI)"``),
+        the API MUST report ``ok=false`` with the per-library reason
+        surfaced in ``error``.
+
+        Pre-fix the route only counted ``error_count``, so a targeted
+        toggle that skipped every requested library still came back as
+        ``ok=true`` — the frontend then showed a green "Setting updated"
+        toast while the re-probe re-rendered the row unchanged (BIF
+        still on, Disable button still there). Exact symptom the user
+        reported on a library called "Sports" that turned out to use a
+        custom agent.
+        """
+        _seed_plex_server()
+        from media_preview_generator.servers.plex import PlexServer
+
+        skipped_reason = "skipped: custom agent (toggle manually in Plex UI)"
+        with patch.object(
+            PlexServer,
+            "set_vendor_extraction",
+            return_value={"6": skipped_reason},
+        ):
+            response = client.post(
+                "/api/servers/plex-1/vendor-extraction",
+                json={"scan_extraction": False, "library_ids": ["6"]},
+                headers=auth_headers,
+            )
+
+        body = response.get_json()
+        # The HTTP layer succeeded — the call reached the backend.
+        # But the targeted toggle did NOT actually apply, so ok=false.
+        assert body["ok"] is False, f"Targeted toggle that produced 0 successes must report ok=false. Got body={body!r}"
+        assert body["ok_count"] == 0
+        assert body["skipped_count"] == 1
+        assert body["error_count"] == 0
+        # The per-library reason is surfaced so the toast can tell the
+        # user WHY (typically: custom-agent library — toggle manually).
+        assert skipped_reason in (body.get("error") or ""), body
+
+    def test_targeted_partial_success_returns_ok_false_with_unfulfilled_reason(self, client, auth_headers):
+        """Two libraries targeted; one ok, one skipped → ok=false because
+        one of the requested toggles didn't apply. The skipped reason for
+        the unfulfilled library is surfaced in ``error``.
+        """
+        _seed_plex_server()
+        from media_preview_generator.servers.plex import PlexServer
+
+        skipped_reason = "skipped: custom agent (toggle manually in Plex UI)"
+        with patch.object(
+            PlexServer,
+            "set_vendor_extraction",
+            return_value={"1": "ok", "6": skipped_reason},
+        ):
+            response = client.post(
+                "/api/servers/plex-1/vendor-extraction",
+                json={"scan_extraction": False, "library_ids": ["1", "6"]},
+                headers=auth_headers,
+            )
+
+        body = response.get_json()
+        assert body["ok"] is False
+        assert body["ok_count"] == 1
+        assert body["skipped_count"] == 1
+        assert skipped_reason in (body.get("error") or ""), body
+
+    def test_serverwide_skipped_still_reports_ok_true(self, client, auth_headers):
+        """Server-wide call (no ``library_ids``) where some libraries got
+        skipped and others got ``ok`` is still a partial-success — keep
+        ``ok=true`` so the "Fix all" CTA doesn't read as fully-failed when
+        the user toggled what they could. Custom-agent libraries are
+        surfaced separately as a Manual row on the readiness card.
+        """
+        _seed_plex_server()
+        from media_preview_generator.servers.plex import PlexServer
+
+        with patch.object(
+            PlexServer,
+            "set_vendor_extraction",
+            return_value={"1": "ok", "6": "skipped: custom agent (toggle manually in Plex UI)"},
+        ):
+            response = client.post(
+                "/api/servers/plex-1/vendor-extraction",
+                json={"scan_extraction": False},
+                headers=auth_headers,
+            )
+
+        body = response.get_json()
+        assert body["ok"] is True
+        assert body["ok_count"] == 1
+        assert body["skipped_count"] == 1
+        # No `error` field on the server-wide partial-success path.
+        assert "error" not in body or not body["error"]
+
     def test_invalid_body_returns_400(self, client, auth_headers):
         _seed_jellyfin_server()
         # Missing scan_extraction key
@@ -242,6 +338,83 @@ class TestVendorExtractionToggle:
 # ---------------------------------------------------------------------------
 # GET /api/servers/{id}/vendor-extraction/status
 # ---------------------------------------------------------------------------
+
+
+class TestScheduledTrickplayToggle:
+    """``POST /api/servers/<id>/scheduled-trickplay`` — disable/enable the
+    Emby/Jellyfin daily Generate Trickplay Images scheduled task.
+
+    Matrix: enabled=True / enabled=False / bad-body. We assert the
+    backend setter is called with the right kwargs (bug-blind risk —
+    a future refactor that flipped the body key would silently invert
+    the operation).
+    """
+
+    def test_disable_calls_setter_with_enabled_false(self, client, auth_headers):
+        _seed_jellyfin_server()
+        from media_preview_generator.servers.jellyfin import JellyfinServer
+
+        with patch.object(
+            JellyfinServer,
+            "set_scheduled_trickplay_triggers",
+            return_value={"ok": True, "error": ""},
+        ) as mock_set:
+            response = client.post(
+                "/api/servers/jelly-1/scheduled-trickplay",
+                json={"enabled": False},
+                headers=auth_headers,
+            )
+
+        assert response.status_code == 200, response.get_data(as_text=True)
+        body = response.get_json()
+        assert body["ok"] is True
+        # Critical contract: the route must forward enabled=False, NOT
+        # True. A regression that flipped this would let users click
+        # Disable and silently re-enable the daily task.
+        mock_set.assert_called_once_with(enabled=False)
+
+    def test_enable_calls_setter_with_enabled_true(self, client, auth_headers):
+        _seed_jellyfin_server()
+        from media_preview_generator.servers.jellyfin import JellyfinServer
+
+        with patch.object(
+            JellyfinServer,
+            "set_scheduled_trickplay_triggers",
+            return_value={"ok": True, "error": ""},
+        ) as mock_set:
+            response = client.post(
+                "/api/servers/jelly-1/scheduled-trickplay",
+                json={"enabled": True},
+                headers=auth_headers,
+            )
+
+        assert response.status_code == 200
+        mock_set.assert_called_once_with(enabled=True)
+
+    def test_bad_body_returns_400(self, client, auth_headers):
+        _seed_jellyfin_server()
+        # Missing key.
+        r1 = client.post(
+            "/api/servers/jelly-1/scheduled-trickplay",
+            json={},
+            headers=auth_headers,
+        )
+        assert r1.status_code == 400
+        # Wrong type (string instead of bool).
+        r2 = client.post(
+            "/api/servers/jelly-1/scheduled-trickplay",
+            json={"enabled": "yes"},
+            headers=auth_headers,
+        )
+        assert r2.status_code == 400
+
+    def test_unknown_server_returns_404(self, client, auth_headers):
+        response = client.post(
+            "/api/servers/nope/scheduled-trickplay",
+            json={"enabled": False},
+            headers=auth_headers,
+        )
+        assert response.status_code == 404
 
 
 class TestVendorExtractionStatus:

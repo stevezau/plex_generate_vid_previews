@@ -2030,12 +2030,36 @@
     //                         under "Recommended" would cry-wolf about
     //                         a transient connectivity blip).
     //   ok          + any   → All good
+    // Vendor display-name lookup for badge copy that references the
+    // user's media server admin UI (e.g. "Change in Plex UI"). Falls
+    // back to "server admin" when the type is missing/unknown so the
+    // badge still reads sensibly.
+    function _vendorDisplayName(serverType) {
+        switch ((serverType || '').toLowerCase()) {
+            case 'plex': return 'Plex';
+            case 'jellyfin': return 'Jellyfin';
+            case 'emby': return 'Emby';
+            default: return 'server admin';
+        }
+    }
+
     function _partitionChecks(sections) {
         const mustFix = [];
         const recommended = [];
         const allGood = [];
         for (const section of sections || []) {
             for (const check of (section.checks || [])) {
+                // Drop pure-info rows entirely — they have no
+                // recommendation to apply and no failure to fix, so
+                // they're decorative noise on a card whose whole job
+                // is to surface checks the user should act on. Things
+                // that NEED to surface (skipped custom-agent libraries,
+                // probe failures, plugin-required-but-absent) must be
+                // emitted by the backend as severity="recommended" or
+                // "critical" — not "info". This filter is the safety
+                // net so any stray info row never sneaks back into the
+                // user's eyeline.
+                if ((check.severity || 'info') === 'info') continue;
                 const item = {
                     check,
                     sectionTitle: section.title || section.id || '',
@@ -2081,7 +2105,7 @@
         for (const item of items) {
             if (item.sectionId !== lastSectionId) {
                 lastSectionId = item.sectionId;
-                inner.appendChild(_renderSectionSubhead(item.sectionTitle, item.sectionAnchor));
+                inner.appendChild(_renderSectionSubhead(item.sectionTitle));
             }
             inner.appendChild(_renderCheckRow(serverId, serverType, item.check));
         }
@@ -2090,7 +2114,15 @@
         return det;
     }
 
-    function _renderSectionSubhead(title, docsAnchor) {
+    function _renderSectionSubhead(title) {
+        // Section subhead is a plain label — pre-fix this rendered a
+        // small ⓘ next to the title that opened
+        // https://github.com/…/previews-readiness.md#anchor in a new
+        // tab. Users hit 404s on environments where that path doesn't
+        // resolve (private fork, unpublished branch, renamed file).
+        // Every row already carries its OWN ⓘ that opens the inline
+        // explanation modal — section-level docs links were redundant
+        // even when they worked. Drop entirely.
         const wrap = document.createElement('div');
         wrap.className = 'text-muted small text-uppercase mb-1 mt-2 d-flex align-items-center gap-1';
         wrap.style.letterSpacing = '0.5px';
@@ -2098,17 +2130,6 @@
         const lbl = document.createElement('span');
         lbl.textContent = title;
         wrap.appendChild(lbl);
-        if (docsAnchor) {
-            const link = document.createElement('a');
-            link.href = `https://github.com/stevezau/media_preview_generator/blob/main/docs/guides/previews-readiness.md#${encodeURIComponent(docsAnchor)}`;
-            link.target = '_blank';
-            link.rel = 'noopener';
-            link.className = 'text-muted';
-            link.setAttribute('data-bs-toggle', 'tooltip');
-            link.title = 'Open docs for this section';
-            link.innerHTML = '<i class="bi bi-info-circle" style="font-size:0.8rem;"></i>';
-            wrap.appendChild(link);
-        }
         return wrap;
     }
 
@@ -2122,40 +2143,54 @@
 
         const ok = check.ok !== false;
         const sev = check.severity || 'info';
-        // Four-tier visual hierarchy so users can tell at a glance whether
-        // a red ✗ is "blocks the server from working" (Required) or "the
-        // server still works but you're missing a recommended optimisation"
-        // (Recommended).
+        // Info severity is filtered out upstream in _partitionChecks —
+        // it never reaches a rendered row. ALL passing rows get a
+        // green filled check; pre-fix passing recommended rows got a
+        // grey outlined check and users complained that a row "off
+        // when recommended off" didn't show as passing.
+        //
+        // ONE badge per row — pre-fix a failing row with no auto-fix
+        // got BOTH "Recommended — server still works" AND a separate
+        // "Manual" chip and the dual-badge was confusing. When there's
+        // no action button the badge becomes "Change in <vendor> UI"
+        // — pre-fix this said "Manual fix needed" but the user noted
+        // calling it a "fix" reads as "the app needs to apply a fix"
+        // when the app actually CAN'T act on this row at all. The new
+        // wording names the actual place the user has to go.
+        const actionsObj = check.actions || {};
+        const hasFixAction = !!(actionsObj.enable || actionsObj.disable);
+        const vendorLabel = _vendorDisplayName(serverType);
+        const manualBadgeText = `Change in ${vendorLabel} UI`;
+        const manualBadgeTitle = `This app can't toggle this for you — open ${vendorLabel}'s admin UI and follow the instructions below.`;
         let icon;
         let tierBadge;
         if (ok && sev === 'critical') {
             icon = '<i class="bi bi-check-circle-fill text-success mt-1"></i>';
-            tierBadge = '<span class="badge bg-success-subtle text-success-emphasis border border-success-subtle ms-1" title="This check is required for the server to work. It is currently passing.">Required</span>';
+            tierBadge = '<span class="badge bg-success-subtle text-success-emphasis border border-success-subtle ms-1" title="Required check — currently passing.">Required</span>';
         } else if (ok) {
-            icon = '<i class="bi bi-check-circle text-secondary mt-1"></i>';
-            tierBadge = '<span class="badge bg-secondary-subtle text-secondary-emphasis border border-secondary-subtle ms-1" title="This check is a recommendation, not a requirement. It is currently passing.">Recommended</span>';
+            icon = '<i class="bi bi-check-circle-fill text-success mt-1"></i>';
+            tierBadge = '<span class="badge bg-secondary-subtle text-secondary-emphasis border border-secondary-subtle ms-1" title="Recommended optimisation — currently applied.">Recommended</span>';
+        } else if (sev === 'critical' && !hasFixAction) {
+            icon = '<i class="bi bi-x-circle-fill text-danger mt-1"></i>';
+            tierBadge = `<span class="badge bg-danger-subtle text-danger-emphasis border border-danger-subtle ms-1" title="${escapeAttr(manualBadgeTitle)}">${escapeHtml(manualBadgeText)}</span>`;
         } else if (sev === 'critical') {
             icon = '<i class="bi bi-x-circle-fill text-danger mt-1"></i>';
-            tierBadge = '<span class="badge bg-danger-subtle text-danger-emphasis border border-danger-subtle ms-1" title="This is required — fix it to get the server working.">Required — fix to enable</span>';
+            tierBadge = '<span class="badge bg-danger-subtle text-danger-emphasis border border-danger-subtle ms-1" title="Required for the server to work — apply the fix.">Required — fix to enable</span>';
+        } else if (!hasFixAction) {
+            icon = '<i class="bi bi-exclamation-triangle-fill text-warning mt-1"></i>';
+            tierBadge = `<span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle ms-1" title="${escapeAttr(manualBadgeTitle)}">${escapeHtml(manualBadgeText)}</span>`;
         } else {
             icon = '<i class="bi bi-exclamation-triangle-fill text-warning mt-1"></i>';
-            tierBadge = '<span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle ms-1" title="The server still works without this — it is a recommended improvement, not a blocker.">Recommended — server still works</span>';
+            tierBadge = '<span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle ms-1" title="Recommended improvement — server still works without it.">Recommended</span>';
         }
+        // No separate Manual chip — the badge above already says it.
+        const manualChip = '';
 
-        // Manual chip: a failing row with no enable/disable action means
-        // the user has to fix this themselves (e.g. upgrade Jellyfin to
-        // 10.10+). Without this signal, the absence of buttons looks
-        // identical to "we're still loading". Make the read-only nature
-        // explicit.
-        const actionsObj = check.actions || {};
-        const hasFixAction = !!(actionsObj.enable || actionsObj.disable);
-        const manualChip = (!ok && !hasFixAction)
-            ? '<span class="badge bg-secondary-subtle text-body-secondary border border-secondary-subtle ms-1" title="There is no toggle for this — you have to change it yourself in the media server\'s admin UI or by upgrading.">Manual</span>'
-            : '';
-
-        const anchor = check.docs_anchor
-            ? `https://github.com/stevezau/media_preview_generator/blob/main/docs/guides/previews-readiness.md#${encodeURIComponent(check.docs_anchor)}`
-            : '';
+        // No data-explain-docs — the row's rich explanation is shown
+        // inline via the global explain modal (set up by app.js's
+        // .info-icon click delegator), and we deliberately don't link
+        // out to an external docs page. Pre-fix every row carried a
+        // GitHub URL that 404'd on private forks / unpushed branches.
         const tooltip = check.tooltip || '';
         const explanationHtml = check.explanation || '';
         const hasMore = !!explanationHtml;
@@ -2167,7 +2202,6 @@
                 + `data-bs-toggle="tooltip" data-bs-placement="top" `
                 + `title="${escapeAttr(tooltipText || 'Click for details')}" `
                 + `data-explain-title="${escapeAttr(check.label || tooltip || 'About this check')}" `
-                + (anchor ? `data-explain-docs="${escapeAttr(anchor)}" ` : '')
                 + `aria-label="Explain ${escapeAttr(check.label || '')}">`
                 + `<i class="bi bi-info-circle"></i></button>`
             : '';
@@ -2215,24 +2249,41 @@
         const btnWrap = document.createElement('div');
         btnWrap.className = 'd-flex gap-1 flex-wrap';
 
+        // Button labels are decoupled from the on/off DIRECTION the
+        // action runs in — pre-fix the same word "Enable" meant "apply
+        // the recommendation" on one row (recommended=On) and "override
+        // the recommendation" on another (recommended=Off). Users had
+        // to figure out which button was the fix on each row before
+        // clicking. Now:
+        //   * Fix button   — always reads "Apply recommended" (intent-
+        //                    labelled). The amber colour reinforces it
+        //                    as the primary CTA.
+        //   * Break button — reads "Enable (override)" or "Disable
+        //                    (override)" — outcome verb + a "(override)"
+        //                    tag so the user reads it as "do the
+        //                    opposite of the recommendation, on
+        //                    purpose". Tooltip restates the target
+        //                    state in full.
         if (!ok && fixAction) {
-            // Failing row → primary call-to-action. Filled amber matches
-            // the Recommended-bucket colour so the eye lands on the
-            // button that resolves the issue.
-            const label = fixDir === 'enable' ? 'Enable' : 'Disable';
-            const icon = fixDir === 'enable' ? 'bi-toggle-on' : 'bi-toggle-off';
-            const btn = _makeActionButton('btn-warning', icon, label, check, fixDir);
+            const targetOn = fixDir === 'enable';
+            const icon = targetOn ? 'bi-toggle-on' : 'bi-toggle-off';
+            const btn = _makeActionButton('btn-warning', icon, 'Apply recommended', check, fixDir);
+            btn.title = `Apply the recommendation — set ${check.label || check.id || 'this'} to ${targetOn ? 'On' : 'Off'}`;
             btn.addEventListener('click', () => _runCheckAction(serverId, serverType, check, fixDir, btn));
             btnWrap.appendChild(btn);
         }
         if (breakAction) {
-            // Always show the opt-out / break button as low-emphasis.
-            // Power users who deliberately want to disable a recommended
-            // setting still have the affordance; everyone else's eye
-            // skips past it.
-            const label = breakDir === 'enable' ? 'Enable' : 'Disable';
-            const icon = breakDir === 'enable' ? 'bi-toggle-on' : 'bi-toggle-off';
-            const btn = _makeActionButton('btn-outline-secondary', icon, label, check, breakDir);
+            const targetOn = breakDir === 'enable';
+            const verb = targetOn ? 'Enable' : 'Disable';
+            const icon = targetOn ? 'bi-toggle-on' : 'bi-toggle-off';
+            const btn = _makeActionButton(
+                'btn-outline-secondary',
+                icon,
+                `${verb} <span class="text-body-tertiary fw-normal">(override)</span>`,
+                check,
+                breakDir,
+            );
+            btn.title = `Override the recommendation — set ${check.label || check.id || 'this'} to ${targetOn ? 'On' : 'Off'}`;
             btn.addEventListener('click', () => _runCheckAction(serverId, serverType, check, breakDir, btn));
             btnWrap.appendChild(btn);
         }
@@ -2350,6 +2401,17 @@
                 const r = await api('POST', `/api/servers/${encoded}/vendor-extraction`, body);
                 return { ok: !!(r.data && r.data.ok) && r.ok, error: r.data && r.data.error, status: r.status };
             }
+            case 'set_scheduled_trickplay': {
+                // Toggle the Emby/Jellyfin daily Generate-Trickplay-Images
+                // scheduled task. Body shape mirrors the backend route:
+                // ``{enabled: bool}``. The readiness row builds the
+                // recommendation conditionally on plugin state — the
+                // dispatcher here just forwards the click.
+                const r = await api('POST', `/api/servers/${encoded}/scheduled-trickplay`, {
+                    enabled: !!args.enabled,
+                });
+                return { ok: !!(r.data && r.data.ok) && r.ok, error: r.data && r.data.error, status: r.status };
+            }
             default:
                 return { ok: false, error: `Unknown action: ${action.action}`, status: 0 };
         }
@@ -2420,7 +2482,10 @@
         return plugin.checks[0].current !== 'not installed';
     }
 
-    function _makeSection(title, docsAnchor) {
+    function _makeSection(title) {
+        // No external docs link — see _renderSectionSubhead. Row-level
+        // ⓘ icons open the inline explain modal which is the only
+        // place rich help text should live.
         const sec = document.createElement('div');
         sec.className = 'mb-3';
         const heading = document.createElement('div');
@@ -2429,17 +2494,6 @@
         const label = document.createElement('span');
         label.textContent = title;
         heading.appendChild(label);
-        if (docsAnchor) {
-            const link = document.createElement('a');
-            link.href = `https://github.com/stevezau/media_preview_generator/blob/main/docs/guides/previews-readiness.md#${encodeURIComponent(docsAnchor)}`;
-            link.target = '_blank';
-            link.rel = 'noopener';
-            link.className = 'text-muted';
-            link.setAttribute('data-bs-toggle', 'tooltip');
-            link.title = 'Open docs for this section';
-            link.innerHTML = '<i class="bi bi-info-circle" style="font-size:0.8rem;"></i>';
-            heading.appendChild(link);
-        }
         sec.appendChild(heading);
         return sec;
     }
@@ -2648,11 +2702,28 @@
         if (matched) {
             if (isObjectRow) {
                 return `<div class="readiness-currently text-muted mt-1">`
-                    + `<i class="bi bi-check2 me-1"></i>Matches recommended</div>`;
+                    + `<i class="bi bi-check2 me-1"></i>Matches recommended — open ⓘ for details</div>`;
+            }
+            // Tautology guard: on a passing row where current and
+            // recommended display IDENTICALLY as non-toggle values
+            // (e.g. "Currently reachable — recommended reachable",
+            // "Currently installed — recommended installed"), drop
+            // the redundant "— recommended X" tail. The recommended
+            // value is information only when there's a meaningful
+            // OTHER state — true for bool toggles ("we recommend On"
+            // tells you the direction), useless for unary status
+            // strings where the only valid value IS the recommended
+            // one. Bools keep the tail so the user can still see
+            // which way the recommendation points.
+            const sameDisplay = formatHealthValue(current) === formatHealthValue(recommended);
+            const isBoolToggle = typeof current === 'boolean' && typeof recommended === 'boolean';
+            if (sameDisplay && !isBoolToggle) {
+                return `<div class="readiness-currently text-muted mt-1">`
+                    + `<i class="bi bi-check2 me-1"></i>Currently <code>${formatHealthValue(current)}</code></div>`;
             }
             return `<div class="readiness-currently text-muted mt-1">`
                 + `<i class="bi bi-check2 me-1"></i>Currently <code>${formatHealthValue(current)}</code> `
-                + `<span class="text-body-tertiary">(matches recommended)</span></div>`;
+                + `<span class="text-body-tertiary">— recommended <code>${formatHealthValue(recommended)}</code></span></div>`;
         }
 
         if (isObjectRow) {

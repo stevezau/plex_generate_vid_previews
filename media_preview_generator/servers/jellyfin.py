@@ -774,9 +774,9 @@ class JellyfinServer(EmbyApiClient):
         "phrase": "",
         "body": (
             "Removes the Media Preview Bridge plugin and restarts Jellyfin (~30 seconds). "
-            "After restart, activation falls back from instant (Mode A) to next-scan "
-            "(Mode B): newly generated previews will wait for Jellyfin's next library scan "
-            "or the 3 AM daily refresh before appearing in the player. "
+            "After restart, activation switches from instant to on-next-scan: newly "
+            "generated previews will wait for Jellyfin's next library scan or the 3 AM "
+            "daily refresh before appearing in the player. "
             "Already-published tile files stay on disk untouched — this change is "
             "reversible by re-installing the plugin any time."
         ),
@@ -882,11 +882,11 @@ class JellyfinServer(EmbyApiClient):
                 "video file and generate preview tiles itself if none exist.</p>"
                 "<p><strong>Why we recommend it depends on the plugin:</strong></p>"
                 "<ul>"
-                "<li><strong>With the Media Preview Bridge plugin installed (Mode A):</strong> "
+                "<li><strong>With the Media Preview Bridge plugin installed:</strong> "
                 "recommend OFF. The plugin registers our published tiles instantly via a direct "
                 "API call, so Jellyfin running its own extraction on top is just wasted CPU "
                 "and produces duplicate output.</li>"
-                "<li><strong>Without the plugin (Mode B):</strong> recommend ON. Jellyfin's "
+                "<li><strong>Without the plugin:</strong> recommend ON. Jellyfin's "
                 "scan-time code is the ADOPTION path — when it scans a file with existing "
                 "<code>.trickplay/</code> tiles next to it, it imports them into its database "
                 "(no ffmpeg, instant). With this flag off AND no plugin, adoption stalls until "
@@ -1503,16 +1503,21 @@ class JellyfinServer(EmbyApiClient):
         )
 
         # --- Plugin section ------------------------------------------
+        # User-facing labels avoid "Mode A/B" jargon — users don't know
+        # what the modes mean and the row label is the first thing they
+        # see. "Instant activation" vs. "Activates on next scan" is
+        # self-explanatory. The ⓘ explanation still mentions Mode A/B
+        # in parens for users following the docs.
         if plugin_installed:
-            plugin_mode = "Instant (Mode A)"
+            plugin_mode = "Instant activation"
         elif mode_a_library_names:
-            # Plugin absent but a library is configured for Mode A — the
-            # "next scan" fallback doesn't apply here (scan-extraction is
-            # disabled on that library), so saying "Next scan (Mode B)"
-            # would contradict the red critical row below.
+            # Plugin absent but a library has scan-extraction disabled
+            # — the "next scan" fallback doesn't apply here, so saying
+            # "Activates on next scan" would contradict the red critical
+            # row below.
             plugin_mode = "Plugin required — not installed"
         else:
-            plugin_mode = "Next scan (Mode B)"
+            plugin_mode = "Activates on next scan"
         if plugin_installed:
             plugin_actions = {
                 "disable": {
@@ -1532,8 +1537,8 @@ class JellyfinServer(EmbyApiClient):
                         "body": (
                             "Adds the Media Preview Bridge plugin to Jellyfin and restarts the "
                             "server. Previews you generate after install will appear INSTANTLY "
-                            "in Jellyfin clients (Mode A) instead of waiting for the next library "
-                            "scan or the 3 AM scheduled task. Takes ~30 seconds for Jellyfin to "
+                            "in Jellyfin clients instead of waiting for the next library scan "
+                            "or the 3 AM scheduled task. Takes ~30 seconds for Jellyfin to "
                             "restart and re-index. Reversible via the Uninstall button."
                         ),
                     },
@@ -1556,10 +1561,11 @@ class JellyfinServer(EmbyApiClient):
             libs = ", ".join(mode_a_library_names)
             probe_error = plugin.get("error") or ""
             plugin_reason = (
-                f"Plugin required for library(ies) in Mode A: {libs}. "
-                f"Without it, published tiles never get adopted by Jellyfin and "
-                f"scrubbing previews will not render. Either install the plugin "
-                f"or enable scan-extraction on the listed libraries (Mode B)."
+                f"Plugin required because scan-time extraction is disabled on: {libs}. "
+                f"Without the plugin, this app's published tiles never get adopted by "
+                f"Jellyfin and scrubbing previews will not render. Either install the "
+                f"plugin (for instant activation) or re-enable scan-time extraction on "
+                f"the listed libraries (Jellyfin will adopt our tiles on its next scan)."
                 + (f" Probe: {probe_error}" if probe_error else "")
             )
             plugin_current = "not installed"
@@ -1586,17 +1592,17 @@ class JellyfinServer(EmbyApiClient):
                             "it exposes an internal endpoint this app calls to register published "
                             "previews directly with Jellyfin's trickplay manager — instantly, without "
                             "waiting for a library scan.</p>"
-                            "<p><strong>The two activation modes:</strong></p>"
+                            "<p><strong>How previews get activated:</strong></p>"
                             "<ul>"
-                            "<li><strong>Mode A (plugin installed):</strong> new previews appear in "
+                            "<li><strong>With the plugin installed:</strong> new previews appear in "
                             "the player the moment generation completes. Near-zero latency.</li>"
-                            "<li><strong>Mode B (no plugin):</strong> Jellyfin adopts our tiles on "
+                            "<li><strong>Without the plugin:</strong> Jellyfin adopts our tiles on "
                             "its next library scan (usually within minutes) or at worst on the 3 AM "
                             "scheduled 'Refresh Trickplay Images' task. Fully functional — just slower.</li>"
                             "</ul>"
                             "<p><strong>When the plugin is required:</strong> if any library has "
                             "<code>ExtractTrickplayImagesDuringLibraryScan</code> set to <em>false</em> "
-                            "(the app's recommended Mode A configuration), plugin absence is a hard "
+                            "(scan-time extraction disabled), plugin absence is a hard "
                             "failure — nothing registers our tiles and the scrubber stays blank. "
                             "Either install the plugin or enable scan-extraction on those libraries.</p>"
                             "<p><strong>Install / uninstall:</strong> both require a Jellyfin restart "
@@ -1849,7 +1855,242 @@ class JellyfinServer(EmbyApiClient):
             }
         )
 
-        overall_ok = connection_ok and version_ok and plugin_ok and library_section_ok and server_ok
+        # --- Scheduled "Generate Trickplay Images" task --------------
+        # Jellyfin ships with a daily 3 AM task that walks every video
+        # and generates its own trickplay tiles via FFmpeg. The decision
+        # to keep this task ON or OFF depends entirely on whether the
+        # Media Preview Bridge plugin is installed:
+        #
+        #   Plugin installed (Mode A): this app's published tiles are
+        #     registered instantly via a direct DB-write API call. The
+        #     scheduled task ends up re-doing work that's already done,
+        #     burning CPU + competing with library scans. Recommend OFF.
+        #
+        #   Plugin NOT installed (Mode B): the scheduled task IS the
+        #     only path by which Jellyfin ever sees this app's tiles.
+        #     Disabling it silently breaks trickplay. Recommend ON.
+        #
+        # The check below renders one row in either mode so users see
+        # the relationship explicitly. Severity is conditional: amber
+        # "Recommended" when we're suggesting disable for a Mode A user;
+        # red "Critical" when we're warning a Mode B user that disabling
+        # would break trickplay registration entirely.
+        sched_state = self.get_scheduled_trickplay_state()
+        if sched_state.get("found"):
+            triggers_count = int(sched_state.get("triggers_count") or 0)
+            task_state = (sched_state.get("state") or "").lower()
+            task_running_note = (
+                " (currently running — Jellyfin is mid-pass right now)" if task_state == "running" else ""
+            )
+
+            sched_explanation_common = (
+                "<p><strong>What this task does:</strong> Jellyfin's built-in "
+                "<code>Generate Trickplay Images</code> scheduled task runs daily at 3 AM "
+                "by default. It walks every video in your libraries and creates trickplay "
+                "tiles (the scrub-bar previews) for any file that doesn't already have "
+                "them, using its own FFmpeg pass.</p>"
+                "<p><strong>How this app handles trickplay:</strong> when a webhook fires "
+                "(Sonarr/Radarr import), this app generates tiles to disk and tells "
+                "Jellyfin about them. The path depends on whether the Media Preview Bridge "
+                "plugin is installed:</p>"
+                "<ul>"
+                "<li><strong>With the plugin (Mode A):</strong> this app calls the plugin's "
+                "<code>/MediaPreviewBridge/Trickplay/{itemId}</code> endpoint, which writes "
+                "the trickplay row in Jellyfin's database directly. Registration is instant. "
+                "The scheduled daily task ends up scanning the same files Jellyfin already "
+                "knows about — wasted CPU and IO that also competes with library scans "
+                "(slower scans = longer retry windows when new files arrive).</li>"
+                "<li><strong>Without the plugin (Mode B):</strong> this app writes tiles to "
+                "disk and crosses its fingers. Jellyfin's only chance to discover them is "
+                "the daily scheduled task. Disabling it means tiles sit on disk forever "
+                "with no DB row — trickplay silently never appears in the player.</li>"
+                "</ul>"
+            )
+
+            if plugin_installed:
+                # Mode A — plugin handles registration. Daily task is wasted CPU.
+                if triggers_count > 0:
+                    sched_check = {
+                        "id": "scheduled_trickplay_task",
+                        "label": "Jellyfin's daily 'Generate Trickplay Images' task",
+                        "docs_anchor": "scheduled-trickplay",
+                        "tooltip": (
+                            "You have the Bridge plugin installed — this app already registers "
+                            "trickplay instantly. The daily task just re-does the work and slows "
+                            "library scans. Recommend disabling it."
+                        ),
+                        "explanation": (
+                            sched_explanation_common + "<p><strong>Your setup:</strong> the Bridge plugin <em>is</em> "
+                            "installed, so disabling the daily task is safe — trickplay "
+                            "registration will continue to work instantly via the plugin's "
+                            "direct DB write. You'll free up CPU and your library scans will "
+                            "finish faster (which also shortens the retry window when new "
+                            "files arrive before Jellyfin has indexed them).</p>"
+                            "<p><strong>If you ever uninstall the plugin:</strong> re-enable "
+                            "this task — it becomes the only way Jellyfin discovers tiles this "
+                            "app published.</p>"
+                        ),
+                        "ok": False,
+                        "severity": "recommended",
+                        "current": f"enabled ({triggers_count} active trigger{'s' if triggers_count != 1 else ''}){task_running_note}",
+                        "recommended": "disabled (Bridge plugin handles registration)",
+                        "actions": {
+                            "disable": {
+                                "action": "set_scheduled_trickplay",
+                                "args": {"enabled": False},
+                                "confirm": {
+                                    "kind": "button",
+                                    "phrase": "",
+                                    "body": (
+                                        "Clears all triggers on Jellyfin's daily "
+                                        "<code>Generate Trickplay Images</code> task. The task "
+                                        "will no longer auto-fire at 3 AM. You can still run it "
+                                        "manually from Jellyfin's Dashboard → Scheduled Tasks. "
+                                        "<br><br><strong>Why this is safe for you:</strong> the "
+                                        "Bridge plugin is installed, so this app registers "
+                                        "trickplay instantly — Jellyfin already knows about every "
+                                        "tile this app publishes."
+                                    ),
+                                },
+                            },
+                            "enable": {
+                                "action": "set_scheduled_trickplay",
+                                "args": {"enabled": True},
+                                "confirm": {
+                                    "kind": "button",
+                                    "phrase": "",
+                                    "body": (
+                                        "Restores the default daily 3 AM trigger on the "
+                                        "<code>Generate Trickplay Images</code> task. Useful if "
+                                        "you plan to uninstall the Bridge plugin or want a "
+                                        "safety-net pass that re-scans for missing tiles."
+                                    ),
+                                },
+                            },
+                        },
+                        "reason": None,
+                        "meta": sched_state,
+                    }
+                else:
+                    sched_check = {
+                        "id": "scheduled_trickplay_task",
+                        "label": "Jellyfin's daily 'Generate Trickplay Images' task",
+                        "docs_anchor": "scheduled-trickplay",
+                        "tooltip": "Disabled — the Bridge plugin handles registration directly.",
+                        "explanation": (
+                            sched_explanation_common + "<p><strong>Your setup:</strong> the Bridge plugin handles "
+                            "registration and the daily task is disabled. Optimal — no duplicate "
+                            "work, library scans aren't fighting an extra background pass.</p>"
+                        ),
+                        "ok": True,
+                        "severity": "info",
+                        "current": "disabled (no triggers)",
+                        "recommended": "disabled (Bridge plugin handles registration)",
+                        "actions": {
+                            "enable": {
+                                "action": "set_scheduled_trickplay",
+                                "args": {"enabled": True},
+                                "confirm": {
+                                    "kind": "button",
+                                    "phrase": "",
+                                    "body": (
+                                        "Restores the default daily 3 AM trigger. Useful if you "
+                                        "plan to uninstall the Bridge plugin and need Jellyfin's "
+                                        "scheduled task to take over registration."
+                                    ),
+                                },
+                            },
+                        },
+                        "reason": None,
+                        "meta": sched_state,
+                    }
+            else:
+                # Mode B — no plugin. The daily task is the registration path.
+                if triggers_count > 0:
+                    sched_check = {
+                        "id": "scheduled_trickplay_task",
+                        "label": "Jellyfin's daily 'Generate Trickplay Images' task",
+                        "docs_anchor": "scheduled-trickplay",
+                        "tooltip": (
+                            "Keep enabled — without the Bridge plugin, this task is how Jellyfin "
+                            "discovers the tiles this app publishes."
+                        ),
+                        "explanation": (
+                            sched_explanation_common + "<p><strong>Your setup:</strong> the Bridge plugin is NOT "
+                            "installed, so this task is the only way Jellyfin ever sees the "
+                            "tiles this app publishes. Keep it enabled.</p>"
+                            "<p><strong>Better alternative:</strong> install the Media Preview "
+                            "Bridge plugin (separate row in this card) for instant registration "
+                            "instead of waiting up to 24 hours for the daily pass to run.</p>"
+                        ),
+                        "ok": True,
+                        "severity": "info",
+                        "current": f"enabled ({triggers_count} active trigger{'s' if triggers_count != 1 else ''}){task_running_note}",
+                        "recommended": "keep enabled (no Bridge plugin)",
+                        "actions": {},
+                        "reason": None,
+                        "meta": sched_state,
+                    }
+                else:
+                    sched_check = {
+                        "id": "scheduled_trickplay_task",
+                        "label": "Jellyfin's daily 'Generate Trickplay Images' task",
+                        "docs_anchor": "scheduled-trickplay",
+                        "tooltip": (
+                            "Critical: without the Bridge plugin AND without this task running, "
+                            "Jellyfin will never see the tiles this app publishes."
+                        ),
+                        "explanation": (
+                            sched_explanation_common + "<p><strong>Your setup:</strong> the Bridge plugin is NOT "
+                            "installed AND the daily task has no triggers. Tiles this app "
+                            "publishes will sit on disk indefinitely with no Jellyfin DB row "
+                            "— trickplay never appears in the player.</p>"
+                            "<p><strong>Fix:</strong> either install the Bridge plugin "
+                            "(recommended — instant registration) or re-enable this task "
+                            "(slow — registration happens up to 24h after each new file).</p>"
+                        ),
+                        "ok": False,
+                        "severity": "critical",
+                        "current": "disabled (no triggers)",
+                        "recommended": "enabled (no Bridge plugin → this is the only registration path)",
+                        "actions": {
+                            "enable": {
+                                "action": "set_scheduled_trickplay",
+                                "args": {"enabled": True},
+                                "confirm": {
+                                    "kind": "button",
+                                    "phrase": "",
+                                    "body": (
+                                        "Restores the default daily 3 AM trigger. Without this "
+                                        "task AND without the Bridge plugin, Jellyfin has no way "
+                                        "to discover the tiles this app publishes — trickplay "
+                                        "never appears in the player."
+                                    ),
+                                },
+                            },
+                        },
+                        "reason": None,
+                        "meta": sched_state,
+                    }
+
+            sched_section_ok = bool(sched_check.get("ok"))
+            sched_section_severity = sched_check["severity"]
+            sections.append(
+                {
+                    "id": "scheduled_trickplay",
+                    "title": "Scheduled trickplay task",
+                    "docs_anchor": "scheduled-trickplay",
+                    "ok": sched_section_ok,
+                    "severity": sched_section_severity,
+                    "checks": [sched_check],
+                }
+            )
+        else:
+            sched_section_ok = True  # task not present → nothing to flag
+
+        overall_ok = (
+            connection_ok and version_ok and plugin_ok and library_section_ok and server_ok and sched_section_ok
+        )
         return {
             "vendor": "jellyfin",
             "overall_ok": overall_ok,

@@ -1139,6 +1139,27 @@ class TestPreviewsReadinessJellyfin:
                     json=MagicMock(return_value=[{"Name": "Movies", "ItemId": "m", "LibraryOptions": good_options}]),
                     raise_for_status=MagicMock(),
                 )
+            if url == "/ScheduledTasks":
+                # Healthy Jellyfin for a Mode-A user (plugin installed):
+                # daily scheduled trickplay task is DISABLED → optimal,
+                # no duplicate work. Matches the recommended-state row
+                # the readiness card emits.
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(
+                        return_value=[
+                            {
+                                "Name": "Generate Trickplay Images",
+                                "Key": "RefreshTrickplayImages",
+                                "Id": "sched-trickplay-id",
+                                "Triggers": [],
+                                "State": "Idle",
+                                "Description": "Creates trickplay previews for videos.",
+                            }
+                        ]
+                    ),
+                    raise_for_status=MagicMock(),
+                )
             raise AssertionError(f"unexpected {method} {url}")
 
         return fake_request
@@ -1451,6 +1472,163 @@ class TestPreviewsReadinessJellyfin:
         assert "library_settings" in payload
         assert "trickplay_options" in payload
         assert payload["overall_ok"] is True
+
+
+class TestScheduledTrickplayTaskReadiness:
+    """Matrix coverage for the new scheduled-trickplay readiness check.
+
+    Two branching variables; four cells. Bug shape #8 ("cover the matrix,
+    not one cell") demands every cell that produces different downstream
+    behaviour gets a row. The recommendation flips on plugin state:
+      * Plugin installed (Mode A): daily task is duplicate CPU →
+        recommend disable.
+      * Plugin NOT installed (Mode B): daily task is the ONLY
+        registration path → flag disable-with-no-triggers as critical.
+
+    Each test pins the load-bearing kwargs the SUT controls — the
+    severity, current/recommended copy, and the action shape. A test
+    that only checked ``section in payload`` would miss a regression
+    that flipped Mode A's recommendation to "keep enabled" (the entire
+    point of the check).
+    """
+
+    def _wire(self, jelly, *, plugin_installed: bool, triggers_count: int, state: str = "Idle"):
+        """Build a fake `_request` side-effect for one matrix cell.
+
+        Stubs only the URLs the readiness path hits — plugin-ping,
+        version, config, libraries, scheduled-tasks. Other readiness
+        sub-probes (library options, server-wide trickplay geometry)
+        are wired to healthy responses so the test isolates the
+        scheduled-task row.
+        """
+        good_lib_options = {
+            "EnableTrickplayImageExtraction": True,
+            "SaveTrickplayWithMedia": True,
+            "ExtractTrickplayImagesDuringLibraryScan": False,
+            "EnableRealtimeMonitor": True,
+        }
+        good_trickplay = {"TileWidth": 10, "TileHeight": 10, "Interval": 10000, "WidthResolutions": [320]}
+        triggers = [{"Type": "DailyTrigger", "TimeOfDayTicks": 108_000_000_000}] * triggers_count
+
+        def fake_request(method, url, **kwargs):
+            if url == "/MediaPreviewBridge/Ping":
+                if not plugin_installed:
+                    return MagicMock(status_code=404, json=MagicMock(return_value={}))
+                return MagicMock(status_code=200, json=MagicMock(return_value={"ok": True, "version": "10.11.0.2"}))
+            if url == "/System/Info":
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value={"Version": "10.11.8"}),
+                    raise_for_status=MagicMock(),
+                )
+            if url == "/System/Configuration":
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value={"TrickplayOptions": good_trickplay}),
+                    raise_for_status=MagicMock(),
+                )
+            if url == "/Library/VirtualFolders":
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(
+                        return_value=[{"Name": "Movies", "ItemId": "m", "LibraryOptions": good_lib_options}]
+                    ),
+                    raise_for_status=MagicMock(),
+                )
+            if url == "/ScheduledTasks":
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(
+                        return_value=[
+                            {
+                                "Name": "Generate Trickplay Images",
+                                "Key": "RefreshTrickplayImages",
+                                "Id": "sched-trickplay-id",
+                                "Triggers": triggers,
+                                "State": state,
+                                "Description": "Creates trickplay previews for videos.",
+                            }
+                        ]
+                    ),
+                    raise_for_status=MagicMock(),
+                )
+            raise AssertionError(f"unexpected {method} {url}")
+
+        return fake_request
+
+    def test_mode_a_with_triggers_recommends_disable(self, jelly):
+        """Plugin installed + task armed → Recommended severity, disable button present."""
+        with patch.object(
+            JellyfinServer, "_request", side_effect=self._wire(jelly, plugin_installed=True, triggers_count=1)
+        ):
+            payload = jelly.previews_readiness()
+
+        sched = next(s for s in payload["sections"] if s["id"] == "scheduled_trickplay")
+        assert sched["severity"] == "recommended", sched
+        assert sched["ok"] is False
+        check = sched["checks"][0]
+        # The disable action MUST exist and carry the right body — a
+        # bug-blind ``"disable" in actions`` would pass if a future
+        # refactor renamed the args key. Pin the args shape.
+        assert check["actions"]["disable"]["action"] == "set_scheduled_trickplay"
+        assert check["actions"]["disable"]["args"] == {"enabled": False}
+        # Mode A row's recommended copy must mention the plugin so users
+        # understand why disabling is safe for them specifically.
+        assert "Bridge plugin" in (check["recommended"] or "")
+
+    def test_mode_a_without_triggers_is_all_good(self, jelly):
+        """Plugin installed + task disabled → info severity, ok=True."""
+        with patch.object(
+            JellyfinServer, "_request", side_effect=self._wire(jelly, plugin_installed=True, triggers_count=0)
+        ):
+            payload = jelly.previews_readiness()
+
+        sched = next(s for s in payload["sections"] if s["id"] == "scheduled_trickplay")
+        assert sched["severity"] == "info"
+        assert sched["ok"] is True
+        check = sched["checks"][0]
+        # No disable button (already disabled) but enable available
+        # for users who plan to uninstall the plugin.
+        assert "disable" not in check["actions"]
+        assert "enable" in check["actions"]
+
+    def test_mode_b_with_triggers_is_informational(self, jelly):
+        """No plugin + task armed → info severity, NO actions (don't
+        offer disable because it would break registration)."""
+        with patch.object(
+            JellyfinServer, "_request", side_effect=self._wire(jelly, plugin_installed=False, triggers_count=1)
+        ):
+            payload = jelly.previews_readiness()
+
+        sched = next(s for s in payload["sections"] if s["id"] == "scheduled_trickplay")
+        check = sched["checks"][0]
+        assert check["severity"] == "info"
+        assert check["ok"] is True
+        # CRITICAL: no disable action when plugin is missing — disabling
+        # the task in Mode B silently breaks trickplay registration.
+        # If this assertion ever fires, the UI has a footgun.
+        assert "disable" not in check["actions"], (
+            "Mode B (no plugin) MUST NOT offer a disable action — the task is "
+            "the only registration path. UI would let users silently break "
+            "their trickplay setup."
+        )
+
+    def test_mode_b_without_triggers_is_critical(self, jelly):
+        """No plugin + task disabled → critical: trickplay broken silently."""
+        with patch.object(
+            JellyfinServer, "_request", side_effect=self._wire(jelly, plugin_installed=False, triggers_count=0)
+        ):
+            payload = jelly.previews_readiness()
+
+        sched = next(s for s in payload["sections"] if s["id"] == "scheduled_trickplay")
+        check = sched["checks"][0]
+        assert check["severity"] == "critical", check
+        assert check["ok"] is False
+        # The enable action must be present so the user can fix this.
+        assert check["actions"]["enable"]["args"] == {"enabled": True}
+        assert payload["overall_ok"] is False, (
+            "Critical-severity scheduled-task row must trip overall_ok so the badge surfaces the breakage."
+        )
 
 
 class TestRegistryWiring:

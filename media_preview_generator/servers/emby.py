@@ -839,10 +839,105 @@ class EmbyServer(EmbyApiClient):
             }
         )
 
+        # --- Scheduled "Generate Trickplay Images" task --------------
+        # Emby has no Bridge-plugin equivalent — this app publishes
+        # sidecar tile files and relies on Emby's filename-based
+        # auto-discovery (the daily scheduled task is what wires that
+        # discovery up). Disabling the task breaks the registration
+        # path entirely, so the recommendation here is always "keep
+        # enabled" — purely informational on Emby.
+        sched_state = self.get_scheduled_trickplay_state()
+        if sched_state.get("found"):
+            triggers_count = int(sched_state.get("triggers_count") or 0)
+            task_running = (sched_state.get("state") or "").lower() == "running"
+            sched_explanation = (
+                "<p><strong>What this task does:</strong> Emby's built-in "
+                "<code>Generate Trickplay Images</code> scheduled task scans every video "
+                "in your libraries and ingests sidecar trickplay tiles (the ones this app "
+                "publishes) into Emby's database so the player can serve them.</p>"
+                "<p><strong>Why it matters on Emby:</strong> unlike Jellyfin (which has a "
+                "Bridge-plugin path for instant registration), Emby's only registration "
+                "path is this scheduled task. This app writes the tile files next to your "
+                "media; Emby's daily task discovers them and wires them up. Disable the "
+                "task and tiles sit on disk indefinitely — trickplay never appears in the "
+                "player.</p>"
+                "<p><strong>Recommendation:</strong> keep this enabled on Emby.</p>"
+            )
+            if triggers_count > 0:
+                running_note = " (currently running)" if task_running else ""
+                sched_check = {
+                    "id": "scheduled_trickplay_task",
+                    "label": "Emby's daily 'Generate Trickplay Images' task",
+                    "docs_anchor": "scheduled-trickplay",
+                    "tooltip": "Keep enabled — Emby's only path to register the tiles this app publishes.",
+                    "explanation": sched_explanation,
+                    "ok": True,
+                    "severity": "info",
+                    "current": f"enabled ({triggers_count} trigger{'s' if triggers_count != 1 else ''}){running_note}",
+                    "recommended": "keep enabled",
+                    "actions": {},
+                    "reason": None,
+                    "meta": sched_state,
+                }
+                sched_section_ok = True
+                sched_section_severity = "info"
+            else:
+                sched_check = {
+                    "id": "scheduled_trickplay_task",
+                    "label": "Emby's daily 'Generate Trickplay Images' task",
+                    "docs_anchor": "scheduled-trickplay",
+                    "tooltip": (
+                        "Critical: Emby has no other way to discover the tiles this app "
+                        "publishes — trickplay will never appear in the player."
+                    ),
+                    "explanation": (
+                        sched_explanation + "<p><strong>Your setup:</strong> the task has no triggers. Tiles "
+                        "this app publishes will never be registered. Re-enable the task in "
+                        "Emby → Dashboard → Scheduled Tasks.</p>"
+                    ),
+                    "ok": False,
+                    "severity": "critical",
+                    "current": "disabled (no triggers)",
+                    "recommended": "enabled (Emby has no other registration path)",
+                    "actions": {
+                        "enable": {
+                            "action": "set_scheduled_trickplay",
+                            "args": {"enabled": True},
+                            "confirm": {
+                                "kind": "button",
+                                "phrase": "",
+                                "body": (
+                                    "Restores the default daily 3 AM trigger. Without this "
+                                    "task running, Emby will never discover the tiles this "
+                                    "app publishes — trickplay will not appear in the player."
+                                ),
+                            },
+                        },
+                    },
+                    "reason": None,
+                    "meta": sched_state,
+                }
+                sched_section_ok = False
+                sched_section_severity = "critical"
+
+            sections.append(
+                {
+                    "id": "scheduled_trickplay",
+                    "title": "Scheduled trickplay task",
+                    "docs_anchor": "scheduled-trickplay",
+                    "ok": sched_section_ok,
+                    "severity": sched_section_severity,
+                    "checks": [sched_check],
+                }
+            )
+        else:
+            sched_section_ok = True
+
         return {
             "vendor": "emby",
-            # Emby library-flag issues are advisory, never blocking.
-            "overall_ok": connection_ok,
+            # Emby library-flag issues are advisory; scheduled-task absence
+            # breaks registration entirely, so it joins overall_ok.
+            "overall_ok": connection_ok and sched_section_ok,
             "sections": sections,
         }
 

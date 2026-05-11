@@ -146,6 +146,148 @@ class EmbyApiClient(MediaServer):
             verify=verify,
         )
 
+    # ------------------------------------------------ Scheduled tasks
+    # Jellyfin's ``RefreshTrickplayImages`` task (Emby has an equivalent
+    # under the same Key on newer versions) runs daily by default. It
+    # scans every video in enabled libraries and generates trickplay
+    # tiles via FFmpeg for files that don't have any. For users running
+    # the Media Preview Bridge plugin, the registration path is already
+    # instant (the plugin writes the trickplay DB row directly when
+    # this app publishes), so the scheduled task is mostly redundant
+    # CPU and IO. For users WITHOUT the plugin, the scheduled task is
+    # how Jellyfin eventually discovers and registers existing tile
+    # files — disabling it there breaks trickplay silently.
+    #
+    # The probe + setter live here because the API surface is identical
+    # on both Emby and Jellyfin (both inherit ``EmbyApiClient``).
+    _TRICKPLAY_TASK_KEY = "RefreshTrickplayImages"
+
+    def get_scheduled_trickplay_state(self) -> dict[str, Any]:
+        """Probe the server's scheduled-trickplay task.
+
+        Returns a dict shape consumed by the readiness card:
+
+          * ``found`` — True when the task exists on this server version.
+          * ``task_id`` — opaque server-side id (needed to POST the
+            triggers update). Empty when ``found=False``.
+          * ``triggers_count`` — number of triggers currently attached.
+            >0 means the task auto-runs; 0 means it only fires when a
+            human clicks "Run" in the dashboard.
+          * ``state`` — Idle / Running / Cancelled (server-reported).
+          * ``description`` — server-emitted description so the readiness
+            row can quote the server's own copy if needed.
+          * ``error`` — short reason when the probe failed (transport
+            error / 404 / parse error). Empty on success.
+
+        Tolerant of every failure mode — the readiness card has to render
+        even when this single probe fails.
+        """
+        try:
+            response = self._request("GET", "/ScheduledTasks", params={"IsHidden": "false"})
+        except Exception as exc:
+            return {
+                "found": False,
+                "task_id": "",
+                "triggers_count": 0,
+                "state": "",
+                "description": "",
+                "error": f"{type(exc).__name__}: {exc}"[:200],
+            }
+        if response.status_code != 200:
+            return {
+                "found": False,
+                "task_id": "",
+                "triggers_count": 0,
+                "state": "",
+                "description": "",
+                "error": f"HTTP {response.status_code}",
+            }
+        try:
+            payload = response.json()
+        except (ValueError, TypeError) as exc:
+            return {
+                "found": False,
+                "task_id": "",
+                "triggers_count": 0,
+                "state": "",
+                "description": "",
+                "error": f"bad JSON: {exc}"[:200],
+            }
+        if not isinstance(payload, list):
+            return {
+                "found": False,
+                "task_id": "",
+                "triggers_count": 0,
+                "state": "",
+                "description": "",
+                "error": "unexpected /ScheduledTasks shape",
+            }
+        for task in payload:
+            if not isinstance(task, dict):
+                continue
+            if task.get("Key") != self._TRICKPLAY_TASK_KEY:
+                continue
+            triggers = task.get("Triggers") or []
+            return {
+                "found": True,
+                "task_id": str(task.get("Id") or ""),
+                "triggers_count": len(triggers) if isinstance(triggers, list) else 0,
+                "state": str(task.get("State") or ""),
+                "description": str(task.get("Description") or ""),
+                "error": "",
+            }
+        # Task not present on this server (older Emby version, or feature
+        # disabled by build flag) — not an error, just nothing to flag.
+        return {
+            "found": False,
+            "task_id": "",
+            "triggers_count": 0,
+            "state": "",
+            "description": "",
+            "error": "",
+        }
+
+    def set_scheduled_trickplay_triggers(self, *, enabled: bool) -> dict[str, Any]:
+        """Toggle the scheduled-trickplay task.
+
+        ``enabled=False`` clears all triggers (the task can still be
+        manually invoked but won't auto-run). ``enabled=True`` restores
+        the vendor default of one Daily trigger at 03:00 — matches the
+        out-of-the-box behaviour so users who flip-flop don't end up
+        with a permanently-armed-but-no-trigger task.
+
+        Returns ``{"ok": bool, "error": str}``. Best-effort — the caller
+        (the readiness route) surfaces failures via the standard UI.
+        """
+        state = self.get_scheduled_trickplay_state()
+        if not state.get("found"):
+            return {
+                "ok": False,
+                "error": state.get("error") or "scheduled trickplay task not present on this server",
+            }
+        task_id = state["task_id"]
+        if not task_id:
+            return {"ok": False, "error": "scheduled task id missing from probe"}
+        # 03:00 in .NET DateTime ticks (one tick = 100 ns; 3 hours
+        # = 3 × 3600 × 10^7 = 108_000_000_000). Matches the default
+        # the server ships with, so a user who hits Disable then Enable
+        # gets back to where they started.
+        triggers = [] if not enabled else [{"Type": "DailyTrigger", "TimeOfDayTicks": 108_000_000_000}]
+        try:
+            response = self._request(
+                "POST",
+                f"/ScheduledTasks/{task_id}/Triggers",
+                json_body=triggers,
+            )
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:200]}
+        if response.status_code not in (200, 204):
+            return {
+                "ok": False,
+                "error": f"HTTP {response.status_code}: {response.text[:200] if response.text else ''}",
+            }
+        return {"ok": True, "error": ""}
+
     # ------------------------------------------------ Public query helpers
     def query_items(self, params: dict[str, Any]) -> list[dict[str, Any]]:
         """Run a parameterised ``GET /Items`` query and return the ``Items`` list.

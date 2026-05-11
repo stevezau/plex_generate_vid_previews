@@ -1067,13 +1067,17 @@ def set_vendor_extraction(server_id: str):
         ``SaveTrickplayWithMedia`` per library. Always KEEPS
         ``EnableTrickplayImageExtraction = True`` (D38: that flag is
         destructive — Jellyfin deletes our published trickplay when
-        it's False). The daily "Refresh Trickplay Images" task is
-        deliberately LEFT at its default 3 AM trigger because that
-        task is also Jellyfin's import path for our published files;
-        clearing it makes our trickplay sit on disk forever invisible.
+        it's False). This route does NOT touch the daily
+        "Refresh Trickplay Images" scheduled task — that's clearable
+        via ``POST /api/servers/<id>/scheduled-trickplay``, and the
+        readiness card only exposes the disable button for Mode-A
+        (Bridge plugin installed) configurations where the plugin
+        handles registration. Mode-B configurations (no plugin) never
+        see a disable button because clearing the task there silently
+        breaks tile registration entirely.
     """
-    payload = request.get_json(silent=True) or {}
-    if "scan_extraction" not in payload or not isinstance(payload["scan_extraction"], bool):
+    request_body = request.get_json(silent=True) or {}
+    if "scan_extraction" not in request_body or not isinstance(request_body["scan_extraction"], bool):
         return jsonify({"error": "body must be {scan_extraction: bool}"}), 400
 
     # Optional per-library scoping. Plex's previews-readiness panel emits
@@ -1092,7 +1096,7 @@ def set_vendor_extraction(server_id: str):
     #     here so the route's behaviour matches the obvious reading of
     #     the body shape.
     library_ids: list[str] | None = None
-    raw_library_ids = payload.get("library_ids")
+    raw_library_ids = request_body.get("library_ids")
     if raw_library_ids is not None:
         if not isinstance(raw_library_ids, list) or not all(isinstance(x, str) for x in raw_library_ids):
             return jsonify({"error": "library_ids must be a list of strings"}), 400
@@ -1122,7 +1126,7 @@ def set_vendor_extraction(server_id: str):
         return jsonify({"error": f"vendor {cfg.type.value!r} doesn't support extraction toggle yet"}), 400
 
     try:
-        kwargs: dict[str, Any] = {"scan_extraction": payload["scan_extraction"]}
+        kwargs: dict[str, Any] = {"scan_extraction": request_body["scan_extraction"]}
         if library_ids is not None:
             kwargs["library_ids"] = library_ids
         results = live.set_vendor_extraction(**kwargs)
@@ -1138,17 +1142,88 @@ def set_vendor_extraction(server_id: str):
     skipped_count = sum(1 for v in results.values() if v.startswith("skipped"))
     error_count = sum(1 for v in results.values() if v.startswith("error"))
     total = len(results)
-    return jsonify(
-        {
-            "ok": error_count == 0,
-            "results": results,
-            "ok_count": ok_count,
-            "skipped_count": skipped_count,
-            "error_count": error_count,
-            "total": total,
-            "scan_extraction": payload["scan_extraction"],
-        }
-    )
+
+    # Skipped libraries (Plex custom-agent sections, in particular) are
+    # not errors per se, but for a TARGETED call they mean "the thing the
+    # user just asked us to toggle did not actually toggle". Reporting
+    # ok=true purely on the absence of errors would make the frontend
+    # show a green "Setting updated" toast while the row stays unchanged
+    # — exactly the silent-success symptom that was reported. When
+    # library_ids was supplied, demand that every requested library
+    # produced a real "ok" result; surface the per-library reason as the
+    # error so the toast tells the user WHY (typically: custom-agent
+    # library, toggle manually in Plex web UI). Server-wide calls keep
+    # the lenient semantics: skipped custom-agent libraries co-existing
+    # with successfully-toggled built-ins is still a partial success.
+    response_error: str | None = None
+    if library_ids is not None:
+        requested = set(library_ids)
+        fulfilled = {k for k, v in results.items() if v == "ok"}
+        unfulfilled = sorted(requested - fulfilled)
+        response_ok = error_count == 0 and not unfulfilled
+        if unfulfilled:
+            reasons = [results.get(key) or f"library {key} not found on server" for key in unfulfilled]
+            response_error = "; ".join(reasons)
+    else:
+        response_ok = error_count == 0
+
+    payload: dict[str, Any] = {
+        "ok": response_ok,
+        "results": results,
+        "ok_count": ok_count,
+        "skipped_count": skipped_count,
+        "error_count": error_count,
+        "total": total,
+        "scan_extraction": request_body["scan_extraction"],
+    }
+    if response_error:
+        payload["error"] = response_error
+    return jsonify(payload)
+
+
+@api.route("/servers/<server_id>/scheduled-trickplay", methods=["POST"])
+@setup_or_auth_required
+def set_scheduled_trickplay(server_id: str):
+    """Toggle the Emby/Jellyfin scheduled trickplay task.
+
+    Body: ``{"enabled": bool}``.
+
+    ``enabled=False`` clears every trigger so the task only fires on
+    manual invocation. ``enabled=True`` restores the vendor default
+    (one Daily trigger at 03:00) so a user who flip-flops doesn't end
+    up with a permanently-armed-but-no-trigger task. Returns 200 with
+    ``{"ok": bool, "error": str}`` — the readiness card's standard
+    failure-surfacing pattern.
+    """
+    payload = request.get_json(silent=True) or {}
+    if "enabled" not in payload or not isinstance(payload["enabled"], bool):
+        return jsonify({"error": "body must be {enabled: bool}"}), 400
+
+    raw_servers = _get_media_servers()
+    target = next((s for s in raw_servers if isinstance(s, dict) and s.get("id") == server_id), None)
+    if target is None:
+        return jsonify({"error": f"server {server_id!r} not found"}), 404
+
+    try:
+        cfg = server_config_from_dict(target)
+    except Exception as exc:
+        return jsonify({"error": f"invalid server config: {exc}"}), 400
+
+    live = _instantiate_for_probe(cfg)
+    if live is None or not hasattr(live, "set_scheduled_trickplay_triggers"):
+        return jsonify({"error": f"vendor {cfg.type.value!r} doesn't expose a scheduled trickplay task"}), 400
+
+    try:
+        result = live.set_scheduled_trickplay_triggers(enabled=bool(payload["enabled"]))
+    except Exception as exc:
+        logger.warning(
+            "Could not toggle scheduled trickplay task on {!r}: {}",
+            cfg.name or cfg.id,
+            exc,
+        )
+        return jsonify({"ok": False, "error": str(exc)}), 200
+
+    return jsonify({"ok": bool(result.get("ok")), "error": result.get("error") or None}), 200
 
 
 @api.route("/servers/<server_id>/vendor-extraction/status", methods=["GET"])
