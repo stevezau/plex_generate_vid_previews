@@ -200,23 +200,22 @@ jobs:
         run: playwright install chromium
 
       - name: Run e2e tests
-        # ``-n 4`` (pinned, not ``-n auto``): GH upgraded ubuntu-latest
-        # to 4-vCPU runners in late 2024, so ``-n auto`` resolves to
-        # 4 — same as the pin in practice. But the pin is explicit:
-        # local dev machines have many more cores, and an over-eager
-        # ``-n auto`` (32+ workers on a beefy dev box) saturates the
-        # function-scoped ``app_url_wizard`` fixture's subprocess
-        # churn — reproducibly 73-114 errors above ``-n 16`` in local
-        # sweeps. 4 is the sweet spot for both GH and local hardware.
+        # ``-n 2`` for GH runners. -n 4 reproducibly produces xdist
+        # "node down: Not properly terminated" crashes on GH's
+        # 4-vCPU/16GB ubuntu-latest — workers SIGKILL during the
+        # subprocess+browser+Flask boot wave (Playwright Chromium
+        # + multiple Flask subprocesses + xdist worker pressure
+        # all colliding within the first ~30s). Each crash flips
+        # an unrelated test to FAIL. Locally on 32 cores -n 4..8
+        # is clean; on GH's smaller runner the same level over-
+        # commits and the workers die. -n 2 trades ~25s of wall
+        # time (86s vs 61s) for green CI.
         # Local parallelism sweep results (2026-05-11):
         #   -n 2  → 86s, 0 errors
-        #   -n 4  → 61s, 0 errors
-        #   -n 8  → 62s, 0 errors  (sweet spot)
+        #   -n 4  → 61s, 0 errors (locally; 9 crashed workers on GH)
+        #   -n 8  → 62s, 0 errors (32-core dev box only)
         #   -n 16 → 93s, 114 errors (resource exhaustion)
-        #   -n auto (=32) → 80s, 73 errors
-        # 4 is conservative — caps GH's actual CPU count. Bump to 8
-        # if GH ever moves to 8-vCPU runners (re-test first).
-        run: pytest -m e2e -n 4 --no-cov --tb=short
+        run: pytest -m e2e -n 2 --no-cov --tb=short
         timeout-minutes: 8
 
       - name: Upload Playwright traces on failure
