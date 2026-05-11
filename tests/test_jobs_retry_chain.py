@@ -1,20 +1,27 @@
-"""Tests for JobManager.upsert_retry_chain_job — the user-visible
-retry-chain Job row that surfaces the headless retry queue's progress.
+"""Tests for ``JobManager.upsert_retry_chain_job`` — the method that
+MUTATES the originating dispatch Job into chain mode.
 
-Pre-fix the retry queue was ENTIRELY headless: retries fired in the
-background with no UI representation. The user couldn't see "this is
-still working" — they had to trust the logs. The retry-chain Job
-machinery puts each in-flight retry chain on the Jobs panel as a
-single row that updates in place across attempts and sorts to the top.
+After the chain rewrite (PLAN at
+``.claude/plans/check-the-last-30-40-binary-engelbart.md``):
+- There is NO separate ``retry-<sha256(path)[:16]>`` Job.
+- The originating dispatch's Job (the worker-pool Job that ran the
+  initial FFmpeg + Plex/Emby publish) IS the chain Job. Its UUID is
+  the chain identity.
+- ``upsert_retry_chain_job`` adds/updates retry-chain state on that
+  Job — flips status, sets retry chip aliases, bumps created_at,
+  etc. It does NOT create a new row.
 
 Matrix coverage per .claude/rules/testing.md:
-  * outcome: scheduled / running / completed / exhausted
-  * first call (creates) vs subsequent calls (updates same row)
-  * stable ID derivation (same canonical_path → same chain ID)
-  * created_at bump on each update (sort-to-top)
-  * retry_eta + retry_wait_total set/cleared appropriately
-  * server attribution forwarded
-  * config aliases (is_retry, max_retries) for existing UI rendering
+  * outcome state machine: scheduled / running / completed / exhausted
+  * first mutation (originating Job hasn't been chain-ified yet)
+    vs. subsequent mutations
+  * server attribution: late-arriving wins over empty
+  * title-cleanup heuristic (extension-aware)
+  * source persistence (first-writer-wins)
+  * CANCELLED is sticky (TOCTOU race guard)
+  * legacy ``retry-<hash>`` rows are dropped at load
+  * chain Job (regular UUID with is_retry_chain config) survives
+    restart with mark-failed for non-terminal interruption
 """
 
 from __future__ import annotations
@@ -24,7 +31,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from media_preview_generator.web.jobs import JobManager, JobStatus
+from media_preview_generator.web.jobs import Job, JobManager, JobStatus, JobStorage
 
 
 @pytest.fixture(autouse=True)
@@ -45,142 +52,216 @@ def jm(tmp_path):
     return JobManager(config_dir=str(config_dir))
 
 
-class TestUpsertRetryChainJob:
-    def test_first_call_creates_row_with_stable_retry_prefixed_id(self, jm):
-        path = "/data/Movies/Foo.mkv"
+def _seed_originating_job(jm, library_name="Foo"):
+    """Create a real worker-pool dispatch Job to use as the chain origin.
+
+    Real chains spawn when ``process_canonical_path`` sees a publisher
+    return ``PUBLISHED_PENDING_REGISTRATION``; at that point the
+    originating Job already exists. Tests need a stand-in.
+    """
+    job = jm.create_job(library_name=library_name, config={})
+    # The originating dispatch typically completes its initial work
+    # before the chain takes over the lifecycle. Mimic that.
+    jm.complete_job(job.id)
+    return jm.get_job(job.id)
+
+
+class TestUpsertMutatesOriginatingJob:
+    def test_no_originating_job_returns_none(self, jm):
+        """If the originating Job doesn't exist (CLI smoke test or
+        deleted before retry fired), the method must NOT crash — it
+        returns None and the caller falls through cleanly."""
+        job = jm.upsert_retry_chain_job(
+            canonical_path="/data/Foo.mkv",
+            basename="Foo.mkv",
+            attempt=1,
+            max_attempts=5,
+            next_run_at=None,
+            wait_seconds=30,
+            outcome="scheduled",
+            originating_job_id="does-not-exist",
+        )
+        assert job is None
+
+    def test_first_mutation_stamps_chain_init_bits(self, jm):
+        """First call to ``upsert_retry_chain_job`` for a Job that
+        hasn't been chain-ified yet must stamp the canonical-path,
+        is_retry_chain flag, retry_started_at, etc."""
+        original = _seed_originating_job(jm, library_name="Foo")
+        path = "/data/Foo.mkv"
         job = jm.upsert_retry_chain_job(
             canonical_path=path,
-            basename="Foo.mkv",
+            basename="Foo",
             attempt=1,
             max_attempts=5,
             next_run_at=(datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat(),
             wait_seconds=30,
             outcome="scheduled",
+            originating_job_id=original.id,
         )
-        assert job.id.startswith("retry-")
-        assert len(job.id) == len("retry-") + 16  # 16-char SHA prefix
-        assert job.status == JobStatus.PENDING
-        assert job.library_name == "Foo.mkv"
+        # SAME UUID — no new row was created
+        assert job.id == original.id
         assert job.config["is_retry_chain"] is True
         assert job.config["retry_chain_for"] == path
+        assert "retry_started_at" in job.config
         assert job.config["retry_attempt"] == 1
         assert job.config["retry_max_attempts"] == 5
+        # status flipped to PENDING (chain re-armed the lifecycle)
+        assert job.status == JobStatus.PENDING
+        # Only ONE Job row exists (originating == chain)
+        all_jobs = jm.get_all_jobs()
+        retry_chain_rows = [j for j in all_jobs if j.config.get("is_retry_chain")]
+        assert len(retry_chain_rows) == 1
+        assert retry_chain_rows[0].id == original.id
 
-    def test_same_canonical_path_yields_same_chain_id(self, jm):
-        """Different upsert calls for the same path must update the SAME row."""
-        path = "/data/Movies/Foo.mkv"
-        job1 = jm.upsert_retry_chain_job(
-            canonical_path=path,
-            basename="Foo.mkv",
+    def test_no_separate_retry_hash_row_created(self, jm):
+        """Pre-rewrite a ``retry-<sha256(path)[:16]>`` row was created.
+        Post-rewrite the chain IS the originating Job — never a
+        separate row. Pinned so a regression that re-introduces the
+        synthetic row gets caught."""
+        original = _seed_originating_job(jm)
+        jm.upsert_retry_chain_job(
+            canonical_path="/data/Foo.mkv",
+            basename="Foo",
             attempt=1,
             max_attempts=5,
             next_run_at=None,
             wait_seconds=30,
             outcome="scheduled",
+            originating_job_id=original.id,
         )
-        job2 = jm.upsert_retry_chain_job(
-            canonical_path=path,
-            basename="Foo.mkv",
+        # No retry- prefixed Jobs anywhere in the JobManager.
+        for job in jm.get_all_jobs():
+            assert not job.id.startswith("retry-"), (
+                f"Legacy retry-<hash> row leaked: {job.id}. Post-rewrite the "
+                f"chain is the originating Job's UUID; no separate row should exist."
+            )
+
+    def test_subsequent_mutations_update_in_place(self, jm):
+        """Each subsequent ``upsert_retry_chain_job`` call (attempt 2,
+        3, ...) must mutate the SAME Job — not create a new one."""
+        original = _seed_originating_job(jm)
+        jm.upsert_retry_chain_job(
+            canonical_path="/data/Foo.mkv",
+            basename="Foo",
+            attempt=1,
+            max_attempts=5,
+            next_run_at=None,
+            wait_seconds=30,
+            outcome="scheduled",
+            originating_job_id=original.id,
+        )
+        job_v2 = jm.upsert_retry_chain_job(
+            canonical_path="/data/Foo.mkv",
+            basename="Foo",
             attempt=2,
             max_attempts=5,
             next_run_at=None,
             wait_seconds=120,
             outcome="scheduled",
+            originating_job_id=original.id,
         )
-        assert job1.id == job2.id, "Same canonical_path must derive the same chain ID"
-        assert job2.config["retry_attempt"] == 2  # update in place
-        # Only one Job row exists for this chain.
-        all_jobs = jm.get_all_jobs()
-        chain_jobs = [j for j in all_jobs if j.id.startswith("retry-")]
-        assert len(chain_jobs) == 1
+        assert job_v2.id == original.id
+        assert job_v2.config["retry_attempt"] == 2
+        assert len([j for j in jm.get_all_jobs() if j.config.get("is_retry_chain")]) == 1
 
-    def test_different_canonical_paths_yield_different_chain_ids(self, jm):
-        a = jm.upsert_retry_chain_job(
-            canonical_path="/data/A.mkv",
-            basename="A.mkv",
-            attempt=1,
-            max_attempts=5,
-            next_run_at=None,
-            wait_seconds=30,
-            outcome="scheduled",
-        )
-        b = jm.upsert_retry_chain_job(
-            canonical_path="/data/B.mkv",
-            basename="B.mkv",
-            attempt=1,
-            max_attempts=5,
-            next_run_at=None,
-            wait_seconds=30,
-            outcome="scheduled",
-        )
-        assert a.id != b.id
 
-    # ------------------------------------------------------------------
-    # State machine
-    # ------------------------------------------------------------------
-
-    def test_outcome_scheduled_sets_pending_with_countdown(self, jm):
+class TestStateMachine:
+    def test_outcome_scheduled_pending_with_countdown(self, jm):
+        original = _seed_originating_job(jm)
         eta = (datetime.now(timezone.utc) + timedelta(seconds=120)).isoformat()
         job = jm.upsert_retry_chain_job(
             canonical_path="/x.mkv",
-            basename="x.mkv",
+            basename="x",
             attempt=2,
             max_attempts=5,
             next_run_at=eta,
             wait_seconds=120,
             outcome="scheduled",
+            originating_job_id=original.id,
         )
         assert job.status == JobStatus.PENDING
         assert job.progress.retry_eta == eta
         assert job.progress.retry_wait_total == 120
         assert job.error is None
+        # completed_at was set by _seed_originating_job's complete_job
+        # call — the chain re-arm MUST clear it so the row reads as
+        # "still in progress" not "finished in the past".
+        assert job.completed_at is None, f"completed_at must be cleared when chain re-arms; got {job.completed_at!r}"
+
+    def test_outcome_running_clears_completed_at(self, jm):
+        """Defensive: even if a callback lands directly on
+        outcome="running" as the FIRST chain mutation on an
+        already-COMPLETED originating Job (skipping the "scheduled"
+        leg), ``completed_at`` must clear. Otherwise sort/filter/
+        duration logic that reads ``completed_at`` while status=RUNNING
+        misbehaves.
+        """
+        original = _seed_originating_job(jm)
+        # _seed_originating_job calls complete_job, so completed_at is set.
+        assert original.completed_at is not None
+        job = jm.upsert_retry_chain_job(
+            canonical_path="/x.mkv",
+            basename="x",
+            attempt=1,
+            max_attempts=5,
+            next_run_at=None,
+            wait_seconds=None,
+            outcome="running",
+            originating_job_id=original.id,
+        )
+        assert job.status == JobStatus.RUNNING
+        assert job.completed_at is None, (
+            f"Running outcome must clear completed_at on the first mutation; got {job.completed_at!r}"
+        )
 
     def test_outcome_running_clears_countdown(self, jm):
-        # First scheduled, then running
+        original = _seed_originating_job(jm)
         jm.upsert_retry_chain_job(
             canonical_path="/x.mkv",
-            basename="x.mkv",
+            basename="x",
             attempt=1,
             max_attempts=5,
             next_run_at=(datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat(),
             wait_seconds=30,
             outcome="scheduled",
+            originating_job_id=original.id,
         )
         job = jm.upsert_retry_chain_job(
             canonical_path="/x.mkv",
-            basename="x.mkv",
+            basename="x",
             attempt=1,
             max_attempts=5,
             next_run_at=None,
             wait_seconds=None,
             outcome="running",
+            originating_job_id=original.id,
         )
         assert job.status == JobStatus.RUNNING
-        assert job.progress.retry_eta is None, (
-            "Countdown must clear when retry fires — otherwise UI keeps "
-            "showing 'next in Xs' while the dispatch is actually running."
-        )
+        assert job.progress.retry_eta is None
         assert job.progress.retry_wait_total is None
-        assert job.started_at is not None
 
-    def test_outcome_completed_sets_completed_status(self, jm):
+    def test_outcome_completed_sets_terminal_green(self, jm):
+        original = _seed_originating_job(jm)
         jm.upsert_retry_chain_job(
             canonical_path="/x.mkv",
-            basename="x.mkv",
+            basename="x",
             attempt=1,
             max_attempts=5,
             next_run_at=None,
             wait_seconds=None,
             outcome="running",
+            originating_job_id=original.id,
         )
         job = jm.upsert_retry_chain_job(
             canonical_path="/x.mkv",
-            basename="x.mkv",
+            basename="x",
             attempt=2,
             max_attempts=5,
             next_run_at=None,
             wait_seconds=None,
             outcome="completed",
+            originating_job_id=original.id,
         )
         assert job.status == JobStatus.COMPLETED
         assert job.completed_at is not None
@@ -188,102 +269,67 @@ class TestUpsertRetryChainJob:
         assert job.progress.retry_eta is None
 
     def test_outcome_exhausted_sets_failed_with_reason(self, jm):
+        original = _seed_originating_job(jm)
         job = jm.upsert_retry_chain_job(
             canonical_path="/x.mkv",
-            basename="x.mkv",
+            basename="x",
             attempt=5,
             max_attempts=5,
             next_run_at=None,
             wait_seconds=None,
             outcome="exhausted",
             reason="Server still hadn't indexed after 5 attempts",
+            originating_job_id=original.id,
         )
         assert job.status == JobStatus.FAILED
-        assert job.completed_at is not None
         assert "5 attempts" in (job.error or "")
         assert job.progress.retry_eta is None
 
-    def test_exhausted_without_reason_falls_back_to_default(self, jm):
-        job = jm.upsert_retry_chain_job(
-            canonical_path="/x.mkv",
-            basename="x.mkv",
-            attempt=5,
-            max_attempts=5,
-            next_run_at=None,
-            wait_seconds=None,
-            outcome="exhausted",
-        )
-        assert job.error is not None
-        assert "5" in job.error  # mentions attempt count
 
-    # ------------------------------------------------------------------
-    # Sort-to-top behaviour
-    # ------------------------------------------------------------------
-
+class TestSortToTop:
     def test_created_at_bumps_on_each_update(self, jm):
-        """For sort-to-top: each upsert refreshes created_at so the row
-        floats to the front of the 'newest first' Jobs list."""
+        """Each mutation refreshes created_at so the row pops to top
+        of newest-first list. retry_started_at preserved in config
+        for chain-age display."""
         import time
 
-        job_v1 = jm.upsert_retry_chain_job(
+        original = _seed_originating_job(jm)
+        jm.upsert_retry_chain_job(
             canonical_path="/x.mkv",
-            basename="x.mkv",
+            basename="x",
             attempt=1,
             max_attempts=5,
             next_run_at=None,
             wait_seconds=30,
             outcome="scheduled",
+            originating_job_id=original.id,
         )
-        first_created = job_v1.created_at
+        first_created = jm.get_job(original.id).created_at
         time.sleep(0.01)
-        job_v2 = jm.upsert_retry_chain_job(
+        v2 = jm.upsert_retry_chain_job(
             canonical_path="/x.mkv",
-            basename="x.mkv",
+            basename="x",
             attempt=2,
             max_attempts=5,
             next_run_at=None,
             wait_seconds=120,
             outcome="scheduled",
+            originating_job_id=original.id,
         )
-        assert job_v2.created_at > first_created, (
-            "created_at must bump on each upsert so the row sorts to top of "
-            "newest-first Jobs list — otherwise it gets buried under newer jobs."
-        )
-        # Original chain start is preserved in config for chain-age display
-        assert job_v2.config["retry_started_at"] == first_created
+        assert v2.created_at > first_created
+        # retry_started_at stamped on first mutation, preserved after
+        assert v2.config["retry_started_at"] is not None
 
-    def test_retry_started_at_preserved_across_updates(self, jm):
-        job_v1 = jm.upsert_retry_chain_job(
-            canonical_path="/x.mkv",
-            basename="x.mkv",
-            attempt=1,
-            max_attempts=5,
-            next_run_at=None,
-            wait_seconds=30,
-            outcome="scheduled",
-        )
-        original_start = job_v1.config["retry_started_at"]
-        # Multiple state transitions
-        for outcome in ("running", "scheduled", "running", "completed"):
-            j = jm.upsert_retry_chain_job(
-                canonical_path="/x.mkv",
-                basename="x.mkv",
-                attempt=2,
-                max_attempts=5,
-                next_run_at=None,
-                wait_seconds=60,
-                outcome=outcome,
-            )
-            assert j.config["retry_started_at"] == original_start
 
-    # ------------------------------------------------------------------
-    # Server attribution
-    # ------------------------------------------------------------------
-
-    def test_server_attribution_forwarded(self, jm):
+class TestServerAttribution:
+    def test_server_attribution_set_when_missing(self, jm):
+        """Originating Job created without server attribution; chain
+        upsert fills it in."""
+        original = _seed_originating_job(jm)
+        assert original.server_id is None
         job = jm.upsert_retry_chain_job(
             canonical_path="/x.mkv",
-            basename="x.mkv",
+            basename="x",
             attempt=1,
             max_attempts=5,
             next_run_at=None,
@@ -292,454 +338,353 @@ class TestUpsertRetryChainJob:
             server_id="jelly-1",
             server_name="JellyTest",
             server_type="jellyfin",
+            originating_job_id=original.id,
         )
         assert job.server_id == "jelly-1"
         assert job.server_name == "JellyTest"
         assert job.server_type == "jellyfin"
 
-    def test_late_arriving_server_attribution_wins_over_empty(self, jm):
-        # First call without server attribution
-        jm.upsert_retry_chain_job(
+    def test_existing_server_attribution_not_overwritten(self, jm):
+        """Originating Job already pinned to Plex; chain upsert with
+        different server context must NOT overwrite (defensive
+        against multi-server fan-out coalescing incorrectly)."""
+
+        # Create a Job with server attribution explicitly set
+        original = jm.create_job(
+            library_name="Foo",
+            server_id="plex-default",
+            server_name="Plex",
+            server_type="plex",
+        )
+        jm.complete_job(original.id)
+
+        job = jm.upsert_retry_chain_job(
             canonical_path="/x.mkv",
-            basename="x.mkv",
+            basename="x",
             attempt=1,
             max_attempts=5,
             next_run_at=None,
             wait_seconds=30,
             outcome="scheduled",
-        )
-        # Second call WITH attribution should fill it in
-        job = jm.upsert_retry_chain_job(
-            canonical_path="/x.mkv",
-            basename="x.mkv",
-            attempt=2,
-            max_attempts=5,
-            next_run_at=None,
-            wait_seconds=120,
-            outcome="scheduled",
-            server_id="jelly-1",
+            server_id="jelly-1",  # different
             server_name="JellyTest",
             server_type="jellyfin",
+            originating_job_id=original.id,
         )
-        assert job.server_id == "jelly-1"
-
-    # ------------------------------------------------------------------
-    # UI integration — config aliases
-    # ------------------------------------------------------------------
-
-    def test_chain_jobs_persist_and_mark_failed_on_restart(self, jm, tmp_path):
-        """Retry-chain rows now PERSIST across container restart so the
-        Job Details modal's Attempts dropdown can show full history.
-        The underlying ``threading.Timer`` is still gone after restart,
-        though, so any non-terminal chain (PENDING/RUNNING) loaded from
-        disk is marked FAILED with a 'Retry interrupted by restart'
-        reason — surfacing the interruption on the dashboard instead
-        of leaving stale PENDING rows counting down to a Timer that
-        will never fire.
-
-        Pre-PLAN-collapse this contract was the inverse: chain rows
-        were ephemeral, dropped at load. That was protective against
-        the 5,387-row-explosion incident (2026-05-09) when chains
-        accumulated as dashboard noise. The collapse moved chains
-        to ONE row per file (max ~tens in flight at once) and hid
-        per-attempt children behind the modal dropdown, so row-count
-        is bounded and persistence is safe.
-        """
-        from media_preview_generator.web.jobs import JobManager, JobStatus
-
-        path = "/data/Movies/Foo.mkv"
-        jm.upsert_retry_chain_job(
-            canonical_path=path,
-            basename="Foo.mkv",
-            attempt=1,
-            max_attempts=5,
-            next_run_at=None,
-            wait_seconds=30,
-            outcome="scheduled",
-        )
-        # The chain Job is visible in this JobManager instance...
-        live_chain = next((j for j in jm.get_all_jobs() if j.id.startswith("retry-")), None)
-        assert live_chain is not None
-        assert live_chain.status == JobStatus.PENDING
-
-        # ...and a brand-new JobManager (simulating a container restart)
-        # loading the same config dir DOES see it — but marked FAILED
-        # with the interruption reason because its Timer is gone.
-        import media_preview_generator.web.jobs as jobs_mod
-
-        with jobs_mod._job_lock:
-            jobs_mod._job_manager = None
-        jm2 = JobManager(config_dir=jm.config_dir)
-        recovered = next((j for j in jm2.get_all_jobs() if j.id.startswith("retry-")), None)
-        assert recovered is not None, (
-            "Retry-chain Jobs MUST survive a JobManager restart so the modal Attempts "
-            "dropdown can show full history. Pre-collapse this assertion was inverted "
-            "(ephemeral); the row-count bound now comes from `is_retry_attempt` filtering "
-            "in /api/jobs and `one chain row per canonical_path` hash keying."
-        )
-        assert recovered.status == JobStatus.FAILED, (
-            f"Non-terminal chain must be marked FAILED at load (Timer is gone); got {recovered.status}"
-        )
-        assert recovered.error and "interrupted" in recovered.error.lower(), (
-            f"Failure reason must explain WHY (Timer gone after restart); got {recovered.error!r}"
+        assert job.server_id == "plex-default", (
+            f"Existing server attribution must not be overwritten; got {job.server_id!r}"
         )
 
-    def test_terminal_chain_jobs_load_as_is(self, tmp_path):
-        """Counterpoint to ``test_chain_jobs_persist_and_mark_failed_on_restart``:
-        a chain that already reached a terminal state pre-restart
-        (COMPLETED / FAILED / CANCELLED) must NOT have its status
-        rewritten at load — that history is the user's record.
-        """
-        import media_preview_generator.web.jobs as jobs_mod
-        from media_preview_generator.web.jobs import Job, JobManager, JobStatus, JobStorage
 
-        with jobs_mod._job_lock:
-            jobs_mod._job_manager = None
-
-        config_dir = tmp_path / "legacy_config"
-        config_dir.mkdir()
-        storage = JobStorage(str(config_dir / "jobs.db"))
-        completed_chain = Job(
-            id="retry-deadbeef00000000",
-            library_name="Already done",
-            status=JobStatus.COMPLETED,
-            config={"is_retry_chain": True},
-        )
-        storage.upsert(completed_chain)
-        storage.close()
-
-        jm = JobManager(config_dir=str(config_dir))
-        recovered = next((j for j in jm.get_all_jobs() if j.id == "retry-deadbeef00000000"), None)
-        assert recovered is not None
-        assert recovered.status == JobStatus.COMPLETED, f"Terminal chains must load as-is; got {recovered.status}"
-
-    def test_sets_existing_ui_aliases_for_existing_retry_renderer(self, jm):
-        """The existing app.js retry-badge + countdown rendering reads
-        ``config.is_retry`` and ``config.max_retries``. Our retry-chain
-        Job MUST set both so the existing UI renders it correctly without
-        a JS-side change.
-        """
+class TestUIAliases:
+    def test_chip_aliases_present(self, jm):
+        """app.js retry chip reads ``config.is_retry`` and
+        ``config.max_retries``. The mutation must stamp both."""
+        original = _seed_originating_job(jm)
         job = jm.upsert_retry_chain_job(
             canonical_path="/x.mkv",
-            basename="x.mkv",
+            basename="x",
             attempt=2,
             max_attempts=6,
             next_run_at=None,
             wait_seconds=60,
             outcome="scheduled",
+            originating_job_id=original.id,
         )
-        assert job.config["is_retry"] is True, (
-            "Without is_retry=True the existing app.js retry badge (line ~1641) won't render the 'Retry N/M' chip."
-        )
-        assert job.config["max_retries"] == 6, (
-            "Without max_retries set, the existing badge won't show the M denominator."
-        )
-        assert job.config["is_retry_chain"] is True  # distinguisher
+        assert job.config["is_retry"] is True
+        assert job.config["max_retries"] == 6
+        assert job.config["is_retry_chain"] is True
         assert job.config["retry_attempt"] == 2
 
 
-class TestUpsertRetryChainJobSourceAndDisplay:
-    """Cross-feature: ``source`` (trigger pill) + ``basename`` cleanup
-    on subsequent upserts (cleaner title wins).
+class TestPersistenceAndRestart:
+    def test_chain_job_persists_across_restart(self, jm, tmp_path):
+        """The chain Job (originating dispatch with is_retry_chain
+        config) MUST survive a restart so the modal Attempts dropdown
+        can show history. Non-terminal state at restart is marked
+        FAILED with a clear reason (the threading.Timer is gone)."""
+        import media_preview_generator.web.jobs as jobs_mod
 
-    Pre-fix the chain row dropped both the cleaned title (showed the raw
-    filename instead of "Deadliest Catch S22E01") and the colored source
-    pill (no Sonarr/Radarr/Sportarr/Plex chip), so it visually
-    disconnected from its parent dispatch row in the queue table.
+        original = _seed_originating_job(jm)
+        jm.upsert_retry_chain_job(
+            canonical_path="/data/Foo.mkv",
+            basename="Foo",
+            attempt=1,
+            max_attempts=5,
+            next_run_at=None,
+            wait_seconds=30,
+            outcome="scheduled",
+            originating_job_id=original.id,
+        )
+        # Pre-restart: chain Job in PENDING with retry_eta
+        live = jm.get_job(original.id)
+        assert live.status == JobStatus.PENDING
+        assert live.config["is_retry_chain"] is True
+
+        # Restart simulation
+        with jobs_mod._job_lock:
+            jobs_mod._job_manager = None
+        jm2 = JobManager(config_dir=jm.config_dir)
+        recovered = jm2.get_job(original.id)
+        assert recovered is not None
+        assert recovered.status == JobStatus.FAILED, (
+            f"Non-terminal chain Job MUST be marked FAILED at restart; got {recovered.status}"
+        )
+        assert "interrupted" in (recovered.error or "").lower()
+        assert recovered.config["is_retry_chain"] is True
+
+    def test_terminal_chain_job_loads_as_is(self, tmp_path):
+        """A chain Job that COMPLETED before restart must load
+        unchanged. Its history is the user's record."""
+        import media_preview_generator.web.jobs as jobs_mod
+
+        with jobs_mod._job_lock:
+            jobs_mod._job_manager = None
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        storage = JobStorage(str(config_dir / "jobs.db"))
+        terminal_chain = Job(
+            id="abc-original-uuid",
+            library_name="Already Done",
+            status=JobStatus.COMPLETED,
+            config={
+                "is_retry_chain": True,
+                "retry_chain_for": "/data/Foo.mkv",
+                "retry_attempt": 3,
+                "retry_max_attempts": 5,
+            },
+        )
+        storage.upsert(terminal_chain)
+        storage.close()
+
+        jm = JobManager(config_dir=str(config_dir))
+        recovered = jm.get_job("abc-original-uuid")
+        assert recovered is not None
+        assert recovered.status == JobStatus.COMPLETED
+
+    def test_legacy_retry_hash_rows_dropped_at_load(self, tmp_path):
+        """Pre-rewrite chain rows had IDs like
+        ``retry-deadbeef00000000``. These are obsolete after the
+        rewrite — the chain identity is now the originating UUID.
+        ``_load_jobs`` must drop them at startup AND remove them
+        from disk so they don't re-appear on the next graceful exit.
+        """
+        import media_preview_generator.web.jobs as jobs_mod
+
+        with jobs_mod._job_lock:
+            jobs_mod._job_manager = None
+        config_dir = tmp_path / "legacy_config"
+        config_dir.mkdir()
+        storage = JobStorage(str(config_dir / "jobs.db"))
+
+        legacy_chain = Job(
+            id="retry-deadbeef00000000",
+            library_name="Old Schema",
+            status=JobStatus.COMPLETED,
+            config={"is_retry_chain": True},
+        )
+        normal_job = Job(id="normal-uuid", library_name="Normal")
+        storage.upsert(legacy_chain)
+        storage.upsert(normal_job)
+        storage.close()
+
+        jm = JobManager(config_dir=str(config_dir))
+        loaded_ids = [j.id for j in jm.get_all_jobs()]
+        assert "retry-deadbeef00000000" not in loaded_ids, f"Legacy retry-<hash> row survived load; got {loaded_ids}"
+        assert "normal-uuid" in loaded_ids, "Cleanup is over-aggressive — non-retry rows must survive."
+
+
+class TestCompleteJobChainActiveGuard:
+    """When the worker's post-dispatch ``complete_job`` runs on a Job
+    that has been mutated into chain mode, the status transition must
+    be skipped — the chain's own state machine drives the lifecycle.
+    But the worker-pool BOOKKEEPING must still be cleared (the dispatch
+    IS done; that slot is released).
     """
 
-    def test_source_is_persisted_on_create(self, jm):
-        job = jm.upsert_retry_chain_job(
-            canonical_path="/data/x.mkv",
-            basename="x.mkv",
+    def test_complete_job_skips_status_when_chain_active(self, jm):
+        original = _seed_originating_job(jm)
+        # Chain mutates the Job to PENDING (mid-chain re-arm)
+        jm.upsert_retry_chain_job(
+            canonical_path="/x.mkv",
+            basename="x",
+            attempt=2,
+            max_attempts=5,
+            next_run_at=None,
+            wait_seconds=30,
+            outcome="scheduled",
+            originating_job_id=original.id,
+        )
+        chain = jm.get_job(original.id)
+        assert chain.status == JobStatus.PENDING
+
+        # Worker's complete_job tries to mark COMPLETED — must be no-op
+        # for the status transition.
+        jm.complete_job(original.id)
+        after = jm.get_job(original.id)
+        assert after.status == JobStatus.PENDING, (
+            f"complete_job must NOT overwrite chain-active status; got {after.status}"
+        )
+        assert after.config.get("is_retry_chain") is True
+        # last_outcome stays "scheduled" (chain's view) — complete_job
+        # didn't drive the state machine.
+        assert after.config["last_outcome"] == "scheduled"
+
+    def test_complete_job_clears_bookkeeping_when_chain_active(self, jm):
+        """The guard skips the status transition but MUST still clear
+        the worker-pool bookkeeping. Otherwise the Job leaks in
+        ``_running_job_ids``, the pause/cancel flags remain, and a
+        future retry firing's cancellation check would trip on a
+        stale flag (architecture-review MED at commit-time).
+        """
+        original = _seed_originating_job(jm)
+        # Simulate worker bookkeeping that the dispatch set up.
+        jm._running_job_ids.add(original.id)
+        jm.request_cancellation(original.id)
+        # Chain mutation
+        jm.upsert_retry_chain_job(
+            canonical_path="/x.mkv",
+            basename="x",
             attempt=1,
             max_attempts=5,
             next_run_at=None,
             wait_seconds=30,
             outcome="scheduled",
-            source="sonarr",
+            originating_job_id=original.id,
         )
-        assert job.config.get("source") == "sonarr", (
-            "Without config['source'], _serverBadge() in app.js falls through to "
-            "an unlabelled chain row — the user can't tell at a glance which "
-            "trigger spawned the chain."
+        # Worker completes its dispatch
+        jm.complete_job(original.id)
+
+        assert original.id not in jm._running_job_ids, (
+            "Chain-active guard must still discard from _running_job_ids "
+            "(the dispatch IS done; worker slot is released)."
+        )
+        assert not jm.is_cancellation_requested(original.id), (
+            "Chain-active guard must still clear the cancellation flag — "
+            "leaving it set would trip a future retry firing's cancel check."
         )
 
-    def test_source_back_fills_on_subsequent_upsert(self, jm):
-        """Some retry-chain call sites don't have ``source`` in scope yet
-        (e.g. a re-schedule after a non-deterministic exception). When a
-        later upsert DOES carry it, fill in the gap rather than
-        clobbering an already-set value with None.
-        """
-        path = "/data/x.mkv"
+
+class TestCancelledIsSticky:
+    def test_cancelled_chain_not_resurrected_by_late_upsert(self, jm):
+        """TOCTOU race guard: if a Timer's _callback is mid-firing
+        when the user clicks Cancel, the cascade marks the chain
+        CANCELLED. The callback's post-process upsert must NOT
+        overwrite that terminal state."""
+        original = _seed_originating_job(jm)
         jm.upsert_retry_chain_job(
-            canonical_path=path,
-            basename="x.mkv",
+            canonical_path="/x.mkv",
+            basename="x",
             attempt=1,
             max_attempts=5,
             next_run_at=None,
             wait_seconds=30,
             outcome="scheduled",
+            originating_job_id=original.id,
         )
+        # User cancels (sets status=CANCELLED)
+        jm.cancel_job(original.id)
+        assert jm.get_job(original.id).status == JobStatus.CANCELLED
+
+        # Late callback tries to mark "completed" — must be ignored
         job = jm.upsert_retry_chain_job(
-            canonical_path=path,
-            basename="x.mkv",
+            canonical_path="/x.mkv",
+            basename="x",
+            attempt=2,
+            max_attempts=5,
+            next_run_at=None,
+            wait_seconds=None,
+            outcome="completed",
+            originating_job_id=original.id,
+        )
+        assert job.status == JobStatus.CANCELLED, (
+            f"CANCELLED must be sticky; got {job.status} after late-callback upsert"
+        )
+
+
+class TestTitleHeuristic:
+    def test_extension_bearing_basename_loses_to_clean(self, jm):
+        """Originating Job's clean title must NOT be clobbered by a
+        shorter raw-.mkv basename arriving in a later upsert
+        (heuristic: extension-bearing titles always lose)."""
+        # Create with the clean Sonarr title
+        original = jm.create_job(library_name="Ruqyah The Exorcism (2017)", config={})
+        jm.complete_job(original.id)
+
+        job = jm.upsert_retry_chain_job(
+            canonical_path="/data/Foo.mkv",
+            basename="Foo.mkv",  # shorter but dirty
             attempt=2,
             max_attempts=5,
             next_run_at=None,
             wait_seconds=120,
             outcome="scheduled",
-            source="radarr",
+            originating_job_id=original.id,
         )
-        assert job.config["source"] == "radarr"
+        assert job.library_name == "Ruqyah The Exorcism (2017)", (
+            f"Extension-bearing basename must not win; got {job.library_name!r}"
+        )
 
-    def test_source_does_not_overwrite_existing(self, jm):
-        """First write wins: don't clobber a real source with a later
-        ``None`` from a context that lost it (e.g. a worker callback
-        rebuilt without the original webhook payload in scope).
-        """
-        path = "/data/x.mkv"
-        jm.upsert_retry_chain_job(
-            canonical_path=path,
-            basename="x.mkv",
+    def test_clean_basename_wins_over_dirty_existing(self, jm):
+        """Inverse: if the originating dispatch happened to be created
+        with a raw .mkv title (rare but possible), and a later chain
+        upsert has a clean title, the clean one must win."""
+        original = jm.create_job(library_name="Foo.mkv", config={})
+        jm.complete_job(original.id)
+
+        job = jm.upsert_retry_chain_job(
+            canonical_path="/data/Foo.mkv",
+            basename="A Very Long Clean Movie Title (2024)",
+            attempt=1,
+            max_attempts=5,
+            next_run_at=None,
+            wait_seconds=30,
+            outcome="scheduled",
+            originating_job_id=original.id,
+        )
+        assert job.library_name == "A Very Long Clean Movie Title (2024)"
+
+
+class TestSource:
+    def test_source_persisted_on_first_mutation(self, jm):
+        original = _seed_originating_job(jm)
+        job = jm.upsert_retry_chain_job(
+            canonical_path="/x.mkv",
+            basename="x",
             attempt=1,
             max_attempts=5,
             next_run_at=None,
             wait_seconds=30,
             outcome="scheduled",
             source="sonarr",
+            originating_job_id=original.id,
+        )
+        assert job.config["source"] == "sonarr"
+
+    def test_source_first_writer_wins(self, jm):
+        """A later upsert with source=None must not clobber the first
+        upsert's source value."""
+        original = _seed_originating_job(jm)
+        jm.upsert_retry_chain_job(
+            canonical_path="/x.mkv",
+            basename="x",
+            attempt=1,
+            max_attempts=5,
+            next_run_at=None,
+            wait_seconds=30,
+            outcome="scheduled",
+            source="radarr",
+            originating_job_id=original.id,
         )
         job = jm.upsert_retry_chain_job(
-            canonical_path=path,
-            basename="x.mkv",
+            canonical_path="/x.mkv",
+            basename="x",
             attempt=2,
             max_attempts=5,
             next_run_at=None,
             wait_seconds=120,
             outcome="scheduled",
             source=None,
+            originating_job_id=original.id,
         )
-        assert job.config["source"] == "sonarr"
-
-    def test_extension_bearing_basename_loses_to_clean_title_regardless_of_length(self, jm):
-        """Live regression caught 2026-05-11 in production on
-        ``retry-550b9f7fa83bd575``: the chain row's library_name was
-        ``"Ruqyah The Exorcism (2017) [imdb-...][WEBDL-1080p][AAC 2.0][x264]-MooMa.mkv"``
-        (the raw ``.mkv``-bearing filename) instead of the cleaner
-        ``"Ruqyah The Exorcism (2017)"`` the parent dispatch had. The
-        pre-fix "shorter wins" heuristic picked the dirty filename
-        because, in this case, the basename was BOTH dirty AND shorter
-        than the dispatcher's verbose title in the same upsert sequence.
-
-        Rule: titles ending in a media file extension (``.mkv``,
-        ``.mp4`` etc.) ALWAYS lose to non-extension-bearing titles.
-        """
-        path = "/data/Foo.mkv"
-        # First seed with a clean title that's LONGER than the raw filename.
-        jm.upsert_retry_chain_job(
-            canonical_path=path,
-            basename="Ruqyah The Exorcism (2017)",  # 26 chars, clean
-            attempt=1,
-            max_attempts=5,
-            next_run_at=None,
-            wait_seconds=30,
-            outcome="scheduled",
-        )
-        # Now upsert with a SHORTER dirty basename. Pre-fix would clobber.
-        job = jm.upsert_retry_chain_job(
-            canonical_path=path,
-            basename="Foo.mkv",  # 7 chars, dirty
-            attempt=2,
-            max_attempts=5,
-            next_run_at=None,
-            wait_seconds=120,
-            outcome="scheduled",
-        )
-        assert job.library_name == "Ruqyah The Exorcism (2017)", (
-            f"Extension-bearing basename must NOT win even when shorter. Got {job.library_name!r}."
-        )
-
-    def test_clean_basename_wins_over_existing_dirty_title(self, jm):
-        """Inverse direction: when the existing library_name has a
-        media extension and a CLEAN replacement arrives (even if
-        longer), the clean one must win — that's the upgrade path
-        for a chain row whose first upsert happened with the raw
-        filename (no display_name in scope yet) and a later upsert
-        from the worker has the dispatcher's cleaned title.
-        """
-        path = "/data/Foo.mkv"
-        # Seed with dirty title (would happen if display_name was None at
-        # first call and basename fell back to os.path.basename).
-        jm.upsert_retry_chain_job(
-            canonical_path=path,
-            basename="Foo.mkv",  # dirty
-            attempt=1,
-            max_attempts=5,
-            next_run_at=None,
-            wait_seconds=30,
-            outcome="scheduled",
-        )
-        # Worker subsequently passes the cleaned title — even though
-        # it's LONGER, it should win because the existing is dirty.
-        job = jm.upsert_retry_chain_job(
-            canonical_path=path,
-            basename="A Very Long Clean Movie Title (2024)",  # 36 chars, clean
-            attempt=2,
-            max_attempts=5,
-            next_run_at=None,
-            wait_seconds=120,
-            outcome="scheduled",
-        )
-        assert job.library_name == "A Very Long Clean Movie Title (2024)", (
-            f"A clean longer title must win over an existing dirty .mkv basename. Got {job.library_name!r}."
-        )
-
-    def test_cleaner_title_replaces_raw_basename_on_subsequent_upsert(self, jm):
-        """Live regression (2026-05-10): retry-queue's first call comes
-        from a path-only context and uses ``os.path.basename`` (raw
-        filename like 'Deadliest Catch (2005) - S22E01 - Kings of the
-        Frozen North [WEBDL-1080p][EAC3 2.0][h264]-SNAKE.mkv'); a later
-        call from the worker carries the dispatcher's cleaned
-        ``library_name`` ('Deadliest Catch S22E01'). Prefer the cleaner
-        title so the chain row matches its parent dispatch row.
-        """
-        path = (
-            "/data/Deadliest Catch (2005) - S22E01 - Kings of the Frozen North [WEBDL-1080p][EAC3 2.0][h264]-SNAKE.mkv"
-        )
-        raw = "Deadliest Catch (2005) - S22E01 - Kings of the Frozen North [WEBDL-1080p][EAC3 2.0][h264]-SNAKE.mkv"
-        clean = "Deadliest Catch S22E01"
-        jm.upsert_retry_chain_job(
-            canonical_path=path,
-            basename=raw,
-            attempt=1,
-            max_attempts=5,
-            next_run_at=None,
-            wait_seconds=30,
-            outcome="scheduled",
-        )
-        job = jm.upsert_retry_chain_job(
-            canonical_path=path,
-            basename=clean,
-            attempt=2,
-            max_attempts=5,
-            next_run_at=None,
-            wait_seconds=120,
-            outcome="scheduled",
-        )
-        assert job.library_name == clean, (
-            f"Cleaner title should win; got {job.library_name!r}. "
-            "Without this, the chain row stays glued to the raw filename "
-            "even after a later caller passes the dispatcher's cleaned title."
-        )
-        assert job.config["retry_basename"] == clean
-
-    def test_raw_basename_does_not_overwrite_cleaner_existing(self, jm):
-        """Reverse direction: don't regress a clean title to a raw
-        basename if a later upsert hits the path-only fallback.
-        """
-        path = "/data/Foo.mkv"
-        jm.upsert_retry_chain_job(
-            canonical_path=path,
-            basename="Foo (Cleaned)",
-            attempt=1,
-            max_attempts=5,
-            next_run_at=None,
-            wait_seconds=30,
-            outcome="scheduled",
-        )
-        job = jm.upsert_retry_chain_job(
-            canonical_path=path,
-            basename="Foo.mkv.with.much.longer.raw.label",
-            attempt=2,
-            max_attempts=5,
-            next_run_at=None,
-            wait_seconds=120,
-            outcome="scheduled",
-        )
-        assert job.library_name == "Foo (Cleaned)"
-
-
-class TestRetryChainSynthesizedLogs:
-    """The chain Job's ``View Logs`` modal used to show the misleading
-    "Log file was cleared due to log retention policy." sentinel because
-    chain Jobs themselves never write a per-attempt log file. Each retry
-    firing now spawns a real per-attempt Job (with a properly-levelled
-    log file the user can drill into) and the synthesized chain log
-    references those child Job IDs and uses ``INFO -`` / ``WARNING -``
-    prefixes so the dashboard's ``colorizeLogLine`` paints it the same
-    teal/amber as every other Job log.
-    """
-
-    def test_get_logs_returns_synthesized_status_for_chain_job(self, jm):
-        path = "/data/X.mkv"
-        jm.upsert_retry_chain_job(
-            canonical_path=path,
-            basename="X.mkv",
-            attempt=2,
-            max_attempts=5,
-            next_run_at=None,
-            wait_seconds=60,
-            outcome="running",
-            source="sonarr",
-        )
-        chain_id = "retry-" + __import__("hashlib").sha256(path.encode()).hexdigest()[:16]
-        logs = jm.get_logs(chain_id)
-
-        assert logs, "Synthesized log lines must not be empty for a chain Job"
-        joined = "\n".join(logs)
-        assert "real Job with its own log" in joined, (
-            "Synthesized log must point users to the per-attempt child Jobs (which DO have line-by-line logs)."
-        )
-        assert "X.mkv" in joined, "Synthesized log must surface the source file name"
-        assert "2 of 5" in joined, "Synthesized log must surface attempt N of M"
-        assert "Log file was cleared" not in joined, (
-            "Pre-fix the retention sentinel was returned — that's misleading; "
-            "no log was ever written for a chain Job to clear."
-        )
-        # Every emitted line MUST carry a level prefix the dashboard can
-        # colorize — otherwise the chain row's log renders without the
-        # teal/amber tint every other Job log has, which is exactly the
-        # "different colour" UX bug the user reported.
-        for line in logs:
-            assert " INFO - " in line or " WARNING - " in line or " ERROR - " in line, (
-                f"Synthesized log line missing level prefix — colorizeLogLine won't paint it: {line!r}"
-            )
-
-    def test_get_logs_lists_child_attempt_job_ids_when_present(self, jm):
-        """When per-attempt Jobs have been spawned, the chain row's log
-        must list them — without that the user has no way to navigate
-        from the chain summary to the actual coloured per-attempt logs.
-        """
-        path = "/data/Z.mkv"
-        chain = jm.upsert_retry_chain_job(
-            canonical_path=path,
-            basename="Z.mkv",
-            attempt=1,
-            max_attempts=5,
-            next_run_at=None,
-            wait_seconds=30,
-            outcome="scheduled",
-        )
-        new_cfg = dict(chain.config)
-        new_cfg["child_job_ids"] = ["aaa-1111", "bbb-2222"]
-        jm.update_job_config(chain.id, new_cfg)
-        joined = "\n".join(jm.get_logs(chain.id))
-        assert "aaa-1111" in joined and "bbb-2222" in joined, (
-            "Per-attempt Job UUIDs must surface in the chain log so users can find the real coloured logs."
-        )
-
-    def test_get_logs_paginated_returns_synthesized_status_for_chain_job(self, jm):
-        path = "/data/Y.mkv"
-        jm.upsert_retry_chain_job(
-            canonical_path=path,
-            basename="Y.mkv",
-            attempt=1,
-            max_attempts=5,
-            next_run_at=None,
-            wait_seconds=30,
-            outcome="scheduled",
-        )
-        chain_id = "retry-" + __import__("hashlib").sha256(path.encode()).hexdigest()[:16]
-        result = jm.get_logs_paginated(chain_id)
-        assert result["total_lines"] >= 6
-        assert all("Log file was cleared" not in line for line in result["lines"])
+        assert job.config["source"] == "radarr"

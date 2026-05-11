@@ -458,6 +458,15 @@ class Worker:
                     deleted_paths=getattr(config, "webhook_deleted_paths", None) or None,
                     display_name=_retry_display_name,
                     source=_webhook_source,
+                    # Identify this dispatch as the "Original" in any
+                    # retry chain that gets spawned from a publisher
+                    # returning PUBLISHED_PENDING_REGISTRATION. The
+                    # chain's modal-dropdown surfaces this UUID as
+                    # the first entry ("Original dispatch") so the
+                    # user sees the full lifecycle (initial FFmpeg
+                    # + Plex/Emby publish, then each retry firing)
+                    # from one row.
+                    originating_job_id=self.current_job_id,
                 )
 
             # Persist the per-file outcome via the job-runner-installed

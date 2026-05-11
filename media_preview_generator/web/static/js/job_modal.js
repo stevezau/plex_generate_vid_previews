@@ -430,6 +430,7 @@ const _ATTEMPT_STATUS_GLYPH = {
     'cancelled': '⊘',
     'running':   '⏳',
     'pending':   '·',
+    'deleted':   '⊘',  // sentinel for an originating dispatch that no longer exists
 };
 
 function _formatAttemptDuration(secs) {
@@ -439,6 +440,33 @@ function _formatAttemptDuration(secs) {
     const m = Math.floor(s / 60);
     const rem = s % 60;
     return rem ? (m + 'm' + rem + 's') : (m + 'm');
+}
+
+// Build one <option> for the Attempts dropdown. Handles three shapes:
+//   1. Regular per-attempt firing — label "Attempt N of M — status · dur"
+//   2. Originating dispatch (a.is_originating === true) — label
+//      "Original dispatch — status · dur". Different label so the user
+//      sees the lifecycle distinction (initial FFmpeg + Plex/Emby
+//      publish vs each subsequent retry firing).
+//   3. Deleted-original sentinel (a.id === null AND a.is_originating)
+//      — disabled option so the user knows what's missing without the
+//      dropdown trying to fetch a non-existent log.
+function _renderAttemptOption(a, max) {
+    const glyph = _ATTEMPT_STATUS_GLYPH[a.status] || '?';
+    const dur = _formatAttemptDuration(a.duration_sec);
+    const durLabel = dur ? ' · ' + dur : '';
+    if (a.is_originating && !a.id) {
+        // Sentinel — render as disabled, no value, can't be selected.
+        return '<option disabled>' + escapeHtml(glyph + ' Original dispatch (no longer available)') + '</option>';
+    }
+    let label;
+    if (a.is_originating) {
+        label = glyph + ' Original dispatch — ' + a.status + durLabel;
+    } else {
+        label = glyph + ' Attempt ' + a.retry_attempt + ' of ' + max
+            + ' — ' + a.status + durLabel;
+    }
+    return '<option value="' + escapeHtml(a.id) + '">' + escapeHtml(label) + '</option>';
 }
 
 async function _loadAttemptsDropdown(chainId) {
@@ -458,28 +486,33 @@ async function _loadAttemptsDropdown(chainId) {
             refreshLogs();
             return;
         }
-        const max = data.max_attempts || attempts[attempts.length - 1].retry_attempt;
+        const max = data.max_attempts || attempts[attempts.length - 1].retry_attempt || 0;
         let options = '';
         for (let i = 0; i < attempts.length; i++) {
-            const a = attempts[i];
-            const glyph = _ATTEMPT_STATUS_GLYPH[a.status] || '?';
-            const dur = _formatAttemptDuration(a.duration_sec);
-            const durLabel = dur ? ' · ' + dur : '';
-            const label = glyph + ' Attempt ' + a.retry_attempt + ' of ' + max
-                + ' — ' + a.status + durLabel;
-            options += '<option value="' + escapeHtml(a.id) + '">'
-                + escapeHtml(label) + '</option>';
+            options += _renderAttemptOption(attempts[i], max);
         }
         select.innerHTML = options;
         // Default-select the LATEST attempt (the one the user most likely
-        // wants to see). Attempts are sorted ascending by retry_attempt,
-        // so the last option is newest.
-        select.selectedIndex = attempts.length - 1;
-        _logsModalAttemptId = attempts[attempts.length - 1].id;
+        // wants to see). Attempts are sorted ascending by retry_attempt
+        // with originating dispatch (retry_attempt=0) first, so the last
+        // option is newest. SKIP disabled options (deleted-original
+        // sentinel) so the default landing is always a selectable entry.
+        let defaultIdx = -1;
+        for (let i = attempts.length - 1; i >= 0; i--) {
+            if (attempts[i].id) { defaultIdx = i; break; }
+        }
+        if (defaultIdx >= 0) {
+            select.selectedIndex = defaultIdx;
+            _logsModalAttemptId = attempts[defaultIdx].id;
+        } else {
+            _logsModalAttemptId = null;
+        }
         if (hint) {
-            hint.textContent = attempts.length === max
-                ? attempts.length + ' of ' + max + ' attempts'
-                : attempts.length + ' attempts so far (max ' + max + ')';
+            // Count only real (non-sentinel) attempts for the "N of M" hint.
+            const real = attempts.filter(a => a.id).length;
+            hint.textContent = real === max
+                ? real + ' of ' + max + ' attempts'
+                : real + ' attempts so far (max ' + max + ')';
         }
         refreshLogs();
     } catch (error) {
@@ -502,36 +535,39 @@ async function _refreshAttemptsDropdown(chainId) {
         const data = await apiGet('/api/jobs/' + encodeURIComponent(chainId) + '/attempts');
         const attempts = data.attempts || [];
         if (attempts.length === 0) return;
-        const max = data.max_attempts || attempts[attempts.length - 1].retry_attempt;
+        const max = data.max_attempts || attempts[attempts.length - 1].retry_attempt || 0;
         const existingIds = new Set(Array.from(select.options).map(o => o.value));
         const previouslySelected = select.value;
         let html = '';
         for (let i = 0; i < attempts.length; i++) {
-            const a = attempts[i];
-            const glyph = _ATTEMPT_STATUS_GLYPH[a.status] || '?';
-            const dur = _formatAttemptDuration(a.duration_sec);
-            const durLabel = dur ? ' · ' + dur : '';
-            const label = glyph + ' Attempt ' + a.retry_attempt + ' of ' + max
-                + ' — ' + a.status + durLabel;
-            html += '<option value="' + escapeHtml(a.id) + '">' + escapeHtml(label) + '</option>';
+            html += _renderAttemptOption(attempts[i], max);
         }
         select.innerHTML = html;
         // Restore previously-selected option if it still exists; otherwise
-        // select the newest (last in the sorted list).
+        // select the newest selectable entry (last with a non-null id —
+        // SKIP the deleted-original sentinel which has id=null).
         const wasInList = existingIds.has(previouslySelected);
-        let pickedIdx = attempts.length - 1;
+        let pickedIdx = -1;
         if (wasInList) {
             for (let i = 0; i < attempts.length; i++) {
                 if (attempts[i].id === previouslySelected) { pickedIdx = i; break; }
             }
         }
-        select.selectedIndex = pickedIdx;
-        _logsModalAttemptId = attempts[pickedIdx].id;
+        if (pickedIdx < 0) {
+            for (let i = attempts.length - 1; i >= 0; i--) {
+                if (attempts[i].id) { pickedIdx = i; break; }
+            }
+        }
+        if (pickedIdx >= 0) {
+            select.selectedIndex = pickedIdx;
+            _logsModalAttemptId = attempts[pickedIdx].id;
+        }
         const hint = document.getElementById('attemptsHint');
         if (hint) {
-            hint.textContent = attempts.length === max
-                ? attempts.length + ' of ' + max + ' attempts'
-                : attempts.length + ' attempts so far (max ' + max + ')';
+            const real = attempts.filter(a => a.id).length;
+            hint.textContent = real === max
+                ? real + ' of ' + max + ' attempts'
+                : real + ' attempts so far (max ' + max + ')';
         }
     } catch (error) {
         // Silent on poll-driven refresh failures — the user has the

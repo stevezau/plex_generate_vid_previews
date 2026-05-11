@@ -1130,6 +1130,7 @@ def process_canonical_path(
     deleted_paths: list[str] | None = None,
     display_name: str | None = None,
     source: str | None = None,
+    originating_job_id: str | None = None,
 ) -> MultiServerResult:
     """Process ``canonical_path`` and publish to every owning server.
 
@@ -1490,6 +1491,7 @@ def process_canonical_path(
                     server_id_filter=server_id_filter,
                     display_name=display_name,
                     source=source,
+                    originating_job_id=originating_job_id,
                 )
             return MultiServerResult(
                 canonical_path=canonical_path,
@@ -1878,6 +1880,7 @@ def process_canonical_path(
                 server_id_filter=server_id_filter,
                 display_name=display_name,
                 source=source,
+                originating_job_id=originating_job_id,
             )
 
         # Orphan cleanup runs once at the end of the dispatch so it sees

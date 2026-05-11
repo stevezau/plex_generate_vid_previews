@@ -267,6 +267,13 @@ def get_jobs():
 
         include_attempts = request.args.get("include_retry_attempts") == "1"
         if not include_attempts:
+            # Hide per-attempt retry firings — they're visible only via
+            # the chain Job's modal Attempts dropdown. The chain row
+            # itself IS the originating dispatch Job (same UUID after
+            # the rewrite); no separate retry-<hash> row exists, so
+            # there's nothing else to filter here. User sees ONE row
+            # per file lifecycle (initial dispatch + every retry
+            # firing) as a single entry.
             all_jobs = [j for j in all_jobs if not j.config.get("is_retry_attempt")]
 
         running = [j for j in all_jobs if j.status == JobStatus.RUNNING]
@@ -336,17 +343,20 @@ def get_job(job_id):
 @api.route("/jobs/<chain_id>/attempts")
 @api_token_required
 def get_chain_attempts(chain_id):
-    """Return per-attempt child Jobs for a retry-chain row.
+    """Return the full lifecycle of a retry chain for the modal Attempts dropdown.
 
-    Powers the Job Details modal's Attempts dropdown so the user can
-    flip between each firing's real log without those rows cluttering
-    the main /jobs list (which hides them by default — see the
-    ``include_retry_attempts`` flag).
+    After the chain rewrite the chain Job IS the originating dispatch
+    (same UUID — no separate ``retry-<hash>`` row). So the dropdown's
+    first entry ("Original dispatch") points back at the chain itself,
+    and the subsequent entries are the per-firing child Jobs
+    (``is_retry_attempt: true`` with ``parent_chain_id == chain.id``).
 
     Returns:
         ``{"chain_id": str, "attempts": [{...metadata}], "max_attempts": int}``
-        with attempts sorted by ``retry_attempt`` ascending (Attempt 1
-        first). 404 if ``chain_id`` is not a retry-chain row.
+        with the originating dispatch as the first entry
+        (``retry_attempt: 0``, ``is_originating: true``) followed by
+        each retry firing sorted by ``retry_attempt`` ascending.
+        404 if ``chain_id`` is not a retry-chain Job.
     """
     job_manager = get_job_manager()
     chain = job_manager.get_job(chain_id)
@@ -373,23 +383,50 @@ def get_chain_attempts(chain_id):
         except (TypeError, ValueError):
             return None
 
+    attempts: list[dict] = []
+
+    # First entry: the originating dispatch == the chain Job itself.
+    # Selecting it in the dropdown loads /api/jobs/<chain_id>/logs,
+    # which serves the original dispatch's log file (FFmpeg + Plex/Emby
+    # publish lines + the PUBLISHED_PENDING_REGISTRATION message
+    # that triggered the chain). The chain's status field reflects
+    # the WHOLE lifecycle (PENDING while between firings, RUNNING
+    # during a firing, COMPLETED when chain succeeds, FAILED on
+    # exhaustion), so the dropdown label shows the right glyph.
+    attempts.append(
+        {
+            "id": chain.id,
+            "retry_attempt": 0,
+            "status": chain.status.value if hasattr(chain.status, "value") else str(chain.status),
+            "created_at": chain.config.get("retry_started_at") or chain.created_at,
+            "started_at": chain.started_at,
+            "completed_at": chain.completed_at,
+            "error": chain.error,
+            "duration_sec": _duration_sec(chain),
+            "is_originating": True,
+        }
+    )
+
+    for j in children:
+        attempts.append(
+            {
+                "id": j.id,
+                "retry_attempt": int(j.config.get("retry_attempt", 0)),
+                "status": j.status.value if hasattr(j.status, "value") else str(j.status),
+                "created_at": j.created_at,
+                "started_at": j.started_at,
+                "completed_at": j.completed_at,
+                "error": j.error,
+                "duration_sec": _duration_sec(j),
+                "is_originating": False,
+            }
+        )
+
     return jsonify(
         {
             "chain_id": chain_id,
             "max_attempts": int(chain.config.get("retry_max_attempts") or 0),
-            "attempts": [
-                {
-                    "id": j.id,
-                    "retry_attempt": int(j.config.get("retry_attempt", 0)),
-                    "status": j.status.value if hasattr(j.status, "value") else str(j.status),
-                    "created_at": j.created_at,
-                    "started_at": j.started_at,
-                    "completed_at": j.completed_at,
-                    "error": j.error,
-                    "duration_sec": _duration_sec(j),
-                }
-                for j in children
-            ],
+            "attempts": attempts,
         }
     )
 

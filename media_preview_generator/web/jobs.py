@@ -613,23 +613,33 @@ class JobManager:
 
         needs_resave: list[Job] = []
         retry_interrupted_count = 0
+        legacy_retry_ids: list[str] = []
         for job in stored_jobs:
-            # Retry-chain rows AND their per-attempt children persist
-            # across restart so the Job Details modal's Attempts
-            # dropdown can show full history. The in-process
-            # ``threading.Timer`` driving the chain is GONE after a
-            # restart, though — so any chain/attempt that was still
-            # in-flight is now dead work. Mark them FAILED with a
+            # Legacy ``retry-<sha256(path)[:16]>`` rows are obsolete after
+            # the chain rewrite (the chain is now the originating
+            # dispatch's UUID — no separate row). Drop them at load AND
+            # remove from the SQLite store so the next graceful exit
+            # doesn't re-write them. Per-attempt rows whose
+            # ``parent_chain_id`` pointed at one of these legacy
+            # chains are also orphans — their parent is gone — but we
+            # keep them for log-history purposes (their .log files are
+            # still on disk; the dropdown won't surface them but
+            # direct ID URLs still work).
+            if job.id.startswith("retry-"):
+                legacy_retry_ids.append(job.id)
+                continue
+
+            # Chain-active Jobs (the originating dispatch was mutated
+            # into chain mode) AND per-attempt children persist across
+            # restart so the Job Details modal's Attempts dropdown can
+            # show full history. The in-process ``threading.Timer``
+            # driving the chain is GONE after a restart, though — so
+            # any chain/attempt that was still in-flight (PENDING /
+            # RUNNING) is now dead work. Mark them FAILED with a
             # human-readable reason so the dashboard surfaces the
             # interruption instead of leaving stale PENDING rows
             # counting down to a Timer that will never fire.
-            #
-            # Pre-PLAN-collapse this branch DROPPED these rows
-            # entirely. That kept the dashboard clean but meant the
-            # modal could never show historical attempts after a
-            # restart — incompatible with the "single chain row +
-            # in-modal attempts dropdown" design.
-            is_chain_or_attempt = job.id.startswith("retry-") or job.config.get("is_retry_attempt")
+            is_chain_or_attempt = job.config.get("is_retry_chain") or job.config.get("is_retry_attempt")
             if is_chain_or_attempt and job.status in (JobStatus.PENDING, JobStatus.RUNNING):
                 job.status = JobStatus.FAILED
                 job.error = "Retry interrupted by container restart — re-trigger the source webhook to resume."
@@ -666,6 +676,24 @@ class JobManager:
 
         for job in needs_resave:
             self._persist_job(job)
+
+        # Clean up legacy retry-<hash> rows from disk. After the chain
+        # rewrite (commit replacing this comment), the chain identity
+        # IS the originating dispatch's UUID — there is no separate
+        # retry-<sha256(path)[:16]> row. Any such rows on disk are
+        # from before the rewrite; drop them so the dashboard doesn't
+        # show them on first boot of the new code.
+        if legacy_retry_ids and self._storage is not None:
+            logger.info(
+                "Dropping {} legacy retry-<hash> Job row(s) from previous schema "
+                "(chain rewrite: chain is now the originating dispatch's UUID).",
+                len(legacy_retry_ids),
+            )
+            for legacy_id in legacy_retry_ids:
+                try:
+                    self._storage.delete(legacy_id)
+                except Exception as exc:
+                    logger.debug("Could not delete legacy retry row {}: {}", legacy_id, exc)
 
         logger.info("Loaded {} jobs from {}", len(self._jobs), self.jobs_db_path)
         if self._interrupted_jobs:
@@ -1082,155 +1110,166 @@ class JobManager:
         server_type: str | None = None,
         reason: str | None = None,
         source: str | None = None,
-    ) -> Job:
-        """Create or update the retry-chain Job for ``canonical_path``.
+        originating_job_id: str,
+    ) -> Job | None:
+        """Mutate the originating dispatch Job to ADD or UPDATE retry-chain state.
 
-        A "retry chain" Job is a single user-visible row that surfaces
-        the headless retry queue's progress for one canonical path. Each
-        call to this method either creates the row (first retry being
-        scheduled) or updates it in place (subsequent attempts), bumping
-        ``created_at`` so the row sorts to the top of the "newest first"
-        Jobs list — operators can SEE that something is still working in
-        the background instead of trusting only the logs.
+        **There is NO separate retry-chain row.** The originating
+        dispatch's Job — the one whose worker actually ran FFmpeg and
+        published to Plex/Emby/etc. — IS the chain. Its UUID is the
+        chain identity. The user sees ONE row per file across the
+        entire lifecycle (initial dispatch + every retry firing), with
+        the retry chip + countdown + status reflecting the whole
+        journey.
 
-        Stable ID derivation (``retry-<hash16>``) prevents duplicate rows
-        across attempts and survives restarts. Cannot collide with the
-        UUIDs that ``create_job`` produces (different prefix, different
-        length).
+        Pre-rewrite there was a synthetic ``retry-<sha256(path)[:16]>``
+        row separate from the originating dispatch, which created the
+        "two rows for one file" UX bug: the user saw both the
+        completed dispatch (Plex+Emby published) AND a pending chain
+        row counting down, and read them as separate jobs. The rewrite
+        collapses them: the originating Job is mutated in place when
+        a publisher needs a retry chain.
 
         State machine driven by ``outcome``:
-          * ``"scheduled"``  → status=PENDING, retry_eta + retry_wait_total set
+          * ``"scheduled"``  → status=PENDING, retry_eta + retry_wait_total set,
+                               completed_at cleared, error cleared
           * ``"running"``    → status=RUNNING, retry_eta cleared (countdown stops)
-          * ``"completed"``  → status=COMPLETED, completed_at set
+          * ``"completed"``  → status=COMPLETED, completed_at set, error cleared
           * ``"exhausted"``  → status=FAILED with ``reason`` written to ``error``
 
         Args:
-            canonical_path: Source media path; used to derive the stable
-                Job ID (so subsequent retries update the same row).
-            basename: Display label — usually ``os.path.basename(canonical_path)``
-                or a Sonarr-style cleaned title. Renders as the Job's
-                ``library_name`` (the column the operator scans).
+            canonical_path: Source media path (stored on the Job's
+                config as ``retry_chain_for`` so the retry queue can
+                find this Job from a Timer callback that only knows
+                the path).
+            basename: Cleaned title for the Job's ``library_name`` slot.
+                Only applied on first chain mutation OR when the
+                incoming title is cleaner than the existing one (see
+                the extension-aware heuristic below) — the originating
+                dispatch already set a sensible title; we only swap
+                if we have a better one.
             attempt: Current attempt number (1-indexed).
-            max_attempts: Backoff schedule's max attempts; surfaces as
-                "Retry 2 of 6" in the UI.
-            next_run_at: ISO timestamp when the next attempt fires —
-                drives the existing ``retry_eta`` countdown machinery in
-                ``app.js``. ``None`` clears it (e.g. when the chain
-                completes or the retry is firing right now).
-            wait_seconds: Seconds between this state and ``next_run_at``;
-                drives the retry-wait progress bar.
+            max_attempts: Backoff schedule's max attempts.
+            next_run_at: ISO timestamp when the next attempt fires.
+            wait_seconds: Seconds until ``next_run_at`` (drives the bar).
             outcome: State transition (see state machine above).
-            server_id / server_name / server_type: Server attribution
-                pulled from the originating webhook so the Job's vendor
-                pill matches the parent dispatch.
-            reason: Human-readable explanation surfaced in ``error`` when
-                ``outcome == "exhausted"`` — e.g. "JellyTest still hasn't
-                indexed after 6 attempts".
-        """
-        import hashlib
+            server_id / server_name / server_type: Late-arriving server
+                attribution. Only applied if the originating Job didn't
+                already have it set.
+            reason: Exhaustion reason (written to ``error`` on outcome="exhausted").
+            source: Trigger pill ("sonarr"/"radarr"/"plex"/…); set if
+                not already on the Job.
+            originating_job_id: **Required.** UUID of the originating
+                dispatch Job to mutate. If the Job doesn't exist (CLI
+                smoke test, deleted by retention before chain fired),
+                this method is a no-op and returns ``None``.
 
-        chain_id = "retry-" + hashlib.sha256(canonical_path.encode("utf-8")).hexdigest()[:16]
+        Returns:
+            The mutated Job, or ``None`` if no originating Job exists.
+        """
         now_iso = datetime.now(timezone.utc).isoformat()
 
         with self._lock:
-            job = self._jobs.get(chain_id)
+            job = self._jobs.get(originating_job_id)
             if job is None:
-                init_config: dict[str, Any] = {
-                    "is_retry_chain": True,
-                    "retry_chain_for": canonical_path,
-                    "retry_max_attempts": int(max_attempts),
-                    "retry_basename": basename,
-                    "retry_started_at": now_iso,
-                }
-                if source:
-                    # Surface the trigger pill (sonarr/radarr/sportarr/plex/…)
-                    # the same way real dispatch jobs do — _serverBadge() in
-                    # app.js falls back on config["source"] when the row has
-                    # no server_type, so without this the chain row renders
-                    # bare while the parent row carries the colored pill.
-                    init_config["source"] = source
-                job = Job(
-                    id=chain_id,
-                    library_name=basename,
-                    server_id=server_id,
-                    server_name=server_name,
-                    server_type=server_type,
-                    config=init_config,
+                # No originating Job to mutate — happens in CLI smoke
+                # tests, or if the dispatch's Job was deleted between
+                # the publisher returning pending_registration and the
+                # Timer firing. Silently no-op so the retry queue
+                # doesn't crash.
+                logger.debug(
+                    "upsert_retry_chain_job: no Job {} to mutate (CLI / deleted)",
+                    originating_job_id,
                 )
-                self._jobs[chain_id] = job
-            else:
-                # CANCELLED is the user's explicit terminal state — never
-                # let a late callback or in-flight Timer flip it back to
-                # RUNNING/COMPLETED/PENDING. Without this guard a TOCTOU
-                # race between ``cancel_job`` and a Timer's ``_fire``
-                # produces a "ghost resurrection": the cascade marks the
-                # chain CANCELLED, then the mid-flight callback's
-                # post-process upsert (``_upsert_retry_chain_job(outcome=
-                # 'completed')``) silently overwrites it.
-                if job.status == JobStatus.CANCELLED:
-                    self._persist_job(job)
-                    return job
-                # Late-arriving server attribution wins over an empty one.
-                if not job.server_id and server_id:
-                    job.server_id = server_id
-                    job.server_name = server_name
-                    job.server_type = server_type
-                if source and not job.config.get("source"):
-                    job.config["source"] = source
-                # When the cleaned title arrives later (e.g. first attempt
-                # was scheduled with the raw basename, second attempt's
-                # caller has the dispatcher's library_name) prefer the
-                # cleaner one. Cleanliness rule:
-                #   * Titles that end in a media extension (.mkv, .mp4,
-                #     .avi, etc.) ALWAYS lose to titles that don't,
-                #     regardless of length. ``"Show.Name.S01E01...-RELEASE.mkv"``
-                #     is dirtier than ``"Show S01E01"`` even when the
-                #     latter is shorter, but a length tiebreak alone
-                #     gets the wrong answer when the dirty basename is
-                #     coincidentally shorter (live regression seen
-                #     2026-05-11 on ``Ruqyah.mkv`` vs the parent
-                #     dispatch's cleaned ``"Ruqyah The Exorcism (2017)"``).
-                #   * Otherwise: shorter wins (preserves the original
-                #     "prefer the dispatcher's cleaned title" intent).
-                _MEDIA_EXTS = (".mkv", ".mp4", ".m4v", ".avi", ".mov", ".wmv", ".ts")
-                if basename and basename != job.library_name:
-                    cur = job.library_name or ""
-                    new_dirty = basename.lower().endswith(_MEDIA_EXTS)
-                    cur_dirty = cur.lower().endswith(_MEDIA_EXTS)
-                    prefer_new = False
-                    if cur_dirty and not new_dirty:
-                        prefer_new = True
-                    elif not new_dirty and not cur_dirty and len(basename) < len(cur):
-                        prefer_new = True
-                    elif new_dirty and cur_dirty and len(basename) < len(cur):
-                        prefer_new = True
-                    if prefer_new:
-                        job.library_name = basename
-                        job.config["retry_basename"] = basename
+                return None
+
+            # CANCELLED is the user's explicit terminal state — never
+            # let a late callback or in-flight Timer flip it back to
+            # RUNNING/COMPLETED/PENDING. Without this guard a TOCTOU
+            # race between ``cancel_job`` and a Timer's ``_fire``
+            # produces a "ghost resurrection": the cascade marks the
+            # Job CANCELLED, then the mid-flight callback's
+            # post-process upsert silently overwrites it.
+            if job.status == JobStatus.CANCELLED:
+                self._persist_job(job)
+                return job
+
+            # Late-arriving server attribution wins over an empty one
+            # (originating dispatch may have had no server pin set if
+            # this was a multi-server fan-out).
+            if not job.server_id and server_id:
+                job.server_id = server_id
+                job.server_name = server_name
+                job.server_type = server_type
+            if source and not job.config.get("source"):
+                job.config["source"] = source
+
+            # Title cleanup heuristic: only swap library_name when the
+            # incoming basename is CLEANER than what's there. Originating
+            # dispatch's library_name is already the cleaned Sonarr/Radarr
+            # title in the typical case; we don't want to clobber it with
+            # a raw ``os.path.basename`` like ``Foo.mkv``. Rule: titles
+            # ending in a media extension lose to non-extension titles,
+            # regardless of length. Same as pre-rewrite.
+            _MEDIA_EXTS = (".mkv", ".mp4", ".m4v", ".avi", ".mov", ".wmv", ".ts")
+            if basename and basename != job.library_name:
+                cur = job.library_name or ""
+                new_dirty = basename.lower().endswith(_MEDIA_EXTS)
+                cur_dirty = cur.lower().endswith(_MEDIA_EXTS)
+                prefer_new = False
+                if cur_dirty and not new_dirty:
+                    prefer_new = True
+                elif not new_dirty and not cur_dirty and len(basename) < len(cur):
+                    prefer_new = True
+                elif new_dirty and cur_dirty and len(basename) < len(cur):
+                    prefer_new = True
+                if prefer_new:
+                    job.library_name = basename
+                    job.config["retry_basename"] = basename
+
+            # First mutation: stamp the chain-init bits onto the Job's
+            # config so it's recognised as a chain everywhere downstream
+            # (status badge, retry chip, modal dropdown). Subsequent
+            # upserts skip this block.
+            if not job.config.get("is_retry_chain"):
+                job.config["is_retry_chain"] = True
+                job.config["retry_chain_for"] = canonical_path
+                job.config["retry_started_at"] = now_iso
+                if not job.config.get("retry_basename"):
+                    job.config["retry_basename"] = job.library_name or basename
 
             job.config["retry_attempt"] = int(attempt)
             job.config["retry_max_attempts"] = int(max_attempts)
             job.config["last_outcome"] = outcome
-            # Aliases so the existing app.js retry badge + countdown
-            # rendering (which reads ``config.is_retry`` and
-            # ``config.max_retries``) just works without a JS change.
-            # The new ``is_retry_chain`` flag distinguishes background
-            # registration retries from worker-level dispatch retries
-            # — UI can choose to style differently in a follow-up.
+            # Aliases the existing app.js retry badge reads (chip
+            # renders on ``is_retry: true && max_retries > 0``).
             job.config["is_retry"] = True
             job.config["max_retries"] = int(max_attempts)
 
-            # State transitions
+            # State transitions. ``completed_at`` is cleared on
+            # re-armed PENDING (chain restart after an attempt) so the
+            # Job doesn't look "completed in the past" while it's
+            # actually counting down to the next firing.
             if outcome == "scheduled":
                 job.status = JobStatus.PENDING
                 job.progress.retry_eta = next_run_at
                 job.progress.retry_wait_total = wait_seconds
+                job.completed_at = None
                 job.error = None
             elif outcome == "running":
                 job.status = JobStatus.RUNNING
                 job.started_at = job.started_at or now_iso
                 job.progress.retry_eta = None
                 job.progress.retry_wait_total = None
+                # Defensive: if a callback lands directly on
+                # outcome="running" as the FIRST chain mutation on an
+                # already-COMPLETED originating Job (no prior "scheduled"
+                # leg cleared it), ``completed_at`` would still be set
+                # — leaving a Job in status=RUNNING with a non-null
+                # completed_at, which downstream readers
+                # (sort/filter/duration) don't expect. Clear it.
+                job.completed_at = None
+                job.error = None
             elif outcome == "completed":
                 job.status = JobStatus.COMPLETED
                 job.completed_at = now_iso
@@ -1244,24 +1283,12 @@ class JobManager:
                 job.progress.retry_wait_total = None
                 job.error = reason or f"Retry chain exhausted after {attempt} attempts"
 
-            # Bump created_at so the row sorts to top of "newest first"
-            # whenever a state change happens. Original chain start is
-            # preserved in config["retry_started_at"] for chain-age
-            # display.
+            # Bump created_at so the row sorts to top of the
+            # newest-first Jobs list on each chain state change.
+            # Preserves the original dispatch start in
+            # ``config["retry_started_at"]`` for chain-age display.
             job.created_at = now_iso
 
-            # Persist the chain row so the Job Details modal's Attempts
-            # dropdown can show its history across container restarts.
-            # The 5,387-row-explosion incident (2026-05-09) that the
-            # pre-PLAN-collapse skip-persist guarded against came from
-            # showing EVERY chain in the dashboard's main list. Now
-            # chain rows are bounded by the number of in-flight files
-            # (typically tens) and per-attempt children are hidden
-            # from the main list by default (see api_jobs.py's
-            # ``include_retry_attempts`` opt-in), so persistence is
-            # safe. Interrupted non-terminal chains are marked FAILED
-            # at load time by ``_load_jobs`` so they don't masquerade
-            # as live work after restart.
             self._persist_job(job)
             self._emit_event("job_updated", job.to_dict())
         return job
@@ -1441,6 +1468,44 @@ class JobManager:
                     self._persist_job(job)
                     log_msg = f"Job {job_id} already cancelled; skipping completion update"
                     # Early return after logging outside the lock
+                elif job.config.get("is_retry_chain") and job.status in (
+                    JobStatus.PENDING,
+                    JobStatus.RUNNING,
+                ):
+                    # Chain has taken over this Job's lifecycle. The
+                    # original dispatch ran successfully but a publisher
+                    # returned PUBLISHED_PENDING_REGISTRATION, so the
+                    # retry queue mutated this Job to is_retry_chain=true
+                    # with PENDING status + retry_eta. The worker's
+                    # ``complete_job`` call (job_runner.py post-dispatch)
+                    # would otherwise overwrite the chain state back to
+                    # COMPLETED, hiding the active retry cadence from
+                    # the dashboard. Skip the status transition — chain's
+                    # own state machine (driven by ``upsert_retry_chain_job``)
+                    # will land the terminal state when the chain finishes
+                    # or exhausts.
+                    #
+                    # BUT: still clear the worker-pool bookkeeping. The
+                    # dispatch IS done — the worker pool has released
+                    # this slot, the cancellation/pause flags were
+                    # specific to that worker thread, and leaving them
+                    # set would (a) leak job_id in ``_running_job_ids``
+                    # (used for live job count), and (b) trip a future
+                    # ``is_cancellation_requested`` check inside a
+                    # retry firing's per-attempt sub-process. Architecture
+                    # review caught this — the chain's own COMPLETED /
+                    # EXHAUSTED upsert paths don't clear these either,
+                    # so without doing it here the bookkeeping leaks
+                    # until restart.
+                    self._running_job_ids.discard(job_id)
+                    self.clear_pause_flag(job_id)
+                    self.clear_cancellation_flag(job_id)
+                    self.clear_active_worker_pool(job_id)
+                    self._persist_job(job)
+                    log_msg = (
+                        f"Job {job_id} dispatch finished but chain is active; "
+                        f"skipping worker completion update (chain drives lifecycle)"
+                    )
                 else:
                     job.completed_at = datetime.now(timezone.utc).isoformat()
                     if error:

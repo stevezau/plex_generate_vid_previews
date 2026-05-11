@@ -49,6 +49,19 @@ def _reset_job_manager():
         jobs_mod._job_manager = None
 
 
+def _seed_originating(jm, library_name="Origin"):
+    """Create an originating dispatch Job for the chain to mutate.
+
+    Post-rewrite the chain IS this Job — same UUID. ``schedule_retry_for_unindexed``
+    requires ``originating_job_id`` to find which Job to mutate, so
+    tests that exercise the retry queue must seed an originating Job
+    first and pass its id.
+    """
+    j = jm.create_job(library_name=library_name, config={})
+    jm.complete_job(j.id)
+    return j.id
+
+
 class TestUpsertHookAtSchedule:
     def test_schedule_upserts_retry_chain_job_with_outcome_scheduled(self, tmp_path):
         """Calling schedule_retry_for_unindexed creates a user-visible
@@ -62,6 +75,7 @@ class TestUpsertHookAtSchedule:
 
         with jobs_mod._job_lock:
             jobs_mod._job_manager = JobManager(config_dir=str(tmp_path / "config"))
+        origin_id = _seed_originating(jobs_mod._job_manager)
 
         registry = MagicMock()
         config = MagicMock()
@@ -75,16 +89,14 @@ class TestUpsertHookAtSchedule:
                 config=config,
                 item_id_by_server=None,
                 attempt=1,
+                originating_job_id=origin_id,
             )
         assert scheduled is True
 
-        all_jobs = jobs_mod._job_manager.get_all_jobs()
-        chain_jobs = [j for j in all_jobs if j.id.startswith("retry-")]
-        assert len(chain_jobs) == 1, (
-            "Schedule must create a retry-chain Job — without it, the "
-            "user can't see anything is happening until the timer fires."
-        )
-        chain = chain_jobs[0]
+        # Chain Job IS the originating dispatch (same UUID after rewrite).
+        chain = jobs_mod._job_manager.get_job(origin_id)
+        assert chain is not None
+        assert chain.config["is_retry_chain"] is True
         assert chain.config["last_outcome"] == "scheduled"
         assert chain.config["retry_attempt"] == 1
         assert chain.progress.retry_eta is not None
@@ -99,6 +111,7 @@ class TestUpsertHookAtSchedule:
 
         with jobs_mod._job_lock:
             jobs_mod._job_manager = JobManager(config_dir=str(tmp_path / "config"))
+        origin_id = _seed_originating(jobs_mod._job_manager)
 
         registry = MagicMock()
         config = MagicMock()
@@ -108,10 +121,14 @@ class TestUpsertHookAtSchedule:
             config=config,
             item_id_by_server=None,
             attempt=len(_BACKOFF) + 1,  # past the end of the schedule
+            originating_job_id=origin_id,
         )
         assert scheduled is False
-        chain_jobs = [j for j in jobs_mod._job_manager.get_all_jobs() if j.id.startswith("retry-")]
-        assert chain_jobs == []
+        # Originating Job must NOT have been mutated into chain mode
+        # when the backoff was already exhausted.
+        chain = jobs_mod._job_manager.get_job(origin_id)
+        assert chain is not None
+        assert not chain.config.get("is_retry_chain")
 
 
 class TestUpsertHookAtCallbackFire:
@@ -150,6 +167,7 @@ class TestUpsertHookAtCallbackFire:
                 message="ok",
             )
 
+        origin_id = _seed_originating(jobs_mod._job_manager)
         with (
             patch(
                 "media_preview_generator.processing.retry_queue._BACKOFF",
@@ -166,13 +184,14 @@ class TestUpsertHookAtCallbackFire:
                 config=MagicMock(),
                 item_id_by_server=None,
                 attempt=1,
+                originating_job_id=origin_id,
             )
             assert chain_complete.wait(timeout=2)
             time.sleep(0.05)
 
-        chain_jobs = [j for j in jobs_mod._job_manager.get_all_jobs() if j.id.startswith("retry-")]
-        assert len(chain_jobs) == 1
-        chain = chain_jobs[0]
+        chain = jobs_mod._job_manager.get_job(origin_id)
+        assert chain is not None
+        assert chain.config["is_retry_chain"] is True
         assert chain.config["last_outcome"] == "completed", (
             f"Chain final outcome must be 'completed' when dispatch returns "
             f"PUBLISHED — got {chain.config.get('last_outcome')!r}"
@@ -193,6 +212,7 @@ class TestUpsertHookAtCallbackFire:
 
         with jobs_mod._job_lock:
             jobs_mod._job_manager = JobManager(config_dir=str(tmp_path / "config"))
+        origin_id = _seed_originating(jobs_mod._job_manager)
 
         attempts_seen = []
         third_attempt = threading.Event()
@@ -233,6 +253,7 @@ class TestUpsertHookAtCallbackFire:
                 config=MagicMock(),
                 item_id_by_server=None,
                 attempt=1,
+                originating_job_id=origin_id,
             )
             assert third_attempt.wait(timeout=3), (
                 f"Chain didn't get to attempt 3 — attempts_seen={attempts_seen}. "
@@ -240,13 +261,11 @@ class TestUpsertHookAtCallbackFire:
             )
             time.sleep(0.05)
 
-        # Exactly ONE retry-chain Job row regardless of how many attempts fired.
-        chain_jobs = [j for j in jobs_mod._job_manager.get_all_jobs() if j.id.startswith("retry-")]
-        assert len(chain_jobs) == 1, (
-            f"Multiple retry attempts MUST update the same row, not spawn new ones. "
-            f"Got {len(chain_jobs)} rows for {len(attempts_seen)} attempts."
-        )
-        chain = chain_jobs[0]
+        # The originating Job IS the chain — mutated in place, not
+        # a separate row. Same UUID across all firings.
+        chain = jobs_mod._job_manager.get_job(origin_id)
+        assert chain is not None
+        assert chain.config["is_retry_chain"] is True
         assert chain.config["retry_attempt"] >= 3
 
 
@@ -273,6 +292,7 @@ class TestPerAttemptJobSpawn:
 
         with jobs_mod._job_lock:
             jobs_mod._job_manager = JobManager(config_dir=str(tmp_path / "config"))
+        origin_id = _seed_originating(jobs_mod._job_manager)
 
         chain_done = threading.Event()
 
@@ -310,6 +330,7 @@ class TestPerAttemptJobSpawn:
                 config=MagicMock(),
                 item_id_by_server=None,
                 attempt=1,
+                originating_job_id=origin_id,
             )
             assert chain_done.wait(timeout=2)
             time.sleep(0.1)
@@ -321,13 +342,11 @@ class TestPerAttemptJobSpawn:
             "(check _create_retry_attempt_job is called inside the timer thread)."
         )
         attempt = attempt_jobs[0]
-        # Contract assertions the dispatcher → multi_server boundary depends on:
-        #   * ``parent_chain_id`` lets the UI render a "← Part of <chain>" link.
-        #   * ``retry_attempt`` MUST match the firing number (not always 1) —
-        #     pre-final-pass this was the kwargs-not-just-call-count gap that
-        #     hid bug D34 in production for months (see .claude/rules/testing.md
-        #     "Asserting boundary calls").
-        assert attempt.config["parent_chain_id"].startswith("retry-")
+        # ``parent_chain_id`` IS the originating dispatch's UUID after
+        # the rewrite (chain = originating Job, same identity).
+        assert attempt.config["parent_chain_id"] == origin_id, (
+            f"parent_chain_id must point at the originating Job; got {attempt.config['parent_chain_id']!r}"
+        )
         assert attempt.config["retry_attempt"] == 1
         assert attempt.config["retry_chain_for"] == "/data/Foo.mkv"
 
@@ -350,6 +369,7 @@ class TestPerAttemptJobSpawn:
 
         with jobs_mod._job_lock:
             jobs_mod._job_manager = JobManager(config_dir=str(tmp_path / "config"))
+        origin_id = _seed_originating(jobs_mod._job_manager)
 
         done = threading.Event()
 
@@ -387,6 +407,7 @@ class TestPerAttemptJobSpawn:
                 config=MagicMock(),
                 item_id_by_server=None,
                 attempt=1,
+                originating_job_id=origin_id,
             )
             assert done.wait(timeout=2)
             time.sleep(0.1)
@@ -415,10 +436,14 @@ class TestPerAttemptJobSpawn:
         with jobs_mod._job_lock:
             jobs_mod._job_manager = JobManager(config_dir=str(tmp_path / "config"))
 
-        # Pre-seed the chain row with a clean human-readable title so
-        # ``_create_retry_attempt_job`` can inherit it (matching the
-        # real webhook flow where the parent dispatch's library_name
-        # is already cleaned by ``upsert_retry_chain_job``).
+        # Pre-seed the originating dispatch Job with the clean Sonarr
+        # title (matching the real webhook flow where the parent
+        # dispatch's library_name is the cleaned title). The chain
+        # will mutate THIS Job — and the per-attempt _create_retry_attempt_job
+        # inherits library_name from the chain.
+        origin = jobs_mod._job_manager.create_job(library_name="Standout The Ben Kjar Story (2026)", config={})
+        jobs_mod._job_manager.complete_job(origin.id)
+        origin_id = origin.id
         jobs_mod._job_manager.upsert_retry_chain_job(
             canonical_path="/data/Movies/Standout (2026).mkv",
             basename="Standout The Ben Kjar Story (2026)",
@@ -427,12 +452,7 @@ class TestPerAttemptJobSpawn:
             next_run_at=None,
             wait_seconds=30,
             outcome="scheduled",
-            # Pass display_name explicitly so when the retry-queue
-            # callback later re-upserts the chain row from inside
-            # ``schedule_retry_for_unindexed``, it doesn't clobber
-            # our clean basename with ``os.path.basename(canonical_path)``
-            # via the "prefer shorter title" heuristic
-            # (``upsert_retry_chain_job:1138``).
+            originating_job_id=origin_id,
         )
 
         done = threading.Event()
@@ -479,6 +499,7 @@ class TestPerAttemptJobSpawn:
                 item_id_by_server=None,
                 attempt=1,
                 display_name="Standout The Ben Kjar Story (2026)",
+                originating_job_id=origin_id,
             )
             assert done.wait(timeout=2)
             time.sleep(0.1)
@@ -547,6 +568,7 @@ class TestPerAttemptJobSpawn:
 
         with jobs_mod._job_lock:
             jobs_mod._job_manager = JobManager(config_dir=str(tmp_path / "config"))
+        origin_id = _seed_originating(jobs_mod._job_manager)
 
         attempts = []
         third = threading.Event()
@@ -587,13 +609,16 @@ class TestPerAttemptJobSpawn:
                 config=MagicMock(),
                 item_id_by_server=None,
                 attempt=1,
+                originating_job_id=origin_id,
             )
             assert third.wait(timeout=3)
             time.sleep(0.1)
 
-        chain_jobs = [j for j in jobs_mod._job_manager.get_all_jobs() if j.id.startswith("retry-")]
-        assert len(chain_jobs) == 1
-        child_ids = chain_jobs[0].config.get("child_job_ids") or []
+        # Chain Job IS the originating dispatch (same UUID).
+        chain = jobs_mod._job_manager.get_job(origin_id)
+        assert chain is not None
+        assert chain.config["is_retry_chain"] is True
+        child_ids = chain.config.get("child_job_ids") or []
         assert len(child_ids) >= 3, (
             f"Chain row must accumulate one child Job ID per firing; got {len(child_ids)} for {len(attempts)} attempts."
         )
@@ -828,6 +853,7 @@ class TestPerAttemptJobSpawn:
 
         with jobs_mod._job_lock:
             jobs_mod._job_manager = JobManager(config_dir=str(tmp_path / "config"))
+        origin_id = _seed_originating(jobs_mod._job_manager)
 
         last_done = threading.Event()
 
@@ -869,6 +895,7 @@ class TestPerAttemptJobSpawn:
                 config=MagicMock(),
                 item_id_by_server=None,
                 attempt=last_idx,
+                originating_job_id=origin_id,
             )
             assert last_done.wait(timeout=2)
             time.sleep(0.2)
@@ -882,9 +909,11 @@ class TestPerAttemptJobSpawn:
         assert last_attempt.error and "indexed" in last_attempt.error.lower(), (
             f"Exhaustion reason must propagate to the per-attempt Job's error; got {last_attempt.error!r}"
         )
-        # The chain row also flips to FAILED (exhausted).
-        chain_jobs = [j for j in jobs_mod._job_manager.get_all_jobs() if j.id.startswith("retry-")]
-        assert chain_jobs and chain_jobs[0].status == JobStatus.FAILED
+        # The chain Job IS the originating dispatch — also flips to FAILED.
+        chain = jobs_mod._job_manager.get_job(origin_id)
+        assert chain is not None
+        assert chain.config["is_retry_chain"] is True
+        assert chain.status == JobStatus.FAILED
 
     def test_completed_per_attempt_jobs_persist_across_restart(self, tmp_path):
         """Per-attempt Jobs PERSIST so the Job Details modal's Attempts

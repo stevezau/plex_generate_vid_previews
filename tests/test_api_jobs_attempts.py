@@ -50,11 +50,29 @@ def _headers():
     return {"Authorization": "Bearer test-token-12345678"}
 
 
-def _seed_chain_with_attempts(jm, *, canonical_path: str, basename: str, num_attempts: int):
-    """Seed a chain row + N per-attempt child Jobs.
+def _seed_chain_with_attempts(
+    jm,
+    *,
+    canonical_path: str,
+    basename: str,
+    num_attempts: int,
+    originating_job_id: str | None = None,
+):
+    """Seed an originating dispatch Job mutated into chain mode +
+    N per-attempt child Jobs.
 
-    Returns ``(chain_id, [attempt_ids])`` so tests can assert on shape.
+    Post-rewrite the chain IS the originating Job — same UUID. If
+    ``originating_job_id`` isn't provided, create a fresh originating
+    Job and use its id.
+
+    Returns ``(chain_id, [attempt_ids])`` where chain_id is the
+    originating Job's UUID.
     """
+    if originating_job_id is None:
+        origin = jm.create_job(library_name=basename, config={})
+        jm.complete_job(origin.id)
+        originating_job_id = origin.id
+
     chain = jm.upsert_retry_chain_job(
         canonical_path=canonical_path,
         basename=basename,
@@ -63,14 +81,26 @@ def _seed_chain_with_attempts(jm, *, canonical_path: str, basename: str, num_att
         next_run_at=None,
         wait_seconds=30,
         outcome="scheduled",
+        originating_job_id=originating_job_id,
     )
+    # chain might be None if originating_job_id didn't exist (e.g.
+    # caller passed a fake UUID for the orphan-original test). Return
+    # the originating_job_id either way so callers can pin behavior.
+    if chain is None:
+        # Edge case for the orphan test: the chain Job is gone. Use a
+        # synthetic chain ID by creating a fresh Job manually (still
+        # not via upsert) — we need SOME chain to anchor child
+        # attempts so the orphan test can assert deleted-sentinel.
+        chain_id = originating_job_id
+    else:
+        chain_id = chain.id
     attempt_ids = []
     for i in range(1, num_attempts + 1):
         attempt = jm.create_job(
             library_name=basename,
             config={
                 "is_retry_attempt": True,
-                "parent_chain_id": chain.id,
+                "parent_chain_id": chain_id,
                 "retry_attempt": i,
                 "retry_max_attempts": 5,
                 "is_retry": True,
@@ -79,7 +109,7 @@ def _seed_chain_with_attempts(jm, *, canonical_path: str, basename: str, num_att
         )
         attempt_ids.append(attempt.id)
         jm.complete_job(attempt.id)
-    return chain.id, attempt_ids
+    return chain_id, attempt_ids
 
 
 class TestJobsListFilter:
@@ -102,7 +132,9 @@ class TestJobsListFilter:
             f"Attempt rows must be hidden from /api/jobs by default; got {returned_ids & set(attempt_ids)}"
         )
         # Chain row IS visible.
-        assert any(j["id"].startswith("retry-") for j in data["jobs"]), (
+        # Chain Job IS the originating dispatch's UUID (no retry-<hash> prefix).
+        # The chain is recognised by config.is_retry_chain.
+        assert any(j.get("config", {}).get("is_retry_chain") for j in data["jobs"]), (
             "Chain row must remain visible in the default response."
         )
 
@@ -152,7 +184,11 @@ class TestJobsListFilter:
 
 
 class TestAttemptsEndpoint:
-    def test_returns_sorted_attempts_for_chain(self, client):
+    def test_returns_attempts_with_original_prepended(self, client):
+        """Post-rewrite the chain IS the originating dispatch. The
+        endpoint returns the original as Attempt 0 (is_originating=True)
+        followed by each retry firing in ascending order.
+        """
         from media_preview_generator.web.jobs import get_job_manager
 
         jm = get_job_manager()
@@ -168,25 +204,20 @@ class TestAttemptsEndpoint:
         data = resp.get_json()
         assert data["chain_id"] == chain_id
         assert data["max_attempts"] == 5
-        # Sorted ascending by retry_attempt.
+        # First entry: originating dispatch (is_originating=True, retry_attempt=0).
+        # Subsequent entries: retry firings sorted ascending.
         nums = [a["retry_attempt"] for a in data["attempts"]]
-        assert nums == [1, 2, 3, 4], f"Attempts must sort by retry_attempt ascending; got {nums}"
-        # Each entry's FIELD VALUES (not just key presence) are what
-        # the modal dropdown reads to render its option labels — pin
-        # actual values so a regression that returns ``status=None``
-        # or ``completed_at=None`` for every attempt fails the test
-        # instead of silently passing (D34-shape bug-blind gap).
-        for a in data["attempts"]:
-            assert set(["id", "retry_attempt", "status", "completed_at", "duration_sec"]).issubset(a.keys())
-            assert a["status"] == "completed", (
-                f"Seeded attempts called complete_job → status should be 'completed'; got {a['status']!r}"
-            )
-            assert a["completed_at"] is not None, (
-                f"Completed attempts must surface completed_at so the dropdown can show duration; "
-                f"got None for {a['id']}"
-            )
+        assert nums == [0, 1, 2, 3, 4], f"Expected [0,1,2,3,4] (original + 4 retries); got {nums}"
+        # First entry IS the chain itself (originating dispatch)
+        assert data["attempts"][0]["is_originating"] is True
+        assert data["attempts"][0]["id"] == chain_id
+        # Subsequent entries are the per-firing attempt Jobs
+        for a in data["attempts"][1:]:
+            assert a["is_originating"] is False
+            assert a["id"] in set(attempt_ids), f"Attempt {a['id']!r} not in seeded ids"
+            assert a["status"] == "completed"
+            assert a["completed_at"] is not None
             assert a["duration_sec"] is not None and a["duration_sec"] >= 0
-            assert a["id"] in set(attempt_ids), f"Attempt id {a['id']!r} doesn't match any seeded child"
 
     def test_returns_404_for_non_chain_job(self, client):
         from media_preview_generator.web.jobs import get_job_manager
@@ -199,38 +230,96 @@ class TestAttemptsEndpoint:
         assert resp.status_code == 404, f"Non-chain jobs must 404 on /attempts; got {resp.status_code}"
 
     def test_returns_404_for_unknown_id(self, client):
-        resp = client.get("/api/jobs/retry-doesnotexist0000/attempts", headers=_headers())
+        # Use a UUID-shaped id that doesn't exist
+        resp = client.get("/api/jobs/00000000-0000-0000-0000-000000000000/attempts", headers=_headers())
         assert resp.status_code == 404
 
-    def test_returns_empty_attempts_for_chain_with_no_firings(self, client):
-        """A chain row can exist before its first firing has spawned an
-        attempt Job — the endpoint must still 200 with an empty list
-        rather than 404 so the dropdown can render 'No attempts yet'.
-        """
+    def test_returns_only_original_for_chain_with_no_firings(self, client):
+        """A chain with no retry firings yet still has one entry:
+        the originating dispatch itself (Attempt 0). Dropdown renders
+        that as the only option until the first firing spawns."""
         from media_preview_generator.web.jobs import get_job_manager
 
         jm = get_job_manager()
-        chain = jm.upsert_retry_chain_job(
+        chain_id, _ = _seed_chain_with_attempts(
+            jm,
             canonical_path="/data/NoFiringsYet.mkv",
             basename="NoFiringsYet",
-            attempt=1,
-            max_attempts=5,
-            next_run_at=None,
-            wait_seconds=30,
-            outcome="scheduled",
+            num_attempts=0,
         )
-
-        resp = client.get(f"/api/jobs/{chain.id}/attempts", headers=_headers())
+        resp = client.get(f"/api/jobs/{chain_id}/attempts", headers=_headers())
         assert resp.status_code == 200
         data = resp.get_json()
-        assert data["attempts"] == []
+        # Even with zero retry firings, the original dispatch is
+        # always present (chain IS the original).
+        assert len(data["attempts"]) == 1
+        assert data["attempts"][0]["is_originating"] is True
+        assert data["attempts"][0]["id"] == chain_id
         assert data["max_attempts"] == 5
 
     def test_requires_auth(self, client):
         """The endpoint sits behind @api_token_required — calls without
         a valid token MUST be rejected.
         """
-        resp = client.get("/api/jobs/retry-anything/attempts")
+        resp = client.get("/api/jobs/00000000-0000-0000-0000-000000000000/attempts")
         assert resp.status_code in (401, 403), (
             f"Endpoint must require auth; unauthenticated request got {resp.status_code}"
         )
+
+
+class TestOriginatingDispatchFilter:
+    """Single-row-per-file UX: when a chain row references an
+    ``originating_job_id``, that worker-pool dispatch Job is hidden
+    from the default /api/jobs list so the user sees ONE row per file.
+    The original is accessible via the chain's modal Attempts dropdown
+    (where it appears as "Original dispatch"), and via direct
+    /api/jobs/<uuid> for power-user / debugging use.
+    """
+
+    def test_chain_is_the_originating_dispatch_uuid(self, client):
+        """Post-rewrite the chain Job IS the originating dispatch
+        (same UUID — chain identity = dispatch UUID). No separate
+        retry-<hash> row. The chain row is visible in /api/jobs.
+        """
+        from media_preview_generator.web.jobs import get_job_manager
+
+        jm = get_job_manager()
+        chain_id, _ = _seed_chain_with_attempts(
+            jm,
+            canonical_path="/data/Marshals.mkv",
+            basename="Marshals S01E11",
+            num_attempts=2,
+        )
+
+        resp = client.get("/api/jobs?page=0", headers=_headers())
+        assert resp.status_code == 200
+        ids = {j["id"] for j in resp.get_json()["jobs"]}
+        assert chain_id in ids, (
+            f"Chain Job (originating dispatch's UUID) MUST be visible in the default list. Found ids: {ids}"
+        )
+        # No retry-<hash>-prefixed ids should appear (legacy rows are dropped at load)
+        assert not any(i.startswith("retry-") for i in ids)
+
+    def test_attempt_rows_hidden_default_visible_with_opt_in(self, client):
+        from media_preview_generator.web.jobs import get_job_manager
+
+        jm = get_job_manager()
+        _, attempt_ids = _seed_chain_with_attempts(
+            jm,
+            canonical_path="/data/Marshals.mkv",
+            basename="Marshals S01E11",
+            num_attempts=3,
+        )
+
+        # Default: attempts hidden
+        resp = client.get("/api/jobs?page=0", headers=_headers())
+        ids_default = {j["id"] for j in resp.get_json()["jobs"]}
+        assert ids_default.isdisjoint(set(attempt_ids)), (
+            f"is_retry_attempt rows must be hidden from default list; found {ids_default & set(attempt_ids)}"
+        )
+
+        # Opt-in: attempts visible
+        resp = client.get("/api/jobs?page=0&include_retry_attempts=1", headers=_headers())
+        ids_opt = {j["id"] for j in resp.get_json()["jobs"]}
+        for aid in attempt_ids:
+            assert aid in ids_opt, f"Attempt {aid} missing with include_retry_attempts=1"

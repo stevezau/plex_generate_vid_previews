@@ -192,6 +192,7 @@ def _upsert_retry_chain_job(
     reason: str | None = None,
     display_name: str | None = None,
     source: str | None = None,
+    originating_job_id: str | None = None,
 ) -> None:
     """Best-effort upsert of the user-visible retry-chain Job row.
 
@@ -235,6 +236,7 @@ def _upsert_retry_chain_job(
             server_type=server_type,
             reason=reason,
             source=source,
+            originating_job_id=originating_job_id,
         )
     except Exception as exc:
         logger.debug("Retry-chain Job upsert failed for {!r}: {}", canonical_path, exc)
@@ -498,22 +500,19 @@ def _record_attempt_file_result(child_job_id: str | None, canonical_path: str, r
         logger.debug("Per-attempt file_result record failed for {!r}: {}", child_job_id, exc)
 
 
-def _link_attempt_to_chain(canonical_path: str, attempt_job_id: str | None) -> None:
-    """Append ``attempt_job_id`` to the parent chain's ``child_job_ids`` config.
+def _link_attempt_to_chain(chain_id: str | None, attempt_job_id: str | None) -> None:
+    """Append ``attempt_job_id`` to the chain Job's ``child_job_ids`` config.
 
-    The chain row's synthesized log uses this list to hand the user
-    direct UUIDs they can paste into the Jobs panel filter to find the
-    real per-attempt log file. Without it the chain is a dead-end
-    summary with no way back to the actual retry execution.
+    The chain ID is now the originating dispatch's UUID (the Job that
+    was mutated into chain mode by ``upsert_retry_chain_job``). The
+    list of child IDs powers the modal Attempts dropdown's
+    ``/api/jobs/<chain>/attempts`` endpoint.
     """
-    if not attempt_job_id:
+    if not attempt_job_id or not chain_id:
         return
     try:
-        import hashlib
-
         from ..web.jobs import get_job_manager
 
-        chain_id = "retry-" + hashlib.sha256(canonical_path.encode("utf-8")).hexdigest()[:16]
         jm = get_job_manager()
         chain = jm.get_job(chain_id)
         if chain is None:
@@ -538,6 +537,7 @@ def schedule_retry_for_unindexed(
     server_id_filter: str | None = None,
     display_name: str | None = None,
     source: str | None = None,
+    originating_job_id: str | None = None,
 ) -> bool:
     """Convenience wrapper that schedules a retry calling back into process_canonical_path.
 
@@ -569,8 +569,6 @@ def schedule_retry_for_unindexed(
     scheduler = get_retry_scheduler()
 
     def _callback(path: str, fired_attempt: int) -> None:
-        import hashlib
-
         # Imported lazily to break the import cycle:
         # multi_server -> retry_queue (here) -> multi_server.
         from .generator import failure_scope
@@ -592,17 +590,17 @@ def schedule_retry_for_unindexed(
             server_id=_retry_pin_id,
             display_name=display_name,
             source=source,
+            originating_job_id=originating_job_id,
         )
 
-        # Spawn a real per-attempt Job so the user sees a normal job
-        # row (with proper INFO/WARNING-coloured logs) for THIS firing
-        # — instead of the synthesized status text on the parent chain
-        # row, which had no level prefixes and so rendered without the
-        # log-line colour every other job has. Best-effort: when the
-        # JobManager isn't available (CLI / test contexts) the firing
-        # still proceeds with no per-attempt Job, matching the legacy
-        # headless behaviour.
-        chain_id = "retry-" + hashlib.sha256(path.encode("utf-8")).hexdigest()[:16]
+        # Spawn a per-attempt Job (separate UUID) so the user sees the
+        # firing's INFO/WARNING-coloured logs in the modal Attempts
+        # dropdown. The chain id IS the originating dispatch's UUID
+        # (the same Job whose worker did the FFmpeg + Plex/Emby
+        # publish before the chain spawned). Best-effort: when the
+        # JobManager isn't available (CLI / test contexts) the
+        # firing still proceeds with no per-attempt Job.
+        chain_id = originating_job_id
         attempt_job_id = _create_retry_attempt_job(
             canonical_path=path,
             chain_id=chain_id,
@@ -614,7 +612,7 @@ def schedule_retry_for_unindexed(
             display_name=display_name,
             source=source,
         )
-        _link_attempt_to_chain(path, attempt_job_id)
+        _link_attempt_to_chain(chain_id, attempt_job_id)
 
         # Bind a synthetic failure scope for the retry. The ORIGINATING
         # job (the dispatch row that first hit SKIPPED_NOT_INDEXED) has
@@ -680,6 +678,7 @@ def schedule_retry_for_unindexed(
                     server_id_filter=server_id_filter,
                     display_name=display_name,
                     source=source,
+                    originating_job_id=originating_job_id,
                 )
                 return
 
@@ -728,6 +727,7 @@ def schedule_retry_for_unindexed(
                     server_id_filter=server_id_filter,
                     display_name=display_name,
                     source=source,
+                    originating_job_id=originating_job_id,
                 )
                 if not rescheduled:
                     exhausted_reason = (
@@ -747,6 +747,7 @@ def schedule_retry_for_unindexed(
                         display_name=display_name,
                         source=source,
                         reason=exhausted_reason,
+                        originating_job_id=originating_job_id,
                     )
                     _complete_retry_attempt_job(attempt_job_id, error=exhausted_reason)
                 else:
@@ -767,6 +768,7 @@ def schedule_retry_for_unindexed(
                     server_id=_retry_pin_id,
                     display_name=display_name,
                     source=source,
+                    originating_job_id=originating_job_id,
                 )
                 _complete_retry_attempt_job(attempt_job_id)
 
@@ -796,5 +798,6 @@ def schedule_retry_for_unindexed(
             # would surface as ".mkv" in every attempt row's title.
             display_name=display_name,
             source=source,
+            originating_job_id=originating_job_id,
         )
     return scheduled

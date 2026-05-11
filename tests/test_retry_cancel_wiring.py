@@ -40,6 +40,15 @@ def _make_jm(tmp_path):
     return jm
 
 
+def _seed_originating(jm, library_name="Foo"):
+    """Create an originating dispatch Job and complete it. The chain
+    will mutate this Job in place via upsert_retry_chain_job.
+    Returns the Job's id."""
+    j = jm.create_job(library_name=library_name, config={})
+    jm.complete_job(j.id)
+    return j.id
+
+
 class TestChainCancelCancelsTimer:
     def test_cancel_chain_calls_retry_scheduler_cancel(self, tmp_path):
         """``cancel_job`` on a chain row MUST also call
@@ -53,6 +62,7 @@ class TestChainCancelCancelsTimer:
         )
 
         jm = _make_jm(tmp_path)
+        origin_id = _seed_originating(jm)
 
         # Use a long backoff so the Timer is still pending when we cancel.
         path = "/data/Foo.mkv"
@@ -68,13 +78,14 @@ class TestChainCancelCancelsTimer:
                 config=MagicMock(),
                 item_id_by_server=None,
                 attempt=1,
+                originating_job_id=origin_id,
             )
         assert scheduled is True
         scheduler = get_retry_scheduler()
         assert scheduler.pending_count() == 1, "Timer should be pending before cancel"
 
-        chain = next(j for j in jm.get_all_jobs() if j.id.startswith("retry-"))
-        jm.cancel_job(chain.id)
+        # Chain Job is the originating dispatch (same UUID after rewrite).
+        jm.cancel_job(origin_id)
 
         assert scheduler.pending_count() == 0, (
             "RetryScheduler.cancel was not called — the Timer is still pending. "
@@ -92,8 +103,9 @@ class TestChainCancelCancelsTimer:
         )
 
         jm = _make_jm(tmp_path)
+        origin_id = _seed_originating(jm, library_name="Origin")
 
-        # Set up a pending Timer.
+        # Set up a pending Timer for the originating Job.
         from unittest.mock import patch
 
         with patch(
@@ -106,10 +118,11 @@ class TestChainCancelCancelsTimer:
                 config=MagicMock(),
                 item_id_by_server=None,
                 attempt=1,
+                originating_job_id=origin_id,
             )
         assert get_retry_scheduler().pending_count() == 1
 
-        # Create + cancel an unrelated regular Job.
+        # Create + cancel an UNRELATED regular Job (not a chain).
         regular = jm.create_job(library_name="Regular", config={})
         jm.cancel_job(regular.id)
 
@@ -129,6 +142,7 @@ class TestChainCancelCancelsChildren:
         from media_preview_generator.web.jobs import JobStatus
 
         jm = _make_jm(tmp_path)
+        origin_id = _seed_originating(jm)
 
         chain = jm.upsert_retry_chain_job(
             canonical_path="/data/Foo.mkv",
@@ -138,6 +152,7 @@ class TestChainCancelCancelsChildren:
             next_run_at=None,
             wait_seconds=30,
             outcome="scheduled",
+            originating_job_id=origin_id,
         )
 
         # Hand-create two in-flight children + one already-terminal.
@@ -201,6 +216,8 @@ class TestChainCancelCancelsChildren:
         from media_preview_generator.web.jobs import JobStatus
 
         jm = _make_jm(tmp_path)
+        origin_a = _seed_originating(jm, library_name="A")
+        origin_b = _seed_originating(jm, library_name="B")
 
         chain_a = jm.upsert_retry_chain_job(
             canonical_path="/data/A.mkv",
@@ -210,6 +227,7 @@ class TestChainCancelCancelsChildren:
             next_run_at=None,
             wait_seconds=30,
             outcome="scheduled",
+            originating_job_id=origin_a,
         )
         chain_b = jm.upsert_retry_chain_job(
             canonical_path="/data/B.mkv",
@@ -219,6 +237,7 @@ class TestChainCancelCancelsChildren:
             next_run_at=None,
             wait_seconds=30,
             outcome="scheduled",
+            originating_job_id=origin_b,
         )
         child_b = jm.create_job(
             library_name="B",
@@ -317,6 +336,8 @@ class TestCancelDuringFiringRace:
                 message="ok",
             )
 
+        origin_id = _seed_originating(jm)
+
         with (
             patch(
                 "media_preview_generator.processing.retry_queue._BACKOFF",
@@ -333,6 +354,7 @@ class TestCancelDuringFiringRace:
                 config=MagicMock(),
                 item_id_by_server=None,
                 attempt=1,
+                originating_job_id=origin_id,
             )
             # Wait until the Timer has fired and process_canonical_path
             # is in flight. At this point the attempt Job has been
@@ -341,8 +363,8 @@ class TestCancelDuringFiringRace:
             # to "running" — but the callback is BLOCKED.
             assert callback_running.wait(timeout=2), "Timer should have fired"
 
-            # Find the chain id from the live state.
-            chain = next(j for j in jm.get_all_jobs() if j.id.startswith("retry-"))
+            # Chain Job IS the originating dispatch (same UUID).
+            chain_id = origin_id
             inflight_attempt = next(
                 (j for j in jm.get_all_jobs() if j.config.get("is_retry_attempt")),
                 None,
@@ -350,7 +372,7 @@ class TestCancelDuringFiringRace:
             assert inflight_attempt is not None, "Attempt Job should have been created before process_canonical_path"
 
             # Issue cancel WHILE the callback is mid-execution.
-            jm.cancel_job(chain.id)
+            jm.cancel_job(chain_id)
 
             # Chain is now CANCELLED. Release the callback to finish.
             release_callback.set()
@@ -360,7 +382,7 @@ class TestCancelDuringFiringRace:
             time.sleep(0.3)
 
         # Post-race state:
-        chain_final = jm.get_job(chain.id)
+        chain_final = jm.get_job(chain_id)
         assert chain_final.status == JobStatus.CANCELLED, (
             f"Chain row must stay CANCELLED after race; got {chain_final.status}"
         )
@@ -429,6 +451,8 @@ class TestCancelDuringFiringRace:
                 message="pending",
             )
 
+        origin_id = _seed_originating(jm)
+
         with (
             patch(
                 "media_preview_generator.processing.retry_queue._BACKOFF",
@@ -445,15 +469,15 @@ class TestCancelDuringFiringRace:
                 config=MagicMock(),
                 item_id_by_server=None,
                 attempt=1,
+                originating_job_id=origin_id,
             )
             # Wait for the first firing.
             assert first_fired.wait(timeout=2)
             time.sleep(0.1)  # let it record file_result + complete
 
             # Cancel BEFORE the next Timer fires (next backoff is 0.5s).
-            chain = next(j for j in jm.get_all_jobs() if j.id.startswith("retry-"))
             attempts_at_cancel = len([j for j in jm.get_all_jobs() if j.config.get("is_retry_attempt")])
-            jm.cancel_job(chain.id)
+            jm.cancel_job(origin_id)
 
             # Wait past the next would-be firing window.
             time.sleep(0.8)
