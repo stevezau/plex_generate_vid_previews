@@ -466,13 +466,22 @@
                      GET /api/jobs/<chain_id>/attempts; selecting an
                      option sets ``_logsModalAttemptId`` and re-renders
                      whichever tab is active. -->
-                <div id="attemptsDropdownWrap" class="d-none align-items-center mb-2 gap-2"
+                <div id="attemptsDropdownWrap" class="d-none align-items-center mb-2 gap-2 flex-wrap"
                      role="region" aria-label="Retry attempts">
                     <label class="form-label small mb-0 text-muted" for="attemptsDropdown">
                         <i class="bi bi-arrow-clockwise me-1"></i>Attempt
                     </label>
+                    <!-- ``max-width: 100%`` lets the dropdown shrink on
+                         narrow viewports (iPhone, etc.) so it never
+                         overflows the modal-body's clientWidth. The
+                         flex-wrap on the parent lets the hint text drop
+                         to a new line when there isn't horizontal space
+                         for it. Without these, mobile users saw the
+                         modal scroll horizontally — a real bug caught
+                         in the verify_mobile.py Playwright test. -->
                     <select class="form-select form-select-sm" id="attemptsDropdown"
-                            style="width: 280px;" onchange="onAttemptSelected(this)"
+                            style="max-width: 100%; min-width: 220px;"
+                            onchange="onAttemptSelected(this)"
                             aria-label="Switch between retry attempts"></select>
                     <small class="text-muted" id="attemptsHint"></small>
                 </div>
