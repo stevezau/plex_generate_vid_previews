@@ -406,6 +406,107 @@ class TestResolveRemotePathToItemIdViaPlugin:
             assert req.call_args_list[0].args == ("GET", "/MediaPreviewBridge/ResolvePath")
 
 
+class TestResolveOnePathCacheSemantics:
+    """``_resolve_one_path`` caches positive results but MUST NOT cache
+    negatives.
+
+    Live regression — chain ``62e32c35`` (Jonestown movie,
+    2026-05-11 22:30 → 22:38): a ``PUBLISHED_PENDING_REGISTRATION``
+    chain was armed because Jellyfin hadn't finished scanning the
+    new MKV by the time the originating dispatch resolved its
+    item id. The retry queue
+    (``processing/retry_queue.py:schedule_retry_for_unindexed``)
+    captures the live ``ServerRegistry`` — and therefore the same
+    :class:`JellyfinServer` instance — in a closure, so every
+    retry attempt shares the originating dispatch's
+    ``_reverse_lookup_cache``. With negative caching at 300 s TTL,
+    retries #1 (T+60 s) and #2 (T+180 s) both hit the cached
+    ``None`` and returned in 0.0 s without re-querying — even
+    though Jellyfin had completed its scan within the first
+    minute. The chain only recovered at attempt #3 (T+480 s) when
+    the TTL expired naturally.
+
+    The pin: a ``None`` result from
+    :meth:`_uncached_resolve_remote_path_to_item_id` must NEVER
+    leave a cache entry behind, so the very next
+    :meth:`_resolve_one_path` call re-runs the lookup. Positive
+    results retain their TTL cache (the perf win for full-library
+    scans is real and unaffected).
+    """
+
+    def test_negative_result_is_not_cached(self, jelly):
+        path = "/data_16tb2/Movies/Foo (2024)/Foo (2024).mkv"
+        with patch.object(JellyfinServer, "_uncached_resolve_remote_path_to_item_id") as uncached:
+            uncached.return_value = None
+
+            assert jelly._resolve_one_path(path) is None
+            assert jelly._resolve_one_path(path) is None
+
+            # If the cache had absorbed the first ``None``, the second
+            # call would short-circuit and ``_uncached`` would only run
+            # once. Two calls proves the lookup re-runs.
+            assert uncached.call_count == 2, (
+                f"Negative result was cached — retry chains would short-circuit on stale ``None`` "
+                f"for the full TTL (see TestResolveOnePathCacheSemantics docstring). Expected "
+                f"two ``_uncached`` invocations on back-to-back miss-then-miss, got "
+                f"{uncached.call_count}."
+            )
+            # Pin the forwarded kwarg the SUT controls — a future
+            # refactor that normalised or stripped the path before
+            # forwarding would leave call_count untouched but break
+            # the cache key contract.
+            assert uncached.call_args_list[0].args == (path,)
+            assert uncached.call_args_list[1].args == (path,)
+
+    def test_retry_chain_pattern_negative_then_positive_returns_positive(self, jelly):
+        """Simulates the exact retry-chain scenario: the originating
+        dispatch's lookup misses (server still scanning), then a
+        subsequent attempt on the SAME server instance finds the
+        item (server has finished its scan). Pre-fix this returned
+        ``None`` from cache; post-fix it must return the freshly
+        resolved id.
+        """
+        path = "/data_16tb2/Movies/Jonestown (2006)/Jonestown (2006).mkv"
+        with patch.object(JellyfinServer, "_uncached_resolve_remote_path_to_item_id") as uncached:
+            uncached.side_effect = [None, "ecaae1ad830f417baa6c521237e86a64"]
+
+            first = jelly._resolve_one_path(path)
+            second = jelly._resolve_one_path(path)
+
+            assert first is None
+            assert second == "ecaae1ad830f417baa6c521237e86a64", (
+                "Retry attempt re-queried a server that has now indexed the file but the "
+                "wrapper returned a stale cached ``None``. The negative result from the "
+                "originating dispatch must not survive in the cache."
+            )
+            assert uncached.call_count == 2
+            # Both invocations must forward the exact ``server_view_path``;
+            # a regression that transformed the path between calls would
+            # silently change the cache key.
+            assert uncached.call_args_list[0].args == (path,)
+            assert uncached.call_args_list[1].args == (path,)
+
+    def test_positive_result_is_cached_within_ttl(self, jelly):
+        """Perf-preservation pin: positive caching must still work so
+        full-library scans don't pay the per-path lookup cost twice
+        for the same path within the TTL window. Without this, the
+        fix would regress the 200K-item-Jellyfin full-scan path the
+        original caching policy was written for.
+        """
+        path = "/data_16tb2/Movies/Foo (2024)/Foo (2024).mkv"
+        with patch.object(JellyfinServer, "_uncached_resolve_remote_path_to_item_id") as uncached:
+            uncached.return_value = "item-42"
+
+            assert jelly._resolve_one_path(path) == "item-42"
+            assert jelly._resolve_one_path(path) == "item-42"
+
+            assert uncached.call_count == 1, (
+                f"Positive result was NOT cached — full-library scans would re-pay the lookup "
+                f"cost on every duplicate path within the TTL window. Expected one ``_uncached`` "
+                f"invocation on back-to-back hits, got {uncached.call_count}."
+            )
+
+
 class TestTriggerRefresh:
     def test_calls_plugin_bridge_then_per_item_refresh_when_id_known(self, jelly):
         # Two requests fire when an item_id is supplied: the Media Preview
