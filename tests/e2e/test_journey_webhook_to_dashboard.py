@@ -41,6 +41,13 @@ def _post_sonarr_webhook(page, app_url: str, file_path: str, series_title: str =
 
 @pytest.mark.e2e
 class TestWebhookToDashboard:
+    # webhook_delay=30 (override default seed of 1s) — this test polls
+    # /api/webhooks/pending and races the debounce Timer. With delay=1s
+    # the batch can fire + pop from _pending_batches before the test's
+    # first GET sees it (Playwright roundtrip + JSON parse can exceed
+    # 1s on a loaded runner), turning the assertion into a Heisenbug.
+    # The test calls fire-now to skip the wait anyway, so 30s is harmless.
+    @pytest.mark.parametrize("backend_real_app", [{"webhook_delay": 30}], indirect=True)
     def test_sonarr_webhook_creates_pending_batch_then_fire_now_dispatches(
         self,
         backend_real_page,
@@ -76,7 +83,8 @@ class TestWebhookToDashboard:
         assert resp.ok, f"Sonarr webhook returned {resp.status}: {resp.text()}"
 
         # 2. The batch should appear in /api/webhooks/pending within a few
-        #    ticks (the debounce window is 1s by seeding).
+        #    ticks (this test uses webhook_delay=30s via parametrize so the
+        #    natural Timer can't race the polling loop).
         deadline = time.monotonic() + 5
         pending_batch = None
         while time.monotonic() < deadline:
