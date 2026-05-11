@@ -45,8 +45,14 @@ def __test_reset():
     errors: list[str] = []
 
     # 1. Stop scheduler — APScheduler runs a background thread with
-    #    its own SQLite jobstore. Shut it down so the next test's
-    #    fresh ScheduleManager doesn't clash with the stale thread.
+    #    its own SQLite jobstore. Shut it down so we can re-create.
+    #    Critical: ScheduleManager.start() is only called from
+    #    create_app() at app boot. If we leave the singleton as None,
+    #    the NEXT test's first API call triggers get_schedule_manager()
+    #    which constructs a fresh instance but never starts it →
+    #    schedule-dependent tests fail silently.
+    #    Solution: stop the old one, construct a fresh instance,
+    #    explicitly call start() so it's running for the next test.
     try:
         from .. import scheduler as sched_mod
 
@@ -56,7 +62,9 @@ def __test_reset():
                     sched_mod._schedule_manager.stop()  # noqa: SLF001
                 except Exception as exc:
                     errors.append(f"scheduler.stop: {type(exc).__name__}: {exc}")
-                sched_mod._schedule_manager = None  # noqa: SLF001
+            # Drop scheduler.db so the new instance reads a clean
+            # jobstore — done as part of file cleanup below.
+            sched_mod._schedule_manager = None  # noqa: SLF001
         cleared.append("ScheduleManager")
     except Exception as exc:
         errors.append(f"ScheduleManager: {type(exc).__name__}: {exc}")
@@ -125,6 +133,19 @@ def __test_reset():
                 files_deleted.append(name)
             except OSError as exc:
                 errors.append(f"unlink {name}: {exc}")
+
+    # 6. Re-start scheduler so the next test gets a working one.
+    #    Equivalent to what create_app() does at boot: construct +
+    #    start. Done AFTER file cleanup so the new instance reads
+    #    a clean schedule jobstore.
+    try:
+        from .. import scheduler as sched_mod
+
+        sched = sched_mod.get_schedule_manager(config_dir=config_dir)
+        sched.start()
+        cleared.append("ScheduleManager:restarted")
+    except Exception as exc:
+        errors.append(f"ScheduleManager.start: {type(exc).__name__}: {exc}")
 
     logger.debug(
         "__test_reset: cleared={} files_deleted={} errors={}",

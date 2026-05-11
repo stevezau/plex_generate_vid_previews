@@ -395,9 +395,12 @@ def backend_real_app(tmp_path_factory, request) -> Generator[tuple[str, str], No
     FFmpeg/ffprobe shim — the real subprocess.run calls succeed
     instantly without doing any video work.
 
-    Function-scoped so each test gets a clean job DB / settings file.
-    Boot cost is ~3s; acceptable for backend-real tests where the whole
-    point is exercising real wiring.
+    Function-scoped because these tests exercise REAL backend wiring
+    (scheduler, JobManager, webhook debounce timers). The reset
+    endpoint used by the wizard fixture doesn't fully restore these
+    (in-flight Timer threads, APScheduler state, etc.), so sharing
+    subprocesses introduced flaky failures. Boot cost is ~3s; for
+    the ~30 backend-real tests that's ~90s total — acceptable.
 
     Tests can pass ``request.param`` as a dict of settings overrides
     via parametrize; default seeds an empty media_servers list. A
@@ -412,10 +415,7 @@ def backend_real_app(tmp_path_factory, request) -> Generator[tuple[str, str], No
 
     fake_bin = _build_fake_ffmpeg_path(str(config_dir))
     extra_env = {
-        # Put fake FFmpeg first on PATH so any subprocess.run("ffmpeg")
-        # call hits the no-op shim instead of a real (or missing) binary.
         "PATH": fake_bin + os.pathsep + os.environ.get("PATH", ""),
-        # Force CORS to a known value so SocketIO origin checks pass.
         "CORS_ORIGINS": "*",
         **extra_env_overrides,
     }
