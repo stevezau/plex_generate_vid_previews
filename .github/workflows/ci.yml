@@ -118,6 +118,7 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
 
   e2e:
+    name: e2e (shard ${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
     # Only depend on lint (formatting/style). The unit `test` job covers
     # different scope (no Playwright); making e2e wait for test serialises
@@ -125,6 +126,13 @@ jobs:
     # `merge` job still gates publishing on test + e2e + build all passing,
     # so the safety contract is preserved.
     needs: lint
+    strategy:
+      # Don't cancel sibling shards if one fails. If shard 2's Chromium
+      # crashes on test 35, we still want shards 1/3/4 to finish so
+      # the failure is visibly isolated rather than masking the others.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -199,36 +207,43 @@ jobs:
       - name: Install Playwright Chromium (browser binary only; runtime libs cached above)
         run: playwright install chromium
 
-      - name: Run e2e tests
-        # GH ubuntu-latest is 4-vCPU. Two distinct things misbehave:
+      - name: Run e2e tests (shard ${{ matrix.shard }}/4)
+        # Sharding strategy (Playwright's officially-documented pattern
+        # for handling Chromium SIGSEGV on memory-constrained CI —
+        # playwright.dev/docs/test-parallel). Each matrix shard runs
+        # on its own ubuntu-latest runner = fresh Chromium = fresh
+        # memory budget, so cross-test accumulation can't pile up
+        # the way it did in the previous single-job design.
         #
-        # 1. xdist worker churn at -n >= 2 on a small runner: workers
-        #    SIGKILL'd silently, "node down: Not properly terminated".
-        #    The cause was a real Flask-side leak (APScheduler thread
-        #    not drained between test-resets), fixed in 20c42cf. With
-        #    that fix the boot wave is survivable, but #2 still applies.
-        # 2. Chromium SIGSEGV on the same small runner after ~30 tests
-        #    per browser. Memory accumulation in the long-lived Chromium
-        #    process eventually crashes the page, which kills the
-        #    Playwright session, which kills the xdist worker. This is
-        #    inherent to Playwright + Chromium on memory-constrained
-        #    CI and not fixable at the test-fixture layer.
+        # 4 shards × ~30-42 tests/shard sits at or under the empirical
+        # ~30-test Chromium crash threshold from prior runs. Two real
+        # bugs were fixed before reaching for sharding (webhook race
+        # in c8ac9d4, APScheduler thread drain in 20c42cf) — sharding
+        # mitigates only the residual environmental flakes, not real
+        # regressions.
         #
-        # Mitigation: serial (`-n 0`) + auto-retry. Serial keeps the
-        # peak resource pressure low so the Chromium process survives
-        # longer; ``--reruns 2 --reruns-delay 5`` catches the residual
-        # flake when it still fires. 3 consecutive failures still
-        # surface a real regression. Locally (32-core box) this command
-        # is unused — the default `pyproject.toml` pytest invocation
-        # excludes the e2e marker.
-        run: pytest -m e2e -n 0 --no-cov --tb=short --timeout=120 --reruns 2 --reruns-delay 5
-        timeout-minutes: 20
+        # --shard-id is 0-indexed; matrix index is 1-indexed for the
+        # GH status check display ("e2e (shard 3/4)"). Shell arithmetic
+        # below maps 1->0, 2->1, etc.
+        #
+        # --reruns 1 (down from 2) — at 30-42 tests per shard we expect
+        # ~zero reruns; this is a thin safety net for true single-event
+        # flakes (page-load jitter, network blips). 2 consecutive
+        # failures still flag a real regression.
+        run: >-
+          pytest -m e2e -n 0 --no-cov --tb=short --timeout=120
+          --reruns 1 --reruns-delay 5
+          --shard-id=$((${{ matrix.shard }} - 1)) --num-shards=4
+        timeout-minutes: 10
 
       - name: Upload Playwright traces on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-traces
+          # Shard suffix prevents collision when multiple shards fail
+          # in the same run — actions/upload-artifact@v4 errors on
+          # duplicate names instead of merging.
+          name: playwright-traces-shard-${{ matrix.shard }}
           path: tests/e2e/test-results/
           if-no-files-found: ignore
           retention-days: 7
