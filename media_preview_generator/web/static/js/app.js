@@ -1580,9 +1580,21 @@ function _renderRetryChip(job) {
         || (status === 'pending' && !!eta);
     if (!activelyRetrying) return '';
     const attempt = typeof cfg.retry_attempt === 'number' ? cfg.retry_attempt : 0;
-    return ' <span class="badge bg-warning text-dark ms-1" '
-        + 'title="The destination server hadn\'t indexed this file when we first published — auto-retrying until it catches up. Backoff: 1m → 2m → 5m → 15m → 1h.">'
-        + '<i class="bi bi-arrow-clockwise me-1"></i>Retry ' + attempt + '/' + max + '</span>';
+    // Trailing info-icon opens the shared #globalInfoModal with the
+    // full retry-chain explanation (what's happening, why the wait,
+    // backoff schedule, when it gives up). Same rich content the chain-
+    // state chip in the Job Details modal links to — single source of
+    // truth lives in ``_shared_info_templates.html#infoRetryChainTpl``.
+    return ' <span class="badge bg-warning text-dark ms-1 d-inline-flex align-items-center" '
+        + 'title="Auto-retrying — click ⓘ for details">'
+        + '<i class="bi bi-arrow-clockwise me-1"></i>Retry ' + attempt + '/' + max
+        + ' <button type="button" class="info-icon info-icon-more btn btn-link p-0 ms-1 align-baseline text-dark"'
+        + ' data-explain-template="infoRetryChainTpl"'
+        + ' data-explain-title="Why this file is auto-retrying"'
+        + ' title="What is this? — click for details"'
+        + ' aria-label="About retry chain">'
+        + '<i class="bi bi-info-circle"></i></button>'
+        + '</span>';
 }
 
 let _jobQueueUpdatePending = false;

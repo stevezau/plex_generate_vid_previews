@@ -550,28 +550,39 @@ function _renderChainStateChip(chainId) {
     const retryEta = progress.retry_eta || null;
     chip.classList.remove('d-none', 'bg-success', 'bg-danger', 'bg-warning', 'bg-info', 'bg-secondary', 'text-dark');
     chip.classList.add('attempts-state-chip');
+    // Trailing info-icon (same template as the dashboard's Retry chip)
+    // so users can drill into the explanation without leaving the modal.
+    // The delegated click handler in app.js routes ``.info-icon`` clicks
+    // to the global info modal regardless of where they appear.
+    const _infoIcon = ' <button type="button" class="info-icon info-icon-more btn btn-link p-0 ms-1 align-baseline"'
+        + ' data-explain-template="infoRetryChainTpl"'
+        + ' data-explain-title="Why this file is auto-retrying"'
+        + ' title="What is this? — click for details"'
+        + ' aria-label="About retry chain"'
+        + ' style="color: inherit;">'
+        + '<i class="bi bi-info-circle"></i></button>';
     if (status === 'completed') {
         chip.classList.add('bg-success');
-        chip.innerHTML = '<i class="bi bi-check2-circle me-1"></i>Chain completed';
+        chip.innerHTML = '<i class="bi bi-check2-circle me-1"></i>Chain completed' + _infoIcon;
     } else if (status === 'failed') {
         chip.classList.add('bg-danger');
-        chip.innerHTML = '<i class="bi bi-exclamation-circle me-1"></i>Chain failed';
+        chip.innerHTML = '<i class="bi bi-exclamation-circle me-1"></i>Chain failed' + _infoIcon;
     } else if (status === 'cancelled') {
         chip.classList.add('bg-secondary');
-        chip.innerHTML = '<i class="bi bi-slash-circle me-1"></i>Cancelled';
+        chip.innerHTML = '<i class="bi bi-slash-circle me-1"></i>Cancelled' + _infoIcon;
     } else if (status === 'running') {
         chip.classList.add('bg-info', 'text-dark');
         const label = attempt && max
             ? `Attempt ${attempt}/${max} running`
             : 'Attempt running';
-        chip.innerHTML = `<i class="bi bi-lightning-charge-fill me-1"></i>${label}`;
+        chip.innerHTML = `<i class="bi bi-lightning-charge-fill me-1"></i>${label}${_infoIcon}`;
     } else if (status === 'pending' && retryEta) {
         chip.classList.add('bg-warning', 'text-dark');
         const tick = () => {
             const remaining = Math.max(0, Math.ceil((new Date(retryEta).getTime() - Date.now()) / 1000));
             const label = _formatRetryRemaining(remaining);
             const ofMax = (attempt && max) ? ` (attempt ${attempt + 1}/${max})` : '';
-            chip.innerHTML = `<i class="bi bi-hourglass-split me-1"></i>Next attempt in ${label}${ofMax}`;
+            chip.innerHTML = `<i class="bi bi-hourglass-split me-1"></i>Next attempt in ${label}${ofMax}${_infoIcon}`;
             if (remaining === 0) {
                 clearInterval(_chainStateTickInterval);
                 _chainStateTickInterval = null;
@@ -583,7 +594,7 @@ function _renderChainStateChip(chainId) {
         // PENDING without retry_eta — chain spawned, first attempt not
         // yet scheduled. Rare transient state.
         chip.classList.add('bg-secondary');
-        chip.innerHTML = '<i class="bi bi-hourglass me-1"></i>Pending';
+        chip.innerHTML = '<i class="bi bi-hourglass me-1"></i>Pending' + _infoIcon;
     }
 }
 

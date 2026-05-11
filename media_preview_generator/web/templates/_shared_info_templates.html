@@ -144,3 +144,40 @@
     is the heaviest — you're trusting this app to not persist the
     password (it doesn't, but that's a trust you're making).</p>
 </template>
+
+<template id="infoRetryChainTpl">
+    <p><strong>What's happening:</strong> tiles for this file are on disk,
+    but the destination server hadn't indexed the file yet when this app
+    tried to register the trickplay row. The app is auto-retrying — each
+    attempt asks the server "do you have this file yet?" and finishes the
+    registration as soon as the answer is yes.</p>
+
+    <p><strong>Why the wait:</strong> Jellyfin in particular has a
+    hard-coded ~45-second delay in its <code>LibraryMonitor</code> before
+    it processes a file event (intentional — gives writes time to settle,
+    especially over the network). On top of that, Jellyfin has to fetch
+    metadata, download poster/fanart, and probe the video before the item
+    becomes registerable. Typical end-to-end: 1–5 minutes. Slow setups
+    (Jellyfin chewing through other background tasks): can stretch to
+    30+ minutes.</p>
+
+    <p><strong>Backoff schedule:</strong></p>
+    <ul>
+        <li>Attempt 1 — 1 minute after the originating publish</li>
+        <li>Attempt 2 — 2 minutes later (3m total)</li>
+        <li>Attempt 3 — 5 minutes later (8m total)</li>
+        <li>Attempt 4 — 15 minutes later (23m total)</li>
+        <li>Attempt 5 — 60 minutes later (1h 23m total)</li>
+    </ul>
+
+    <p>After all five attempts, the chain marks FAILED. Re-trigger the
+    source webhook (Sonarr/Radarr "rescan" or this app's "Run scan now")
+    to start a fresh chain.</p>
+
+    <p><strong>If every chain exhausts:</strong> the most common cause is
+    Jellyfin's own <code>Generate Trickplay Images</code> scheduled task
+    competing for CPU + database locks. Check the Setup Health card on
+    the Servers page — the row "Jellyfin's daily 'Generate Trickplay
+    Images' task" flags this and offers a Disable button (safe when the
+    Media Preview Bridge plugin is installed).</p>
+</template>
