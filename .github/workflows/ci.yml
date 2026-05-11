@@ -226,13 +226,16 @@ jobs:
         # GH status check display ("e2e (shard 3/4)"). Shell arithmetic
         # below maps 1->0, 2->1, etc.
         #
-        # --reruns 1 (down from 2) — at 30-42 tests per shard we expect
-        # ~zero reruns; this is a thin safety net for true single-event
-        # flakes (page-load jitter, network blips). 2 consecutive
-        # failures still flag a real regression.
+        # --reruns 2 — observed empirically that the "element is not
+        # stable" wizard-transition flakes on GH's slow runner can
+        # take 3 attempts to clear (the Bootstrap step-pane animation
+        # outlives the 60s per-locator budget under runner pressure).
+        # Sharding doesn't help that class of flake — only Chromium
+        # SIGSEGV-class accumulation. Keep 2 reruns; 3 consecutive
+        # failures still flag real regressions.
         run: >-
           pytest -m e2e -n 0 --no-cov --tb=short --timeout=120
-          --reruns 1 --reruns-delay 5
+          --reruns 2 --reruns-delay 5
           --shard-id=$((${{ matrix.shard }} - 1)) --num-shards=4
         timeout-minutes: 10
 

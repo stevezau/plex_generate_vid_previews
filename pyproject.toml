@@ -64,14 +64,14 @@ test = [
     "pytest-xdist>=3.0.0",
     "pytest-timeout>=2.3.0",
     "pytest-playwright>=0.4.0",
-    # Auto-retry Chromium flakes on CI. The real Flask-side leaks
-    # have been fixed (APScheduler drain, webhook debounce race),
-    # and the primary mitigation is shard-based parallelism via
-    # ``pytest-shard`` below — each shard sees ~38 tests, well under
-    # the ~30-test Chromium SIGSEGV threshold on small GH runners.
-    # ``--reruns 1`` remains as a thin safety net for true single-
-    # event environmental flakes. Local runs (32-core box) pass
-    # without reruns.
+    # Auto-retry Chromium-and-runner-induced flakes on CI. Sharding
+    # (see pytest-shard below) handles the Chromium SIGSEGV-class
+    # accumulation flakes by giving each shard a fresh runner. But
+    # a separate flake class — "element is not stable" wizard
+    # transitions on GH's slow CPU — needs up to 3 attempts to
+    # clear. ``--reruns 2`` (set in ci.yml) covers both classes;
+    # 3 consecutive failures still flag real regressions. Local
+    # runs (32-core box) pass without reruns.
     "pytest-rerunfailures>=14.0",
     # Shard the e2e suite across multiple GH Actions jobs. Each
     # shard runs an independent ubuntu-latest runner = fresh
