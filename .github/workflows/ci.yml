@@ -222,15 +222,15 @@ jobs:
         # A follow-up could split wizard tests into a separate serial
         # job and keep the non-wizard ones at -n 2, but most of the
         # e2e suite IS wizard tests, so the gain would be ~30s.
-        # ``--timeout=120`` overrides the project-wide 30s timeout.
-        # Playwright's per-locator default is bumped to 60s in
-        # tests/e2e/conftest.py (see wizard_page / authed_page
-        # fixtures); a test doing multiple operations needs at least
-        # 2× that to not race the pytest timeout. 120s is generous
-        # enough for the slowest cold-boot wizard tests while still
-        # catching real hangs (anything >120s is genuinely stuck).
-        run: pytest -m e2e -n 0 --no-cov --tb=short --timeout=120
-        timeout-minutes: 15
+        # ``--timeout=60`` overrides the project-wide 30s timeout for
+        # e2e only. Each wizard test spawns a Flask subprocess (~2s
+        # boot) + a Chromium page (~5-10s cold start on the runner).
+        # 30s left no headroom and pytest-timeout fired during normal
+        # page-load on slower steps (folder picker test_up_button…
+        # was the first to hit it). 60s gives generous slack for the
+        # cold-boot path while still failing on real hangs.
+        run: pytest -m e2e -n 0 --no-cov --tb=short --timeout=60
+        timeout-minutes: 10
 
       - name: Upload Playwright traces on failure
         if: failure()
