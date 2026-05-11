@@ -77,7 +77,16 @@ def _start_app(config_dir: str, port: int, extra_env: dict | None = None) -> sub
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
-    if not wait_for_port(port, timeout=20):
+    # 60s (was 20s): under high parallelism (xdist with many workers)
+    # the OS scheduler can't give every concurrent Flask boot enough
+    # CPU to finish in 20s. Flask boot involves GPU detection +
+    # JobManager (reads jobs.db) + APScheduler (SQLite jobstore) +
+    # SocketIO + module imports — ~2-3s wall on idle, but contention
+    # serialises chunks of it. 60s is enough headroom for 32 workers
+    # concurrently on a beefy local box (verified) while still
+    # failing fast on real boot bugs (anything >60s is genuinely
+    # stuck, not just slow).
+    if not wait_for_port(port, timeout=60):
         stdout, stderr = proc.communicate(timeout=5)
         proc.kill()
         raise RuntimeError(f"App failed to start on port {port}.\nstdout: {stdout.decode()}\nstderr: {stderr.decode()}")
@@ -102,14 +111,19 @@ def app_url(tmp_path_factory) -> Generator[str, None, None]:
 
 @pytest.fixture
 def app_url_wizard(tmp_path_factory) -> Generator[str, None, None]:
-    """Per-test app instance for wizard tests.
+    """Per-test Flask subprocess for wizard tests.
 
-    Function-scoped so each wizard test gets a pristine first-run
-    state — even though the wizard tests mock every writeable endpoint
-    client-side, real /api/setup/state writes from previous walks would
-    otherwise leak between tests via the persisted setup_state.json
-    and auto-resume mid-wizard. Boot cost is ~2s; acceptable for the
-    handful of wizard tests.
+    Function-scoped because attempts to share across tests (class-
+    scoped, session-scoped per-worker) both introduced real state
+    leaks even with autouse reset fixtures wiping disk state. The
+    Flask app holds in-memory caches (JobManager, scheduler,
+    settings) that don't reset when files are deleted, and many
+    tests POST to endpoints the page-level mocks don't intercept.
+
+    Boot cost is ~2s; this becomes the dominant wall-clock at
+    high parallelism. The bottleneck (subprocess startup
+    contention causing port-bind to exceed the wait_for_port
+    timeout) is mitigated by the 60s timeout in ``_start_app``.
     """
     config_dir = tmp_path_factory.mktemp("config_wizard")
     port = get_free_port()
