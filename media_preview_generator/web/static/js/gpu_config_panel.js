@@ -17,6 +17,18 @@ function _gpuPanelEscapeHtml(str) {
     return div.innerHTML;
 }
 
+// Vendor mark for the small caption under the GPU name. Uses the shared
+// helper from app.js (window.MPGShared.gpuVendorLogo) so the dashboard and
+// settings/setup panels stay visually in sync. Falls back to escaped text
+// (e.g. "ARM", "UNKNOWN") when we don't ship an icon for the vendor.
+function _gpuPanelVendorMark(type) {
+    const fallback = `${_gpuPanelEscapeHtml(type || 'UNKNOWN')} &mdash; `;
+    const logo = window.MPGShared && window.MPGShared.gpuVendorLogo
+        ? window.MPGShared.gpuVendorLogo(type, 14)
+        : null;
+    return logo || fallback;
+}
+
 function renderGpuConfigPanel(detectedGpus, savedConfig) {
     const configByDevice = {};
     (savedConfig || []).forEach(c => { if (c.device) configByDevice[c.device] = c; });
@@ -47,7 +59,7 @@ function renderGpuConfigPanel(detectedGpus, savedConfig) {
                         </div>
                         <span class="badge bg-danger ms-2">failed</span>
                     </div>
-                    <small class="text-muted mb-2">${_gpuPanelEscapeHtml(gpu.type || 'UNKNOWN')} &mdash; ${_gpuPanelEscapeHtml(gpu.device || 'N/A')}</small>
+                    <small class="text-muted mb-2">${_gpuPanelVendorMark(gpu.type)}${_gpuPanelEscapeHtml(gpu.device || 'N/A')}</small>
                     <div class="alert alert-danger mb-0 py-2 px-3" style="font-size: 0.85em;">
                         <i class="bi bi-exclamation-triangle-fill me-1"></i>
                         <strong>${_gpuPanelEscapeHtml(gpu.error || 'Acceleration test failed')}</strong>
@@ -90,7 +102,7 @@ function renderGpuConfigPanel(detectedGpus, savedConfig) {
                                 ${safeName}
                             </label>
                         </div>
-                        <small class="text-muted">${safeType} &mdash; ${safeDeviceOrNa}</small>
+                        <small class="text-muted">${_gpuPanelVendorMark(gpu.type)}${safeDeviceOrNa}</small>
                     </div>
                     <div class="col-md-4 gpu-settings-${deviceId}" ${enabled ? '' : 'style="opacity:0.5;pointer-events:none"'}>
                         <label class="form-label form-label-sm mb-1">Workers

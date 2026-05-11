@@ -348,8 +348,7 @@ class PlexServer(MediaServer):
 
         target = set(library_ids) if library_ids else None
         results: dict[str, str] = {}
-        # plexapi maps the field's allowed values to int 0/1 (bool).
-        # Passing the string "0"/"1" raises "0 not found in {0: False, 1: True}".
+        # Setting value goes to Plex as 0/1 in the query string.
         value = 1 if scan_extraction else 0
         for section in sections:
             section_key = str(getattr(section, "key", "") or "")
@@ -360,24 +359,27 @@ class PlexServer(MediaServer):
             try:
                 section.editAdvanced(enableBIFGeneration=value)
                 results[section_key] = "ok"
+                continue
             except Exception as exc:
-                # Custom-agent libraries (Sportarr / XBMCnfoMovieImporter
-                # / community agents) hit a 400: Plex's section edit
-                # endpoint validates the agent against its built-in
-                # registry. There's no API path to bypass that — the
-                # user has to flip the toggle in Plex's web UI for
-                # those libraries. Report distinctly so the user knows
-                # WHY a library was skipped, not just "error".
-                msg = str(exc)
-                if "agent" in msg.lower() and "400" in msg:
-                    results[section_key] = "skipped: custom agent (toggle manually in Plex UI)"
-                    logger.info(
-                        "Plex library {} on server {!r} uses a custom agent — Plex's edit API doesn't accept "
-                        "BIF-generation toggle for custom agents. Disable it manually in Plex (Library → Edit → Advanced).",
-                        section_key,
-                        self.name,
-                    )
-                else:
+                primary_msg = str(exc)
+                # plexapi's editAdvanced sends
+                # ``PUT /library/sections/{id}?agent=X&prefs[…]=…`` and
+                # Plex 400s with *"unable to find built-in agent group
+                # for provided 'agent'"* when X is a custom agent
+                # (Sportarr / XBMCnfo / community agents). The
+                # codebase used to treat that 400 as a permanent
+                # "manual fix only" verdict.
+                #
+                # Verified 2026-05-11 against a live Sportarr library:
+                # ``PUT /library/sections/{id}/prefs?enableBIFGeneration=N``
+                # succeeds (HTTP 200, value actually changes). Same
+                # subpath as the GET that ``section.settings()`` reads
+                # from; this asymmetric write handler does NOT
+                # re-validate the agent. So a 400 on the full-section
+                # edit path is recoverable: retry via /prefs subpath
+                # before surfacing failure.
+                looks_like_agent_rejection = "agent" in primary_msg.lower() and "400" in primary_msg
+                if not looks_like_agent_rejection:
                     logger.warning(
                         "Could not update Plex library {} BIF-generation preference on server {!r}: {}",
                         section_key,
@@ -385,7 +387,66 @@ class PlexServer(MediaServer):
                         exc,
                     )
                     results[section_key] = f"error: {exc}"
+                    continue
+
+                fallback_error = self._set_bif_via_prefs_subpath(section, value)
+                if fallback_error is None:
+                    logger.info(
+                        "Plex library {} on server {!r}: editAdvanced rejected the section's "
+                        "custom agent; /prefs subpath PUT succeeded.",
+                        section_key,
+                        self.name,
+                    )
+                    results[section_key] = "ok"
+                    continue
+
+                logger.warning(
+                    "Plex library {} on server {!r}: BOTH editAdvanced and /prefs subpath failed. "
+                    "editAdvanced: {} | /prefs PUT: {}",
+                    section_key,
+                    self.name,
+                    primary_msg,
+                    fallback_error,
+                )
+                results[section_key] = f"error: {fallback_error}"
         return results
+
+    def _set_bif_via_prefs_subpath(self, section: Any, value: int) -> str | None:
+        """Write ``enableBIFGeneration`` via the section's ``/prefs`` subpath.
+
+        Plex's ``PUT /library/sections/{id}/prefs?<setting>=<value>``
+        endpoint is the asymmetric write counterpart to the GET that
+        ``section.settings()`` uses to read prefs. Unlike the
+        full-section edit handler at ``PUT /library/sections/{id}``
+        (which plexapi's ``editAdvanced`` uses and which validates
+        the section's agent against Plex's built-in registry), the
+        ``/prefs`` subpath does NOT re-validate the agent — so it
+        works for custom-agent libraries (Sportarr / XBMCnfo /
+        community agents) that the full-section handler 400s on
+        with *"unable to find built-in agent group for provided
+        'agent'"*.
+
+        Verified empirically on 2026-05-11 against a live Sportarr
+        library: ``PUT /library/sections/12/prefs?enableBIFGeneration=0``
+        returned 200 and the read-back value actually changed from
+        ``true`` to ``false`` (and was restored to ``true`` cleanly).
+
+        Returns ``None`` on success or the error string on failure so
+        the caller can log Plex's verbatim response.
+        """
+        from urllib.parse import urlencode
+
+        plex = self._connect()
+        section_key = getattr(section, "key", None)
+        if section_key is None:
+            return "no section key on plexapi object"
+
+        url = f"/library/sections/{section_key}/prefs?{urlencode({'enableBIFGeneration': value})}"
+        try:
+            plex.query(url, method=plex._session.put)
+            return None
+        except Exception as exc:
+            return str(exc)
 
     def get_vendor_extraction_status(self) -> dict[str, Any]:
         """Audit per-section ``enableBIFGeneration`` to drive the Edit modal CTA.
@@ -431,10 +492,10 @@ class PlexServer(MediaServer):
                 # tab in Plex web UI) via ``section.settings()`` —
                 # NOT ``section.advanced``/``section.preferences`` which
                 # don't exist. The relevant entry is enableBIFGeneration
-                # (a Bool-typed Setting). Custom-agent libraries can
-                # raise on the call; count those as ``skipped`` so the
-                # UI shows the same footnote ``set_vendor_extraction``
-                # surfaces for them.
+                # (a Bool-typed Setting). The GET that reads settings
+                # works for every library type (built-in OR custom
+                # agent) — it doesn't validate the agent like the
+                # full-section edit PUT does.
                 settings = retry_plex_call(section.settings)
                 bif_setting = next(
                     (s for s in settings if str(getattr(s, "id", "")) == "enableBIFGeneration"),
@@ -445,6 +506,15 @@ class PlexServer(MediaServer):
                     libraries.append({"key": section_key, "name": section_title, "state": "skipped"})
                     continue
                 # Setting.value is True/False for bool settings.
+                # No edit-probe needed at audit time: every library
+                # (including custom-agent ones) is writable via the
+                # ``/library/sections/{id}/prefs`` subpath that
+                # ``set_vendor_extraction`` falls back to. Pre-fix the
+                # audit did a no-op ``section.edit()`` to detect
+                # custom-agent rejection and demoted those libraries
+                # to "skipped" so the UI hid the Apply button. With
+                # the /prefs fallback in place, that demotion was
+                # wrong — Sports IS auto-fixable. Drop the probe.
                 if bool(getattr(bif_setting, "value", False)):
                     extracting += 1
                     libraries.append({"key": section_key, "name": section_title, "state": "extracting"})
@@ -1084,10 +1154,14 @@ class PlexServer(MediaServer):
 
         vendor_checks: list[dict[str, Any]] = []
         if not vendor_probe_ok:
-            # Probe failed entirely — preserve the prior single-row shape
-            # so the UI keeps surfacing "couldn't read state" instead of
-            # silently going green. (Regression-tested by
-            # test_vendor_extraction_probe_failure_is_not_green.)
+            # Probe failed entirely — surface as recommended (not info)
+            # so the frontend's info-filter doesn't drop it and the
+            # user actually sees that we couldn't read state. Pre-fix
+            # this was severity="info"; the filter dropped it and the
+            # vendor section rendered as empty/silent. Severity stays
+            # below critical because a missed probe doesn't break
+            # preview playback — but the user still needs to know the
+            # audit is blind.
             vendor_checks.append(
                 {
                     "id": "vendor_extraction_state",
@@ -1096,7 +1170,7 @@ class PlexServer(MediaServer):
                     "tooltip": "Stop Plex generating its own BIF previews",
                     "explanation": vendor_explanation,
                     "ok": False,
-                    "severity": "info",
+                    "severity": "recommended",
                     "current": "unknown (probe failed)",
                     "recommended": "stopped",
                     "actions": {},
@@ -1136,10 +1210,13 @@ class PlexServer(MediaServer):
                                 "confirm": {
                                     "kind": "button",
                                     "phrase": "",
+                                    # PLAIN TEXT — the frontend renders this via
+                                    # textContent (servers.js:_openConfirmModal),
+                                    # so HTML tags would appear as literal markup.
                                     "body": (
                                         f"Stops Plex generating its own BIF previews on "
-                                        f"<strong>{section_name}</strong>. Recommended when this "
-                                        "app owns preview generation. Non-destructive — existing "
+                                        f"{section_name}. Recommended when this app owns "
+                                        "preview generation. Non-destructive — existing "
                                         "bundles stay on disk."
                                     ),
                                 },
@@ -1154,9 +1231,10 @@ class PlexServer(MediaServer):
                                     "phrase": "",
                                     "body": (
                                         f"Re-enables Plex's own BIF generation on "
-                                        f"<strong>{section_name}</strong>. Plex will generate its "
-                                        "own previews in parallel to this app — whichever writes "
-                                        "last wins, so app-published previews may get overwritten."
+                                        f"{section_name}. Plex will generate its own "
+                                        "previews in parallel to this app — whichever "
+                                        "writes last wins, so app-published previews may "
+                                        "get overwritten."
                                     ),
                                 },
                             },
@@ -1166,29 +1244,60 @@ class PlexServer(MediaServer):
                     }
                 )
 
-            if skipped:
-                # Custom-agent libraries can't be toggled via the API, but
-                # users still need to know they exist so they can disable
-                # BIF generation manually in Plex's web UI.
-                skipped_names = ", ".join(str(lib.get("name") or lib.get("key") or "?") for lib in skipped)
+            # Custom-agent libraries can't be toggled via the API. Emit
+            # one Manual row per library so each appears in the
+            # Recommended bucket as its own to-do — pre-fix this was a
+            # single aggregate "1 library/libraries can't be toggled via
+            # API" row at info severity, which the frontend's new info
+            # filter would drop entirely. Per-library rows match how
+            # auditable libraries are rendered (one row each) and let
+            # the user check them off in their head as they toggle each
+            # one in Plex web UI.
+            for lib in skipped:
+                section_key = str(lib.get("key") or "")
+                section_name = str(lib.get("name") or section_key or "library")
                 vendor_checks.append(
                     {
-                        "id": "vendor_extraction_skipped",
-                        "label": f"{len(skipped)} library/libraries can't be toggled via API",
+                        "id": f"vendor_extraction_skipped:{section_key}"
+                        if section_key
+                        else "vendor_extraction_skipped",
+                        # Label matches the auditable-row format
+                        # exactly — the "Manual fix needed" badge that
+                        # the frontend stamps on actionless rows
+                        # carries the "this is a manual fix" signal, so
+                        # no "(manual)" suffix is needed in the label.
+                        "label": f"{section_name} — Plex's BIF generation",
                         "docs_anchor": "vendor-extraction",
-                        "tooltip": "Custom-agent libraries — toggle in Plex web UI manually",
+                        "tooltip": "Custom-agent library — toggle in Plex web UI",
                         "explanation": vendor_explanation,
-                        "ok": True,
-                        "severity": "info",
-                        "current": skipped_names,
-                        "recommended": None,
+                        # ok=False so the row surfaces in the Recommended
+                        # bucket; severity=recommended so it doesn't gate
+                        # overall_ok (which only critical does).
+                        "ok": False,
+                        "severity": "recommended",
+                        # Bool current/recommended so the side-by-side
+                        # diff renders the same "On → Off" pills as the
+                        # auditable rows. The "Manual fix needed" badge
+                        # (stamped by the frontend when actions is
+                        # empty) and the reason text below carry the
+                        # manual-fix signal.
+                        "current": True,
+                        "recommended": False,
                         "actions": {},
+                        # Action-first reason so the user reads what to
+                        # DO before any technical explanation. The "why
+                        # this app can't do it for you" is one short
+                        # parenthetical at the end — Plex rejects API
+                        # writes for custom-agent libraries, but the
+                        # user doesn't need to know that to take
+                        # action.
                         "reason": (
-                            "Plex's section-edit endpoint rejects BIF-generation toggles for "
-                            "custom-agent libraries. Open Plex web UI → Library → Edit → Advanced "
-                            "to disable it on these manually."
+                            f"In Plex web UI: Libraries → {section_name} → Edit → Advanced "
+                            f'→ untick "Generate video preview thumbnails". '
+                            f"(Plex's API rejects this toggle for custom-agent libraries, "
+                            f"so it has to be done in the web UI.)"
                         ),
-                        "meta": {"libraries": skipped},
+                        "meta": {"library_id": section_key, "library_name": section_name},
                     }
                 )
 
@@ -1216,10 +1325,14 @@ class PlexServer(MediaServer):
         # severity "recommended" so a row with extraction on amber-flags
         # the section without bumping overall_ok (which is critical-only).
         vendor_section_ok = vendor_probe_ok and all(c.get("ok") for c in vendor_checks)
-        vendor_section_severity = "info"
-        if not vendor_probe_ok:
+        # Section severity drives the right-side badge on the section
+        # header. "recommended" when ANY row is failing (auditable
+        # extracting, manual skipped, or probe-failed) so the section
+        # surfaces in the Recommended bucket; "info" only when every
+        # row is passing (then frontend hides them anyway).
+        if vendor_section_ok:
             vendor_section_severity = "info"
-        elif not vendor_section_ok:
+        else:
             vendor_section_severity = "recommended"
 
         sections.append(

@@ -1169,6 +1169,7 @@ class JobManager:
         reason: str | None = None,
         source: str | None = None,
         originating_job_id: str,
+        publishers: list[dict] | None = None,
     ) -> Job | None:
         """Mutate the originating dispatch Job to ADD or UPDATE retry-chain state.
 
@@ -1341,6 +1342,23 @@ class JobManager:
                 job.progress.retry_eta = None
                 job.progress.retry_wait_total = None
                 job.error = None
+                # Refresh the chain's publishers snapshot from the
+                # successful firing's result so the modal's per-server
+                # tiles don't keep rendering the originating dispatch's
+                # stale ``published_pending_registration`` after the
+                # chain has actually completed. The originating dispatch's
+                # snapshot is captured the instant the publishers return —
+                # at that moment Jellyfin/Emby may not have indexed the
+                # file yet, so the snapshot records pending_registration.
+                # By the time a retry attempt actually registers the
+                # trickplay (item id resolved, Bridge plugin call wrote
+                # the DB row), the chain has moved on. Without this
+                # refresh the user sees a green-completed status next to
+                # a publisher tile that still claims auto-retry.
+                # See ``test_completed_outcome_refreshes_publishers_from_attempt``
+                # for the pinned contract.
+                if publishers is not None:
+                    job.publishers = list(publishers)
             elif outcome == "exhausted":
                 job.status = JobStatus.FAILED
                 job.completed_at = now_iso
@@ -1349,6 +1367,13 @@ class JobManager:
                 job.error = reason or f"Retry chain exhausted after {attempt} attempts"
                 # Stale per-firing status doesn't belong on a terminal row.
                 job.progress.current_item = ""
+                # Same publishers refresh as the completed path — between
+                # attempts a publisher may have transitioned (e.g. Plex
+                # ``skipped_not_indexed`` → ``skipped_output_exists``).
+                # The last firing's snapshot is the most accurate
+                # diagnostic of where each server ended up.
+                if publishers is not None:
+                    job.publishers = list(publishers)
 
             # Bump created_at so the row sorts to top of the
             # newest-first Jobs list on each chain state change.

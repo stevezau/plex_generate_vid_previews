@@ -343,6 +343,181 @@ class TestStateMachine:
         assert "5 attempts" in (job.error or "")
         assert job.progress.retry_eta is None
 
+    def test_completed_outcome_refreshes_publishers_from_attempt(self, jm):
+        """Pin the contract: when a retry chain completes, the chain Job's
+        ``publishers`` row MUST be replaced with the firing's per-server
+        outcomes — NOT left as the originating dispatch's snapshot.
+
+        Production bug: a Family Guy chain (9c50cd99) completed
+        successfully on attempt 3 (Bridge plugin registered Jellyfin's
+        trickplay; verified in jellyfin logs). The chain status flipped
+        to COMPLETED but the modal kept rendering "JellyTest → Generated
+        (auto-retrying) × 1" because the publishers field on the chain
+        Job was set at the originating dispatch (when JellyTest was
+        still pending_registration) and never refreshed. Users saw a
+        green-completed row with a publisher tile claiming something
+        was still retrying — confusing and wrong.
+        """
+        original = _seed_originating_job(jm)
+        # Originating dispatch's snapshot — Jelly is pending.
+        jm.set_publishers(
+            original.id,
+            [
+                {"server_id": "plex", "server_name": "Plex", "server_type": "plex", "counts": {"published": 1}},
+                {
+                    "server_id": "jelly",
+                    "server_name": "JellyTest",
+                    "server_type": "jellyfin",
+                    "counts": {"published_pending_registration": 1},
+                },
+            ],
+        )
+
+        # Retry attempt 3 succeeded — JellyTest now reports
+        # skipped_output_exists (tiles already on disk; bridge plugin
+        # registered the row). The retry callback hands these final
+        # rows to upsert_retry_chain_job via the new ``publishers``
+        # kwarg.
+        final_rows = [
+            {"server_id": "plex", "server_name": "Plex", "server_type": "plex", "counts": {"skipped_output_exists": 1}},
+            {
+                "server_id": "jelly",
+                "server_name": "JellyTest",
+                "server_type": "jellyfin",
+                "counts": {"skipped_output_exists": 1},
+            },
+        ]
+
+        job = jm.upsert_retry_chain_job(
+            canonical_path="/x.mkv",
+            basename="x",
+            attempt=3,
+            max_attempts=5,
+            next_run_at=None,
+            wait_seconds=None,
+            outcome="completed",
+            originating_job_id=original.id,
+            publishers=final_rows,
+        )
+        assert job.status == JobStatus.COMPLETED
+        # The chain's publishers MUST now reflect the firing's final
+        # outcomes. Without this refresh, the dashboard renders stale
+        # pending_registration on a successfully-completed row.
+        jelly = next(p for p in job.publishers if p["server_id"] == "jelly")
+        assert jelly["counts"] == {"skipped_output_exists": 1}, (
+            f"Chain publishers must be refreshed to the firing's outcome on completion; "
+            f"got {jelly['counts']!r}. Stale pending_registration on a completed chain is "
+            f"the exact production bug this regression test guards against."
+        )
+
+    def test_exhausted_outcome_refreshes_publishers_from_attempt(self, jm):
+        """Same principle for exhausted chains: the publishers row should
+        reflect the LAST attempt's per-server state, not the originating
+        dispatch. An exhausted Jellyfin still showing pending_registration
+        IS the accurate diagnostic — but the chain may also include rows
+        whose state advanced (e.g., Plex transitioned from skipped_not_indexed
+        to skipped_output_exists between attempts)."""
+        original = _seed_originating_job(jm)
+        jm.set_publishers(
+            original.id,
+            [
+                {
+                    "server_id": "plex",
+                    "server_name": "Plex",
+                    "server_type": "plex",
+                    "counts": {"skipped_not_indexed": 1},
+                },
+                {
+                    "server_id": "jelly",
+                    "server_name": "JellyTest",
+                    "server_type": "jellyfin",
+                    "counts": {"published_pending_registration": 1},
+                },
+            ],
+        )
+
+        # Last attempt's outcome — Plex resolved, Jelly still pending.
+        final_rows = [
+            {"server_id": "plex", "server_name": "Plex", "server_type": "plex", "counts": {"skipped_output_exists": 1}},
+            {
+                "server_id": "jelly",
+                "server_name": "JellyTest",
+                "server_type": "jellyfin",
+                "counts": {"published_pending_registration": 1},
+            },
+        ]
+
+        job = jm.upsert_retry_chain_job(
+            canonical_path="/x.mkv",
+            basename="x",
+            attempt=5,
+            max_attempts=5,
+            next_run_at=None,
+            wait_seconds=None,
+            outcome="exhausted",
+            reason="exhausted after 5",
+            originating_job_id=original.id,
+            publishers=final_rows,
+        )
+        plex = next(p for p in job.publishers if p["server_id"] == "plex")
+        assert plex["counts"] == {"skipped_output_exists": 1}, (
+            f"Plex should have transitioned to skipped_output_exists on the last attempt; got {plex['counts']!r}"
+        )
+
+    def test_running_outcome_does_not_clobber_publishers(self, jm):
+        """Sibling of the scheduled-preserve test — closes the matrix
+        on the ``outcome`` variable. running is fired when a Timer
+        callback transitions the chain to "attempt N executing now";
+        publishers belongs to the FINAL outcome (completed/exhausted),
+        not the in-flight transition. Without this row a future
+        consolidation that accidentally applied publishers on running
+        too would wipe the originating snapshot mid-firing."""
+        original = _seed_originating_job(jm)
+        seed = [
+            {"server_id": "plex", "server_name": "Plex", "server_type": "plex", "counts": {"published": 1}},
+        ]
+        jm.set_publishers(original.id, seed)
+        job = jm.upsert_retry_chain_job(
+            canonical_path="/x.mkv",
+            basename="x",
+            attempt=2,
+            max_attempts=5,
+            next_run_at=None,
+            wait_seconds=None,
+            outcome="running",
+            originating_job_id=original.id,
+            # No publishers kwarg — running transitions don't have
+            # firing-result data to apply.
+        )
+        assert job.publishers == seed, f"running outcome must preserve publishers; got {job.publishers!r}"
+
+    def test_scheduled_outcome_does_not_clobber_publishers(self, jm):
+        """When a chain re-arms (outcome='scheduled', waiting for next attempt),
+        ``publishers`` must NOT be touched — the originating snapshot still
+        applies until a firing replaces it. Pre-fix concern: if upsert
+        blindly took ``publishers`` from every outcome, a scheduled call
+        without publishers data would wipe the originating snapshot."""
+        original = _seed_originating_job(jm)
+        seed = [
+            {"server_id": "plex", "server_name": "Plex", "server_type": "plex", "counts": {"published": 1}},
+        ]
+        jm.set_publishers(original.id, seed)
+
+        job = jm.upsert_retry_chain_job(
+            canonical_path="/x.mkv",
+            basename="x",
+            attempt=2,
+            max_attempts=5,
+            next_run_at=None,
+            wait_seconds=120,
+            outcome="scheduled",
+            originating_job_id=original.id,
+            # No publishers passed — scheduled path doesn't have firing data.
+        )
+        # Publishers MUST survive the re-arm — the originating snapshot is
+        # still the most-recent reality between firings.
+        assert job.publishers == seed, f"scheduled outcome must preserve publishers; got {job.publishers!r}"
+
 
 class TestSortToTop:
     def test_created_at_bumps_on_each_update(self, jm):

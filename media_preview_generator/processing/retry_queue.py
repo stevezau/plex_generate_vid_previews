@@ -193,6 +193,7 @@ def _upsert_retry_chain_job(
     display_name: str | None = None,
     source: str | None = None,
     originating_job_id: str | None = None,
+    publishers: list[dict] | None = None,
 ) -> None:
     """Best-effort upsert of the user-visible retry-chain Job row.
 
@@ -237,6 +238,7 @@ def _upsert_retry_chain_job(
             reason=reason,
             source=source,
             originating_job_id=originating_job_id,
+            publishers=publishers,
         )
     except Exception as exc:
         logger.debug("Retry-chain Job upsert failed for {!r}: {}", canonical_path, exc)
@@ -712,6 +714,20 @@ def schedule_retry_for_unindexed(
                 )
                 for p in result.publishers
             )
+            # Flatten the firing's MultiServerResult into the per-server
+            # aggregate shape the chain Job stores. Done once here so
+            # both the exhausted and completed branches can hand it
+            # to ``_upsert_retry_chain_job``. The chain's publishers
+            # snapshot needs to reflect THIS firing's outcome so the
+            # modal doesn't show stale pending_registration from the
+            # originating dispatch on a completed/exhausted chain.
+            from ..jobs.orchestrator import _publisher_rows_from_result, fold_publisher_rows_into_aggregate
+
+            firing_rows = _publisher_rows_from_result(result, path)
+            firing_aggregate: dict[str, dict] = {}
+            fold_publisher_rows_into_aggregate(firing_aggregate, firing_rows)
+            firing_publishers = list(firing_aggregate.values()) or None
+
             if needs_retry and result.status is not MultiServerStatus.FAILED:
                 next_attempt = fired_attempt + 1
                 # ``schedule_retry_for_unindexed`` will upsert the row
@@ -748,6 +764,7 @@ def schedule_retry_for_unindexed(
                         source=source,
                         reason=exhausted_reason,
                         originating_job_id=originating_job_id,
+                        publishers=firing_publishers,
                     )
                     _complete_retry_attempt_job(attempt_job_id, error=exhausted_reason)
                 else:
@@ -769,6 +786,7 @@ def schedule_retry_for_unindexed(
                     display_name=display_name,
                     source=source,
                     originating_job_id=originating_job_id,
+                    publishers=firing_publishers,
                 )
                 _complete_retry_attempt_job(attempt_job_id)
 

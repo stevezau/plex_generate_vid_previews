@@ -1012,6 +1012,102 @@ class TestPlexApplyFlagValues:
         assert plex_wrapper.apply_flag_values([]) == {}
 
 
+class TestPlexVendorExtractionStatus:
+    """Direct unit tests for ``get_vendor_extraction_status`` — the audit
+    behind the per-library "Plex's BIF generation" rows on the Setup
+    Health card.
+
+    The audit reads each section's ``enableBIFGeneration`` via
+    ``section.settings()`` (a GET that doesn't validate the agent) and
+    classifies the library as extracting/stopped based on the value.
+    Every library is auto-fixable via the ``/prefs`` subpath PUT used
+    by ``set_vendor_extraction``, so there's no audit-time custom-agent
+    demotion — pre-fix the audit did a no-op ``section.edit()`` probe
+    and demoted libraries whose agent Plex rejected. That demotion was
+    wrong (verified 2026-05-11 against a live Sportarr library:
+    ``PUT /library/sections/{id}/prefs?enableBIFGeneration=N`` succeeds
+    where the full-section PUT 400s).
+    """
+
+    def _make_section(self, *, key, title, bif_on):
+        """Build a MagicMock section shaped like plexapi's LibrarySection.
+
+        ``section.settings()`` returns a one-element list whose
+        ``enableBIFGeneration`` Setting carries the ``bif_on`` value.
+        """
+        bif_setting = MagicMock()
+        bif_setting.id = "enableBIFGeneration"
+        bif_setting.value = bif_on
+        section = MagicMock()
+        section.key = key
+        section.title = title
+        section.settings = MagicMock(return_value=[bif_setting])
+        return section
+
+    def test_extracting_library_classifies_correctly_regardless_of_agent(self, plex_wrapper):
+        """The exact "Sports" scenario: ``section.settings()`` reports
+        BIF on, so the library is classified as extracting. Pre-fix
+        the audit probed ``section.edit()`` and demoted custom-agent
+        libraries to "skipped" so the UI hid the Apply button. That
+        demotion was wrong — every library is writable via the
+        ``/prefs`` subpath that ``set_vendor_extraction`` falls back to.
+        So Sports stays as extracting and the Apply button renders.
+        """
+        movies = self._make_section(key=1, title="Movies", bif_on=True)
+        sports = self._make_section(key=6, title="Sports", bif_on=True)
+        plex = MagicMock()
+        plex.library.sections.return_value = [movies, sports]
+        plex_wrapper._plex = plex
+
+        status = plex_wrapper.get_vendor_extraction_status()
+
+        libs_by_name = {lib["name"]: lib for lib in status["libraries"]}
+        assert libs_by_name["Movies"]["state"] == "extracting", status
+        assert libs_by_name["Sports"]["state"] == "extracting", (
+            "Custom-agent libraries must NOT be demoted to skipped — every Plex library is "
+            "auto-fixable via the /prefs subpath in set_vendor_extraction. " + repr(status)
+        )
+        assert status["extracting_count"] == 2
+        assert status["skipped_count"] == 0
+        # The audit MUST NOT call section.edit() — the probe was
+        # removed because it falsely demoted custom-agent libraries
+        # that are actually writable via the /prefs subpath.
+        (
+            movies.edit.assert_not_called(),
+            (
+                "Audit must not probe section.edit() — the /prefs fallback makes every library "
+                "writable, so the probe falsely demoted custom agents."
+            ),
+        )
+        sports.edit.assert_not_called()
+
+    def test_section_settings_failure_skips_the_library(self, plex_wrapper):
+        """A library whose ``section.settings()`` raises (truly broken
+        section, e.g. plex returned malformed XML) is the only path to
+        the "skipped" state — surfaces in the readiness card so the
+        user knows the audit was blind for that one library.
+        """
+        bif_setting = MagicMock()
+        bif_setting.id = "enableBIFGeneration"
+        bif_setting.value = True
+        good = MagicMock(key=1, title="Movies")
+        good.settings = MagicMock(return_value=[bif_setting])
+
+        broken = MagicMock(key=99, title="Broken")
+        broken.settings = MagicMock(side_effect=RuntimeError("malformed XML"))
+
+        plex = MagicMock()
+        plex.library.sections.return_value = [good, broken]
+        plex_wrapper._plex = plex
+
+        status = plex_wrapper.get_vendor_extraction_status()
+
+        libs_by_name = {lib["name"]: lib for lib in status["libraries"]}
+        assert libs_by_name["Movies"]["state"] == "extracting"
+        assert libs_by_name["Broken"]["state"] == "skipped"
+        assert status["skipped_count"] == 1
+
+
 class TestPlexPreviewsReadiness:
     """Plex's new unified previews_readiness envelope."""
 
@@ -1205,10 +1301,10 @@ class TestPlexPreviewsReadiness:
         assert vendor["ok"] is False
         assert vendor["severity"] == "recommended"
 
-        # Two auditable rows + one info row for the skipped (custom-agent)
-        # library = three total. The skipped row carries no enable/disable
-        # actions because Plex's section-edit endpoint rejects the toggle
-        # for custom agents.
+        # Two auditable rows + one per-library Manual row for the skipped
+        # (custom-agent) library = three total. The skipped row carries
+        # no enable/disable actions because Plex's section-edit endpoint
+        # rejects the toggle for custom agents.
         assert len(vendor["checks"]) == 3, [c["id"] for c in vendor["checks"]]
 
         movies = next(c for c in vendor["checks"] if "Movies" in c["label"] and "Custom" not in c["label"])
@@ -1231,22 +1327,32 @@ class TestPlexPreviewsReadiness:
         assert tv["recommended"] is False
         assert tv["actions"]["disable"]["args"] == {"scan_extraction": False, "library_ids": ["2"]}
 
-        skipped = next(c for c in vendor["checks"] if c["id"] == "vendor_extraction_skipped")
-        # No buttons on the skipped row — the API can't toggle these.
+        skipped = next(c for c in vendor["checks"] if c["id"].startswith("vendor_extraction_skipped"))
+        # Custom-agent libraries surface as one Recommended row per
+        # library — the user must manually toggle each in Plex's web UI.
+        # Pre-fix this was a single info-severity aggregate row, which
+        # the frontend's new info-filter would drop entirely. Reclassify
+        # to ok=False, severity="recommended" so each row shows up in
+        # the Recommended bucket with a "Manual" chip (no actions).
         assert skipped["actions"] == {}
-        assert skipped["severity"] == "info"
-        # The user needs to know WHICH library they have to fix manually.
-        assert "Custom Agent Movies" in (skipped["current"] or "")
-
-        # Recommended-only failure must not trip the critical gate.
+        assert skipped["ok"] is False
+        assert skipped["severity"] == "recommended"
+        # The label MUST name the specific library so the user knows
+        # which one to fix manually.
+        assert "Custom Agent Movies" in skipped["label"]
+        # Recommended-only failures (per-library Manual rows or
+        # auditable extracting rows) must not trip the critical gate.
         assert payload["overall_ok"] is True
 
     def test_vendor_extraction_probe_failure_is_not_green(self, plex_wrapper, tmp_path):
         """When get_vendor_extraction_status raises, the section MUST report
-        ok=False (severity=info — missed probe isn't critical for preview
-        playback, but the UI must stop lying about state it can't read).
-        Prior regression hardcoded ok=True and rendered a green tick with
-        fallback-zero counts that looked identical to 'nothing extracting'."""
+        ok=False (severity=recommended — missed probe isn't critical for
+        preview playback, but the UI must stop lying about state it can't
+        read). Pre-fix this was severity=info and the frontend's info
+        filter dropped the row entirely, hiding the audit blindness from
+        the user. Severity stays below critical because preview playback
+        isn't affected — but the row surfaces in the Recommended bucket
+        so the user knows we couldn't read."""
         plex_wrapper._config.plex_config_folder = str(tmp_path)
 
         with (
@@ -1266,9 +1372,13 @@ class TestPlexPreviewsReadiness:
 
         vendor = next(s for s in payload["sections"] if s["id"] == "vendor_extraction")
         assert vendor["ok"] is False
-        assert vendor["severity"] == "info"
+        # Section severity is "recommended" when ANY row is failing —
+        # the probe-failure row counts as failing, so the section
+        # surfaces in the Recommended bucket (not silently dropped by
+        # the frontend's info filter).
+        assert vendor["severity"] == "recommended"
         row = vendor["checks"][0]
         assert row["ok"] is False
-        assert row["severity"] == "info"
+        assert row["severity"] == "recommended"
         assert "boom" in (row["reason"] or "")
         assert row["current"] == "unknown (probe failed)"
