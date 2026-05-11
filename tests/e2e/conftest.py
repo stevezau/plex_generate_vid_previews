@@ -64,6 +64,13 @@ def _start_app(config_dir: str, port: int, extra_env: dict | None = None) -> sub
         "WEB_PORT": str(port),
         "CONFIG_DIR": config_dir,
         "WEB_AUTH_TOKEN": "e2e-test-token",
+        # Activates the ``/api/__test/reset`` endpoint inside the Flask
+        # subprocess. The endpoint is the load-bearing piece that lets
+        # the session-scoped wizard fixture (below) reset all in-memory
+        # + on-disk state between tests without spawning a fresh
+        # Flask subprocess each time. Production builds never set this
+        # env var, so the endpoint module is never imported.
+        "MPG_TEST_RESET": "1",
     }
     if extra_env:
         env.update(extra_env)
@@ -109,23 +116,30 @@ def app_url(tmp_path_factory) -> Generator[str, None, None]:
             proc.kill()
 
 
-@pytest.fixture
-def app_url_wizard(tmp_path_factory) -> Generator[str, None, None]:
-    """Per-test Flask subprocess for wizard tests.
+@pytest.fixture(scope="session")
+def app_url_wizard(tmp_path_factory, worker_id) -> Generator[str, None, None]:
+    """Session-scoped Flask subprocess for wizard tests, per xdist worker.
 
-    Function-scoped because attempts to share across tests (class-
-    scoped, session-scoped per-worker) both introduced real state
-    leaks even with autouse reset fixtures wiping disk state. The
-    Flask app holds in-memory caches (JobManager, scheduler,
-    settings) that don't reset when files are deleted, and many
-    tests POST to endpoints the page-level mocks don't intercept.
+    Standard pytest-xdist pattern: each worker gets ONE long-lived
+    Flask subprocess that all the worker's wizard tests share.
+    Without xdist, ``worker_id`` is "master"; under xdist it's
+    "gw0", "gw1", ... so concurrent workers don't share state.
 
-    Boot cost is ~2s; this becomes the dominant wall-clock at
-    high parallelism. The bottleneck (subprocess startup
-    contention causing port-bind to exceed the wait_for_port
-    timeout) is mitigated by the 60s timeout in ``_start_app``.
+    State isolation between tests on the same worker comes from the
+    ``_reset_wizard_state`` autouse fixture below, which POSTs to
+    ``/api/__test/reset`` before each wizard test. That endpoint
+    (registered only when ``MPG_TEST_RESET=1`` — see ``_start_app``)
+    stops the scheduler, cancels timers, nukes all four global
+    singletons, and deletes on-disk state files. Net effect: each
+    test starts against a clean Flask, but with zero subprocess
+    boot cost.
+
+    Pre-fix: function-scoped — ~120 wizard tests × ~2s boot = 4min
+    of pure overhead, plus subprocess churn that destabilised
+    ``-n auto`` on beefy local boxes (73+ ERRORs from ``wait_for_port``
+    contention).
     """
-    config_dir = tmp_path_factory.mktemp("config_wizard")
+    config_dir = tmp_path_factory.mktemp(f"config_wizard_{worker_id}")
     port = get_free_port()
     proc = _start_app(str(config_dir), port)
     try:
@@ -136,6 +150,48 @@ def app_url_wizard(tmp_path_factory) -> Generator[str, None, None]:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             proc.kill()
+
+
+@pytest.fixture(autouse=True)
+def _reset_wizard_state(request) -> Generator[None, None, None]:
+    """POST to ``/api/__test/reset`` before each wizard test.
+
+    Calls the test-only endpoint registered when ``MPG_TEST_RESET=1``
+    (see ``api_test.py``). The endpoint nukes all global singletons
+    (JobManager, ScheduleManager, SettingsManager, JobGate) and
+    deletes on-disk state files (jobs.db, settings.json,
+    setup_state.json, etc.). Next request on Flask side re-initialises
+    everything from defaults — equivalent to a fresh subprocess but
+    without the 2s boot.
+
+    No-op for tests that don't use ``app_url_wizard``. The autouse
+    is fine because:
+      * The fixturenames check makes this a zero-cost no-op for
+        non-wizard tests.
+      * For wizard tests it's a single ~50ms HTTP POST.
+    """
+    if "app_url_wizard" not in request.fixturenames:
+        yield
+        return
+    url = request.getfixturevalue("app_url_wizard")
+    try:
+        req = urllib.request.Request(
+            f"{url}/api/__test/reset",
+            method="POST",
+            headers={"X-Auth-Token": "e2e-test-token"},
+        )
+        # 10s timeout — the reset is usually <100ms but allow slack
+        # under heavy parallelism. If it ever blocks longer than 10s
+        # the next test will fail loudly rather than silently sharing
+        # state.
+        urllib.request.urlopen(req, timeout=10).close()  # noqa: S310
+    except Exception:
+        # Best-effort: a 401 (auth changed) or 403 (env var missing)
+        # falls through to a normal test run which may flake. Tests
+        # that depend on pristine state will fail visibly; tests
+        # that don't won't notice.
+        pass
+    yield
 
 
 # ---------------------------------------------------------------------------
@@ -180,8 +236,16 @@ def session_cookie(app_url: str) -> dict:
     return _capture_session_cookie(app_url)
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def session_cookie_wizard(app_url_wizard: str) -> dict:
+    """Session-scoped — matches ``app_url_wizard``'s scope.
+
+    Function-scoped here would POST /login per test, and Flask-Limiter's
+    rate limit on /login fires after ~5 logins in a short window
+    (HTTP 429). The Flask session cookie is signed with the secret key
+    (which doesn't change across resets) so a single capture remains
+    valid for the whole session.
+    """
     return _capture_session_cookie(app_url_wizard)
 
 

@@ -5,6 +5,8 @@ single public API. All previously-importable names remain accessible
 from ``media_preview_generator.web.routes``.
 """
 
+import os
+
 from flask import Blueprint
 
 # Create blueprints (must be defined before sub-modules import them)
@@ -28,6 +30,12 @@ from . import (  # noqa: E402
     api_vulkan,  # noqa: F401
     pages,  # noqa: F401
 )
+
+# Test-only reset endpoint. Loaded ONLY when MPG_TEST_RESET=1 — the
+# e2e test harness sets this in ``tests/e2e/conftest.py``. Production
+# builds never import this module, so the route never registers.
+if os.environ.get("MPG_TEST_RESET"):
+    from . import api_test  # noqa: E402, F401
 
 # Re-export names used by other modules (app.py, webhooks.py, tests)
 from ._helpers import (  # noqa: E402, F401
