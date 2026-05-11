@@ -1076,6 +1076,37 @@ def set_vendor_extraction(server_id: str):
     if "scan_extraction" not in payload or not isinstance(payload["scan_extraction"], bool):
         return jsonify({"error": "body must be {scan_extraction: bool}"}), 400
 
+    # Optional per-library scoping. Plex's previews-readiness panel emits
+    # one row per library, each carrying ``library_ids: [section_key]``
+    # so Disable buttons act on a single library at a time. Validate the
+    # shape before passing through — both the type guard AND the empty-
+    # list guard are load-bearing:
+    #   - wrong types (int, dict) would bypass the server-side method's
+    #     internal filter and apply server-wide (surprising scope
+    #     blow-up).
+    #   - an empty list is falsy at ``plex.py:349`` (``set(library_ids)
+    #     if library_ids else None``), so ``set_vendor_extraction``
+    #     interprets it as "every library" — the OPPOSITE of "no
+    #     libraries". A client posting ``[]`` would mass-toggle every
+    #     library when it meant the intent was "none of them". Reject
+    #     here so the route's behaviour matches the obvious reading of
+    #     the body shape.
+    library_ids: list[str] | None = None
+    raw_library_ids = payload.get("library_ids")
+    if raw_library_ids is not None:
+        if not isinstance(raw_library_ids, list) or not all(isinstance(x, str) for x in raw_library_ids):
+            return jsonify({"error": "library_ids must be a list of strings"}), 400
+        if len(raw_library_ids) == 0:
+            return jsonify(
+                {
+                    "error": (
+                        "library_ids must be non-empty — omit the field entirely to apply server-wide. "
+                        "An empty list is rejected because it would silently widen scope to every library."
+                    )
+                }
+            ), 400
+        library_ids = raw_library_ids
+
     raw_servers = _get_media_servers()
     target = next((s for s in raw_servers if isinstance(s, dict) and s.get("id") == server_id), None)
     if target is None:
@@ -1091,7 +1122,10 @@ def set_vendor_extraction(server_id: str):
         return jsonify({"error": f"vendor {cfg.type.value!r} doesn't support extraction toggle yet"}), 400
 
     try:
-        results = live.set_vendor_extraction(scan_extraction=payload["scan_extraction"])
+        kwargs: dict[str, Any] = {"scan_extraction": payload["scan_extraction"]}
+        if library_ids is not None:
+            kwargs["library_ids"] = library_ids
+        results = live.set_vendor_extraction(**kwargs)
     except Exception as exc:
         logger.warning(
             "Could not toggle vendor extraction on {!r}: {}",

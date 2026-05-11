@@ -382,10 +382,17 @@
                                     </div>
                                 </div>
 
-                                <!-- "Fix and enable" — sequences plugin install → library flags → tile geometry. -->
+                                <!-- Fix-all controls: critical-only and full
+                                     buttons. Both open a confirm modal that
+                                     lists the exact changes about to be applied
+                                     so the user can scan-and-cancel before
+                                     anything mutates the server. -->
                                 <div id="editReadinessFixControls" class="d-flex align-items-center gap-2 flex-wrap d-none">
+                                    <button type="button" class="btn btn-sm btn-danger d-none" id="editReadinessFixCriticalBtn">
+                                        <i class="bi bi-shield-exclamation me-1"></i>Fix critical
+                                    </button>
                                     <button type="button" class="btn btn-sm btn-warning" id="editReadinessFixAllBtn">
-                                        <i class="bi bi-magic me-1"></i>Fix and enable
+                                        <i class="bi bi-magic me-1"></i>Fix all
                                     </button>
                                     <span id="editReadinessFixResult" class="small text-muted"></span>
                                 </div>
@@ -671,6 +678,35 @@
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
                 <button type="button" class="btn btn-danger" id="readinessConfirmSubmit" disabled>
                     Confirm
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Bulk fix-plan preview modal: opens before "Fix all" / "Fix critical"
+     run so the user can see the exact list of changes ABOUT to be
+     applied. Pre-existing UX shipped a single one-click button that
+     silently flipped everything; users had no way to scan-and-cancel. -->
+<div class="modal fade" id="readinessFixPlanModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">
+                    <i class="bi bi-list-check text-warning me-2"></i>
+                    <span id="readinessFixPlanTitle">Apply fixes</span>
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p class="mb-2"><span id="readinessFixPlanIntro" class="text-body-secondary"></span></p>
+                <ul id="readinessFixPlanList" class="list-group small mb-3"></ul>
+                <div id="readinessFixPlanResults" class="small d-none"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal" id="readinessFixPlanCancelBtn">Cancel</button>
+                <button type="button" class="btn btn-warning" id="readinessFixPlanApplyBtn">
+                    <i class="bi bi-magic me-1"></i>Apply
                 </button>
             </div>
         </div>

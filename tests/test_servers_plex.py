@@ -1157,6 +1157,90 @@ class TestPlexPreviewsReadiness:
         # Critical row → overall_ok must be False.
         assert payload["overall_ok"] is False
 
+    def test_vendor_extraction_emits_per_library_rows_when_some_extracting(self, plex_wrapper, tmp_path):
+        """The vendor_extraction section now emits one actionable row per
+        library instead of one aggregate info row.
+
+        Pre-fix: a single info-severity "stopped on N/M" row hid which
+        libraries still had Plex's BIF generation on. Users couldn't tell
+        if the offender was Movies or 4K Movies, and the disable button
+        was server-wide (all-or-nothing).
+
+        Post-fix: each library gets its own row with current=True/False,
+        severity=recommended, and a per-library disable action carrying
+        ``library_ids: [section_key]``.
+        """
+        plex_wrapper._config.plex_config_folder = str(tmp_path)
+
+        with (
+            patch.object(PlexServer, "test_connection") as tc,
+            patch("media_preview_generator.servers.plex.requests.get") as prefs_get,
+            patch.object(PlexServer, "get_vendor_extraction_status") as vs,
+        ):
+            tc.return_value = ConnectionResult(ok=True, message="Connected")
+            prefs_get.return_value = self._prefs_response(
+                FSEventLibraryUpdatesEnabled=True,
+                FSEventLibraryPartialScanEnabled=True,
+                ScheduledLibraryUpdatesEnabled=True,
+            )
+            vs.return_value = {
+                "extracting_count": 1,
+                "stopped_count": 1,
+                "skipped_count": 1,
+                "total": 3,
+                "libraries": [
+                    {"key": "1", "name": "Movies", "state": "extracting"},
+                    {"key": "2", "name": "TV", "state": "stopped"},
+                    {"key": "3", "name": "Custom Agent Movies", "state": "skipped"},
+                ],
+            }
+
+            payload = plex_wrapper.previews_readiness()
+
+        vendor = next(s for s in payload["sections"] if s["id"] == "vendor_extraction")
+        # Section flips ok=False because at least one library is still
+        # extracting; severity stays "recommended" (not critical) so the
+        # overall_ok gate isn't tripped — Plex's own pass overwrites our
+        # output but doesn't break playback.
+        assert vendor["ok"] is False
+        assert vendor["severity"] == "recommended"
+
+        # Two auditable rows + one info row for the skipped (custom-agent)
+        # library = three total. The skipped row carries no enable/disable
+        # actions because Plex's section-edit endpoint rejects the toggle
+        # for custom agents.
+        assert len(vendor["checks"]) == 3, [c["id"] for c in vendor["checks"]]
+
+        movies = next(c for c in vendor["checks"] if "Movies" in c["label"] and "Custom" not in c["label"])
+        assert movies["ok"] is False
+        assert movies["severity"] == "recommended"
+        # Boolean current/recommended so the new UI can render "On" vs
+        # "Off" with a side-by-side mismatch tint instead of opaque
+        # strings like "stopped on 1/2".
+        assert movies["current"] is True
+        assert movies["recommended"] is False
+        # Per-library scope on both actions — server-wide here would
+        # silently mass-toggle siblings, which is exactly the bug the
+        # promotion is meant to fix.
+        assert movies["actions"]["disable"]["args"] == {"scan_extraction": False, "library_ids": ["1"]}
+        assert movies["actions"]["enable"]["args"] == {"scan_extraction": True, "library_ids": ["1"]}
+
+        tv = next(c for c in vendor["checks"] if c["label"].startswith("TV"))
+        assert tv["ok"] is True
+        assert tv["current"] is False
+        assert tv["recommended"] is False
+        assert tv["actions"]["disable"]["args"] == {"scan_extraction": False, "library_ids": ["2"]}
+
+        skipped = next(c for c in vendor["checks"] if c["id"] == "vendor_extraction_skipped")
+        # No buttons on the skipped row — the API can't toggle these.
+        assert skipped["actions"] == {}
+        assert skipped["severity"] == "info"
+        # The user needs to know WHICH library they have to fix manually.
+        assert "Custom Agent Movies" in (skipped["current"] or "")
+
+        # Recommended-only failure must not trip the critical gate.
+        assert payload["overall_ok"] is True
+
     def test_vendor_extraction_probe_failure_is_not_green(self, plex_wrapper, tmp_path):
         """When get_vendor_extraction_status raises, the section MUST report
         ok=False (severity=info — missed probe isn't critical for preview

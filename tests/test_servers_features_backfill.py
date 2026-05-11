@@ -203,6 +203,31 @@ class TestVendorExtractionToggle:
             "/api/servers/jelly-1/vendor-extraction", json={"scan_extraction": "yes"}, headers=auth_headers
         )
         assert r2.status_code == 400
+        # library_ids must be a list of strings
+        r3 = client.post(
+            "/api/servers/jelly-1/vendor-extraction",
+            json={"scan_extraction": False, "library_ids": [1, 2]},
+            headers=auth_headers,
+        )
+        assert r3.status_code == 400
+        # Empty library_ids list — REJECTED. The server-side method
+        # treats an empty list as "every library" (truthiness check),
+        # so passing `[]` would silently mass-toggle every section
+        # when the obvious reading is "no libraries". This is the
+        # exact scope-blow-up the validator's empty-list guard exists
+        # to prevent — pin it so a future "let's accept []" loosening
+        # would fail this test.
+        r4 = client.post(
+            "/api/servers/jelly-1/vendor-extraction",
+            json={"scan_extraction": False, "library_ids": []},
+            headers=auth_headers,
+        )
+        assert r4.status_code == 400, (
+            f"Empty library_ids must 400 (would otherwise apply server-wide). Got {r4.status_code} "
+            f"with body {r4.get_json()!r}"
+        )
+        body = r4.get_json() or {}
+        assert "non-empty" in (body.get("error") or ""), body
 
     def test_unknown_server_id_returns_404(self, client, auth_headers):
         _seed_jellyfin_server()

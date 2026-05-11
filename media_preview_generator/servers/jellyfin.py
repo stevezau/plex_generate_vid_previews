@@ -1370,7 +1370,9 @@ class JellyfinServer(EmbyApiClient):
         :meth:`MediaServer.previews_readiness`. Key sections Jellyfin
         emits: ``connection`` (implicit — via version probe), ``version``,
         ``plugin``, ``library_settings``, ``server_options``,
-        ``vendor_extraction``, ``path_mappings``.
+        ``vendor_extraction``. (Path mappings are a Plex-only concept —
+        Jellyfin's webhook plugin reports paths the way Jellyfin sees
+        them, so no mapping section is emitted here.)
         """
         # Probe plugin first — all downstream checks depend on its state.
         plugin = self.check_plugin_installed()

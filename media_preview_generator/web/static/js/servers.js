@@ -255,24 +255,20 @@
                 }
             }
             if (anyCritical) {
-                // criticalCount is the per-check count; a section-level
-                // failure without a matching check row still trips
-                // anyCritical but contributes 0 to the count — fall
-                // back to generic copy in that case so "0 critical
-                // setup issues" never shows up.
                 const tooltip = criticalCount > 0
                     ? `${criticalCount} critical setup issue${criticalCount === 1 ? '' : 's'} — click to fix`
                     : 'Critical setup issue — click to fix';
-                updateServerReadinessGlyph(serverId, { state: 'critical', tooltip });
+                updateServerReadinessGlyph(serverId, { state: 'critical', tooltip, count: criticalCount });
             } else if (anyRecommended) {
                 const tooltip = recommendedCount > 0
                     ? `${recommendedCount} recommended improvement${recommendedCount === 1 ? '' : 's'} — click to review`
                     : 'Recommended improvement available — click to review';
-                updateServerReadinessGlyph(serverId, { state: 'recommended', tooltip });
+                updateServerReadinessGlyph(serverId, { state: 'recommended', tooltip, count: recommendedCount });
             } else {
                 updateServerReadinessGlyph(serverId, {
                     state: 'ok',
                     tooltip: 'Setup healthy — click for details',
+                    count: 0,
                 });
             }
         } catch (e) {
@@ -299,12 +295,21 @@
             return;
         }
         const base = 'server-readiness-glyph ms-2';
+        // Visible count badge sits next to the icon for critical /
+        // recommended states so users can compare "1 thing" vs "5
+        // things" at a glance — pre-redesign the count was hidden in
+        // the hover tooltip only. ok state stays icon-only because
+        // count=0 + green tick is redundant noise.
+        const count = typeof info.count === 'number' ? info.count : 0;
+        const countBadge = (info.state !== 'ok' && count > 0)
+            ? `<span class="badge readiness-count-badge ${info.state === 'critical' ? 'bg-danger' : 'bg-warning text-dark'}">${count}</span>`
+            : '';
         if (info.state === 'critical') {
             glyph.className = `${base} text-danger`;
-            glyph.innerHTML = '<i class="bi bi-exclamation-triangle-fill"></i>';
+            glyph.innerHTML = `<i class="bi bi-exclamation-triangle-fill"></i>${countBadge}`;
         } else if (info.state === 'recommended') {
             glyph.className = `${base} text-warning`;
-            glyph.innerHTML = '<i class="bi bi-exclamation-circle-fill"></i>';
+            glyph.innerHTML = `<i class="bi bi-exclamation-circle-fill"></i>${countBadge}`;
         } else {
             glyph.className = `${base} text-success`;
             glyph.innerHTML = '<i class="bi bi-check-circle-fill"></i>';
@@ -1796,6 +1801,17 @@
     //
     // The "Fix and enable everything" button at the bottom is still
     // there for users who want one-click triage.
+
+    // Cache of the most recent successful readiness probe payload, keyed
+    // by serverId so concurrent edit-modal opens for different servers
+    // can't bleed into each other. Used by the bulk Fix buttons to
+    // enumerate the change plan. Cleared on probe failure for the same
+    // serverId so we don't operate on stale data after that server goes
+    // offline. Declared above the function that mutates it so the
+    // binding is initialised before any caller can reach it (avoids the
+    // latent TDZ footgun a future top-level call would expose).
+    const _readinessDataByServer = new Map();
+
     async function runReadinessProbe(serverId, serverType) {
         const group = document.getElementById('editReadinessGroup');
         const badge = document.getElementById('editReadinessBadge');
@@ -1819,9 +1835,14 @@
             badge.className = 'badge ms-1 bg-warning text-dark';
             badge.textContent = 'unavailable';
             body.innerHTML = '<div class="small text-muted">Could not reach the server. Check connection and try again.</div>';
+            _readinessDataByServer.delete(serverId);
             return;
         }
 
+        // Stash the latest probe payload so the Fix-all / Fix-critical
+        // buttons can build a preview plan from it without re-probing
+        // (the preview modal needs the data BEFORE making any change).
+        _readinessDataByServer.set(serverId, r.data);
         renderReadiness(serverId, serverType, r.data);
     }
 
@@ -1868,10 +1889,11 @@
     }
 
     // Renders the unified previews-readiness card. Walks data.sections[]
-    // and for each check row emits: icon + label + ⓘ tooltip (with a
-    // docs anchor link) + enable/disable toggles (data-driven from
-    // check.actions). Toggles carrying a non-null confirm blob route
-    // through the #readinessConfirmModal.
+    // and groups the checks into three buckets (Must fix / Recommended /
+    // All good) so users immediately see what needs their attention vs.
+    // what's just informational. Within each bucket the source section
+    // appears as a small subheading so context like "Library settings"
+    // isn't lost.
     //
     // No vendor branching in this function — everything is driven by
     // what the server emitted. Vendors control section set + copy.
@@ -1879,6 +1901,7 @@
         const badge = document.getElementById('editReadinessBadge');
         const body = document.getElementById('editReadinessBody');
         const fixCtl = document.getElementById('editReadinessFixControls');
+        const fixCritBtn = document.getElementById('editReadinessFixCriticalBtn');
         const pluginCtl = document.getElementById('editReadinessPluginControls');
         if (!badge || !body || !fixCtl) return;
 
@@ -1891,14 +1914,9 @@
 
         // Tab-label marker — stamp ❗ / ⚠ / ✓ next to "Setup Health"
         // in the nav bar so the user sees there's something to
-        // address even when they're on a different tab. Cls names
-        // come from _deriveBadgeState so the marker and the badge
-        // can't disagree.
+        // address even when they're on a different tab.
         const tabMarker = document.getElementById('editHealthTabMarker');
         if (tabMarker) {
-            // Key off `tier` rather than sniffing the Bootstrap class
-            // string — robust against future class-name additions
-            // (bg-warning-subtle etc).
             if (badgeState.tier === 'critical') {
                 tabMarker.className = 'ms-1 text-danger';
                 tabMarker.innerHTML = '<i class="bi bi-exclamation-triangle-fill"></i>';
@@ -1908,39 +1926,82 @@
                 tabMarker.innerHTML = '<i class="bi bi-exclamation-circle-fill"></i>';
                 tabMarker.title = 'Recommendations';
             } else {
-                // Don't clutter the tab with a ✓ when everything is fine;
-                // the absence of a marker IS the all-ok signal.
                 tabMarker.className = 'ms-1 d-none';
                 tabMarker.innerHTML = '';
                 tabMarker.title = '';
             }
         }
 
-        // Body.
+        // Bucket the checks once so each bucket can render its own
+        // collapsible group with the right icon/colour/expanded state.
+        // Bucketing rules:
+        //   Must fix      = critical + !ok
+        //   Recommended   = !ok (anything not critical, including info)
+        //   All good      = ok (everything passing or info-pass)
+        const partition = _partitionChecks(sections);
+
         body.innerHTML = '';
-        for (const section of sections) {
-            const sec = _makeSection(section.title || section.id, section.docs_anchor);
-            const checks = section.checks || [];
-            if (checks.length === 0) {
-                sec.appendChild(_makeRow({ ok: section.ok !== false, label: 'OK' }));
-            } else {
-                for (const check of checks) {
-                    sec.appendChild(_renderCheckRow(serverId, serverType, check));
-                }
-            }
-            body.appendChild(sec);
+        if (partition.mustFix.length > 0) {
+            body.appendChild(_renderBucket({
+                serverId,
+                serverType,
+                tier: 'critical',
+                title: 'Must fix',
+                items: partition.mustFix,
+                expanded: true,
+                badgeCls: 'bg-danger',
+                iconHtml: '<i class="bi bi-x-octagon-fill text-danger me-2"></i>',
+                emptyHint: '',
+            }));
+        }
+        if (partition.recommended.length > 0) {
+            body.appendChild(_renderBucket({
+                serverId,
+                serverType,
+                tier: 'recommended',
+                title: 'Recommended',
+                items: partition.recommended,
+                expanded: partition.mustFix.length === 0,
+                badgeCls: 'bg-warning text-dark',
+                iconHtml: '<i class="bi bi-exclamation-triangle-fill text-warning me-2"></i>',
+                emptyHint: '',
+            }));
+        }
+        if (partition.allGood.length > 0) {
+            body.appendChild(_renderBucket({
+                serverId,
+                serverType,
+                tier: 'ok',
+                title: 'All good',
+                items: partition.allGood,
+                // Only auto-expand when there's nothing actionable, so a
+                // server that's fully healthy still shows its checks
+                // up-front instead of an empty card.
+                expanded: partition.mustFix.length === 0 && partition.recommended.length === 0,
+                badgeCls: 'bg-success',
+                iconHtml: '<i class="bi bi-check-circle-fill text-success me-2"></i>',
+                emptyHint: '',
+            }));
         }
 
-        // "Fix and enable" one-click button — still useful for users
-        // who want everything flipped at once. Show whenever ANY check
-        // in any section is ok=false (i.e. something could be fixed).
-        const anyFixable = sections.some((s) =>
-            s.ok === false || (s.checks || []).some((c) => c.ok === false)
-        );
-        if (anyFixable) {
+        // Show the fix controls when there are fixable rows (any check
+        // with an enable/disable action whose recommended-state flip is
+        // actionable). The critical-only button only surfaces when at
+        // least one critical row is fixable — otherwise it'd be a
+        // dead button alongside "Fix all".
+        const fixablePlan = _buildFixPlan(sections, 'all');
+        const criticalPlan = _buildFixPlan(sections, 'critical');
+        if (fixablePlan.length > 0) {
             fixCtl.classList.remove('d-none');
         } else {
             fixCtl.classList.add('d-none');
+        }
+        if (fixCritBtn) {
+            if (criticalPlan.length > 0) {
+                fixCritBtn.classList.remove('d-none');
+            } else {
+                fixCritBtn.classList.add('d-none');
+            }
         }
 
         // Hide the legacy plugin opt-in checkbox — install happens
@@ -1955,10 +2016,106 @@
         }
     }
 
+    // Walk every section's checks and assign each to one of three
+    // buckets. The original section is preserved on each item so the
+    // bucket renderer can group rows by their source section without
+    // losing context (e.g. "Library settings → Movies — Trickplay
+    // enabled").
+    //
+    // Bucketing rules:
+    //   critical + !ok      → Must fix    (red, expanded)
+    //   recommended + !ok   → Recommended (amber, expanded if no critical)
+    //   info        + !ok   → All good    (probe-failure rows are not
+    //                         actionable improvements; surfacing them
+    //                         under "Recommended" would cry-wolf about
+    //                         a transient connectivity blip).
+    //   ok          + any   → All good
+    function _partitionChecks(sections) {
+        const mustFix = [];
+        const recommended = [];
+        const allGood = [];
+        for (const section of sections || []) {
+            for (const check of (section.checks || [])) {
+                const item = {
+                    check,
+                    sectionTitle: section.title || section.id || '',
+                    sectionAnchor: section.docs_anchor || '',
+                    sectionId: section.id || '',
+                };
+                if (check.ok === false && check.severity === 'critical') {
+                    mustFix.push(item);
+                } else if (check.ok === false && check.severity === 'recommended') {
+                    recommended.push(item);
+                } else {
+                    allGood.push(item);
+                }
+            }
+        }
+        return { mustFix, recommended, allGood };
+    }
+
+    // Render one bucket as a `<details>` block. Items are grouped by
+    // their source section — the section title appears as a small
+    // grey subheading so users can still tell whether a row is about
+    // the library scan settings or the plugin or path mappings.
+    function _renderBucket({ serverId, serverType, tier, title, items, expanded, badgeCls, iconHtml }) {
+        const det = document.createElement('details');
+        det.className = 'readiness-bucket mb-2';
+        det.dataset.tier = tier;
+        if (expanded) det.open = true;
+
+        const sum = document.createElement('summary');
+        sum.className = 'd-flex align-items-center gap-2 py-1 px-2 rounded user-select-none';
+        sum.style.cursor = 'pointer';
+        sum.innerHTML = `${iconHtml}<span class="fw-semibold">${escapeHtml(title)}</span>`
+            + `<span class="badge ${badgeCls} ms-1">${items.length}</span>`;
+        det.appendChild(sum);
+
+        const inner = document.createElement('div');
+        inner.className = 'readiness-bucket-body ps-2 pt-2';
+
+        // Group items by section so a "Library settings" header appears
+        // once, followed by all its rows. Stable order — preserves the
+        // section ordering the backend chose.
+        let lastSectionId = null;
+        for (const item of items) {
+            if (item.sectionId !== lastSectionId) {
+                lastSectionId = item.sectionId;
+                inner.appendChild(_renderSectionSubhead(item.sectionTitle, item.sectionAnchor));
+            }
+            inner.appendChild(_renderCheckRow(serverId, serverType, item.check));
+        }
+
+        det.appendChild(inner);
+        return det;
+    }
+
+    function _renderSectionSubhead(title, docsAnchor) {
+        const wrap = document.createElement('div');
+        wrap.className = 'text-muted small text-uppercase mb-1 mt-2 d-flex align-items-center gap-1';
+        wrap.style.letterSpacing = '0.5px';
+        wrap.style.fontWeight = '600';
+        const lbl = document.createElement('span');
+        lbl.textContent = title;
+        wrap.appendChild(lbl);
+        if (docsAnchor) {
+            const link = document.createElement('a');
+            link.href = `https://github.com/stevezau/media_preview_generator/blob/main/docs/guides/previews-readiness.md#${encodeURIComponent(docsAnchor)}`;
+            link.target = '_blank';
+            link.rel = 'noopener';
+            link.className = 'text-muted';
+            link.setAttribute('data-bs-toggle', 'tooltip');
+            link.title = 'Open docs for this section';
+            link.innerHTML = '<i class="bi bi-info-circle" style="font-size:0.8rem;"></i>';
+            wrap.appendChild(link);
+        }
+        return wrap;
+    }
+
     // Render one check row. Emits: status icon + label + ⓘ tooltip
-    // (anchored to docs page) + severity badge + inline [Enable] /
-    // [Disable] toggles built from check.actions. Missing actions =
-    // hide that toggle.
+    // (anchored to docs page) + severity badge + side-by-side
+    // current/recommended diff + Manual chip when read-only +
+    // inline [Enable] / [Disable] toggles built from check.actions.
     function _renderCheckRow(serverId, serverType, check) {
         const row = document.createElement('div');
         row.className = 'd-flex align-items-start gap-2 mb-1 small';
@@ -1968,13 +2125,7 @@
         // Four-tier visual hierarchy so users can tell at a glance whether
         // a red ✗ is "blocks the server from working" (Required) or "the
         // server still works but you're missing a recommended optimisation"
-        // (Recommended). Pre-fix every failing check rendered identically
-        // — users panicked over amber recommendations they could safely
-        // ignore.
-        //   Required + ok      → green ✓ + grey "Required" badge
-        //   Required + fail    → red ✗ + red "Required" badge
-        //   Recommended + ok   → grey ✓ + grey "Recommended" badge
-        //   Recommended + fail → amber ⚠ + amber "Recommended" badge
+        // (Recommended).
         let icon;
         let tierBadge;
         if (ok && sev === 'critical') {
@@ -1991,16 +2142,22 @@
             tierBadge = '<span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle ms-1" title="The server still works without this — it is a recommended improvement, not a blocker.">Recommended — server still works</span>';
         }
 
+        // Manual chip: a failing row with no enable/disable action means
+        // the user has to fix this themselves (e.g. upgrade Jellyfin to
+        // 10.10+). Without this signal, the absence of buttons looks
+        // identical to "we're still loading". Make the read-only nature
+        // explicit.
+        const actionsObj = check.actions || {};
+        const hasFixAction = !!(actionsObj.enable || actionsObj.disable);
+        const manualChip = (!ok && !hasFixAction)
+            ? '<span class="badge bg-secondary-subtle text-body-secondary border border-secondary-subtle ms-1" title="There is no toggle for this — you have to change it yourself in the media server\'s admin UI or by upgrading.">Manual</span>'
+            : '';
+
         const anchor = check.docs_anchor
             ? `https://github.com/stevezau/media_preview_generator/blob/main/docs/guides/previews-readiness.md#${encodeURIComponent(check.docs_anchor)}`
             : '';
         const tooltip = check.tooltip || '';
         const explanationHtml = check.explanation || '';
-        // Use the app-wide `.info-icon` pattern: hover = short tooltip,
-        // click = shared #globalInfoModal (when rich explanation exists).
-        // The `info-icon-more` class adds a chevron so users can tell
-        // at a glance which ⓘs have a modal behind them. The richer
-        // tooltip text ("— click for details") reinforces the affordance.
         const hasMore = !!explanationHtml;
         const tooltipText = hasMore && tooltip
             ? `${tooltip} — click for details`
@@ -2015,16 +2172,14 @@
                 + `<i class="bi bi-info-circle"></i></button>`
             : '';
 
-        const currentStr = check.current === null || check.current === undefined
-            ? ''
-            : `<div class="text-muted">Currently <code>${formatHealthValue(check.current)}</code></div>`;
+        const valuesHtml = _renderValueDiff(check.current, check.recommended, ok, check.label || '');
 
         const reasonStr = check.reason
-            ? `<div class="text-muted">${escapeHtml(check.reason)}</div>`
+            ? `<div class="text-muted mt-1">${escapeHtml(check.reason)}</div>`
             : '';
 
         const labelHtml = escapeHtml(check.label || check.id || '');
-        row.innerHTML = `${icon}<div class="flex-grow-1">${labelHtml}${tierBadge}${infoIcon}${reasonStr}${currentStr}</div>`;
+        row.innerHTML = `${icon}<div class="flex-grow-1">${labelHtml}${tierBadge}${manualChip}${infoIcon}${reasonStr}${valuesHtml}</div>`;
 
         // Attach the rich explanation HTML to the info-icon button as
         // a DOM property — can't round-trip multi-paragraph HTML through
@@ -2040,18 +2195,45 @@
             if (infoBtn) infoBtn._explanationHtml = explanationHtml;
         }
 
-        // Per-check toggle buttons.
+        // Per-check toggle buttons. Two semantic roles:
+        //   FIX direction   — matches check.recommended (the "right" answer).
+        //   OPPOSITE direction — moves AWAY from recommended (destructive/opt-out).
+        //
+        // Pre-redesign both rendered as primary-coloured buttons in the
+        // same row. That meant on a row where current=on, recommended=off,
+        // the user saw an "Enable" (green) button next to a "Disable"
+        // (red) button — the FIX (Disable) had the danger colour while
+        // the BREAK (Enable) had the encouraging colour. Click-confusion
+        // bait. Now: failing-row fix is amber-filled (matches the bucket),
+        // opposite is low-emphasis grey-outline; passing rows hide the
+        // fix (no-op) and keep only the opt-out as a quiet outline.
         const actions = check.actions || {};
+        const fixDir = check.recommended ? 'enable' : 'disable';
+        const breakDir = check.recommended ? 'disable' : 'enable';
+        const fixAction = actions[fixDir];
+        const breakAction = actions[breakDir];
         const btnWrap = document.createElement('div');
         btnWrap.className = 'd-flex gap-1 flex-wrap';
-        if (actions.enable) {
-            const btn = _makeActionButton('btn-outline-success', 'bi-toggle-on', 'Enable', check, 'enable');
-            btn.addEventListener('click', () => _runCheckAction(serverId, serverType, check, 'enable', btn));
+
+        if (!ok && fixAction) {
+            // Failing row → primary call-to-action. Filled amber matches
+            // the Recommended-bucket colour so the eye lands on the
+            // button that resolves the issue.
+            const label = fixDir === 'enable' ? 'Enable' : 'Disable';
+            const icon = fixDir === 'enable' ? 'bi-toggle-on' : 'bi-toggle-off';
+            const btn = _makeActionButton('btn-warning', icon, label, check, fixDir);
+            btn.addEventListener('click', () => _runCheckAction(serverId, serverType, check, fixDir, btn));
             btnWrap.appendChild(btn);
         }
-        if (actions.disable) {
-            const btn = _makeActionButton('btn-outline-danger', 'bi-toggle-off', 'Disable', check, 'disable');
-            btn.addEventListener('click', () => _runCheckAction(serverId, serverType, check, 'disable', btn));
+        if (breakAction) {
+            // Always show the opt-out / break button as low-emphasis.
+            // Power users who deliberately want to disable a recommended
+            // setting still have the affordance; everyone else's eye
+            // skips past it.
+            const label = breakDir === 'enable' ? 'Enable' : 'Disable';
+            const icon = breakDir === 'enable' ? 'bi-toggle-on' : 'bi-toggle-off';
+            const btn = _makeActionButton('btn-outline-secondary', icon, label, check, breakDir);
+            btn.addEventListener('click', () => _runCheckAction(serverId, serverType, check, breakDir, btn));
             btnWrap.appendChild(btn);
         }
         if (btnWrap.children.length > 0) {
@@ -2157,9 +2339,15 @@
                 return { ok: !!(r.data && r.data.ok) && r.ok, error: r.data && r.data.error, status: r.status };
             }
             case 'set_vendor_extraction': {
-                const r = await api('POST', `/api/servers/${encoded}/vendor-extraction`, {
-                    scan_extraction: !!args.scan_extraction,
-                });
+                // Per-library actions carry an optional library_ids
+                // array; legacy aggregate actions omit it and apply
+                // server-wide. Forward both shapes faithfully so the
+                // backend doesn't have to guess.
+                const body = { scan_extraction: !!args.scan_extraction };
+                if (Array.isArray(args.library_ids) && args.library_ids.length > 0) {
+                    body.library_ids = args.library_ids;
+                }
+                const r = await api('POST', `/api/servers/${encoded}/vendor-extraction`, body);
                 return { ok: !!(r.data && r.data.ok) && r.ok, error: r.data && r.data.error, status: r.status };
             }
             default:
@@ -2382,10 +2570,282 @@
     }
 
     function formatHealthValue(v) {
-        if (v === true) return 'on';
-        if (v === false) return 'off';
+        if (v === true) return 'On';
+        if (v === false) return 'Off';
         if (v === null || v === undefined) return '—';
+        // Objects (e.g. Jellyfin's TrickplayOptions geometry dict) don't
+        // fit a one-cell value; render a compact JSON-ish summary so the
+        // diff still surfaces *something* informative without breaking
+        // the layout. Falls through to escapeHtml(String(v)) for
+        // strings/numbers.
+        if (typeof v === 'object') {
+            try {
+                return escapeHtml(JSON.stringify(v));
+            } catch (_e) {
+                return escapeHtml(String(v));
+            }
+        }
         return escapeHtml(String(v));
+    }
+
+    // Render the side-by-side current/recommended diff for a check row.
+    // Empty string when there's no value to show (info-only checks with
+    // current=null and recommended=null).
+    //
+    // - When recommended is null/undefined → only render the current value.
+    // - When current === recommended (passing) → single neutral pill.
+    // - When current !== recommended (failing) → two-column grid with the
+    //   current value tinted red and the recommended tinted green so the
+    //   mismatch jumps out at a glance. Replaces the prior `Currently <X>`
+    //   one-liner that left users guessing whether <X> was good or bad.
+    function _renderValueDiff(current, recommended, ok, label) {
+        const hasCurrent = !(current === null || current === undefined);
+        const hasRecommended = !(recommended === null || recommended === undefined);
+        if (!hasCurrent && !hasRecommended) return '';
+
+        // Avoid the "Plex 1.43.2.10687 / Currently 1.43.2.10687" double-up.
+        // For info-only rows where the label already names the current
+        // value, skip the Currently line — the label is the current value.
+        if (
+            !hasRecommended
+            && hasCurrent
+            && typeof current === 'string'
+            && typeof label === 'string'
+            && label.includes(current)
+        ) {
+            return '';
+        }
+
+        // Object-typed values (Jellyfin's TrickplayOptions geometry dict
+        // and similar) don't fit a one-line pill. Pre-redesign rendered
+        // them as a giant single-line JSON code-block that overflowed
+        // the row. Now: when passing, hide the dump entirely (the user
+        // already sees ✓ + "matches recommended"); when failing, show
+        // a compact "see details" hint pointing at the ⓘ explanation.
+        const currentIsObject = hasCurrent && typeof current === 'object';
+        const recommendedIsObject = hasRecommended && typeof recommended === 'object';
+        const isObjectRow = currentIsObject || recommendedIsObject;
+
+        if (!hasRecommended) {
+            if (isObjectRow) {
+                return `<div class="readiness-currently text-muted mt-1">`
+                    + `<span class="text-body-tertiary">Current state — open ⓘ for details</span></div>`;
+            }
+            return `<div class="readiness-currently text-muted mt-1">`
+                + `Currently <code>${formatHealthValue(current)}</code></div>`;
+        }
+        if (!hasCurrent) {
+            if (isObjectRow) {
+                return `<div class="readiness-currently text-muted mt-1">`
+                    + `<span class="text-body-tertiary">Recommended state — open ⓘ for details</span></div>`;
+            }
+            return `<div class="readiness-currently text-muted mt-1">`
+                + `Recommended <code>${formatHealthValue(recommended)}</code></div>`;
+        }
+
+        // Both present.
+        const matched = ok || _valuesEqual(current, recommended);
+        if (matched) {
+            if (isObjectRow) {
+                return `<div class="readiness-currently text-muted mt-1">`
+                    + `<i class="bi bi-check2 me-1"></i>Matches recommended</div>`;
+            }
+            return `<div class="readiness-currently text-muted mt-1">`
+                + `<i class="bi bi-check2 me-1"></i>Currently <code>${formatHealthValue(current)}</code> `
+                + `<span class="text-body-tertiary">(matches recommended)</span></div>`;
+        }
+
+        if (isObjectRow) {
+            // Mismatch on a structured value — pointing at ⓘ keeps the row
+            // scannable, and the rich explanation modal already carries
+            // the field-by-field breakdown.
+            return `<div class="readiness-currently text-muted mt-1">`
+                + `<span class="text-danger-emphasis">Doesn't match recommended</span> `
+                + `— open ⓘ for details</div>`;
+        }
+
+        return `<div class="readiness-values d-flex flex-wrap gap-2 mt-1">`
+            + `<div class="readiness-current px-2 py-1 rounded">`
+            +   `<span class="readiness-label">Currently</span> `
+            +   `<code>${formatHealthValue(current)}</code></div>`
+            + `<div class="readiness-arrow text-body-tertiary align-self-center">→</div>`
+            + `<div class="readiness-recommended px-2 py-1 rounded">`
+            +   `<span class="readiness-label">Recommended</span> `
+            +   `<code>${formatHealthValue(recommended)}</code></div></div>`;
+    }
+
+    // Loose equality for the value-diff renderer — treats true/false
+    // distinctly from "true"/"false" strings, but treats `1 == "1"` as
+    // equal because the underlying probes sometimes return numeric
+    // strings while the recommended value is a number.
+    function _valuesEqual(a, b) {
+        if (a === b) return true;
+        if (a === null || b === null) return false;
+        if (typeof a === 'object' || typeof b === 'object') {
+            try { return JSON.stringify(a) === JSON.stringify(b); } catch (_e) { return false; }
+        }
+        // eslint-disable-next-line eqeqeq
+        return a == b;
+    }
+
+    // Pick which of (enable | disable) is the "fix" for this check —
+    // i.e. the action whose post-condition matches check.recommended.
+    // Falls back to whichever single action exists when there's no
+    // boolean target (install_plugin / sync_trickplay_options).
+    //
+    // The fix-direction matters: getting it backwards on Plex's BIF
+    // generation rows would TURN ON Plex's own preview generation
+    // (the opposite of what the user clicked "Fix" for) and silently
+    // burn duplicate CPU on every library scan.
+    function _pickFixAction(check) {
+        const a = check.actions || {};
+        // If the recommended state is a boolean (most apply_flag /
+        // set_vendor_extraction rows), pick the action whose args
+        // match. args.value covers apply_flag; args.scan_extraction
+        // covers set_vendor_extraction.
+        const direction = check.recommended ? 'enable' : 'disable';
+        const matched = a[direction];
+        if (matched) {
+            const args = matched.args || {};
+            if (args.value !== undefined && args.value === check.recommended) return matched;
+            if (args.scan_extraction !== undefined && args.scan_extraction === check.recommended) return matched;
+            // No discriminating arg — assume convention holds (enable
+            // moves toward "more on / installed", disable the opposite).
+            return matched;
+        }
+        // Single-direction actions (install_plugin etc.) have no opposite.
+        return a.enable || a.disable || null;
+    }
+
+    // Walk every section's checks and assemble a fix plan ordered for
+    // execution. Items are scoped to:
+    //   'critical' — only severity=critical failing checks
+    //   'all'      — every failing check that has an automatic fix
+    //
+    // Manual rows (no enable/disable action — version upgrades,
+    // skipped custom-agent libraries) are excluded — they need user
+    // intervention outside this app.
+    function _buildFixPlan(sections, scope) {
+        const plan = [];
+        for (const section of sections || []) {
+            for (const check of (section.checks || [])) {
+                if (check.ok !== false) continue;
+                if (scope === 'critical' && check.severity !== 'critical') continue;
+                const fixAction = _pickFixAction(check);
+                if (!fixAction) continue;
+                plan.push({
+                    check,
+                    fixAction,
+                    sectionTitle: section.title || section.id || '',
+                });
+            }
+        }
+        return plan;
+    }
+
+    // Open the bulk fix-plan modal. Preview lists every change about to
+    // happen (label + current → recommended). On Apply: dispatches each
+    // item through _dispatchCheckAction sequentially, then re-probes.
+    //
+    // Sequential not parallel — installing a Jellyfin plugin restarts
+    // the server, so subsequent calls have to wait. Parallel would
+    // race the restart and half the calls would 502.
+    async function _runFixPlanWithPreview(serverId, serverType, plan, label) {
+        if (!plan.length) return;
+        const modalEl = document.getElementById('readinessFixPlanModal');
+        const titleEl = document.getElementById('readinessFixPlanTitle');
+        const introEl = document.getElementById('readinessFixPlanIntro');
+        const listEl = document.getElementById('readinessFixPlanList');
+        const applyBtn = document.getElementById('readinessFixPlanApplyBtn');
+        const cancelBtn = document.getElementById('readinessFixPlanCancelBtn');
+        const resultsEl = document.getElementById('readinessFixPlanResults');
+        if (!modalEl || !titleEl || !listEl || !applyBtn) return;
+
+        titleEl.textContent = label;
+        introEl.textContent = `This will change ${plan.length} setting${plan.length === 1 ? '' : 's'} on the media server. Review the list and click Apply to proceed.`;
+        listEl.innerHTML = '';
+        for (const item of plan) {
+            const li = document.createElement('li');
+            li.className = 'list-group-item d-flex justify-content-between align-items-start gap-2';
+            const cur = formatHealthValue(item.check.current);
+            const rec = formatHealthValue(item.check.recommended);
+            li.innerHTML = `<div class="flex-grow-1">`
+                + `<div class="fw-semibold">${escapeHtml(item.check.label || item.check.id || '')}</div>`
+                + `<div class="text-body-secondary small">${escapeHtml(item.sectionTitle)}</div>`
+                + `</div>`
+                + `<div class="text-end small">`
+                +   `<code class="text-danger-emphasis">${cur}</code> `
+                +   `<span class="text-body-tertiary">→</span> `
+                +   `<code class="text-success-emphasis">${rec}</code>`
+                + `</div>`;
+            listEl.appendChild(li);
+        }
+        if (resultsEl) {
+            resultsEl.classList.add('d-none');
+            resultsEl.innerHTML = '';
+        }
+        applyBtn.disabled = false;
+        applyBtn.innerHTML = `<i class="bi bi-magic me-1"></i>Apply ${plan.length}`;
+
+        const modal = window.bootstrap && window.bootstrap.Modal
+            ? window.bootstrap.Modal.getOrCreateInstance(modalEl)
+            : null;
+        if (!modal) return;
+
+        // Wire one-shot Apply handler. Replace the button element to
+        // detach any previous listeners — calling .show() with stale
+        // listeners would trigger every prior click handler (the modal
+        // is reused across Critical/All/Per-server invocations).
+        const newApplyBtn = applyBtn.cloneNode(true);
+        applyBtn.parentNode.replaceChild(newApplyBtn, applyBtn);
+        newApplyBtn.addEventListener('click', async () => {
+            newApplyBtn.disabled = true;
+            if (cancelBtn) cancelBtn.disabled = true;
+            newApplyBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Applying…';
+            const outcomes = [];
+            for (let i = 0; i < plan.length; i++) {
+                const item = plan[i];
+                try {
+                    const res = await _dispatchCheckAction(serverId, item.fixAction);
+                    outcomes.push({ item, ok: !!res.ok, error: res.error });
+                } catch (exc) {
+                    outcomes.push({ item, ok: false, error: String(exc) });
+                }
+            }
+            const okCount = outcomes.filter((o) => o.ok).length;
+            const failCount = outcomes.length - okCount;
+            if (resultsEl) {
+                resultsEl.classList.remove('d-none');
+                const cls = failCount === 0 ? 'text-success' : (okCount === 0 ? 'text-danger' : 'text-warning');
+                let html = `<div class="${cls} mb-2"><strong>${okCount}/${outcomes.length} applied</strong>`;
+                if (failCount > 0) html += ` (${failCount} failed)`;
+                html += `</div>`;
+                if (failCount > 0) {
+                    html += '<ul class="mb-0 ps-3">';
+                    for (const o of outcomes) {
+                        if (o.ok) continue;
+                        html += `<li>${escapeHtml(o.item.check.label || o.item.check.id || '')}: ${escapeHtml(o.error || 'failed')}</li>`;
+                    }
+                    html += '</ul>';
+                }
+                resultsEl.innerHTML = html;
+            }
+            newApplyBtn.innerHTML = '<i class="bi bi-check2 me-1"></i>Done';
+            // Re-probe so the readiness card reflects post-apply truth.
+            try { await runReadinessProbe(serverId, serverType); } catch (_e) { /* swallow */ }
+            // Auto-close after a short pause so the user sees the result
+            // confirmation. Keep the modal open if there were failures so
+            // the user can read the per-failure detail.
+            if (failCount === 0) {
+                setTimeout(() => modal.hide(), 1200);
+            }
+            if (cancelBtn) {
+                cancelBtn.disabled = false;
+                cancelBtn.textContent = 'Close';
+            }
+        });
+
+        modal.show();
     }
 
     function escapeHtml(s) {
@@ -2588,12 +3048,32 @@
         if (refreshBtn) refreshBtn.addEventListener('click', (ev) => refreshLibrariesFromModal(ev.currentTarget));
         const testConnBtn = document.getElementById('editTestConnectionBtn');
         if (testConnBtn) testConnBtn.addEventListener('click', testEditConnection);
-        // Unified "Previews readiness" card (v3).
+        // Unified "Previews readiness" card (v3). Both Fix buttons go
+        // through the preview modal so the user sees exactly what's
+        // about to change before committing — no more silent flips.
         const readinessFixBtn = document.getElementById('editReadinessFixAllBtn');
-        if (readinessFixBtn) readinessFixBtn.addEventListener('click', () => {
+        if (readinessFixBtn) readinessFixBtn.addEventListener('click', async () => {
             const id = (_editState && _editState.server && _editState.server.id) || '';
             const type = (_editState && _editState.server && _editState.server.type) || '';
-            if (id) runReadinessFixAll(id, type);
+            if (!id) return;
+            // Look up by the in-flight serverId so a stale probe from a
+            // previously-open modal can't leak into this one.
+            const data = _readinessDataByServer.get(id);
+            if (!data) return;
+            const plan = _buildFixPlan(data.sections || [], 'all');
+            if (!plan.length) return;
+            await _runFixPlanWithPreview(id, type, plan, 'Apply all recommended fixes');
+        });
+        const readinessFixCriticalBtn = document.getElementById('editReadinessFixCriticalBtn');
+        if (readinessFixCriticalBtn) readinessFixCriticalBtn.addEventListener('click', async () => {
+            const id = (_editState && _editState.server && _editState.server.id) || '';
+            const type = (_editState && _editState.server && _editState.server.type) || '';
+            if (!id) return;
+            const data = _readinessDataByServer.get(id);
+            if (!data) return;
+            const plan = _buildFixPlan(data.sections || [], 'critical');
+            if (!plan.length) return;
+            await _runFixPlanWithPreview(id, type, plan, 'Fix critical issues only');
         });
         const readinessRecheckBtn = document.getElementById('editReadinessRecheckBtn');
         if (readinessRecheckBtn) readinessRecheckBtn.addEventListener('click', () => {

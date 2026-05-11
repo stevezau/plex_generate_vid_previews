@@ -672,13 +672,18 @@ class EmbyServer(EmbyApiClient):
             logger.debug("Library flags probe failed for {!r}: {}", self.name, exc)
             folders = []
 
+        any_modern_trickplay_flag = False
+        any_libraries_seen = False
         if isinstance(folders, list):
             for raw in folders:
                 if not isinstance(raw, dict):
                     continue
+                any_libraries_seen = True
                 lib_id = str(raw.get("ItemId") or raw.get("Id") or raw.get("Name") or "")
                 lib_name = str(raw.get("Name") or "")
                 options = raw.get("LibraryOptions") or {}
+                if "ExtractTrickplayImagesDuringLibraryScan" in options:
+                    any_modern_trickplay_flag = True
                 for flag, label, recommended, severity, rationale in self._RECOMMENDED_SETTINGS:
                     if flag == "ExtractTrickplayImagesDuringLibraryScan" and flag not in options:
                         continue
@@ -711,6 +716,39 @@ class EmbyServer(EmbyApiClient):
                             "meta": {"flag": flag, "library_id": lib_id, "library_name": lib_name},
                         }
                     )
+
+        # Emby <4.8 doesn't expose ExtractTrickplayImagesDuringLibraryScan
+        # at all. Silently skipping the check (line above) made libraries
+        # show fewer rows on older Embys with no explanation — users
+        # wondered if a config change had eaten the row. Surface a single
+        # info note so the gap is intentional and visible.
+        if any_libraries_seen and not any_modern_trickplay_flag:
+            library_checks.append(
+                {
+                    "id": "trickplay_flag_unavailable",
+                    "label": "Trickplay extraction toggle not available",
+                    "docs_anchor": "library-settings",
+                    "tooltip": "This Emby version is older than 4.8",
+                    "explanation": (
+                        "<p><strong>What this means:</strong> the per-library "
+                        "<code>ExtractTrickplayImagesDuringLibraryScan</code> flag "
+                        "was added in Emby 4.8. Older versions don't expose it, so "
+                        "this app can't toggle Emby's scan-time trickplay extraction "
+                        "for you.</p>"
+                        "<p><strong>Impact:</strong> sidecar BIF previews this app "
+                        "publishes still work — Emby auto-discovers them by filename "
+                        "convention regardless of version. Upgrade to Emby 4.8+ if "
+                        "you want the toggle exposed here.</p>"
+                    ),
+                    "ok": True,
+                    "severity": "info",
+                    "current": "unavailable on this Emby version",
+                    "recommended": None,
+                    "actions": {},
+                    "reason": None,
+                    "meta": {"flag": "ExtractTrickplayImagesDuringLibraryScan"},
+                }
+            )
 
         sections.append(
             {

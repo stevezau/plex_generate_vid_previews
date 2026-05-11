@@ -387,7 +387,7 @@ class PlexServer(MediaServer):
                     results[section_key] = f"error: {exc}"
         return results
 
-    def get_vendor_extraction_status(self) -> dict[str, int]:
+    def get_vendor_extraction_status(self) -> dict[str, Any]:
         """Audit per-section ``enableBIFGeneration`` to drive the Edit modal CTA.
 
         Reads the same field ``set_vendor_extraction`` writes — for each
@@ -399,6 +399,13 @@ class PlexServer(MediaServer):
         a built-in registry); we count those as ``skipped`` so the UI can
         render the same "1 skipped (custom agent — toggle in Plex UI)"
         footnote that ``set_vendor_extraction`` does.
+
+        Returns a dict with aggregate counts plus a per-library
+        ``libraries`` list (``[{key, name, state}]``, where ``state`` is
+        one of ``"extracting"`` / ``"stopped"`` / ``"skipped"``). The
+        readiness probe uses the per-library detail to emit one
+        actionable row per library; older callers using only the
+        aggregate counts continue to work unchanged.
         """
         from ..plex_client import retry_plex_call
 
@@ -406,10 +413,19 @@ class PlexServer(MediaServer):
             sections = retry_plex_call(self._connect().library.sections)
         except Exception as exc:
             logger.debug("Vendor-extraction status probe failed for {!r}: {}", self.name, exc)
-            return {"extracting_count": 0, "stopped_count": 0, "skipped_count": 0, "total": 0}
+            return {
+                "extracting_count": 0,
+                "stopped_count": 0,
+                "skipped_count": 0,
+                "total": 0,
+                "libraries": [],
+            }
 
         extracting = stopped = skipped = 0
+        libraries: list[dict[str, Any]] = []
         for section in sections:
+            section_key = str(getattr(section, "key", "") or "")
+            section_title = str(getattr(section, "title", "") or section_key or "Unknown library")
             try:
                 # plexapi exposes per-section settings (the "Advanced"
                 # tab in Plex web UI) via ``section.settings()`` —
@@ -426,26 +442,31 @@ class PlexServer(MediaServer):
                 )
                 if bif_setting is None:
                     skipped += 1
+                    libraries.append({"key": section_key, "name": section_title, "state": "skipped"})
                     continue
                 # Setting.value is True/False for bool settings.
                 if bool(getattr(bif_setting, "value", False)):
                     extracting += 1
+                    libraries.append({"key": section_key, "name": section_title, "state": "extracting"})
                 else:
                     stopped += 1
+                    libraries.append({"key": section_key, "name": section_title, "state": "stopped"})
             except Exception as exc:
                 logger.debug(
                     "Could not audit Plex section {} BIF-generation on {!r}: {}",
-                    getattr(section, "key", "?"),
+                    section_key or "?",
                     self.name,
                     exc,
                 )
                 skipped += 1
+                libraries.append({"key": section_key, "name": section_title, "state": "skipped"})
 
         return {
             "extracting_count": extracting,
             "stopped_count": stopped,
             "skipped_count": skipped,
             "total": extracting + stopped + skipped,
+            "libraries": libraries,
         }
 
     # ------------------------------------------------------------------
@@ -1024,98 +1045,191 @@ class PlexServer(MediaServer):
         )
 
         # --- Vendor-side extraction ---------------------------------
+        # Promote this from a single aggregate "stopped on N/M" info row
+        # to one actionable row per library, mirroring how Emby and
+        # Jellyfin render their per-library trickplay flags. Users with
+        # 5 libraries where 2 still have BIF generation on now see two
+        # explicit recommended-severity rows with per-library Disable
+        # buttons, instead of one info row that hides the offenders.
         vendor_probe_ok = True
         vendor_probe_reason = ""
         try:
             extraction_status = self.get_vendor_extraction_status()
         except Exception as exc:
             logger.debug("Vendor-extraction status probe failed for {!r}: {}", self.name, exc)
-            extraction_status = {"extracting_count": 0, "stopped_count": 0, "skipped_count": 0, "total": 0}
+            extraction_status = {
+                "extracting_count": 0,
+                "stopped_count": 0,
+                "skipped_count": 0,
+                "total": 0,
+                "libraries": [],
+            }
             vendor_probe_ok = False
             vendor_probe_reason = f"Could not read library extraction state: {exc}"
-        stopped = extraction_status.get("stopped_count", 0)
-        extracting = extraction_status.get("extracting_count", 0)
+
+        vendor_explanation = (
+            "<p><strong>What this controls:</strong> Plex's per-library "
+            "<code>enableBIFGeneration</code> flag. When on, Plex generates its own "
+            "BIF previews during library analysis — the same job this app does.</p>"
+            "<p><strong>Why we recommend off:</strong> this app writes BIFs directly into "
+            "Plex's bundle directory. If Plex is also generating its own, you end up with "
+            "two processes doing the same work — this app's output lands first, Plex's "
+            "subsequent pass overwrites it with a lower-quality or differently-spaced "
+            "version, undoing everything you just generated.</p>"
+            "<p><strong>Custom-agent libraries</strong> (XBMCnfoMovieImporter and similar) "
+            "can't be toggled via the Plex API — Plex's section-edit endpoint rejects the "
+            "change. Those rows are surfaced as a separate footnote and you have to disable "
+            "BIF generation manually in Plex's web UI for them.</p>"
+        )
+
+        vendor_checks: list[dict[str, Any]] = []
         if not vendor_probe_ok:
-            vendor_current = "unknown (probe failed)"
-        elif stopped + extracting:
-            vendor_current = f"stopped on {stopped}/{stopped + extracting}"
+            # Probe failed entirely — preserve the prior single-row shape
+            # so the UI keeps surfacing "couldn't read state" instead of
+            # silently going green. (Regression-tested by
+            # test_vendor_extraction_probe_failure_is_not_green.)
+            vendor_checks.append(
+                {
+                    "id": "vendor_extraction_state",
+                    "label": "Plex's own BIF generation",
+                    "docs_anchor": "vendor-extraction",
+                    "tooltip": "Stop Plex generating its own BIF previews",
+                    "explanation": vendor_explanation,
+                    "ok": False,
+                    "severity": "info",
+                    "current": "unknown (probe failed)",
+                    "recommended": "stopped",
+                    "actions": {},
+                    "reason": vendor_probe_reason or None,
+                    "meta": extraction_status,
+                }
+            )
         else:
-            vendor_current = "unknown"
-        sections.append(
-            {
-                "id": "vendor_extraction",
-                "title": "Vendor-side preview generation",
-                "docs_anchor": "vendor-extraction",
-                "ok": vendor_probe_ok,
-                "severity": "info",
-                "checks": [
+            libs = extraction_status.get("libraries") or []
+            auditable = [lib for lib in libs if lib.get("state") in ("extracting", "stopped")]
+            skipped = [lib for lib in libs if lib.get("state") == "skipped"]
+
+            for lib in auditable:
+                section_key = str(lib.get("key") or "")
+                section_name = str(lib.get("name") or section_key or "library")
+                extracting = lib.get("state") == "extracting"
+                vendor_checks.append(
                     {
-                        "id": "vendor_extraction_state",
-                        "label": "Plex's own BIF generation",
+                        "id": f"vendor_extraction:{section_key}" if section_key else "vendor_extraction_state",
+                        "label": f"{section_name} — Plex's BIF generation",
                         "docs_anchor": "vendor-extraction",
-                        "tooltip": "Stop Plex generating its own BIF previews",
-                        "explanation": (
-                            "<p><strong>What this controls:</strong> whether Plex generates "
-                            "its own BIF bundle previews ("
-                            "<code>enableBIFGeneration</code> per library section) during "
-                            "library analysis. Shortcut for toggling the setting across every "
-                            "library in one batch.</p>"
-                            "<p><strong>Why we recommend stopping it:</strong> this app "
-                            "generates BIFs and writes them directly to Plex's bundle "
-                            "directory. If Plex is also generating its own, you end up with "
-                            "two processes doing the same work — this app's output lands first, "
-                            "Plex's subsequent pass overwrites it with a lower-quality or "
-                            "differently-spaced version, undoing everything you just "
-                            "generated.</p>"
-                            "<p><strong>What happens if you re-enable:</strong> Plex's "
-                            "generation runs in parallel, and whichever writes last wins. "
-                            "Non-destructive in the data-loss sense, but your app-published "
-                            "previews may get stomped by Plex's own pass. Custom-agent "
-                            "libraries (common when using XBMCnfoMovieImporter etc.) can't "
-                            "be toggled via the API — Plex's section-edit endpoint rejects "
-                            "the change for those; they show as 'skipped' in the result.</p>"
-                        ),
-                        "ok": vendor_probe_ok,
-                        "severity": "info",
-                        "current": vendor_current,
-                        "recommended": "stopped",
+                        "tooltip": "Stop Plex generating its own BIF previews on this library",
+                        "explanation": vendor_explanation,
+                        "ok": not extracting,
+                        # Recommended (not info) so the section bubbles up amber
+                        # in the new "Recommended" UI bucket and the per-library
+                        # offenders stop hiding under an info-coloured banner.
+                        "severity": "recommended",
+                        "current": bool(extracting),
+                        "recommended": False,
                         "actions": {
                             "disable": {
                                 "action": "set_vendor_extraction",
-                                "args": {"scan_extraction": False},
+                                "args": {"scan_extraction": False, "library_ids": [section_key]}
+                                if section_key
+                                else {"scan_extraction": False},
                                 "confirm": {
                                     "kind": "button",
                                     "phrase": "",
                                     "body": (
-                                        "Stops Plex generating its own BIF previews across "
-                                        "all supported library sections. Recommended when "
-                                        "this app owns preview generation. Non-destructive — "
-                                        "existing bundles stay on disk. Custom-agent libraries "
-                                        "can't be toggled via the API and will be skipped."
+                                        f"Stops Plex generating its own BIF previews on "
+                                        f"<strong>{section_name}</strong>. Recommended when this "
+                                        "app owns preview generation. Non-destructive — existing "
+                                        "bundles stay on disk."
                                     ),
                                 },
                             },
                             "enable": {
                                 "action": "set_vendor_extraction",
-                                "args": {"scan_extraction": True},
+                                "args": {"scan_extraction": True, "library_ids": [section_key]}
+                                if section_key
+                                else {"scan_extraction": True},
                                 "confirm": {
                                     "kind": "button",
                                     "phrase": "",
                                     "body": (
-                                        "Re-enables Plex's own BIF generation across all "
-                                        "supported library sections. Plex will generate its "
-                                        "OWN previews in parallel to this app — whichever "
-                                        "writes last to each bundle directory wins, so app-"
-                                        "published previews may get overwritten by Plex's "
-                                        "subsequent analysis pass."
+                                        f"Re-enables Plex's own BIF generation on "
+                                        f"<strong>{section_name}</strong>. Plex will generate its "
+                                        "own previews in parallel to this app — whichever writes "
+                                        "last wins, so app-published previews may get overwritten."
                                     ),
                                 },
                             },
                         },
-                        "reason": vendor_probe_reason or None,
+                        "reason": None,
+                        "meta": {"library_id": section_key, "library_name": section_name},
+                    }
+                )
+
+            if skipped:
+                # Custom-agent libraries can't be toggled via the API, but
+                # users still need to know they exist so they can disable
+                # BIF generation manually in Plex's web UI.
+                skipped_names = ", ".join(str(lib.get("name") or lib.get("key") or "?") for lib in skipped)
+                vendor_checks.append(
+                    {
+                        "id": "vendor_extraction_skipped",
+                        "label": f"{len(skipped)} library/libraries can't be toggled via API",
+                        "docs_anchor": "vendor-extraction",
+                        "tooltip": "Custom-agent libraries — toggle in Plex web UI manually",
+                        "explanation": vendor_explanation,
+                        "ok": True,
+                        "severity": "info",
+                        "current": skipped_names,
+                        "recommended": None,
+                        "actions": {},
+                        "reason": (
+                            "Plex's section-edit endpoint rejects BIF-generation toggles for "
+                            "custom-agent libraries. Open Plex web UI → Library → Edit → Advanced "
+                            "to disable it on these manually."
+                        ),
+                        "meta": {"libraries": skipped},
+                    }
+                )
+
+            if not vendor_checks:
+                # No libraries at all (fresh install). Keep the section
+                # visible so users know what it's for, but mark it clean.
+                vendor_checks.append(
+                    {
+                        "id": "vendor_extraction_state",
+                        "label": "Plex's own BIF generation",
+                        "docs_anchor": "vendor-extraction",
+                        "tooltip": "No libraries to audit yet",
+                        "explanation": vendor_explanation,
+                        "ok": True,
+                        "severity": "info",
+                        "current": "no libraries",
+                        "recommended": None,
+                        "actions": {},
+                        "reason": None,
                         "meta": extraction_status,
                     }
-                ],
+                )
+
+        # Section is OK only when every per-library row passes. Keeps
+        # severity "recommended" so a row with extraction on amber-flags
+        # the section without bumping overall_ok (which is critical-only).
+        vendor_section_ok = vendor_probe_ok and all(c.get("ok") for c in vendor_checks)
+        vendor_section_severity = "info"
+        if not vendor_probe_ok:
+            vendor_section_severity = "info"
+        elif not vendor_section_ok:
+            vendor_section_severity = "recommended"
+
+        sections.append(
+            {
+                "id": "vendor_extraction",
+                "title": "Vendor-side preview generation",
+                "docs_anchor": "vendor-extraction",
+                "ok": vendor_section_ok,
+                "severity": vendor_section_severity,
+                "checks": vendor_checks,
             }
         )
 

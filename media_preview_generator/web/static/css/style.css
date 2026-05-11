@@ -1793,3 +1793,65 @@ html[data-bs-theme="light"] .system-version-row { border-color: rgba(0, 0, 0, 0.
     margin-left: 0.1em;
     opacity: 0.6;
 }
+
+/* Setup Health redesign — bucketed checks (Must fix / Recommended /
+ * All good) plus side-by-side current/recommended diffs. The aim is
+ * "one glance answers: do I need to act, and what value should it be?"
+ * — pre-redesign every failing check rendered identically and the
+ * single "Currently <X>" line left users guessing whether <X> was good
+ * or bad. */
+.readiness-bucket > summary {
+    list-style: none;
+    background: var(--bs-tertiary-bg);
+    border: 1px solid var(--bs-border-color);
+    transition: background-color 120ms ease;
+}
+.readiness-bucket > summary::-webkit-details-marker { display: none; }
+.readiness-bucket > summary:hover { background: var(--bs-secondary-bg); }
+.readiness-bucket[open] > summary { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.readiness-bucket-body {
+    border: 1px solid var(--bs-border-color);
+    border-top: none;
+    border-bottom-left-radius: 0.375rem;
+    border-bottom-right-radius: 0.375rem;
+    padding-bottom: 0.5rem;
+}
+
+/* Side-by-side current vs recommended pill pair. Mismatch is tinted
+ * red on the left and green on the right — colour does the heavy
+ * lifting so the user doesn't have to read the values to spot a
+ * problem. */
+.readiness-values .readiness-current {
+    background: var(--bs-danger-bg-subtle);
+    color: var(--bs-danger-text-emphasis);
+    border: 1px solid var(--bs-danger-border-subtle);
+}
+.readiness-values .readiness-recommended {
+    background: var(--bs-success-bg-subtle);
+    color: var(--bs-success-text-emphasis);
+    border: 1px solid var(--bs-success-border-subtle);
+}
+.readiness-values .readiness-label {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    opacity: 0.75;
+}
+.readiness-values code {
+    background: transparent;
+    color: inherit;
+    font-weight: 600;
+}
+.readiness-arrow { font-weight: 700; }
+
+/* Inline server-name glyph (the indicator shown on /servers cards
+ * next to each server's title). Count badge sits to the right of the
+ * icon so users can tell "1 thing to check" from "5 things to check"
+ * without hovering for the tooltip. */
+.server-readiness-glyph .readiness-count-badge {
+    font-size: 0.65rem;
+    padding: 0.15rem 0.35rem;
+    line-height: 1;
+    margin-left: 0.25rem;
+    vertical-align: middle;
+}
