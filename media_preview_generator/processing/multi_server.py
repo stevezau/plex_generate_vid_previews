@@ -508,6 +508,18 @@ def _resolve_publishers(
         if cfg is None:
             continue
 
+        # Defense in depth: matched_ids is already gated by
+        # server_owns_path (which checks enabled), but item_id_hints
+        # comes from upstream callers (the webhook router today, others
+        # tomorrow) and could otherwise revive a disabled server here.
+        if not cfg.enabled:
+            logger.debug(
+                "Publisher candidate {!r} ({}) is disabled — skipping (hint was provided but ignored)",
+                cfg.name,
+                sid,
+            )
+            continue
+
         # Per-server exclude filter — same shape as the legacy global
         # exclude_paths setting, just scoped to one server.
         if cfg.exclude_paths and is_path_excluded(canonical_path, cfg.exclude_paths):

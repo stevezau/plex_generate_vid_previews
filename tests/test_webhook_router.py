@@ -1286,3 +1286,231 @@ class TestPayloadSizeLimit:
         assert response.status_code == 202, response.status_code
         body = response.get_json() or {}
         assert body.get("status") == "queued", body
+
+
+class TestDisabledServerWebhooks:
+    """Matrix coverage for the production-bug shape called out in
+    .claude/rules/testing.md ('cover the matrix, not one cell'):
+    every webhook entry point must reject disabled servers.
+
+    Pre-fix bug: ``_match_registry_server`` and ``webhook_per_server``
+    looked up servers by vendor type only, ignoring ``cfg.enabled``.
+    With a single configured Jellyfin/Emby server toggled off, the
+    ``len(candidates) == 1`` short-circuit still returned it, the
+    router ran ``parse_webhook`` + ``resolve_item_to_remote_path``,
+    a job was created, and the disabled server received publishes
+    — burning CPU on a server the user thought was paused.
+
+    Each test asserts NO ``create_vendor_webhook_job`` call AND a
+    202 response with the diagnostic reason in the body so users
+    tailing logs / API responses can tell *why* nothing happened.
+    """
+
+    def test_jellyfin_webhook_ignored_when_server_disabled(self, client, auth_headers):
+        _seed_servers(
+            [
+                {
+                    "id": "jelly-1",
+                    "type": "jellyfin",
+                    "name": "Jellyfin Off",
+                    "enabled": False,
+                    "url": "http://jellyfin:8096",
+                    "auth": {"method": "api_key", "api_key": "k"},
+                    "libraries": [{"id": "1", "name": "TV", "remote_paths": ["/data/tv"], "enabled": True}],
+                }
+            ]
+        )
+
+        with patch(
+            "media_preview_generator.web.webhook_router.create_vendor_webhook_job",
+            return_value="job-should-not-be-created",
+        ) as proc:
+            response = client.post(
+                "/api/webhooks/incoming",
+                headers={**auth_headers, "Content-Type": "application/json"},
+                data=json.dumps(
+                    {
+                        "NotificationType": "ItemAdded",
+                        "ItemId": "jf-1",
+                        "ItemType": "Episode",
+                        "ServerId": "jelly-1",
+                    }
+                ),
+            )
+
+        assert response.status_code == 202, response.get_data(as_text=True)
+        body = response.get_json() or {}
+        assert body.get("status") == "ignored", body
+        # The reason has to make it clear *why* — users reading logs need to
+        # tell "no match" (mis-config) apart from "playback event" (expected).
+        assert "match jellyfin" in (body.get("reason") or ""), body
+        assert proc.call_count == 0, "Disabled Jellyfin server must not receive a webhook job"
+
+    def test_emby_webhook_ignored_when_server_disabled(self, client, auth_headers):
+        _seed_servers(
+            [
+                {
+                    "id": "emby-1",
+                    "type": "emby",
+                    "name": "Emby Off",
+                    "enabled": False,
+                    "url": "http://emby:8096",
+                    "auth": {"method": "api_key", "api_key": "k"},
+                    "libraries": [{"id": "1", "name": "Movies", "remote_paths": ["/em/movies"], "enabled": True}],
+                }
+            ]
+        )
+
+        with patch(
+            "media_preview_generator.web.webhook_router.create_vendor_webhook_job",
+            return_value="job-should-not-be-created",
+        ) as proc:
+            response = client.post(
+                "/api/webhooks/incoming",
+                headers={**auth_headers, "Content-Type": "application/json"},
+                data=json.dumps(
+                    {
+                        "Event": "library.new",
+                        "Item": {"Id": "em-42"},
+                        "Server": {"Id": "emby-1"},
+                    }
+                ),
+            )
+
+        assert response.status_code == 202, response.get_data(as_text=True)
+        body = response.get_json() or {}
+        assert body.get("status") == "ignored", body
+        assert "match emby" in (body.get("reason") or ""), body
+        assert proc.call_count == 0, "Disabled Emby server must not receive a webhook job"
+
+    def test_plex_webhook_ignored_when_server_disabled(self, client, auth_headers):
+        """Vendor-uniform: same fix must apply to Plex too — proves the gating
+        is shared, not Emby/Jellyfin-specific.
+        """
+        _seed_servers(
+            [
+                {
+                    "id": "plex-1",
+                    "type": "plex",
+                    "name": "Plex Off",
+                    "enabled": False,
+                    "url": "http://plex:32400",
+                    "auth": {"token": "tok"},
+                    "libraries": [{"id": "1", "name": "Movies", "remote_paths": ["/data/movies"], "enabled": True}],
+                }
+            ]
+        )
+
+        plex_payload = {
+            "event": "library.new",
+            "Metadata": {"ratingKey": "557676", "title": "Foo", "type": "movie"},
+        }
+        with patch(
+            "media_preview_generator.web.webhook_router.create_vendor_webhook_job",
+            return_value="job-should-not-be-created",
+        ) as proc:
+            response = client.post(
+                "/api/webhooks/incoming",
+                headers=auth_headers,
+                data={"payload": json.dumps(plex_payload)},
+                content_type="multipart/form-data",
+            )
+
+        assert response.status_code == 202, response.get_data(as_text=True)
+        body = response.get_json() or {}
+        assert body.get("status") == "ignored", body
+        assert "match plex" in (body.get("reason") or ""), body
+        assert proc.call_count == 0, "Disabled Plex server must not receive a webhook job"
+
+    @pytest.mark.parametrize(
+        "vendor,server_id,seed,payload_body,is_multipart",
+        [
+            (
+                "emby",
+                "emby-1",
+                {
+                    "id": "emby-1",
+                    "type": "emby",
+                    "name": "Emby Off",
+                    "enabled": False,
+                    "url": "http://emby:8096",
+                    "auth": {"method": "api_key", "api_key": "k"},
+                    "libraries": [{"id": "1", "name": "Movies", "remote_paths": ["/em/movies"], "enabled": True}],
+                },
+                {"Event": "library.new", "Item": {"Id": "em-42"}, "Server": {"Id": "emby-1"}},
+                False,
+            ),
+            (
+                "jellyfin",
+                "jelly-1",
+                {
+                    "id": "jelly-1",
+                    "type": "jellyfin",
+                    "name": "Jellyfin Off",
+                    "enabled": False,
+                    "url": "http://jelly:8096",
+                    "auth": {"method": "api_key", "api_key": "k"},
+                    "libraries": [{"id": "1", "name": "TV", "remote_paths": ["/data/tv"], "enabled": True}],
+                },
+                {"NotificationType": "ItemAdded", "ItemId": "jf-1", "ItemType": "Episode", "ServerId": "jelly-1"},
+                False,
+            ),
+            (
+                "plex",
+                "plex-1",
+                {
+                    "id": "plex-1",
+                    "type": "plex",
+                    "name": "Plex Off",
+                    "enabled": False,
+                    "url": "http://plex:32400",
+                    "auth": {"token": "tok"},
+                    "libraries": [{"id": "1", "name": "Movies", "remote_paths": ["/data/movies"], "enabled": True}],
+                },
+                {"event": "library.new", "Metadata": {"ratingKey": "557676", "title": "Foo", "type": "movie"}},
+                True,
+            ),
+        ],
+        ids=["emby", "jellyfin", "plex"],
+    )
+    def test_per_server_url_rejects_disabled_server(
+        self, client, auth_headers, vendor, server_id, seed, payload_body, is_multipart
+    ):
+        """Per-server fallback URL must honour the disable switch
+        for every vendor — Plex / Emby / Jellyfin all share the same
+        ``webhook_per_server`` route, so the gating must hold uniformly.
+
+        Pre-fix this matrix had only the Emby cell. A future per-vendor
+        special-case in ``webhook_per_server`` could regress only Plex
+        or Jellyfin and the single-cell test wouldn't catch it — the
+        D34-shape regression the testing rules call out.
+
+        202 (not 404) — the server exists, it's just paused. 404 would
+        imply the user mistyped the URL; 202 with reason='server is
+        disabled' tells them exactly what to do.
+        """
+        _seed_servers([seed])
+
+        with patch(
+            "media_preview_generator.web.webhook_router.create_vendor_webhook_job",
+            return_value="job-should-not-be-created",
+        ) as proc:
+            if is_multipart:
+                response = client.post(
+                    f"/api/webhooks/server/{server_id}",
+                    headers=auth_headers,
+                    data={"payload": json.dumps(payload_body)},
+                    content_type="multipart/form-data",
+                )
+            else:
+                response = client.post(
+                    f"/api/webhooks/server/{server_id}",
+                    headers={**auth_headers, "Content-Type": "application/json"},
+                    data=json.dumps(payload_body),
+                )
+
+        assert response.status_code == 202, response.get_data(as_text=True)
+        body = response.get_json() or {}
+        assert body.get("status") == "ignored", body
+        assert body.get("reason") == "server is disabled", body
+        assert proc.call_count == 0, f"Per-server URL must not bypass the disable switch for {vendor}"

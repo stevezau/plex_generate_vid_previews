@@ -193,7 +193,11 @@ def _match_registry_server(
     if expected_type is None:
         return None, None
 
-    candidates = [(registry.get(c.id), c) for c in registry.configs() if c.type is expected_type]
+    # Disabled servers are off the air — webhooks must not revive them.
+    # Mirror the gating that ownership.server_owns_path and the orchestrator
+    # scans already enforce; without this, a single webhook fire from a
+    # disabled vendor still creates jobs and burns CPU.
+    candidates = [(registry.get(c.id), c) for c in registry.configs() if c.type is expected_type and c.enabled]
 
     if server_id_hint:
         # Match against the server's *self-reported* identity
@@ -432,8 +436,21 @@ def webhook_per_server(server_id: str):
         return jsonify({"status": "ignored", "reason": parse_error or "unrecognised"}), 400
 
     registry = _build_registry_from_settings()
-    if registry.get_config(server_id) is None:
+    server_cfg = registry.get_config(server_id)
+    if server_cfg is None:
         return jsonify({"status": "ignored", "reason": f"server {server_id!r} not configured"}), 404
+    if not server_cfg.enabled:
+        # The server exists but the user has switched it off — return 202
+        # (accepted-but-ignored) so the webhook source treats it as success
+        # and stops retrying. 404 would imply "fix your config"; the user's
+        # config is fine, they just paused this server.
+        logger.info(
+            "Webhook router: ignoring per-server payload for {!r} ({}) — server is disabled. "
+            "Re-enable on the Servers page if you want webhooks to flow.",
+            server_cfg.name,
+            server_id,
+        )
+        return jsonify({"status": "ignored", "reason": "server is disabled"}), 202
 
     canonical, item_id_by_server, error = _resolve_to_canonical_path(
         kind=kind,

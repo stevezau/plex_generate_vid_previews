@@ -697,6 +697,62 @@ class TestMultiServerGuards:
             f"Vendor hint must propagate to ProcessableItem.item_id_by_server; got {items[0]!r}"
         )
 
+    def test_resolve_publishers_skips_disabled_server_even_with_hint(self, tmp_path):
+        """Defense-in-depth: an item_id hint for a disabled server must NOT
+        revive it as a publisher.
+
+        Pre-fix: ``_resolve_publishers`` unioned ``matched_ids`` (already
+        gated by ``server_owns_path`` → enabled-only) with
+        ``item_id_hints.keys()`` — a webhook hint for a disabled server
+        slipped past the ownership gate and got an adapter, so the
+        disabled server still received the publish.
+
+        This unit test calls ``_resolve_publishers`` directly so the
+        gating is asserted at the function boundary and survives any
+        future caller (not just today's webhook router).
+        """
+        from media_preview_generator.processing.multi_server import _resolve_publishers
+        from media_preview_generator.servers import ServerRegistry
+
+        # One disabled jellyfin server. With a path that *would* be owned
+        # if it were enabled, ``server_owns_path`` returns None on disabled
+        # servers (see servers/ownership.py), so matched_ids = {} — the
+        # hint is the only thing trying to revive it.
+        registry = ServerRegistry.from_settings(
+            [
+                {
+                    "id": "jelly-off",
+                    "type": "jellyfin",
+                    "name": "Jellyfin Off",
+                    "enabled": False,
+                    "url": "http://jelly:8096",
+                    "auth": {"method": "api_key", "api_key": "k"},
+                    "libraries": [
+                        {
+                            "id": "1",
+                            "name": "Movies",
+                            "remote_paths": ["/data/movies"],
+                            "enabled": True,
+                        }
+                    ],
+                    "exclude_paths": [],
+                    "output": {"adapter": "jellyfin_trickplay", "width": 320, "frame_interval": 10},
+                }
+            ],
+        )
+
+        publishers = _resolve_publishers(
+            "/data/movies/Foo.mkv",
+            registry,
+            item_id_by_server={"jelly-off": "jf-item-1"},
+        )
+
+        assert publishers == [], (
+            f"Disabled server with item-id hint must not appear as a publisher; got {publishers!r}. "
+            "If this fails, the defense-in-depth gate in _resolve_publishers regressed and a "
+            "webhook for a paused server can again burn CPU on it."
+        )
+
     def test_webhook_path_no_owners_fast_skips(self, tmp_path):
         """No enabled server claims the path → orchestrator fast-skips
         with no worker pickup. Without this gate the path would still hit
