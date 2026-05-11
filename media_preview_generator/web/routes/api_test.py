@@ -59,9 +59,20 @@ def __test_reset():
         with sched_mod._schedule_lock:  # noqa: SLF001
             if sched_mod._schedule_manager is not None:  # noqa: SLF001
                 try:
-                    sched_mod._schedule_manager.stop()  # noqa: SLF001
+                    # ScheduleManager.stop() calls shutdown(wait=False) —
+                    # fire-and-forget, fine for process teardown but
+                    # leaks APScheduler background threads + SQLAlchemy
+                    # connections across rapid reset cycles. Each reset
+                    # was queueing a new thread before the previous one
+                    # exited; after ~40 resets per worker the Flask
+                    # subprocess ran out of thread/FD budget and
+                    # Playwright crashed the worker mid-test.
+                    # shutdown(wait=True) blocks until the old thread
+                    # is gone before we let `_schedule_manager = None`
+                    # release the only reference.
+                    sched_mod._schedule_manager.scheduler.shutdown(wait=True)  # noqa: SLF001
                 except Exception as exc:
-                    errors.append(f"scheduler.stop: {type(exc).__name__}: {exc}")
+                    errors.append(f"scheduler.shutdown: {type(exc).__name__}: {exc}")
             # Drop scheduler.db so the new instance reads a clean
             # jobstore — done as part of file cleanup below.
             sched_mod._schedule_manager = None  # noqa: SLF001
