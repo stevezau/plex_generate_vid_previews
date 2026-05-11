@@ -9,7 +9,7 @@ import hmac
 import json
 import logging  # stdlib logging only — required to mute werkzeug's own logger; app code must use loguru
 import os
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from flask import Flask
@@ -20,7 +20,7 @@ from loguru import logger
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from .auth import log_token_on_startup
-from .jobs import get_job_manager
+from .jobs import JobStatus, get_job_manager
 from .scheduler import get_schedule_manager
 
 # Global SocketIO instance
@@ -270,6 +270,157 @@ def _prewarm_caches() -> None:
 
     threading.Thread(target=_warm_gpu, name="prewarm-gpu", daemon=True).start()
     threading.Thread(target=_warm_version, name="prewarm-version", daemon=True).start()
+
+
+# Chains whose `retry_started_at` is older than this at boot time are
+# NOT auto-resumed. Re-firing days-old webhook context risks publishing
+# against media that's been moved/deleted upstream. Users can manually
+# re-trigger the source webhook to recover.
+_MAX_CHAIN_AGE_FOR_RESUME = timedelta(hours=24)
+
+
+def _resume_interrupted_retry_chains_on_startup(config_dir: str) -> None:
+    """Re-arm Timers for retry-chain Jobs that were mid-backoff at restart.
+
+    The in-process ``threading.Timer`` driving each chain doesn't
+    survive a container restart, but the chain context is fully
+    persisted on the Job's config (canonical_path, attempt, server
+    pin, source, originating_job_id) and on its ``progress.retry_eta``.
+    ``JobManager._load_jobs`` collects affected chains into
+    ``interrupted_retry_chains()`` rather than failing them; this
+    function consumes that list and calls
+    ``schedule_retry_for_unindexed`` for each one so the dashboard's
+    countdown picks up where it left off.
+
+    Behaviour per chain:
+      * ``retry_eta`` in the future → schedule with the original
+        ``_BACKOFF`` delay (the function ignores absolute timestamps,
+        but the user's perception of "I waited 30s" → "30s left after
+        restart" is close enough; a future enhancement could pass a
+        ``delay_override``).
+      * ``retry_eta`` in the past (we were down past the firing) →
+        schedule immediately with the same backoff.
+      * Chain age > 24h → treat as orphaned, mark FAILED with a clear
+        reason. (Stale chains from days ago shouldn't suddenly fire.)
+      * Missing canonical_path / originating_job_id → mark FAILED.
+    """
+    try:
+        from ..config import load_config
+        from ..servers import ServerRegistry
+
+        job_manager = get_job_manager()
+        chains = job_manager.consume_interrupted_retry_chains()
+        if not chains:
+            return
+
+        try:
+            cfg = load_config(log_validation_errors=False)
+            registry = ServerRegistry.from_settings(_get_media_servers_from_settings(config_dir))
+        except Exception as e:
+            logger.warning(
+                "Could not load registry/config for chain resume — leaving {} chain(s) "
+                "PENDING (they'll fail on the next graceful exit unless re-triggered). "
+                "Reason: {}: {}",
+                len(chains),
+                type(e).__name__,
+                e,
+            )
+            return
+
+        from ..processing.retry_queue import schedule_retry_for_unindexed
+
+        now = datetime.now(timezone.utc)
+        # Chains older than this aren't auto-resumed — re-firing days-old
+        # webhook context risks publishing against media that's been
+        # moved or deleted upstream. Users can re-trigger the webhook
+        # manually if they want the chain back. Exposed as a module
+        # constant rather than a config knob: the only legitimate reason
+        # to change it is a debugging session or test, and a magic
+        # constant is easier to grep for than yet another settings.json
+        # key with three callers' worth of defaulting logic.
+        max_chain_age = _MAX_CHAIN_AGE_FOR_RESUME
+        resumed = 0
+        orphaned = 0
+        for chain in chains:
+            canonical_path = chain.config.get("retry_chain_for")
+            attempt = int(chain.config.get("retry_attempt") or 1)
+            if not canonical_path:
+                chain.status = JobStatus.FAILED
+                chain.error = "Chain resume: missing canonical_path on persisted config — orphaned at restart."
+                chain.completed_at = now.isoformat()
+                job_manager._persist_job(chain)  # noqa: SLF001
+                orphaned += 1
+                continue
+
+            # Age check — chains older than 24h shouldn't suddenly
+            # spring back to life. The original webhook context is
+            # likely stale; better to surface the failure than re-fire
+            # against potentially-deleted media.
+            try:
+                started_str = chain.config.get("retry_started_at") or chain.created_at
+                started = datetime.fromisoformat(started_str.replace("Z", "+00:00")) if started_str else now
+                if started.tzinfo is None:
+                    started = started.replace(tzinfo=timezone.utc)
+            except (ValueError, AttributeError):
+                started = now
+            if now - started > max_chain_age:
+                chain.status = JobStatus.FAILED
+                chain.error = (
+                    "Chain resume: skipped — chain has been pending for >24h. "
+                    "Re-trigger the source webhook if you still want this file processed."
+                )
+                chain.completed_at = now.isoformat()
+                job_manager._persist_job(chain)  # noqa: SLF001
+                orphaned += 1
+                continue
+
+            try:
+                schedule_retry_for_unindexed(
+                    canonical_path,
+                    registry=registry,
+                    config=cfg,
+                    attempt=attempt,
+                    server_id_filter=chain.server_id,
+                    display_name=chain.library_name,
+                    source=chain.config.get("source"),
+                    originating_job_id=chain.id,
+                )
+                resumed += 1
+            except Exception as exc:
+                logger.warning(
+                    "Could not resume chain {} ({!r}): {}: {}",
+                    chain.id[:8],
+                    canonical_path,
+                    type(exc).__name__,
+                    exc,
+                )
+                chain.status = JobStatus.FAILED
+                chain.error = f"Chain resume failed at boot: {type(exc).__name__}: {exc}"
+                chain.completed_at = now.isoformat()
+                job_manager._persist_job(chain)  # noqa: SLF001
+                orphaned += 1
+
+        if resumed:
+            logger.info("Resumed {} interrupted retry chain(s) — Timers re-armed", resumed)
+        if orphaned:
+            logger.info("Marked {} retry chain(s) FAILED at restart (orphaned/stale)", orphaned)
+    except Exception as e:
+        logger.warning(
+            "Retry chain resume hit an unexpected error ({}: {}) — chains may remain PENDING "
+            "without an armed Timer. Re-trigger the source webhook to resume them.",
+            type(e).__name__,
+            e,
+        )
+
+
+def _get_media_servers_from_settings(config_dir: str) -> list:
+    """Helper used by the chain-resume path. Mirrors the same source
+    the per-request handlers read from."""
+    from .settings_manager import get_settings_manager
+
+    settings = get_settings_manager(config_dir)
+    servers = settings.get("media_servers", []) or []
+    return servers if isinstance(servers, list) else []
 
 
 def _requeue_interrupted_on_startup(config_dir: str) -> None:
@@ -723,6 +874,12 @@ def create_app(config_dir: str | None = None) -> Flask:
 
     # Auto-requeue jobs that were interrupted by the server restart
     _requeue_interrupted_on_startup(config_dir)
+
+    # Re-arm Timers for retry-chain Jobs that were mid-backoff at restart.
+    # Must run AFTER settings/config are accessible (load_config + registry
+    # are both read by this function). Order doesn't matter relative to
+    # _requeue_interrupted_on_startup — they touch disjoint Job sets.
+    _resume_interrupted_retry_chains_on_startup(config_dir)
 
     # Pre-warm GPU and version caches in background threads so the first
     # page load doesn't block on GPU detection or GitHub API calls.

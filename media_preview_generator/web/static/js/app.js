@@ -543,6 +543,28 @@ function _vendorLogo(type, size) {
     );
 }
 
+// GPU vendor SVG logos. Returns an <img> tag for known vendors, or null when
+// we don't ship an icon (caller falls back to the previous text badge). Type
+// values come from the backend as uppercase strings ("NVIDIA", "INTEL", "AMD",
+// "APPLE", and the exotic "ARM"/"VIDEOCORE"/"UNKNOWN" which intentionally
+// don't have icons).
+const _GPU_VENDOR_LOGO_TYPES = ['nvidia', 'intel', 'amd', 'apple'];
+
+function _gpuVendorLogo(type, size) {
+    const stype = (type || '').toLowerCase();
+    if (!_GPU_VENDOR_LOGO_TYPES.includes(stype)) return null;
+    const px = Number(size) || 18;
+    const label = stype.toUpperCase();
+    return (
+        `<img src="/static/images/vendors/${stype}.svg" alt="" aria-hidden="true" ` +
+        `width="${px}" height="${px}" class="gpu-vendor-logo" title="${label}" ` +
+        `style="vertical-align: -3px; margin-right: 4px;">`
+    );
+}
+
+window.MPGShared = window.MPGShared || {};
+window.MPGShared.gpuVendorLogo = _gpuVendorLogo;
+
 // Refresh the dashboard "Media Servers" rows from /api/system/media-servers.
 // Renders one row per configured server with vendor icon + status badge.
 // Empty state nudges the user to /servers.
@@ -1051,9 +1073,11 @@ function renderDashboardGpuConfig() {
         if (isFailed) {
             const errorTitle = escapeHtml(gpu.error || 'GPU unusable');
             const errorDetail = escapeHtml(gpu.error_detail || '');
+            const failedVendorMark = _gpuVendorLogo(gpu.type, 18)
+                || `<span class="badge bg-primary me-1" style="font-size: 0.65em;">${escapeHtml(gpu.type).toUpperCase()}</span>`;
             html += `<div class="d-flex justify-content-between align-items-center mb-2">`;
             html += `<span class="text-truncate me-2" style="max-width: 70%;" title="${fullNameTitle}">`;
-            html += `<span class="badge bg-primary me-1" style="font-size: 0.65em;">${escapeHtml(gpu.type).toUpperCase()}</span>`;
+            html += failedVendorMark;
             html += `${escapeHtml(gpu.name)} <span class="badge bg-danger">failed</span>`;
             html += `</span>`;
             html += `<span><i class="bi bi-exclamation-triangle-fill text-danger" style="cursor:pointer;" `;
@@ -1070,9 +1094,11 @@ function renderDashboardGpuConfig() {
             ? '<span class="badge bg-success">enabled</span>'
             : '<span class="badge bg-secondary">disabled</span>';
 
+        const vendorMark = _gpuVendorLogo(gpu.type, 18)
+            || `<span class="badge bg-primary me-1" style="font-size: 0.65em;">${escapeHtml(gpu.type).toUpperCase()}</span>`;
         html += `<div class="d-flex justify-content-between align-items-center mb-2">`;
         html += `<span class="text-truncate me-2" style="max-width: 55%;" title="${fullNameTitle}">`;
-        html += `<span class="badge bg-primary me-1" style="font-size: 0.65em;">${escapeHtml(gpu.type).toUpperCase()}</span>`;
+        html += vendorMark;
         html += `${escapeHtml(gpu.name)} ${statusBadge}`;
         html += `</span>`;
         if (enabled) {
@@ -1522,34 +1548,13 @@ function _renderPublishersBlock(job) {
         );
     }).filter(Boolean).join('');
     if (!lines) return '';
-    // Surface a callout when ANY publisher landed on
-    // PUBLISHED_PENDING_REGISTRATION — the per-server badge says
-    // "Generated (auto-retrying)" but users were missing the link
-    // between that and the spawned retry-chain row in the queue.
-    // The chain row carries the SAME title + source pill (after the
-    // retry-queue display_name/source plumbing) so "look for the
-    // matching title with a 'Registering N/M' badge" is actionable.
-    const anyPending = rows.some(function (entry) {
-        const c = (entry && entry.counts) || {};
-        return (c.published_pending_registration || 0) > 0;
-    });
-    let pendingNote = '';
-    if (anyPending) {
-        const pendingServers = rows
-            .filter(function (e) { return ((e.counts || {}).published_pending_registration || 0) > 0; })
-            .map(function (e) { return e.server_name || (e.server_type || '').toUpperCase() || 'Server'; });
-        const list = pendingServers.length ? ` on ${escapeHtmlText(pendingServers.join(', '))}` : '';
-        pendingNote = (
-            `<div class="alert alert-warning py-1 px-2 mt-2 mb-0 small" role="status">` +
-            `<i class="bi bi-arrow-clockwise me-1"></i>` +
-            `<strong>Auto-retrying${list}.</strong> ` +
-            `Tiles are on disk; the server hasn't indexed the file yet, so trickplay registration is still pending. ` +
-            `A retry-chain row was spawned in the queue (same title; "Registering N/M" badge). ` +
-            `It backs off 30s → 2m → 5m → 15m → 1h until the registration completes.` +
-            `</div>`
-        );
-    }
-    return `<div class="mt-3 pt-2 border-top"><strong class="me-2">Servers:</strong>${lines}${pendingNote}</div>`;
+    // The verbose "Auto-retrying — Tiles are on disk… backs off 30s →
+    // 2m → 5m → 15m → 1h…" alert previously rendered here was
+    // redundant with (a) the per-server badge tooltip on "Generated
+    // (auto-retrying)" and (b) the inline countdown + retry-chain
+    // status row that the modal's Attempts block now renders directly
+    // below this section. Removed — the publisher row stays compact.
+    return `<div class="mt-3 pt-2 border-top"><strong class="me-2">Servers:</strong>${lines}</div>`;
 }
 
 let _jobQueueUpdatePending = false;

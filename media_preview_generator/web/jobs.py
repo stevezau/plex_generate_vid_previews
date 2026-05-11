@@ -553,6 +553,13 @@ class JobManager:
         # Background retention timer
         self._retention_timer: threading.Timer | None = None
         self._interrupted_jobs: list[Job] = []
+        # Chain Jobs that were in PENDING/RUNNING at load time. Their
+        # in-process ``threading.Timer`` is gone after restart but the
+        # chain context (canonical_path, attempt, server pin, source)
+        # survives on the Job's config — the app's boot phase can re-arm
+        # the Timer via ``schedule_retry_for_unindexed`` once registry +
+        # config are loaded. Surface via ``interrupted_retry_chains()``.
+        self._interrupted_retry_chains: list[Job] = []
 
         # Load existing jobs from disk
         self._load_jobs()
@@ -629,20 +636,45 @@ class JobManager:
                 legacy_retry_ids.append(job.id)
                 continue
 
-            # Chain-active Jobs (the originating dispatch was mutated
-            # into chain mode) AND per-attempt children persist across
-            # restart so the Job Details modal's Attempts dropdown can
-            # show full history. The in-process ``threading.Timer``
-            # driving the chain is GONE after a restart, though — so
-            # any chain/attempt that was still in-flight (PENDING /
-            # RUNNING) is now dead work. Mark them FAILED with a
-            # human-readable reason so the dashboard surfaces the
-            # interruption instead of leaving stale PENDING rows
-            # counting down to a Timer that will never fire.
-            is_chain_or_attempt = job.config.get("is_retry_chain") or job.config.get("is_retry_attempt")
-            if is_chain_or_attempt and job.status in (JobStatus.PENDING, JobStatus.RUNNING):
+            # Chain Jobs (originating dispatch with is_retry_chain=True)
+            # in PENDING/RUNNING get RECOVERED for resume rather than
+            # failed. The threading.Timer is gone after restart, but
+            # the chain context (canonical_path, attempt, server pin,
+            # source) is intact on config — the app boot phase can
+            # re-arm via ``schedule_retry_for_unindexed`` once registry
+            # + config are loaded. Pre-fix this branch marked them all
+            # FAILED with a "re-trigger the source webhook to resume"
+            # error; that was hostile UX (DEV_RELOAD reload nuked
+            # in-flight chains for no controllable reason).
+            if job.config.get("is_retry_chain") and job.status in (JobStatus.PENDING, JobStatus.RUNNING):
+                if job.status == JobStatus.RUNNING:
+                    # RUNNING means a Timer fire was mid-flight when the
+                    # process died. Recover as PENDING so the resume
+                    # path treats it as "fire this attempt immediately"
+                    # rather than racing the worker bookkeeping.
+                    job.status = JobStatus.PENDING
+                    # Ensure retry_eta exists so the resume path has
+                    # something to schedule against — default to "now"
+                    # if it was cleared by the running transition.
+                    if not job.progress.retry_eta:
+                        job.progress.retry_eta = datetime.now(timezone.utc).isoformat()
+                    job.progress.current_item = ""
+                    needs_resave.append(job)
+                self._interrupted_retry_chains.append(job)
+                self._jobs[job.id] = job
+                continue
+
+            # Per-attempt rows (is_retry_attempt) that were RUNNING when
+            # the process died ARE dead work — a fresh attempt Job will
+            # be created when the chain's next firing executes, so this
+            # one's log/state should reflect that it was interrupted.
+            # Keep them visible in the modal Attempts dropdown for
+            # history but mark FAILED.
+            if job.config.get("is_retry_attempt") and job.status in (JobStatus.PENDING, JobStatus.RUNNING):
                 job.status = JobStatus.FAILED
-                job.error = "Retry interrupted by container restart — re-trigger the source webhook to resume."
+                job.error = (
+                    "Attempt interrupted by container restart — a fresh attempt will run from the chain's next firing."
+                )
                 job.completed_at = datetime.now(timezone.utc).isoformat()
                 needs_resave.append(job)
                 retry_interrupted_count += 1
@@ -668,10 +700,15 @@ class JobManager:
 
         if retry_interrupted_count:
             logger.info(
-                "Marked {} interrupted retry-chain/attempt Job(s) as failed "
-                "(their threading.Timer didn't survive restart; history kept "
-                "for the modal Attempts dropdown).",
+                "Marked {} interrupted per-attempt Job(s) as failed (their worker thread "
+                "didn't survive restart; history kept for the modal Attempts dropdown).",
                 retry_interrupted_count,
+            )
+        if self._interrupted_retry_chains:
+            logger.info(
+                "Found {} retry-chain Job(s) interrupted by restart — keeping PENDING; "
+                "the resume path will re-arm Timers once registry + config load.",
+                len(self._interrupted_retry_chains),
             )
 
         for job in needs_resave:
@@ -1061,6 +1098,27 @@ class JobManager:
         self._interrupted_jobs = []
         return revived
 
+    def interrupted_retry_chains(self) -> list[Job]:
+        """Return chain Jobs that were in PENDING/RUNNING at load time.
+
+        The boot-phase resume callback walks this list once registry +
+        config are loaded and re-arms each chain's Timer via
+        ``schedule_retry_for_unindexed``. The accessor itself is
+        read-only — the caller is responsible for clearing the list
+        after consuming via :meth:`consume_interrupted_retry_chains`.
+        """
+        return list(self._interrupted_retry_chains)
+
+    def consume_interrupted_retry_chains(self) -> list[Job]:
+        """Pop the interrupted-chains list — idempotent across boots.
+
+        Returns the chains, then clears the list so a second call
+        returns nothing. The boot-phase resume code calls this once.
+        """
+        chains = list(self._interrupted_retry_chains)
+        self._interrupted_retry_chains = []
+        return chains
+
     def get_job(self, job_id: str) -> Job | None:
         """Get a job by ID."""
         return self._jobs.get(job_id)
@@ -1256,6 +1314,13 @@ class JobManager:
                 job.progress.retry_wait_total = wait_seconds
                 job.completed_at = None
                 job.error = None
+                # Clear the worker's last-firing status text. The
+                # dashboard's Active panel treats PENDING + non-empty
+                # ``current_item`` as "Active" (pre-dispatch work in
+                # flight), so a chain waiting on backoff would otherwise
+                # appear in Active. The Queue/countdown surface owns
+                # PENDING chain rows.
+                job.progress.current_item = ""
             elif outcome == "running":
                 job.status = JobStatus.RUNNING
                 job.started_at = job.started_at or now_iso
@@ -1282,6 +1347,8 @@ class JobManager:
                 job.progress.retry_eta = None
                 job.progress.retry_wait_total = None
                 job.error = reason or f"Retry chain exhausted after {attempt} attempts"
+                # Stale per-firing status doesn't belong on a terminal row.
+                job.progress.current_item = ""
 
             # Bump created_at so the row sorts to top of the
             # newest-first Jobs list on each chain state change.

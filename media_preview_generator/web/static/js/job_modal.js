@@ -74,14 +74,17 @@ function showLogsModal(jobId) {
     if (_attemptsWrap) {
         const isChainRow = !!(_job && _job.config && _job.config.is_retry_chain);
         if (isChainRow) {
+            // Wrap manages its own inner flex layout; we only toggle visibility.
             _attemptsWrap.classList.remove('d-none');
-            _attemptsWrap.classList.add('d-flex');
             _loadAttemptsDropdown(targetId);
         } else {
             _attemptsWrap.classList.add('d-none');
-            _attemptsWrap.classList.remove('d-flex');
             document.getElementById('attemptsDropdown').innerHTML = '';
-            document.getElementById('attemptsHint').textContent = '';
+            const _hint = document.getElementById('attemptsHint');
+            if (_hint) {
+                _hint.className = 'badge attempts-state-chip d-none';
+                _hint.textContent = '';
+            }
         }
     }
 
@@ -151,6 +154,10 @@ function showLogsModal(jobId) {
         if (logsRefreshInterval) {
             clearInterval(logsRefreshInterval);
             logsRefreshInterval = null;
+        }
+        if (_chainStateTickInterval) {
+            clearInterval(_chainStateTickInterval);
+            _chainStateTickInterval = null;
         }
         _logsModalJobId = null;
         _logsModalAttemptId = null;
@@ -522,9 +529,77 @@ function _setActivePill(button) {
     }
 }
 
+// Chain-state chip on the right of the pill row — shows countdown to
+// next attempt (PENDING + retry_eta), running indicator, or terminal
+// outcome. Driven by the chain Job's status + progress fields read out
+// of the global ``jobs`` array. Ticked once a second while the chip
+// is showing a countdown so users see Xm Ys decrement live.
+let _chainStateTickInterval = null;
+
+function _renderChainStateChip(chainId) {
+    const chip = document.getElementById('attemptsHint');
+    if (!chip) return;
+    if (_chainStateTickInterval) { clearInterval(_chainStateTickInterval); _chainStateTickInterval = null; }
+    const job = (typeof jobs !== 'undefined' && Array.isArray(jobs))
+        ? jobs.find(j => j.id === chainId) : null;
+    if (!job) { chip.className = 'badge attempts-state-chip d-none'; chip.textContent = ''; return; }
+    const status = job.status || '';
+    const attempt = (job.config && job.config.retry_attempt) || 0;
+    const max = (job.config && job.config.retry_max_attempts) || 0;
+    const progress = job.progress || {};
+    const retryEta = progress.retry_eta || null;
+    chip.classList.remove('d-none', 'bg-success', 'bg-danger', 'bg-warning', 'bg-info', 'bg-secondary', 'text-dark');
+    chip.classList.add('attempts-state-chip');
+    if (status === 'completed') {
+        chip.classList.add('bg-success');
+        chip.innerHTML = '<i class="bi bi-check2-circle me-1"></i>Chain completed';
+    } else if (status === 'failed') {
+        chip.classList.add('bg-danger');
+        chip.innerHTML = '<i class="bi bi-exclamation-circle me-1"></i>Chain failed';
+    } else if (status === 'cancelled') {
+        chip.classList.add('bg-secondary');
+        chip.innerHTML = '<i class="bi bi-slash-circle me-1"></i>Cancelled';
+    } else if (status === 'running') {
+        chip.classList.add('bg-info', 'text-dark');
+        const label = attempt && max
+            ? `Attempt ${attempt}/${max} running`
+            : 'Attempt running';
+        chip.innerHTML = `<i class="bi bi-lightning-charge-fill me-1"></i>${label}`;
+    } else if (status === 'pending' && retryEta) {
+        chip.classList.add('bg-warning', 'text-dark');
+        const tick = () => {
+            const remaining = Math.max(0, Math.ceil((new Date(retryEta).getTime() - Date.now()) / 1000));
+            const label = _formatRetryRemaining(remaining);
+            const ofMax = (attempt && max) ? ` (attempt ${attempt + 1}/${max})` : '';
+            chip.innerHTML = `<i class="bi bi-hourglass-split me-1"></i>Next attempt in ${label}${ofMax}`;
+            if (remaining === 0) {
+                clearInterval(_chainStateTickInterval);
+                _chainStateTickInterval = null;
+            }
+        };
+        tick();
+        _chainStateTickInterval = setInterval(tick, 1000);
+    } else {
+        // PENDING without retry_eta — chain spawned, first attempt not
+        // yet scheduled. Rare transient state.
+        chip.classList.add('bg-secondary');
+        chip.innerHTML = '<i class="bi bi-hourglass me-1"></i>Pending';
+    }
+}
+
+function _formatRetryRemaining(seconds) {
+    if (seconds <= 0) return '0s';
+    if (seconds < 60) return seconds + 's';
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    if (m < 60) return s ? `${m}m ${s}s` : `${m}m`;
+    const h = Math.floor(m / 60);
+    const rm = m % 60;
+    return rm ? `${h}h ${rm}m` : `${h}h`;
+}
+
 async function _loadAttemptsDropdown(chainId) {
     const wrap = document.getElementById('attemptsDropdown');
-    const hint = document.getElementById('attemptsHint');
     if (!wrap) return;
     wrap.innerHTML = '<small class="text-muted">Loading attempts…</small>';
     try {
@@ -533,7 +608,7 @@ async function _loadAttemptsDropdown(chainId) {
         if (attempts.length === 0) {
             wrap.innerHTML = '<small class="text-muted">No attempts yet — showing chain status</small>';
             _logsModalAttemptId = null;
-            if (hint) hint.textContent = '';
+            _renderChainStateChip(chainId);
             refreshLogs();
             return;
         }
@@ -551,11 +626,6 @@ async function _loadAttemptsDropdown(chainId) {
             if (attempts[i].id) { defaultIdx = i; break; }
         }
         if (defaultIdx >= 0) {
-            const buttons = wrap.querySelectorAll('button.attempts-pill[data-attempt-id]');
-            // The N'th button corresponds to the N'th attempt, but
-            // disabled sentinels don't have data-attempt-id so they're
-            // filtered out by the selector. Match by id instead of
-            // index to be safe.
             const target = wrap.querySelector(`button[data-attempt-id="${CSS.escape(attempts[defaultIdx].id)}"]`);
             if (target) {
                 _setActivePill(target);
@@ -564,19 +634,13 @@ async function _loadAttemptsDropdown(chainId) {
         } else {
             _logsModalAttemptId = null;
         }
-        if (hint) {
-            // Count only real attempts (non-sentinel, non-originating)
-            // for "N of M" — the originating dispatch isn't an attempt.
-            const real = attempts.filter(a => a.id && !a.is_originating).length;
-            hint.textContent = real === max
-                ? real + ' of ' + max + ' attempts'
-                : real + ' attempt' + (real === 1 ? '' : 's') + ' so far (max ' + max + ')';
-        }
+        _renderChainStateChip(chainId);
         refreshLogs();
     } catch (error) {
         console.error('Failed to load attempts:', error);
         wrap.innerHTML = '<small class="text-danger">Could not load attempts — see console.</small>';
-        if (hint) hint.textContent = '';
+        const chip = document.getElementById('attemptsHint');
+        if (chip) { chip.className = 'badge attempts-state-chip d-none'; chip.textContent = ''; }
         _logsModalAttemptId = null;
     }
 }
@@ -615,13 +679,10 @@ async function _refreshAttemptsDropdown(chainId) {
             if (target) _setActivePill(target);
             _logsModalAttemptId = targetId;
         }
-        const hint = document.getElementById('attemptsHint');
-        if (hint) {
-            const real = attempts.filter(a => a.id && !a.is_originating).length;
-            hint.textContent = real === max
-                ? real + ' of ' + max + ' attempts'
-                : real + ' attempt' + (real === 1 ? '' : 's') + ' so far (max ' + max + ')';
-        }
+        // Re-render the chain-state chip — the chain Job's status /
+        // retry_eta might have changed since modal-open (new firing,
+        // completion, exhaustion) and the poll caught it.
+        _renderChainStateChip(chainId);
     } catch (error) {
         // Silent — user has last-good UI; next tick will retry.
         console.debug('Attempts poll-refresh failed:', error);

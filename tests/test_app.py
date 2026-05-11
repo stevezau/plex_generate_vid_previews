@@ -14,6 +14,7 @@ import pytest
 from media_preview_generator.web.app import (
     _derive_secret,
     _requeue_interrupted_on_startup,
+    _resume_interrupted_retry_chains_on_startup,
     get_cors_origins,
     get_or_create_flask_secret,
     run_scheduled_job,
@@ -458,6 +459,182 @@ class TestRequeueInterruptedOnStartup:
 
         assert sm.processing_paused is False
         mock_start_job.assert_called_once_with("job-456", {})
+
+
+class TestResumeInterruptedRetryChains:
+    """Boot-phase resume for retry chains. The PENDING-keeping in
+    ``_load_jobs`` is unit-tested in test_jobs_retry_chain.py; here
+    we cover the app-side hook that consumes the list and re-arms
+    Timers via schedule_retry_for_unindexed.
+
+    Matrix:
+      * Healthy chain → schedule called with originating_job_id pin.
+      * Missing canonical_path → marked FAILED, no schedule call.
+      * Stale chain (started_at older than 24h) → marked FAILED.
+      * No interrupted chains → no-op (doesn't try to load registry/
+        config, which would fail in unit-test env without a settings
+        file).
+    """
+
+    @patch("media_preview_generator.processing.retry_queue.schedule_retry_for_unindexed")
+    @patch("media_preview_generator.web.app.get_job_manager")
+    def test_no_interrupted_chains_is_noop(self, mock_get_job_manager, mock_schedule):
+        mock_get_job_manager.return_value.consume_interrupted_retry_chains.return_value = []
+
+        _resume_interrupted_retry_chains_on_startup("/tmp/config")
+
+        mock_schedule.assert_not_called()
+
+    @patch("media_preview_generator.web.app._get_media_servers_from_settings", return_value=[])
+    @patch("media_preview_generator.config.load_config")
+    @patch("media_preview_generator.processing.retry_queue.schedule_retry_for_unindexed")
+    @patch("media_preview_generator.web.app.get_job_manager")
+    def test_healthy_chain_re_armed_via_schedule(
+        self, mock_get_job_manager, mock_schedule, mock_load_config, _mock_servers
+    ):
+        """A chain with canonical_path + recent retry_started_at +
+        retry_attempt MUST flow through ``schedule_retry_for_unindexed``
+        with the originating-Job pin so the chain identity is preserved.
+
+        Pre-fix this whole path didn't exist — the chain was marked
+        FAILED at load and there was no resume code to test. The
+        ``originating_job_id`` kwarg assertion is the load-bearing
+        one: if it's missing or wrong, the re-armed Timer would
+        create a NEW chain row (orphaning the user's history) and
+        the modal Attempts dropdown would split across two UUIDs.
+        """
+        from datetime import datetime, timezone
+
+        from media_preview_generator.web.jobs import JobStatus
+
+        chain = type(
+            "Chain",
+            (),
+            {
+                "id": "originating-uuid",
+                "library_name": "Foo",
+                "server_id": "jelly-1",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "config": {
+                    "is_retry_chain": True,
+                    "retry_chain_for": "/data/Foo.mkv",
+                    "retry_attempt": 2,
+                    "retry_max_attempts": 5,
+                    "retry_started_at": datetime.now(timezone.utc).isoformat(),
+                    "source": "sonarr",
+                },
+                # Outer try/except in _resume_interrupted_retry_chains_on_startup
+                # would silently swallow AttributeError if these stub fields
+                # were missing. Include them and assert status stays PENDING
+                # so a regression where the SUT falls into the failure branch
+                # (e.g. schedule_retry_for_unindexed throws) wouldn't pass
+                # this test as-if everything worked.
+                "status": JobStatus.PENDING,
+                "error": None,
+                "completed_at": None,
+            },
+        )()
+        mock_get_job_manager.return_value.consume_interrupted_retry_chains.return_value = [chain]
+        mock_load_config.return_value = object()
+
+        _resume_interrupted_retry_chains_on_startup("/tmp/config")
+
+        mock_schedule.assert_called_once()
+        call = mock_schedule.call_args
+        # canonical_path comes through as the first positional arg.
+        assert call.args[0] == "/data/Foo.mkv", call.args
+        # The originating_job_id pin is the chain identity. Splitting
+        # this asserts the load-bearing contract above.
+        assert call.kwargs["originating_job_id"] == "originating-uuid", call.kwargs
+        assert call.kwargs["attempt"] == 2, call.kwargs
+        assert call.kwargs["server_id_filter"] == "jelly-1", call.kwargs
+        assert call.kwargs["source"] == "sonarr", call.kwargs
+        # Resume succeeded — status must NOT have been flipped to FAILED.
+        # Without this assertion, a regression where the resume hits the
+        # except branch (and the outer try/except in the SUT swallows
+        # whatever happened) would still pass mock_schedule.called.
+        assert chain.status == JobStatus.PENDING, (
+            f"Resume succeeded — chain must stay PENDING (Timer re-armed); got {chain.status}"
+        )
+
+    @patch("media_preview_generator.web.app._get_media_servers_from_settings", return_value=[])
+    @patch("media_preview_generator.config.load_config")
+    @patch("media_preview_generator.processing.retry_queue.schedule_retry_for_unindexed")
+    @patch("media_preview_generator.web.app.get_job_manager")
+    def test_stale_chain_older_than_24h_marked_failed(
+        self, mock_get_job_manager, mock_schedule, _mock_load_config, _mock_servers
+    ):
+        """Pin the stale-chain age threshold so a regression where the
+        24h check is dropped (or the comparison flipped) would mark
+        ancient chains pending and re-fire against potentially-deleted
+        media. The boundary value matters — at exactly 24h the chain
+        should still be considered fresh; at 25h it should be stale.
+        """
+        from datetime import datetime, timedelta, timezone
+
+        from media_preview_generator.web.jobs import JobStatus
+
+        old_started = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
+        chain = type(
+            "Chain",
+            (),
+            {
+                "id": "stale-uuid",
+                "library_name": "OldFile",
+                "server_id": "jelly-1",
+                "created_at": old_started,
+                "config": {
+                    "is_retry_chain": True,
+                    "retry_chain_for": "/data/OldFile.mkv",
+                    "retry_attempt": 3,
+                    "retry_started_at": old_started,
+                },
+                "status": JobStatus.PENDING,
+                "error": None,
+                "completed_at": None,
+            },
+        )()
+        mock_get_job_manager.return_value.consume_interrupted_retry_chains.return_value = [chain]
+
+        _resume_interrupted_retry_chains_on_startup("/tmp/config")
+
+        mock_schedule.assert_not_called()
+        assert chain.status == JobStatus.FAILED, f"stale must be FAILED; got {chain.status}"
+        assert chain.error and "24h" in chain.error, chain.error
+
+    @patch("media_preview_generator.web.app._get_media_servers_from_settings", return_value=[])
+    @patch("media_preview_generator.config.load_config")
+    @patch("media_preview_generator.processing.retry_queue.schedule_retry_for_unindexed")
+    @patch("media_preview_generator.web.app.get_job_manager")
+    def test_chain_missing_canonical_path_marked_failed(
+        self, mock_get_job_manager, mock_schedule, _mock_load_config, _mock_servers
+    ):
+        """A chain row whose retry_chain_for is missing (corrupt config
+        or partial write) cannot be re-armed. Mark FAILED so it's
+        visible rather than silently leaving it PENDING with no Timer."""
+        from media_preview_generator.web.jobs import JobStatus
+
+        chain = type(
+            "Chain",
+            (),
+            {
+                "id": "broken-uuid",
+                "library_name": "Foo",
+                "server_id": None,
+                "created_at": "2026-05-11T00:00:00+00:00",
+                "config": {"is_retry_chain": True, "retry_chain_for": None, "retry_attempt": 1},
+                "status": JobStatus.PENDING,
+                "error": None,
+                "completed_at": None,
+            },
+        )()
+        mock_get_job_manager.return_value.consume_interrupted_retry_chains.return_value = [chain]
+
+        _resume_interrupted_retry_chains_on_startup("/tmp/config")
+
+        mock_schedule.assert_not_called()
+        assert chain.status == JobStatus.FAILED, f"orphan must be FAILED; got {chain.status}"
+        assert chain.error and "orphaned" in chain.error.lower(), chain.error
 
 
 class TestPrewarmCaches:

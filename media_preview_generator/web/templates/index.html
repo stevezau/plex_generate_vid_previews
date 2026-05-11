@@ -460,22 +460,27 @@
                 <!-- Attempts switcher for retry-chain rows — sits ABOVE
                      the tabs strip so it scopes BOTH Logs and Files.
                      Hidden by default; ``showLogsModal`` un-hides
-                     only for chain rows (``is_retry_chain``). Renders
-                     as a row of compact, colour-coded pills (one per
-                     attempt + an Original) — much clearer than the
-                     prior native <select> which buried status behind
-                     a click. ``_renderAttemptOption`` in job_modal.js
-                     builds the <button> for each entry. -->
-                <div id="attemptsDropdownWrap" class="d-none mb-3"
+                     only for chain rows (``is_retry_chain``).
+                     Layout: pills on the left, attempt count + chain
+                     state (countdown / outcome) on the right. The
+                     pre-redesign two-line layout (label row, then a
+                     separate pill row, plus a giant alert above)
+                     dominated the modal. This single row keeps the
+                     chain context compact and scannable. -->
+                <div id="attemptsDropdownWrap" class="d-none mb-3 attempts-bar"
                      role="region" aria-label="Retry attempts timeline">
-                    <div class="d-flex align-items-center gap-2 mb-2 flex-wrap">
-                        <span class="small text-muted text-nowrap">
-                            <i class="bi bi-arrow-clockwise me-1"></i>Attempt:
+                    <div class="d-flex align-items-center gap-2 flex-wrap">
+                        <span class="small text-muted text-nowrap me-1">
+                            <i class="bi bi-arrow-clockwise me-1"></i>Attempts
                         </span>
-                        <small class="text-muted" id="attemptsHint"></small>
+                        <div id="attemptsDropdown" class="d-flex flex-wrap gap-1 attempts-pills"
+                             role="tablist" aria-label="Retry attempts"></div>
+                        <!-- Spacer pushes the chain-state chip to the right
+                             on wide viewports; flex-wrap drops it under the
+                             pills on narrow viewports. -->
+                        <span class="ms-auto"></span>
+                        <span id="attemptsHint" class="badge attempts-state-chip d-none"></span>
                     </div>
-                    <div id="attemptsDropdown" class="d-flex flex-wrap gap-1 attempts-pills"
-                         role="tablist" aria-label="Retry attempts"></div>
                 </div>
                 <!-- Tabs -->
                 <ul class="nav nav-tabs mb-3" id="jobDetailTabs" role="tablist">

@@ -1285,6 +1285,24 @@ html[data-bs-theme="light"] .log-level-critical { color: #b02a37; }
 /* ──────────────────────────────────────────────────────────────────────
  * Retry-chain Attempts pill row (Job Details modal)
  * ────────────────────────────────────────────────────────────────────── */
+.attempts-bar {
+    /* Groups label + pills + chain-state chip into one tidy row.
+       Subtle bg + border reads as "context block" without the
+       alert-warning shoutiness the prior verbose banner had. */
+    background: var(--bs-tertiary-bg);
+    border: 1px solid var(--bs-border-color);
+    border-radius: 0.375rem;
+    padding: 0.5rem 0.75rem;
+}
+.attempts-state-chip {
+    /* Right-aligned chip in the attempts bar — countdown / running /
+       outcome. Sized to read as scannable context, not a primary CTA. */
+    font-size: 0.75rem;
+    padding: 0.35rem 0.55rem;
+    font-weight: 500;
+    align-self: center;
+    white-space: nowrap;
+}
 .attempts-pill {
     /* Compact pill: just the attempt number + status glyph. Status colour
        comes from Bootstrap's btn-outline-{success,danger,...} classes

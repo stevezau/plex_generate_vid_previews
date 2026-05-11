@@ -215,6 +215,64 @@ class TestStateMachine:
             f"Running outcome must clear completed_at on the first mutation; got {job.completed_at!r}"
         )
 
+    def test_outcome_scheduled_clears_current_item(self, jm):
+        """A chain transitioning back to PENDING/scheduled MUST clear
+        ``progress.current_item``. The dashboard's Active panel treats
+        PENDING + non-empty ``current_item`` as "Active" (pre-dispatch
+        work in progress), so a chain that just finished a firing and
+        is now waiting for the next backoff would otherwise show up
+        under Active instead of Queue.
+
+        Production bug: every chain row in the DB had
+        ``current_item='[Webhook Targets] 1/1 completed'`` lingering
+        from the worker's last status push. Chains waiting on backoff
+        appeared in Active until they fired again, confusing users
+        ("why is it Active if it's waiting?"). Queue-side countdown
+        renderer expects to own these rows.
+        """
+        original = _seed_originating_job(jm)
+        # Worker set a current_item during the firing — emulate.
+        jm.update_progress(original.id, current_item="[Webhook Targets] 1/1 completed")
+        assert jm.get_job(original.id).progress.current_item == "[Webhook Targets] 1/1 completed"
+
+        eta = (datetime.now(timezone.utc) + timedelta(seconds=120)).isoformat()
+        job = jm.upsert_retry_chain_job(
+            canonical_path="/x.mkv",
+            basename="x",
+            attempt=2,
+            max_attempts=5,
+            next_run_at=eta,
+            wait_seconds=120,
+            outcome="scheduled",
+            originating_job_id=original.id,
+        )
+        assert job.progress.current_item == "", (
+            f"Scheduled chain must clear current_item so it doesn't show in the dashboard's "
+            f"Active panel; got {job.progress.current_item!r}"
+        )
+
+    def test_outcome_exhausted_clears_current_item(self, jm):
+        """Cleanliness: an exhausted chain row goes terminal (FAILED),
+        but a stale ``current_item`` from the last firing would still
+        render in the failed-row UI. Clear it for the same reason."""
+        original = _seed_originating_job(jm)
+        jm.update_progress(original.id, current_item="[Webhook Targets] 1/1 completed")
+
+        job = jm.upsert_retry_chain_job(
+            canonical_path="/x.mkv",
+            basename="x",
+            attempt=5,
+            max_attempts=5,
+            next_run_at=None,
+            wait_seconds=None,
+            outcome="exhausted",
+            reason="Exhausted after 5 attempts",
+            originating_job_id=original.id,
+        )
+        assert job.progress.current_item == "", (
+            f"Exhausted chain must clear current_item; got {job.progress.current_item!r}"
+        )
+
     def test_outcome_running_clears_countdown(self, jm):
         original = _seed_originating_job(jm)
         jm.upsert_retry_chain_job(
@@ -398,25 +456,43 @@ class TestUIAliases:
 
 
 class TestPersistenceAndRestart:
-    def test_chain_job_persists_across_restart(self, jm, tmp_path):
+    def test_chain_job_persists_pending_across_restart_for_resume(self, jm, tmp_path):
         """The chain Job (originating dispatch with is_retry_chain
         config) MUST survive a restart so the modal Attempts dropdown
-        can show history. Non-terminal state at restart is marked
-        FAILED with a clear reason (the threading.Timer is gone)."""
+        can show history.
+
+        Pre-fix: non-terminal chains were marked FAILED on load with
+        'Retry interrupted by container restart' because the in-memory
+        ``threading.Timer`` driving the chain didn't survive the
+        restart. The user then had to manually re-trigger the source
+        webhook to resume. That was hostile UX — a chain mid-backoff
+        when DEV_RELOAD reloaded the container died for no reason
+        the user could control.
+
+        Post-fix: chains in PENDING (waiting on backoff) keep their
+        PENDING state + retry_eta, and the JobManager collects them
+        into ``interrupted_retry_chains()`` so the app boot phase can
+        re-arm the Timer via ``schedule_retry_for_unindexed`` once
+        the registry + config are loaded.
+        """
         import media_preview_generator.web.jobs as jobs_mod
 
         original = _seed_originating_job(jm)
+        eta = (datetime.now(timezone.utc) + timedelta(seconds=120)).isoformat()
         jm.upsert_retry_chain_job(
             canonical_path="/data/Foo.mkv",
             basename="Foo",
             attempt=1,
             max_attempts=5,
-            next_run_at=None,
-            wait_seconds=30,
+            next_run_at=eta,
+            wait_seconds=120,
             outcome="scheduled",
+            server_id="jelly-1",
+            server_name="JellyTest",
+            server_type="jellyfin",
+            source="sonarr",
             originating_job_id=original.id,
         )
-        # Pre-restart: chain Job in PENDING with retry_eta
         live = jm.get_job(original.id)
         assert live.status == JobStatus.PENDING
         assert live.config["is_retry_chain"] is True
@@ -427,11 +503,60 @@ class TestPersistenceAndRestart:
         jm2 = JobManager(config_dir=jm.config_dir)
         recovered = jm2.get_job(original.id)
         assert recovered is not None
-        assert recovered.status == JobStatus.FAILED, (
-            f"Non-terminal chain Job MUST be marked FAILED at restart; got {recovered.status}"
+        assert recovered.status == JobStatus.PENDING, (
+            f"Chain Job must remain PENDING on restart so the resume path can re-arm "
+            f"the Timer; got {recovered.status}. If this asserts FAILED, the regression "
+            f"would make every container reload nuke in-flight retry chains."
         )
-        assert "interrupted" in (recovered.error or "").lower()
         assert recovered.config["is_retry_chain"] is True
+        assert recovered.progress.retry_eta == eta, (
+            "retry_eta must survive restart so the resume path knows when this attempt was due"
+        )
+
+        # The interrupted-chains collection MUST contain it so the
+        # boot-time resume callback can pick it up.
+        interrupted = jm2.interrupted_retry_chains()
+        ids = [j.id for j in interrupted]
+        assert original.id in ids, (
+            f"Chain Job {original.id} must be in interrupted_retry_chains() so the app's "
+            f"post-config-load resume path can re-arm it; got {ids}"
+        )
+
+    def test_running_chain_job_recovered_as_pending_for_resume(self, jm, tmp_path):
+        """A RUNNING chain Job (the worker was mid-firing when the
+        process died) should also be picked up by the resume path
+        rather than left dead. Restart converts RUNNING → PENDING
+        so the same re-arm logic applies."""
+        import media_preview_generator.web.jobs as jobs_mod
+
+        original = _seed_originating_job(jm)
+        # Force the chain into RUNNING — emulates "worker had just
+        # picked up attempt #2 when the container restarted"
+        jm.upsert_retry_chain_job(
+            canonical_path="/data/Foo.mkv",
+            basename="Foo",
+            attempt=2,
+            max_attempts=5,
+            next_run_at=None,
+            wait_seconds=None,
+            outcome="running",
+            server_id="jelly-1",
+            server_name="JellyTest",
+            server_type="jellyfin",
+            originating_job_id=original.id,
+        )
+        assert jm.get_job(original.id).status == JobStatus.RUNNING
+
+        with jobs_mod._job_lock:
+            jobs_mod._job_manager = None
+        jm2 = JobManager(config_dir=jm.config_dir)
+        recovered = jm2.get_job(original.id)
+        assert recovered is not None
+        # RUNNING → PENDING on restart, so the resume path can re-arm.
+        assert recovered.status == JobStatus.PENDING, (
+            f"RUNNING chain must be recovered as PENDING for resume; got {recovered.status}"
+        )
+        assert original.id in [j.id for j in jm2.interrupted_retry_chains()]
 
     def test_terminal_chain_job_loads_as_is(self, tmp_path):
         """A chain Job that COMPLETED before restart must load
