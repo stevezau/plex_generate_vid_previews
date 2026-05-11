@@ -226,20 +226,11 @@ jobs:
         # Playwright's per-locator default is bumped to 60s in
         # tests/e2e/conftest.py (see wizard_page / authed_page
         # fixtures); a test doing multiple operations needs at least
-        # 2× that to not race the pytest timeout.
-        #
-        # ``--reruns 2 --reruns-delay 5`` auto-retries a failed test
-        # up to 2 more times with a 5-second delay. Playwright's
-        # element-stability check ("element is not stable" 100+
-        # retries inside its 60s budget) intermittently fires on
-        # wizard tests on GH's slow runners — the page's Bootstrap
-        # transitions / step-pane animations occasionally outlast
-        # the per-click budget. These tests are deterministically
-        # green locally and on a re-run; they're flake not bug.
-        # The reruns budget catches the flake without masking real
-        # regressions (3 consecutive failures = real failure).
-        run: pytest -m e2e -n 0 --no-cov --tb=short --timeout=120 --reruns 2 --reruns-delay 5
-        timeout-minutes: 20
+        # 2× that to not race the pytest timeout. 120s is generous
+        # enough for the slowest cold-boot wizard tests while still
+        # catching real hangs (anything >120s is genuinely stuck).
+        run: pytest -m e2e -n 0 --no-cov --tb=short --timeout=120
+        timeout-minutes: 15
 
       - name: Upload Playwright traces on failure
         if: failure()
