@@ -296,6 +296,35 @@ function onLogsTabActivated() {
     try { localStorage.setItem(_OVERVIEW_LAST_TAB_KEY, 'logs'); } catch (e) { /* private mode */ }
 }
 
+// Log level filter (Tier 3.14) — drives a data-attr on #logsContent
+// that the CSS in style.css uses to hide lines below the chosen
+// severity. Persisted in localStorage so an operator's "I only care
+// about WARN+" preference survives modal reopen.
+const _LOG_LEVEL_KEY = 'jobModalLogLevel';
+function onLogLevelChange(value) {
+    const el = document.getElementById('logsContent');
+    if (!el) return;
+    if (value === 'all') {
+        el.removeAttribute('data-log-level');
+    } else {
+        el.setAttribute('data-log-level', value);
+    }
+    try { localStorage.setItem(_LOG_LEVEL_KEY, value); } catch (e) { /* private mode */ }
+}
+function _restoreLogLevel() {
+    let saved = 'all';
+    try { saved = localStorage.getItem(_LOG_LEVEL_KEY) || 'all'; } catch (e) { /* private mode */ }
+    const radioId = saved === 'info' ? 'logLevelInfo'
+        : saved === 'warn' ? 'logLevelWarn'
+        : saved === 'error' ? 'logLevelErr'
+        : 'logLevelAll';
+    const radio = document.getElementById(radioId);
+    if (radio) {
+        radio.checked = true;
+        onLogLevelChange(saved);
+    }
+}
+
 function _restoreLastTab() {
     let last = null;
     try { last = localStorage.getItem(_OVERVIEW_LAST_TAB_KEY); } catch (e) { /* private mode */ }
@@ -626,6 +655,197 @@ function _wireOverviewTimelineClicks() {
     });
 }
 
+// ----------------------------------------------------------------------
+// Keyboard shortcuts (Tier 3.12)
+// ----------------------------------------------------------------------
+// Power-user navigation. Bindings:
+//   [ / ]   previous / next attempt (chain only)
+//   1 / 2 / 3   switch to Overview / Logs / Files tab
+//   /       focus the active tab's search input
+//   j / k   scroll the logs viewport line-by-line (vim-style)
+//   g / G   top / bottom of the logs viewport
+//   c       copy the current log buffer to clipboard
+//   r       refresh logs
+//   ?       open the shortcuts cheatsheet popover
+//
+// Handler registered on modal-shown, deregistered on modal-hidden so
+// other contexts (settings page, dashboard tables) aren't affected.
+
+let _jobModalKeyHandler = null;
+
+function _enableJobModalKeyboard() {
+    if (_jobModalKeyHandler) return;  // idempotent
+    _jobModalKeyHandler = _onJobModalKeydown;
+    document.addEventListener('keydown', _jobModalKeyHandler);
+}
+
+function _disableJobModalKeyboard() {
+    if (!_jobModalKeyHandler) return;
+    document.removeEventListener('keydown', _jobModalKeyHandler);
+    _jobModalKeyHandler = null;
+}
+
+function _onJobModalKeydown(ev) {
+    // Don't intercept when the user is typing in an input. The search
+    // boxes + URL fields would otherwise lose every character.
+    const tag = (ev.target && ev.target.tagName) || '';
+    const isInput = tag === 'INPUT' || tag === 'TEXTAREA' || (ev.target && ev.target.isContentEditable);
+    // Modifier-aware: ignore when Ctrl / Meta / Alt are pressed so we
+    // don't fight browser shortcuts (Cmd-C copy, etc.). Shift is OK —
+    // we use it for `G` (Shift-g).
+    if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+
+    // Allow `/` even when an input is focused so the operator can
+    // re-focus a search box from anywhere in the modal. Everything
+    // else suppresses on input focus.
+    if (isInput && ev.key !== 'Escape') return;
+
+    switch (ev.key) {
+        case '[':
+            _shortcutSwitchAttempt(-1);
+            ev.preventDefault();
+            break;
+        case ']':
+            _shortcutSwitchAttempt(+1);
+            ev.preventDefault();
+            break;
+        case '1':
+            _shortcutSwitchTab('overviewTab');
+            ev.preventDefault();
+            break;
+        case '2':
+            _shortcutSwitchTab('logsTab');
+            ev.preventDefault();
+            break;
+        case '3':
+            _shortcutSwitchTab('filesTab');
+            ev.preventDefault();
+            break;
+        case '/':
+            _shortcutFocusSearch();
+            ev.preventDefault();
+            break;
+        case 'j':
+            _shortcutScrollLogs(20);
+            ev.preventDefault();
+            break;
+        case 'k':
+            _shortcutScrollLogs(-20);
+            ev.preventDefault();
+            break;
+        case 'g':
+            _shortcutScrollLogs('top');
+            ev.preventDefault();
+            break;
+        case 'G':
+            _shortcutScrollLogs('bottom');
+            ev.preventDefault();
+            break;
+        case 'c':
+            if (typeof copyLogs === 'function') copyLogs();
+            ev.preventDefault();
+            break;
+        case 'r':
+            if (typeof refreshLogs === 'function') refreshLogs();
+            ev.preventDefault();
+            break;
+        case '?':
+            _shortcutShowCheatsheet();
+            ev.preventDefault();
+            break;
+        default:
+            // No binding — let the event through.
+            return;
+    }
+}
+
+function _shortcutSwitchAttempt(direction) {
+    const wrap = document.getElementById('attemptsDropdown');
+    if (!wrap) return;
+    const pills = Array.from(wrap.querySelectorAll('button.attempts-pill'));
+    if (!pills.length) return;
+    const activeIdx = pills.findIndex(p => p.classList.contains('active'));
+    const nextIdx = Math.max(0, Math.min(pills.length - 1,
+        (activeIdx >= 0 ? activeIdx : 0) + direction));
+    if (nextIdx === activeIdx || nextIdx < 0) return;
+    pills[nextIdx].click();
+}
+
+function _shortcutSwitchTab(tabId) {
+    const btn = document.getElementById(tabId);
+    if (!btn) return;
+    const tab = new bootstrap.Tab(btn);
+    tab.show();
+}
+
+function _shortcutFocusSearch() {
+    // Focus the search input on the currently active tab.
+    const filesActive = document.getElementById('filesTabPane') &&
+        document.getElementById('filesTabPane').classList.contains('active');
+    const targetId = filesActive ? 'fileResultsSearch' : 'logsSearchInput';
+    const el = document.getElementById(targetId);
+    if (el) el.focus();
+}
+
+function _shortcutScrollLogs(arg) {
+    const el = document.getElementById('logsContent');
+    if (!el) return;
+    if (arg === 'top') {
+        el.scrollTo({ top: 0, behavior: 'smooth' });
+    } else if (arg === 'bottom') {
+        el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    } else {
+        // arg is a pixel delta (positive = down, negative = up).
+        el.scrollBy({ top: arg, behavior: 'auto' });
+    }
+}
+
+function _shortcutShowCheatsheet() {
+    // Render the cheatsheet as a Bootstrap modal-within-modal. Built
+    // inline rather than as a Jinja partial so the shortcut table
+    // stays next to the handler that implements it — a future binding
+    // addition surfaces the documentation right next to the code.
+    let modal = document.getElementById('jobModalShortcutsModal');
+    if (!modal) {
+        const html =
+            '<div class="modal fade" id="jobModalShortcutsModal" tabindex="-1">'
+          +   '<div class="modal-dialog modal-dialog-centered">'
+          +     '<div class="modal-content">'
+          +       '<div class="modal-header py-2">'
+          +         '<h6 class="modal-title"><i class="bi bi-keyboard me-2"></i>Keyboard shortcuts</h6>'
+          +         '<button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>'
+          +       '</div>'
+          +       '<div class="modal-body">'
+          +         '<table class="table table-sm mb-0">'
+          +           '<tbody>'
+          +             _kbRow('[', ']', 'Switch attempt (prev / next)')
+          +             _kbRow('1', '2 / 3', 'Switch tab (Overview / Logs / Files)')
+          +             _kbRow('/', '', 'Focus search on active tab')
+          +             _kbRow('j', 'k', 'Scroll logs down / up')
+          +             _kbRow('g', 'Shift-G', 'Top / bottom of logs')
+          +             _kbRow('c', '', 'Copy current log buffer to clipboard')
+          +             _kbRow('r', '', 'Refresh logs')
+          +             _kbRow('?', '', 'Show this cheatsheet')
+          +           '</tbody>'
+          +         '</table>'
+          +       '</div>'
+          +     '</div>'
+          +   '</div>'
+          + '</div>';
+        document.body.insertAdjacentHTML('beforeend', html);
+        modal = document.getElementById('jobModalShortcutsModal');
+    }
+    new bootstrap.Modal(modal).show();
+}
+
+function _kbRow(key1, key2, label) {
+    const kbd = (k) => k
+        ? '<kbd class="border bg-body-tertiary text-body px-2 py-1 rounded">' + escapeHtmlText(k) + '</kbd>'
+        : '';
+    const keys = [kbd(key1), kbd(key2)].filter(Boolean).join(' <span class="text-muted">/</span> ');
+    return '<tr><td class="text-nowrap">' + keys + '</td><td>' + escapeHtmlText(label) + '</td></tr>';
+}
+
 async function onOperatorCancelChain() {
     if (!_logsModalJobId) return;
     if (!confirm('Cancel this retry chain? Any pending back-off timer will be dropped and in-flight attempts will receive a cancellation signal.')) {
@@ -784,6 +1004,7 @@ function showLogsModal(jobId) {
             clearInterval(_overviewTickInterval);
             _overviewTickInterval = null;
         }
+        _disableJobModalKeyboard();
         _logsModalJobId = null;
         _logsModalAttemptId = null;
     }, { once: true });
@@ -793,6 +1014,11 @@ function showLogsModal(jobId) {
     // restore because the Bootstrap Tab.show() doesn't fire the
     // ``shown`` event synchronously.
     _renderOverview();
+    // Restore the log-level filter selection from localStorage.
+    _restoreLogLevel();
+    // Register keyboard shortcuts (Tier 3.12) — see _onJobModalKeydown
+    // for the binding table.
+    _enableJobModalKeyboard();
 }
 
 function scrollLogsTo(position) {

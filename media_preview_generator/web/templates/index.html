@@ -521,8 +521,26 @@
                     </div>
                     <!-- Logs Tab Pane -->
                     <div class="tab-pane fade" id="logsTabPane" role="tabpanel">
-                        <div class="d-flex justify-content-end align-items-center mb-2">
-                            <div class="d-flex align-items-center gap-3">
+                        <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
+                            <!-- Log level filter (Tier 3.14) — segmented
+                                 control hides lines below the chosen
+                                 severity via CSS class toggling. The
+                                 colorizeLogLine classifier already adds
+                                 log-level-{debug,info,warning,error,critical}
+                                 to each line, so the filter is just a
+                                 CSS variable swap. Persisted in
+                                 localStorage as ``jobModalLogLevel``. -->
+                            <div class="btn-group btn-group-sm" role="group" aria-label="Log level filter">
+                                <input type="radio" class="btn-check" name="logLevelFilter" id="logLevelAll" value="all" checked onchange="onLogLevelChange(this.value)">
+                                <label class="btn btn-outline-secondary" for="logLevelAll" title="Show all log lines">All</label>
+                                <input type="radio" class="btn-check" name="logLevelFilter" id="logLevelInfo" value="info" onchange="onLogLevelChange(this.value)">
+                                <label class="btn btn-outline-secondary" for="logLevelInfo" title="Hide DEBUG lines">INFO+</label>
+                                <input type="radio" class="btn-check" name="logLevelFilter" id="logLevelWarn" value="warn" onchange="onLogLevelChange(this.value)">
+                                <label class="btn btn-outline-secondary" for="logLevelWarn" title="Show only WARNING / ERROR / CRITICAL">WARN+</label>
+                                <input type="radio" class="btn-check" name="logLevelFilter" id="logLevelErr" value="error" onchange="onLogLevelChange(this.value)">
+                                <label class="btn btn-outline-secondary" for="logLevelErr" title="Show only ERROR / CRITICAL">ERROR+</label>
+                            </div>
+                            <div class="d-flex align-items-center gap-3 flex-wrap">
                                 <div class="input-group input-group-sm" style="width: 250px;">
                                     <span class="input-group-text"><i class="bi bi-search"></i></span>
                                     <input type="text" class="form-control" id="logsSearchInput" placeholder="Filter logs..." oninput="filterLogs()">

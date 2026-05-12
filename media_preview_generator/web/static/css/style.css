@@ -1410,6 +1410,17 @@ html[data-bs-theme="dark"] .job-modal-section {
 /* Status-coloured fill — mirrors the pill row's btn-outline-* mapping
    in _ATTEMPT_STATUS_CLASS but here we want SOLID colours so the bar
    reads as a duration block, not a wireframe pill. */
+/* Log level filter — hides lines below the chosen severity via
+   data-attr on the logs container. Five severity levels mapped to
+   numeric weights; the CSS rules below cascade to hide anything
+   strictly less severe than the selected threshold. */
+#logsContent[data-log-level="info"]    .log-level-debug    { display: none; }
+#logsContent[data-log-level="warn"]    .log-level-debug,
+#logsContent[data-log-level="warn"]    .log-level-info     { display: none; }
+#logsContent[data-log-level="error"]   .log-level-debug,
+#logsContent[data-log-level="error"]   .log-level-info,
+#logsContent[data-log-level="error"]   .log-level-warning  { display: none; }
+
 .attempts-timeline-bar-success    { background-color: var(--bs-success); }
 .attempts-timeline-bar-danger     { background-color: var(--bs-danger); }
 .attempts-timeline-bar-secondary  { background-color: var(--bs-secondary); }
