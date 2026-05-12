@@ -16,7 +16,11 @@ from __future__ import annotations
 import json
 
 import pytest
+import requests
 from playwright.sync_api import expect
+
+_AUTH_HEADERS = {"X-Auth-Token": "e2e-test-token"}
+_API_TIMEOUT = 60
 
 
 def _seeded_server() -> dict:
@@ -131,12 +135,14 @@ class TestEditExistingServer:
             ) from None
 
         # Re-fetch via the API to confirm persistence (more reliable than
-        # waiting for the cards to re-render).
-        get_resp = backend_real_page.request.get(
+        # waiting for the cards to re-render). Use requests to avoid the
+        # Playwright IPC stall.
+        get_resp = requests.get(
             f"{app_url}/api/servers/plex-edit-test",
-            headers={"X-Auth-Token": "e2e-test-token"},
+            headers=_AUTH_HEADERS,
+            timeout=_API_TIMEOUT,
         )
-        assert get_resp.ok, f"GET /api/servers/plex-edit-test failed: {get_resp.status}"
+        assert get_resp.ok, f"GET /api/servers/plex-edit-test failed: {get_resp.status_code}"
         server = get_resp.json()
         assert server["name"] == "Renamed Plex", (
             f"After PUT + reload, server name is {server['name']!r} — the rename "

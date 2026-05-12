@@ -14,6 +14,7 @@ Shared fixtures (``app_url`` / ``session_cookie`` / ``servers_page`` /
 """
 
 import pytest
+import requests
 from playwright.sync_api import Page, expect
 
 from ._mocks import (
@@ -137,37 +138,42 @@ class TestAddServerModal:
 class TestServersAPIIntegration:
     """Verify the /api/servers REST endpoints back the page's JS calls."""
 
-    def test_servers_list_endpoint_returns_a_list(self, page: Page, app_url: str, auth_token: str):
-        response = page.request.get(
+    def test_servers_list_endpoint_returns_a_list(self, app_url: str, auth_token: str):
+        # Use requests (not page.request) to avoid the Playwright Python↔Node
+        # IPC stall under -n auto. Same pattern as the canary fix.
+        response = requests.get(
             f"{app_url}/api/servers",
             headers={"X-Auth-Token": auth_token},
+            timeout=30,
         )
-        assert response.status == 200
+        assert response.status_code == 200
         data = response.json()
         # Endpoint shape: ``{"servers": [...]}`` (auth redacted).
         assert isinstance(data, dict)
         assert isinstance(data.get("servers"), list)
 
-    def test_health_check_endpoint_404s_for_unknown_server(self, page: Page, app_url: str, auth_token: str):
+    def test_health_check_endpoint_404s_for_unknown_server(self, app_url: str, auth_token: str):
         """The unified health-check endpoint replaces the old per-vendor
         ``/jellyfin/fix-trickplay`` route. Confirm it's wired up by hitting
         a known-bad id and asserting the 404."""
-        response = page.request.get(
+        response = requests.get(
             f"{app_url}/api/servers/does-not-exist/health-check",
             headers={"X-Auth-Token": auth_token},
+            timeout=30,
         )
-        assert response.status == 404
+        assert response.status_code == 404
 
-    def test_health_check_apply_endpoint_validates_flags_param(self, page: Page, app_url: str, auth_token: str):
+    def test_health_check_apply_endpoint_validates_flags_param(self, app_url: str, auth_token: str):
         """``flags`` (when supplied) must be a list."""
-        response = page.request.post(
+        response = requests.post(
             f"{app_url}/api/servers/some-id/health-check/apply",
             headers={"X-Auth-Token": auth_token, "Content-Type": "application/json"},
             data='{"flags": "not-a-list"}',
+            timeout=30,
         )
         # 400 if route validates first, 404 if the server lookup runs first;
         # either is fine — both prove the route exists with sane validation.
-        assert response.status in (400, 404), response.status
+        assert response.status_code in (400, 404), response.status_code
 
 
 @pytest.mark.e2e

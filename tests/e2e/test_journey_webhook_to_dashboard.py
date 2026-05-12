@@ -16,9 +16,14 @@ import json
 import time
 
 import pytest
+import requests
+
+_AUTH_HEADERS = {"X-Auth-Token": "e2e-test-token"}
+_AUTH_JSON_HEADERS = {"X-Auth-Token": "e2e-test-token", "Content-Type": "application/json"}
+_API_TIMEOUT = 60
 
 
-def _post_sonarr_webhook(page, app_url: str, file_path: str, series_title: str = "Test Series") -> None:
+def _post_sonarr_webhook(app_url: str, file_path: str, series_title: str = "Test Series"):
     """POST a minimal valid Sonarr Download payload."""
     payload = {
         "eventType": "Download",
@@ -28,13 +33,12 @@ def _post_sonarr_webhook(page, app_url: str, file_path: str, series_title: str =
     }
     # Webhook endpoints use _authenticate_webhook which accepts X-Auth-Token
     # against either the configured webhook_secret OR the app auth token.
-    resp = page.request.post(
+    # Use requests (not page.request) to avoid the Playwright IPC stall.
+    resp = requests.post(
         f"{app_url}/api/webhooks/sonarr",
-        headers={
-            "Content-Type": "application/json",
-            "X-Auth-Token": "e2e-test-token",
-        },
+        headers=_AUTH_JSON_HEADERS,
         data=json.dumps(payload),
+        timeout=_API_TIMEOUT,
     )
     return resp
 
@@ -79,8 +83,8 @@ class TestWebhookToDashboard:
 
         # 1. POST a real Sonarr-shaped payload to the real webhook endpoint.
         webhook_path = "/data/TV/Test Series/S01E02.mkv"
-        resp = _post_sonarr_webhook(backend_real_page, app_url, webhook_path)
-        assert resp.ok, f"Sonarr webhook returned {resp.status}: {resp.text()}"
+        resp = _post_sonarr_webhook(app_url, webhook_path)
+        assert resp.ok, f"Sonarr webhook returned {resp.status_code}: {resp.text}"
 
         # 2. The batch should appear in /api/webhooks/pending within a few
         #    ticks (this test uses webhook_delay=30s via parametrize so the
@@ -88,9 +92,10 @@ class TestWebhookToDashboard:
         deadline = time.monotonic() + 5
         pending_batch = None
         while time.monotonic() < deadline:
-            r = backend_real_page.request.get(
+            r = requests.get(
                 f"{app_url}/api/webhooks/pending",
-                headers={"X-Auth-Token": "e2e-test-token"},
+                headers=_AUTH_HEADERS,
+                timeout=_API_TIMEOUT,
             )
             if r.ok:
                 body = r.json()
@@ -110,11 +115,12 @@ class TestWebhookToDashboard:
         # 3. Fire-now to skip the (already short) debounce wait.
         from urllib.parse import quote
 
-        fire_resp = backend_real_page.request.post(
+        fire_resp = requests.post(
             f"{app_url}/api/webhooks/pending/{quote(debounce_key, safe='')}/fire-now",
-            headers={"X-Auth-Token": "e2e-test-token"},
+            headers=_AUTH_HEADERS,
+            timeout=_API_TIMEOUT,
         )
-        assert fire_resp.status in (200, 202), f"fire-now: {fire_resp.status} {fire_resp.text()}"
+        assert fire_resp.status_code in (200, 202), f"fire-now: {fire_resp.status_code} {fire_resp.text}"
 
         # 4. A new job should appear via SocketIO + via the jobs list.
         deadline = time.monotonic() + 15
@@ -140,9 +146,10 @@ class TestWebhookToDashboard:
         deadline = time.monotonic() + 30
         terminal = False
         while time.monotonic() < deadline:
-            r = backend_real_page.request.get(
+            r = requests.get(
                 f"{app_url}/api/jobs/{job_id}",
-                headers={"X-Auth-Token": "e2e-test-token"},
+                headers=_AUTH_HEADERS,
+                timeout=_API_TIMEOUT,
             )
             if r.ok and r.json().get("status") in ("completed", "failed", "cancelled"):
                 terminal = True
@@ -183,7 +190,6 @@ class TestWebhookToDashboard:
 
         # POST the webhook and DO NOT call fire-now.
         resp = _post_sonarr_webhook(
-            backend_real_page,
             app_url,
             "/data/TV/Show Two/S02E03.mkv",
             series_title="Show Two",

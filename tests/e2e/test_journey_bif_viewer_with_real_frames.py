@@ -22,7 +22,11 @@ import struct
 from pathlib import Path
 
 import pytest
+import requests
 from playwright.sync_api import Page, expect
+
+_AUTH_HEADERS = {"X-Auth-Token": "e2e-test-token"}
+_API_TIMEOUT = 60
 
 # A 1x1 pixel valid JPEG — smallest possible bytes that a browser will
 # successfully decode (naturalWidth > 0 after load).
@@ -157,13 +161,15 @@ class TestBifViewerWithRealFrames:
         # Pre-flight: the backend's /api/bif/info endpoint must accept this
         # BIF path through the allow-list. If this fails, the rest of the
         # test would be a wild goose chase chasing JS bugs that don't exist.
-        info_resp = page.request.get(
+        # Use requests (not page.request) to avoid the Playwright IPC stall.
+        info_resp = requests.get(
             f"{app_url}/api/bif/info?path={bif_path}",
-            headers={"X-Auth-Token": "e2e-test-token"},
+            headers=_AUTH_HEADERS,
+            timeout=_API_TIMEOUT,
         )
         assert info_resp.ok, (
             f"Backend's /api/bif/info rejected the seeded BIF at {bif_path}: "
-            f"status={info_resp.status} body={info_resp.text()}"
+            f"status={info_resp.status_code} body={info_resp.text}"
         )
         info = info_resp.json()
         assert info["frame_count"] == 5, f"BIF metadata wrong: {info}"
@@ -246,15 +252,16 @@ class TestBifViewerWithRealFrames:
         context.add_cookies([cookie])
 
         for i in range(5):
-            r = page.request.get(
+            r = requests.get(
                 f"{app_url}/api/bif/frame?path={bif_path}&index={i}",
-                headers={"X-Auth-Token": "e2e-test-token"},
+                headers=_AUTH_HEADERS,
+                timeout=_API_TIMEOUT,
             )
-            assert r.ok, f"Frame {i}: status={r.status} body={r.text()[:200]}"
+            assert r.ok, f"Frame {i}: status={r.status_code} body={r.text[:200]}"
             assert r.headers.get("content-type", "").startswith("image/jpeg"), (
                 f"Frame {i}: wrong content-type {r.headers.get('content-type')!r}"
             )
-            body = r.body()
+            body = r.content
             # Real JPEGs start with FF D8 FF.
             assert body.startswith(b"\xff\xd8\xff"), (
                 f"Frame {i}: backend returned non-JPEG bytes (first 4 = {body[:4]!r})"

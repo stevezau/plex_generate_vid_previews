@@ -14,7 +14,11 @@ import json
 from pathlib import Path
 
 import pytest
+import requests
 from playwright.sync_api import Page, expect
+
+_AUTH_JSON_HEADERS = {"X-Auth-Token": "e2e-test-token", "Content-Type": "application/json"}
+_API_TIMEOUT = 60
 
 
 @pytest.mark.e2e
@@ -102,20 +106,19 @@ class TestSettingsSaveAndReloadPersists:
         backend_real_page.goto(f"{app_url}/settings")
         backend_real_page.wait_for_load_state("domcontentloaded")
 
-        # Endpoint is PUT (not POST) per api_settings.py.
-        resp = backend_real_page.request.put(
+        # Endpoint is PUT (not POST) per api_settings.py. Use requests
+        # to avoid the Playwright IPC stall.
+        resp = requests.put(
             f"{app_url}/api/settings/log-level",
-            headers={
-                "X-Auth-Token": "e2e-test-token",
-                "Content-Type": "application/json",
-            },
+            headers=_AUTH_JSON_HEADERS,
             data='{"log_level": "DEBUG"}',
+            timeout=_API_TIMEOUT,
         )
         # Endpoint may not exist on every build — accept 200 OR fall back to
         # asserting the setting can round-trip via /api/settings.
-        if resp.status == 404:
+        if resp.status_code == 404:
             pytest.skip("/api/settings/log-level not registered in this build")
-        assert resp.ok, f"POST /api/settings/log-level: {resp.status} {resp.text()}"
+        assert resp.ok, f"POST /api/settings/log-level: {resp.status_code} {resp.text}"
 
         settings_path = Path(config_dir) / "settings.json"
         for _ in range(40):

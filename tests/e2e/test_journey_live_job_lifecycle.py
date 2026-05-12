@@ -28,7 +28,12 @@ from __future__ import annotations
 import time
 
 import pytest
+import requests
 from playwright.sync_api import Page, expect
+
+_AUTH_HEADERS = {"X-Auth-Token": "e2e-test-token"}
+_AUTH_JSON_HEADERS = {"X-Auth-Token": "e2e-test-token", "Content-Type": "application/json"}
+_API_TIMEOUT = 60
 
 
 @pytest.mark.e2e
@@ -77,15 +82,14 @@ class TestLiveJobLifecycle:
         # MEDIA_ROOT allowlist (default "/" so /tmp works). The path doesn't
         # need to exist — with no servers configured the orchestrator marks
         # it unresolved and completes quickly without any FFmpeg work.
-        post_resp = backend_real_page.request.post(
+        # Use requests (not page.request) to avoid the Playwright IPC stall.
+        post_resp = requests.post(
             f"{app_url}/api/jobs/manual",
-            headers={
-                "X-Auth-Token": "e2e-test-token",
-                "Content-Type": "application/json",
-            },
+            headers=_AUTH_JSON_HEADERS,
             data='{"file_paths": ["/tmp/nonexistent_e2e_job.mkv"]}',
+            timeout=_API_TIMEOUT,
         )
-        assert post_resp.ok, f"POST /api/jobs/manual failed: {post_resp.status} {post_resp.text()}"
+        assert post_resp.ok, f"POST /api/jobs/manual failed: {post_resp.status_code} {post_resp.text}"
         job = post_resp.json()
         job_id = job["id"]
         assert job_id, "Backend did not return a job id"
@@ -138,9 +142,10 @@ class TestLiveJobLifecycle:
         assert terminal_event["data"]["id"] == job_id
 
         # And the REAL backend's job-stats endpoint must reflect the new total.
-        stats_resp = backend_real_page.request.get(
+        stats_resp = requests.get(
             f"{app_url}/api/jobs/stats",
-            headers={"X-Auth-Token": "e2e-test-token"},
+            headers=_AUTH_HEADERS,
+            timeout=_API_TIMEOUT,
         )
         assert stats_resp.ok
         stats = stats_resp.json()
@@ -158,15 +163,13 @@ class TestLiveJobLifecycle:
         backend_real_page.wait_for_load_state("domcontentloaded")
         backend_real_page.wait_for_function("() => typeof io === 'function'", timeout=5000)
 
-        post_resp = backend_real_page.request.post(
+        post_resp = requests.post(
             f"{app_url}/api/jobs/manual",
-            headers={
-                "X-Auth-Token": "e2e-test-token",
-                "Content-Type": "application/json",
-            },
+            headers=_AUTH_JSON_HEADERS,
             data='{"file_paths": ["/tmp/another_nonexistent.mkv"]}',
+            timeout=_API_TIMEOUT,
         )
-        assert post_resp.ok, post_resp.text()
+        assert post_resp.ok, post_resp.text
         job_id = post_resp.json()["id"]
 
         # Wait for the job to reach a terminal state via the REAL backend's
@@ -176,9 +179,10 @@ class TestLiveJobLifecycle:
         deadline = time.monotonic() + 30
         final_status = None
         while time.monotonic() < deadline:
-            r = backend_real_page.request.get(
+            r = requests.get(
                 f"{app_url}/api/jobs/{job_id}",
-                headers={"X-Auth-Token": "e2e-test-token"},
+                headers=_AUTH_HEADERS,
+                timeout=_API_TIMEOUT,
             )
             if r.ok:
                 final_status = r.json().get("status")

@@ -20,6 +20,7 @@ from __future__ import annotations
 import time
 
 import pytest
+import requests
 from playwright.sync_api import expect
 
 from media_preview_generator.web.notifications import (
@@ -27,6 +28,9 @@ from media_preview_generator.web.notifications import (
     DEPRECATED_IMAGE_NAME,
     SCHEMA_MIGRATION_ID,
 )
+
+_AUTH_HEADERS = {"X-Auth-Token": "e2e-test-token"}
+_API_TIMEOUT = 60
 
 _SEEDED_OVERRIDES = {
     # Setting this synthetic notice triggers the "Settings migrated" card.
@@ -63,8 +67,13 @@ class TestNotificationsLifecycle:
         """
         app_url, _ = backend_real_app
 
-        resp = backend_real_page.request.get(f"{app_url}/api/system/notifications")
-        assert resp.ok, f"GET /api/system/notifications: {resp.status}"
+        # Use requests (not page.request) to avoid the Playwright IPC stall.
+        resp = requests.get(
+            f"{app_url}/api/system/notifications",
+            headers=_AUTH_HEADERS,
+            timeout=_API_TIMEOUT,
+        )
+        assert resp.ok, f"GET /api/system/notifications: {resp.status_code}"
         data = resp.json()
         notifs = data.get("notifications", [])
         ids = {n["id"] for n in notifs}
@@ -90,20 +99,38 @@ class TestNotificationsLifecycle:
         app_url, _ = backend_real_app
 
         # Sanity: both present before dismiss.
-        before = backend_real_page.request.get(f"{app_url}/api/system/notifications").json().get("notifications", [])
+        before = (
+            requests.get(
+                f"{app_url}/api/system/notifications",
+                headers=_AUTH_HEADERS,
+                timeout=_API_TIMEOUT,
+            )
+            .json()
+            .get("notifications", [])
+        )
         ids_before = {n["id"] for n in before}
         assert DEPRECATED_IMAGE_ID in ids_before
         assert SCHEMA_MIGRATION_ID in ids_before
 
         # Dismiss the deprecated-image card via real endpoint.
-        dismiss_resp = backend_real_page.request.post(
-            f"{app_url}/api/system/notifications/{DEPRECATED_IMAGE_ID}/dismiss"
+        dismiss_resp = requests.post(
+            f"{app_url}/api/system/notifications/{DEPRECATED_IMAGE_ID}/dismiss",
+            headers=_AUTH_HEADERS,
+            timeout=_API_TIMEOUT,
         )
         assert dismiss_resp.ok
         assert dismiss_resp.json().get("ok") is True
 
         # Refetch — the dismissed one must be gone, the other must remain.
-        after = backend_real_page.request.get(f"{app_url}/api/system/notifications").json().get("notifications", [])
+        after = (
+            requests.get(
+                f"{app_url}/api/system/notifications",
+                headers=_AUTH_HEADERS,
+                timeout=_API_TIMEOUT,
+            )
+            .json()
+            .get("notifications", [])
+        )
         ids_after = {n["id"] for n in after}
         assert DEPRECATED_IMAGE_ID not in ids_after, (
             f"Session-dismiss did not suppress the notification on next list. Got IDs: {ids_after}"
@@ -127,10 +154,12 @@ class TestNotificationsLifecycle:
 
         app_url, config_dir = backend_real_app
 
-        dismiss_resp = backend_real_page.request.post(
-            f"{app_url}/api/system/notifications/{DEPRECATED_IMAGE_ID}/dismiss-permanent"
+        dismiss_resp = requests.post(
+            f"{app_url}/api/system/notifications/{DEPRECATED_IMAGE_ID}/dismiss-permanent",
+            headers=_AUTH_HEADERS,
+            timeout=_API_TIMEOUT,
         )
-        assert dismiss_resp.ok, dismiss_resp.text()
+        assert dismiss_resp.ok, dismiss_resp.text
         assert dismiss_resp.json().get("ok") is True
         assert dismiss_resp.json().get("persisted") is True
 
@@ -145,7 +174,15 @@ class TestNotificationsLifecycle:
         )
 
         # And the GET endpoint must filter it out.
-        listing = backend_real_page.request.get(f"{app_url}/api/system/notifications").json().get("notifications", [])
+        listing = (
+            requests.get(
+                f"{app_url}/api/system/notifications",
+                headers=_AUTH_HEADERS,
+                timeout=_API_TIMEOUT,
+            )
+            .json()
+            .get("notifications", [])
+        )
         assert DEPRECATED_IMAGE_ID not in {n["id"] for n in listing}
 
     def test_bell_dropdown_renders_notification_in_dom(
@@ -204,14 +241,26 @@ class TestNotificationsLifecycle:
         """
         app_url, _ = backend_real_app
 
-        backend_real_page.request.post(f"{app_url}/api/system/notifications/{DEPRECATED_IMAGE_ID}/dismiss-permanent")
+        requests.post(
+            f"{app_url}/api/system/notifications/{DEPRECATED_IMAGE_ID}/dismiss-permanent",
+            headers=_AUTH_HEADERS,
+            timeout=_API_TIMEOUT,
+        )
 
         backend_real_page.goto(f"{app_url}/")
         backend_real_page.wait_for_load_state("domcontentloaded")
         # Give loadNotifications() a moment.
         time.sleep(0.5)
 
-        listing = backend_real_page.request.get(f"{app_url}/api/system/notifications").json().get("notifications", [])
+        listing = (
+            requests.get(
+                f"{app_url}/api/system/notifications",
+                headers=_AUTH_HEADERS,
+                timeout=_API_TIMEOUT,
+            )
+            .json()
+            .get("notifications", [])
+        )
         ids = {n["id"] for n in listing}
         assert DEPRECATED_IMAGE_ID not in ids, (
             f"After reload, the permanently-dismissed notification reappeared. Got IDs: {ids}"

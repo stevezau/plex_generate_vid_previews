@@ -17,30 +17,37 @@ from __future__ import annotations
 import time
 
 import pytest
+import requests
+
+_AUTH_HEADERS = {"X-Auth-Token": "e2e-test-token"}
+_AUTH_JSON_HEADERS = {"X-Auth-Token": "e2e-test-token", "Content-Type": "application/json"}
+_API_TIMEOUT = 60
 
 
-def _post_manual_job(page, app_url: str, file_path: str) -> str:
-    """POST a real manual job via the real /api/jobs/manual; return its id."""
-    resp = page.request.post(
+def _post_manual_job(app_url: str, file_path: str) -> str:
+    """POST a real manual job via the real /api/jobs/manual; return its id.
+
+    Uses requests (not page.request) to avoid the Playwright IPC stall.
+    """
+    resp = requests.post(
         f"{app_url}/api/jobs/manual",
-        headers={
-            "X-Auth-Token": "e2e-test-token",
-            "Content-Type": "application/json",
-        },
+        headers=_AUTH_JSON_HEADERS,
         data=f'{{"file_paths": ["{file_path}"]}}',
+        timeout=_API_TIMEOUT,
     )
-    assert resp.ok, f"POST /api/jobs/manual failed: {resp.status} {resp.text()}"
+    assert resp.ok, f"POST /api/jobs/manual failed: {resp.status_code} {resp.text}"
     return resp.json()["id"]
 
 
-def _wait_for_status(page, app_url: str, job_id: str, statuses: set[str], timeout_s: float = 30) -> str | None:
+def _wait_for_status(app_url: str, job_id: str, statuses: set[str], timeout_s: float = 30) -> str | None:
     """Poll the real /api/jobs/<id> endpoint until status hits one of `statuses`."""
     deadline = time.monotonic() + timeout_s
     last = None
     while time.monotonic() < deadline:
-        r = page.request.get(
+        r = requests.get(
             f"{app_url}/api/jobs/{job_id}",
-            headers={"X-Auth-Token": "e2e-test-token"},
+            headers=_AUTH_HEADERS,
+            timeout=_API_TIMEOUT,
         )
         if r.ok:
             last = r.json().get("status")
@@ -76,23 +83,23 @@ class TestCancelKillRunningJob:
         backend_real_page.wait_for_load_state("domcontentloaded")
         backend_real_page.wait_for_function("() => typeof io === 'function'", timeout=5000)
 
-        job_id = _post_manual_job(backend_real_page, app_url, "/tmp/cancel_target.mkv")
+        job_id = _post_manual_job(app_url, "/tmp/cancel_target.mkv")
 
-        cancel_resp = backend_real_page.request.post(
+        cancel_resp = requests.post(
             f"{app_url}/api/jobs/{job_id}/cancel",
-            headers={"X-Auth-Token": "e2e-test-token"},
+            headers=_AUTH_HEADERS,
+            timeout=_API_TIMEOUT,
         )
         # 200/201 must always come back — even when cancel arrived after
         # the job already terminated, the endpoint should idempotently
         # return the current job dict.
-        assert cancel_resp.status in (200, 201), f"cancel returned {cancel_resp.status}: {cancel_resp.text()}"
+        assert cancel_resp.status_code in (200, 201), f"cancel returned {cancel_resp.status_code}: {cancel_resp.text}"
         # Body must be a valid job dict with an id field, not an error.
         body = cancel_resp.json()
         assert body.get("id") == job_id, f"cancel response body shape wrong: {body}"
         assert "status" in body, f"cancel response missing status field: {body}"
 
         terminal = _wait_for_status(
-            backend_real_page,
             app_url,
             job_id,
             statuses={"cancelled", "completed", "failed"},
@@ -118,28 +125,29 @@ class TestCancelKillRunningJob:
         backend_real_page.goto(f"{app_url}/")
         backend_real_page.wait_for_load_state("domcontentloaded")
 
-        job_id = _post_manual_job(backend_real_page, app_url, "/tmp/cancel_log_target.mkv")
+        job_id = _post_manual_job(app_url, "/tmp/cancel_log_target.mkv")
 
-        cancel_resp = backend_real_page.request.post(
+        cancel_resp = requests.post(
             f"{app_url}/api/jobs/{job_id}/cancel",
-            headers={"X-Auth-Token": "e2e-test-token"},
+            headers=_AUTH_HEADERS,
+            timeout=_API_TIMEOUT,
         )
-        assert cancel_resp.status in (200, 201)
+        assert cancel_resp.status_code in (200, 201)
 
         # Wait for terminal so the log is fully flushed.
         _wait_for_status(
-            backend_real_page,
             app_url,
             job_id,
             statuses={"cancelled", "completed", "failed"},
             timeout_s=15,
         )
 
-        logs_resp = backend_real_page.request.get(
+        logs_resp = requests.get(
             f"{app_url}/api/jobs/{job_id}/logs",
-            headers={"X-Auth-Token": "e2e-test-token"},
+            headers=_AUTH_HEADERS,
+            timeout=_API_TIMEOUT,
         )
-        assert logs_resp.ok, f"GET /api/jobs/{job_id}/logs returned {logs_resp.status}"
+        assert logs_resp.ok, f"GET /api/jobs/{job_id}/logs returned {logs_resp.status_code}"
         body = logs_resp.json()
         # Endpoint returns either {"logs": [...]} or a list of strings.
         log_lines = body.get("logs", body) if isinstance(body, dict) else body
@@ -168,13 +176,14 @@ class TestCancelKillRunningJob:
         backend_real_page.wait_for_load_state("domcontentloaded")
         backend_real_page.wait_for_function("() => typeof io === 'function'", timeout=5000)
 
-        job_id = _post_manual_job(backend_real_page, app_url, "/tmp/cancel_button_target.mkv")
+        job_id = _post_manual_job(app_url, "/tmp/cancel_button_target.mkv")
 
-        cancel_resp = backend_real_page.request.post(
+        cancel_resp = requests.post(
             f"{app_url}/api/jobs/{job_id}/cancel",
-            headers={"X-Auth-Token": "e2e-test-token"},
+            headers=_AUTH_HEADERS,
+            timeout=_API_TIMEOUT,
         )
-        assert cancel_resp.status in (200, 201)
+        assert cancel_resp.status_code in (200, 201)
 
         # Trigger a refresh — the dashboard's loadJobs() polls every 5s but
         # we can call it directly to avoid the wait. The page is already on /.

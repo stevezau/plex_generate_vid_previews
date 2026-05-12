@@ -15,6 +15,11 @@ from __future__ import annotations
 import time
 
 import pytest
+import requests
+
+_AUTH_HEADERS = {"X-Auth-Token": "e2e-test-token"}
+_AUTH_JSON_HEADERS = {"X-Auth-Token": "e2e-test-token", "Content-Type": "application/json"}
+_API_TIMEOUT = 60
 
 
 @pytest.mark.e2e
@@ -33,26 +38,29 @@ class TestPauseResumeScan:
         app_url, _ = backend_real_app
 
         # Initial state: not paused.
-        state_resp = backend_real_page.request.get(
+        state_resp = requests.get(
             f"{app_url}/api/processing/state",
-            headers={"X-Auth-Token": "e2e-test-token"},
+            headers=_AUTH_HEADERS,
+            timeout=_API_TIMEOUT,
         )
-        assert state_resp.ok, f"GET /api/processing/state: {state_resp.status} {state_resp.text()}"
+        assert state_resp.ok, f"GET /api/processing/state: {state_resp.status_code} {state_resp.text}"
         assert state_resp.json().get("paused") is False, f"Fresh app booted with paused=true: {state_resp.json()}"
 
         # Pause via the real endpoint.
-        pause_resp = backend_real_page.request.post(
+        pause_resp = requests.post(
             f"{app_url}/api/processing/pause",
-            headers={"X-Auth-Token": "e2e-test-token"},
+            headers=_AUTH_HEADERS,
+            timeout=_API_TIMEOUT,
         )
-        assert pause_resp.ok, f"pause failed: {pause_resp.status} {pause_resp.text()}"
+        assert pause_resp.ok, f"pause failed: {pause_resp.status_code} {pause_resp.text}"
         body = pause_resp.json()
         assert body.get("paused") is True, f"pause endpoint returned {body}"
 
         # State must now reflect paused.
-        state_resp = backend_real_page.request.get(
+        state_resp = requests.get(
             f"{app_url}/api/processing/state",
-            headers={"X-Auth-Token": "e2e-test-token"},
+            headers=_AUTH_HEADERS,
+            timeout=_API_TIMEOUT,
         )
         assert state_resp.ok
         assert state_resp.json().get("paused") is True, (
@@ -68,21 +76,24 @@ class TestPauseResumeScan:
         """Pause then Resume: state must end at paused=False."""
         app_url, _ = backend_real_app
 
-        backend_real_page.request.post(
+        requests.post(
             f"{app_url}/api/processing/pause",
-            headers={"X-Auth-Token": "e2e-test-token"},
+            headers=_AUTH_HEADERS,
+            timeout=_API_TIMEOUT,
         )
-        resume_resp = backend_real_page.request.post(
+        resume_resp = requests.post(
             f"{app_url}/api/processing/resume",
-            headers={"X-Auth-Token": "e2e-test-token"},
+            headers=_AUTH_HEADERS,
+            timeout=_API_TIMEOUT,
         )
-        assert resume_resp.ok, f"resume failed: {resume_resp.status}"
+        assert resume_resp.ok, f"resume failed: {resume_resp.status_code}"
         assert resume_resp.json().get("paused") is False
 
         # Confirm via the state endpoint.
-        state_resp = backend_real_page.request.get(
+        state_resp = requests.get(
             f"{app_url}/api/processing/state",
-            headers={"X-Auth-Token": "e2e-test-token"},
+            headers=_AUTH_HEADERS,
+            timeout=_API_TIMEOUT,
         )
         assert state_resp.json().get("paused") is False, (
             "Resume returned paused=False but a follow-up GET still shows paused=True. "
@@ -109,16 +120,18 @@ class TestPauseResumeScan:
         app_url, _ = backend_real_app
 
         # Pause first.
-        backend_real_page.request.post(
+        requests.post(
             f"{app_url}/api/processing/pause",
-            headers={"X-Auth-Token": "e2e-test-token"},
+            headers=_AUTH_HEADERS,
+            timeout=_API_TIMEOUT,
         )
 
         # POST a real job.
-        post_resp = backend_real_page.request.post(
+        post_resp = requests.post(
             f"{app_url}/api/jobs/manual",
-            headers={"X-Auth-Token": "e2e-test-token", "Content-Type": "application/json"},
+            headers=_AUTH_JSON_HEADERS,
             data='{"file_paths": ["/tmp/paused_job_target.mkv"]}',
+            timeout=_API_TIMEOUT,
         )
         assert post_resp.ok
         job_id = post_resp.json()["id"]
@@ -128,9 +141,10 @@ class TestPauseResumeScan:
         deadline = time.monotonic() + 10
         last_status = None
         while time.monotonic() < deadline:
-            r = backend_real_page.request.get(
+            r = requests.get(
                 f"{app_url}/api/jobs/{job_id}",
-                headers={"X-Auth-Token": "e2e-test-token"},
+                headers=_AUTH_HEADERS,
+                timeout=_API_TIMEOUT,
             )
             if r.ok:
                 last_status = r.json().get("status")
@@ -150,9 +164,10 @@ class TestPauseResumeScan:
 
         # Cleanup: resume so we don't leak the paused state into other tests
         # (which use function-scoped subprocesses anyway, but defensive).
-        backend_real_page.request.post(
+        requests.post(
             f"{app_url}/api/processing/resume",
-            headers={"X-Auth-Token": "e2e-test-token"},
+            headers=_AUTH_HEADERS,
+            timeout=_API_TIMEOUT,
         )
 
     def test_pause_resume_emits_socketio_state_change(
@@ -186,9 +201,10 @@ class TestPauseResumeScan:
             timeout=10000,
         )
 
-        backend_real_page.request.post(
+        requests.post(
             f"{app_url}/api/processing/pause",
-            headers={"X-Auth-Token": "e2e-test-token"},
+            headers=_AUTH_HEADERS,
+            timeout=_API_TIMEOUT,
         )
 
         deadline = time.monotonic() + 5
@@ -208,9 +224,10 @@ class TestPauseResumeScan:
 
         # And resume must emit the inverse.
         backend_real_page.evaluate("window.__capturedEvents = [];")
-        backend_real_page.request.post(
+        requests.post(
             f"{app_url}/api/processing/resume",
-            headers={"X-Auth-Token": "e2e-test-token"},
+            headers=_AUTH_HEADERS,
+            timeout=_API_TIMEOUT,
         )
         deadline = time.monotonic() + 5
         observed_resume = False
