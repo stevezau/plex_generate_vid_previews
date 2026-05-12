@@ -322,7 +322,35 @@ Each file is read line-by-line and checked against:
 
 ## tests/journeys/
 
-_(filled in during Phase 1B)_
+### tests/journeys/test_adapter_path_contract.py (292 lines, 11 methods, 4 classes)
+
+- **Findings:**
+  - **CLEAN — REFERENCE EXAMPLE** for "pin the exact byte string with a diagnostic message that explains the production-incident class." Covers all 3 adapters (Plex bundle, Emby sidecar, Jellyfin trickplay) + ValueError/TypeError edges for Plex + parametrized cross-adapter matrix. Each assertion's failure message names the specific incident class (D38 layout-mismatch for Jellyfin, "Plex Media Server reads from this path" for Plex bundle). No `_reset_singletons` — pure path derivation, no global state.
+
+### tests/journeys/test_journey_auth_header_precedence.py (272 lines, 11 methods, 1 class)
+
+- **Findings:**
+  - **CLEAN — GOLD-STANDARD REFERENCE for criterion B (cover-the-matrix).** 11 distinct auth scenarios spanning the full matrix of (Authorization {missing/correct-Bearer/wrong-Bearer/Basic/empty-Bearer}) × (X-Auth-Token {missing/correct/wrong}) × (session {missing/authed}). Each test pins the BODY shape, not just status code. Diagnostic messages reference auth.py line numbers AND name the security regression class each branch protects against (e.g. "any-token-anywhere auth bypass"). This is the matrix-coverage file the rule in `.claude/rules/testing.md:83-91` was written about.
+  - Uses `_reset_singletons` — deferred to the app.extensions migration (out-of-scope).
+
+### tests/journeys/test_journey_multi_server_partial_unreachable.py (257 lines, 2 methods)
+
+- **Findings:**
+  - **CLEAN** — pins partial-failure (`PUBLISHED` aggregate with one `FAILED` row) AND total-failure mirror (`FAILED` aggregate when all rows fail). Strengthens the FAILED row's `message` assertion (line 192-196) to require the "could not write / preview file" substring so a regression that returned a bare "OK" or "all good" message would fail loudly. References the actual production-code line (multi_server.py:602).
+
+### tests/journeys/test_journey_schedule_run_now.py (268 lines, 2 methods, 1 class)
+
+- **Findings:**
+  - **CLEAN** — pins 5 distinct contract points in the happy path:
+    1. `parent_schedule_id` on the spawned Job (line 197-201)
+    2. `selected_libraries` projected from schedule (line 207-211)
+    3. `server_id` pin propagated (line 214-217)
+    4. `last_run` advanced past `t_before_run` (line 228-237)
+    5. `next_run` still set AND different from `last_run` (line 244-255 — catches the subtle "next_run mirrors last_run" bug)
+  - Plus a negative 404 case (test_run_now_unknown_schedule_returns_404).
+  - Uses `_reset_singletons` — deferred (out-of-scope).
+
+**Batch 8 summary (4 files, 1089 lines):** 0 HIGH, 0 MED, 0 LOW. All four files are reference examples. Auth-header-precedence + adapter-path-contract are the two files most worth quoting when explaining matrix coverage and exact-byte-string contract pinning to future contributors.
 
 ## tests/integration/
 
