@@ -86,6 +86,44 @@ Each file is read line-by-line and checked against:
 
 **Batch 1 summary (5 files, 939 lines):** 0 HIGH, 11 MED, 0 LOW. The dominant patterns are (a) hardcoded `wait_for_timeout` sleeps and (b) `page.request.X()` for backend API calls. No inline LOW fixes warranted in this batch — files are already clean on naming, AAA, imports, types.
 
+### tests/e2e/test_journey_edit_existing_server.py (200 lines, 3 methods, 1 class)
+
+- **Findings:**
+  - **MED, Criterion F** (line 135-138) — `page.request.get(/api/servers/{id}, X-Auth-Token)` — backend API call, no browser-cookie dependency. Swap to `requests` in Phase 2.F.
+  - **Strong on-disk persistence assertions**: lines 150-159 + 190-197 read `settings.json` directly to prove the PUT actually flushed to disk. Excellent — catches the "PUT updated in-memory state but never wrote to disk" bug class explicitly.
+- **LOW**: none.
+
+### tests/e2e/test_journey_jellyfin_wizard_full.py (112 lines, 1 method, 1 class)
+
+- **Findings:**
+  - **CLEAN** — heavy use of `_mocks` helpers (HTTP boundary mocking), specific value assertions (`type == "jellyfin"`, `name`, exact token), good docstrings explaining the test's signal vs. its limitations.
+  - No `page.request` backend API calls (uses `capture_*` helpers via `page.route`).
+- **LOW**: none.
+
+### tests/e2e/test_journey_live_job_lifecycle.py (206 lines, 2 methods, 1 class)
+
+- **Findings:**
+  - **MED, Criterion F** (lines 80, 141, 161, 179) — 4 `backend_real_page.request.X()` backend API callsites. Same Playwright IPC risk as canary. Swap in Phase 2.F.
+  - **MED, Criterion F-SocketIO** (lines 58-69) — opens a Playwright-driven SocketIO subscription (`page.evaluate(io('/jobs', ...))`) before posting jobs. This is the exact pattern the canary fix eliminated. Under `-n auto` this is risky. The canary moved to polling `GET /api/jobs?page=0`; this test could too, but it specifically verifies the SocketIO emit which has its own value. **Decision needed**: keep SocketIO observation (and accept `-n auto` flakiness) OR add a parallel `requests` poll for the job-state check.
+  - Strong assertions: line 138 (job id match), line 147 (stats.total >= 1). Good.
+
+### tests/e2e/test_journey_notifications_lifecycle.py (218 lines, 5 methods, 1 class)
+
+- **Findings:**
+  - **MED, Criterion F** (lines 66, 93, 99, 106, 130, 148, 207, 214) — 8 `backend_real_page.request.X()` callsites. None need browser-cookie state. Swap in Phase 2.F.
+  - **Strong on-disk + endpoint cross-check** (lines 138-149): tests that permanent dismiss writes to `settings.json` AND that the GET endpoint filters dismissed entries. Both contracts pinned in one test.
+  - **MED, Criterion B** (lines 102-103) — `dismiss_resp.json().get("ok") is True` is good. But could also pin response shape more completely (id of dismissed item echoed in the response would be a stronger contract). Optional polish.
+
+### tests/e2e/test_journey_pause_resume_scan.py (224 lines, 4 methods, 1 class)
+
+- **Findings:**
+  - **MED, Criterion F** (lines 36, 44, 53, 71, 75, 83, 112, 118, 131, 153, 189, 211) — 11 `backend_real_page.request.X()` callsites. None need browser-cookie state. Largest concentration in any single file so far. Swap in Phase 2.F.
+  - **MED, Criterion F-SocketIO** (lines 173-187) — SocketIO subscription pattern, same as test_journey_live_job_lifecycle.
+  - **Strong contracts**: lines 198-202 pin `paused=True` event payload; lines 219-222 pin `paused=False` for resume. Good.
+  - **Strong negative assertion**: line 145 (`last_status != "running"`) — pins the "must not be stuck running" contract specifically. The docstring explains why this exact negative shape catches the bug.
+
+**Batch 2 summary (5 files, 960 lines):** 0 HIGH, ~36 MED (dominated by page.request callsites — 31 in this batch alone), 0 LOW. Pattern is clear: every backend-real test that interacts with API endpoints uses `page.request.X()` instead of `requests`. The Phase 2.F batch will mass-swap these. No inline LOW fixes warranted; files are well-structured otherwise.
+
 ## tests/journeys/
 
 _(filled in during Phase 1B)_
