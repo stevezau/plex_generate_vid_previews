@@ -33,6 +33,11 @@ def _drive_to_step4(page: Page, app_url: str) -> None:
     page.locator("#manualPlexToken").fill("tok")
     page.locator("#manualPlexTestBtn").click()
     expect(page.locator("#manualPlexResult")).to_contain_text("Connected", timeout=5000)
+    # ``to_be_visible`` ahead of the click surfaces a clearer error than
+    # a 30s ``element is not stable`` timeout if step 1 ever regresses
+    # to async layout shift around ``#step1Next``.
+    expect(page.locator("#step1Next")).to_be_visible()
+    expect(page.locator("#step1Next")).to_be_enabled()
     page.locator("#step1Next").click()
     page.locator(".library-card").first.click()
     page.locator("#step2Next").click()

@@ -37,6 +37,8 @@ def _drive_to_step5(page: Page, app_url: str) -> None:
     page.locator("#manualPlexToken").fill("tok")
     page.locator("#manualPlexTestBtn").click()
     expect(page.locator("#manualPlexResult")).to_contain_text("Connected", timeout=5000)
+    expect(page.locator("#step1Next")).to_be_visible()
+    expect(page.locator("#step1Next")).to_be_enabled()
     page.locator("#step1Next").click()
     page.locator(".library-card").first.click()
     page.locator("#step2Next").click()

@@ -226,16 +226,16 @@ jobs:
         # GH status check display ("e2e (shard 3/4)"). Shell arithmetic
         # below maps 1->0, 2->1, etc.
         #
-        # --reruns 2 — observed empirically that the "element is not
-        # stable" wizard-transition flakes on GH's slow runner can
-        # take 3 attempts to clear (the Bootstrap step-pane animation
-        # outlives the 60s per-locator budget under runner pressure).
-        # Sharding doesn't help that class of flake — only Chromium
-        # SIGSEGV-class accumulation. Keep 2 reruns; 3 consecutive
-        # failures still flag real regressions.
+        # No --reruns — the underlying flake was a 600ms setTimeout
+        # auto-advance in setup.html racing Playwright's stability
+        # check on ``#step1Next`` (every wizard-driving test went
+        # amber). Auto-advance removed at the source, so reruns are
+        # no longer needed to paper over it. ``pytest-rerunfailures``
+        # stays installed but the e2e command no longer requests it,
+        # so a real regression fails immediately instead of after
+        # three slow attempts.
         run: >-
           pytest -m e2e -n 0 --no-cov --tb=short --timeout=120
-          --reruns 2 --reruns-delay 5
           --shard-id=$((${{ matrix.shard }} - 1)) --num-shards=4
         timeout-minutes: 10
 

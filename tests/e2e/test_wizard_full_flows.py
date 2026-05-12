@@ -59,9 +59,14 @@ class TestPlexHappyPath:
         wizard_page.locator("#manualPlexToken").fill("plex-tok")
         wizard_page.locator("#manualPlexTestBtn").click()
         expect(wizard_page.locator("#manualPlexResult")).to_contain_text("Connected", timeout=5000)
-        # Wizard auto-advances after a successful Plex sign-in — no Next click
-        # needed. Wait for step 2 to become active rather than driving it
-        # ourselves; this locks the auto-advance behaviour in.
+        # Click Next explicitly — the 600 ms auto-advance setTimeout was
+        # removed in this PR because it raced Playwright's stability
+        # check on ``#step1Next`` and made every wizard-driving e2e
+        # test go amber on CI shards 2/3. The Next button is visible
+        # and enabled on connection success, so the user clicks it.
+        expect(wizard_page.locator("#step1Next")).to_be_visible()
+        expect(wizard_page.locator("#step1Next")).to_be_enabled()
+        wizard_page.locator("#step1Next").click()
         expect(wizard_page.locator('div.setup-step[data-step="2"]')).to_have_class("setup-step active", timeout=3000)
         wizard_page.locator(".library-card").first.click()
         wizard_page.locator(".library-card").nth(1).click()

@@ -612,12 +612,11 @@ document.addEventListener('DOMContentLoaded', function() {
         document.getElementById('authStatus').classList.add('authenticated');
         document.getElementById('authError').classList.add('d-none');
         document.getElementById('step1Next').disabled = false;
-        // Brief pause so the success state is visible, then auto-advance —
-        // there's nothing else for the user to do on this step once Plex
-        // accepted them. Guard against the rare case where the user (or a
-        // test) clicked Next manually in the meantime — re-stepping back
-        // would snap them backward.
-        setTimeout(() => { if (currentStep === 1) goToStep(2); }, 600);
+        // Explicit Next click: a previous 600 ms ``setTimeout`` auto-advance
+        // raced Playwright's stability check on ``#step1Next`` (CI flake on
+        // shards 2/3 — every wizard-driving test went amber). The Next
+        // button is already visible + enabled here, so the affordance is
+        // the user click, not a hidden timer.
     }
 
     function onAuthError(error) {
@@ -769,8 +768,8 @@ document.addEventListener('DOMContentLoaded', function() {
             resultEl.innerHTML =
                 '<i class="bi bi-check-circle-fill me-1"></i>' +
                 'Connected&nbsp;&mdash;&nbsp;found ' + libraryCount + ' librar' +
-                (libraryCount === 1 ? 'y' : 'ies') + '. Loading libraries…';
-            setTimeout(() => { if (currentStep === 1) goToStep(2); }, 600);
+                (libraryCount === 1 ? 'y' : 'ies') + '.';
+            // Auto-advance setTimeout removed — see onAuthSuccess comment.
         } catch (err) {
             resultEl.className = 'small mt-2 text-danger';
             resultEl.textContent = 'Connection failed: ' + (err && err.message ? err.message : 'unknown error');

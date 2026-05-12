@@ -34,6 +34,8 @@ def _drive_to_step3(page: Page, app_url: str) -> None:
     page.locator("#manualPlexToken").fill("tok")
     page.locator("#manualPlexTestBtn").click()
     expect(page.locator("#manualPlexResult")).to_contain_text("Connected", timeout=5000)
+    expect(page.locator("#step1Next")).to_be_visible()
+    expect(page.locator("#step1Next")).to_be_enabled()
     page.locator("#step1Next").click()
     expect(page.locator('div.setup-step[data-step="2"]')).to_have_class("setup-step active")
     # Tick the first library so step 2's Next enables.
