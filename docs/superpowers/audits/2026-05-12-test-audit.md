@@ -352,6 +352,27 @@ Each file is read line-by-line and checked against:
 
 **Batch 8 summary (4 files, 1089 lines):** 0 HIGH, 0 MED, 0 LOW. All four files are reference examples. Auth-header-precedence + adapter-path-contract are the two files most worth quoting when explaining matrix coverage and exact-byte-string contract pinning to future contributors.
 
+### tests/journeys/test_journey_cancel_running_job.py (324 lines, 2 methods, 1 class)
+
+- **Findings:**
+  - **CLEAN** — pins cancel_check wiring through `_start_job_async` → orchestrator + CANCELLED-not-FAILED final state + cancellation-flag cleanup (line 250-257). Uses `threading.Event` + `_wait_until` for deterministic synchronization (no `time.sleep` waits). Matrix coverage: cancel-mid-flight + cancel-then-bail-with-None-return (lines 259-324).
+  - Diagnostic message at line 232-236: names the production symptom ("yellow vs red badge"). This is the right depth of comment-as-documentation.
+  - Uses `_reset_singletons` — deferred (out-of-scope).
+
+### tests/journeys/test_journey_sonarr_to_published.py (311 lines, 3 methods, 2 classes)
+
+- **Findings:**
+  - **CLEAN** — drives Sonarr POST → debounce → `_start_job_async` capture. 3 cells: happy-path with payload pinning (line 190-209), dedup of two-quick-webhooks (line 211-267), webhook-disabled short-circuit (line 280-311). Strict equality on `library_name` (line 201-205) — explicitly anti-substring.
+  - Uses `_reset_singletons` — deferred.
+
+### tests/journeys/test_journey_webhook_debounce_to_job.py (376 lines, 4 methods, 3 classes)
+
+- **Findings:**
+  - **CLEAN — REFERENCE EXAMPLE** for real-wiring + minimal-mock journey tests. Mocks ONLY (a) the debounce delay via the `webhook_delay` setting and (b) `run_processing` at the orchestrator boundary. Everything else (HTTP route → auth → schedule → Timer → execute → JobManager → start_job_async) runs unmocked. 4 cells: single-post-makes-1-job, three-dedup-to-1, fire-now-cancels-timer (+ pending-state-cleared), fire-now-unknown-404.
+  - Reaches into `wh_mod._pending_batches` / `_pending_timers` module globals (lines 290, 321-325, 356-362) — the test is asserting on the production state directly. **This is exactly what the WebhookDebouncer class refactor would let us collapse** to a cleaner `app.extensions["webhook_debouncer"].is_pending("sonarr")` API. Deferred per session decision; this file is the canonical example of why the refactor would help.
+
+**Batch 9 summary (3 files, 1011 lines):** 0 HIGH, 0 MED, 0 LOW. All three are clean. Webhook-debounce-to-job is the canonical example for "test reaches into production module globals → refactor target for WebhookDebouncer."
+
 ## tests/integration/
 
 _(filled in during Phase 1C)_
