@@ -198,6 +198,38 @@ Each file is read line-by-line and checked against:
 
 **Batch 4 summary (5 files, 808 lines):** 0 HIGH, ~15 MED (mix of wait_for_timeout + 2 assertion-specificity), 0 LOW. test_servers_jellyfin_trickplay.py is a reference example for matrix coverage of a 3-state branch. test_preview_inspector.py pins regression class with negative-pattern assertions.
 
+### tests/e2e/test_settings_page.py (161 lines, 10 methods, 4 classes)
+
+- **Findings:**
+  - **MED, Criterion A** (lines 113, 132, 158-161) — `mock_token_set` / `mock_token_regenerate` / `capture_settings_backups_restore` return a *truthy-list* sentinel. `assert captured, "POST … never fired"` only proves the call happened; it doesn't pin the body payload. `test_set_custom_token_matching_succeeds` doesn't assert that the body's `token` field equals `"brand-new-tok-1"` — a regression that sends an empty/wrong token would still pass call-count. The settings/backups test DOES pin `file` + `backup` (lines 159-161); the token tests should do the same.
+  - **MED, Criterion B** (lines 93-113) — `test_set_custom_token_matching_succeeds` is the only auth test. Matrix gaps: (a) tokens that don't match across the two fields, (b) `mock_token_set(ok=False)` failure path, (c) regenerate-when-cancelled. Three uncovered cells for a security-sensitive code path.
+  - **MED, Criterion G** (lines 112, 131, 157) — three `wait_for_timeout(500)` after `evaluate('void X()')`. Replace with `expect(callable: lambda: bool(captured)).to_be_truthy()` polling, or use `authed_page.wait_for_request()` to deterministically catch the POST.
+  - **LOW** (line 64) — `assert opacity == "0.5"` couples to a CSS inline-style value. If production switches to a class-based fade, this breaks. Minor.
+
+### tests/e2e/test_settings_steppers.py (71 lines, 3 methods, 1 class)
+
+- **Findings:**
+  - **CLEAN** — parametrized smoke + 2 increment tests. Deterministic `expect(...).to_have_value(...)` assertions. No `page.request`, no `wait_for_timeout`. Reference example for parametrized smoke + per-target verification.
+
+### tests/e2e/test_theme_toggle.py (40 lines, 2 methods, 1 class)
+
+- **Findings:**
+  - **LOW, Criterion G** (lines 27, 38) — two `wait_for_timeout(200)`. Could be `expect(authed_page.locator("html")).to_have_attribute("data-bs-theme", ...)` but the 200ms is tiny; not load-bearing for parallel-flake.
+  - **LOW, Criterion B** — second test asserts `stored in ("light", "dark")` — both branches accepted, doesn't pin which one resulted from the click. Mostly OK because the *first* test pins the flip; this is the persistence test. Borderline.
+
+### tests/e2e/test_ui_hover_defer.py (168 lines, 2 methods, 1 class)
+
+- **Findings:**
+  - **CLEAN** — pins the production guard at app.js:1786 (hover-defer for the Active Jobs container) with a sentinel-survival check AND the contract-floor mirror (rebuild DOES happen when not hovered). Reference example for pinning a positive AND negative contract.
+  - Heavy JS injection but every block is commented with WHY (matches `.claude/rules/commenting.md` policy).
+
+### tests/e2e/test_ui_workers_panel.py (295 lines, 5 methods, 3 classes)
+
+- **Findings:**
+  - **CLEAN** — covers all four cells of the worker-card matrix (in-place update, vanish-by-key, pre-FFmpeg phase rendering, FFmpeg-started normal, fallback-active badge). Each test pins both the positive contract AND its inverse where applicable. Reference example for branchy-SUT coverage per `.claude/rules/testing.md:83-91`.
+
+**Batch 5 summary (5 files, 735 lines):** 0 HIGH, ~6 MED (4 in settings_page, 2 LOW in theme_toggle), 0 LOW notable. test_ui_hover_defer + test_ui_workers_panel are gold-standard reference files for render-contract pinning. test_settings_page has the only real assertion-specificity gap (token tests don't pin payload).
+
 ## tests/journeys/
 
 _(filled in during Phase 1B)_
