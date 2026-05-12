@@ -117,15 +117,18 @@ class TestScheduleNonPlex:
         # Fill the form: name + Recently Added scan mode + Jellyfin server.
         authed_page.locator("#scheduleName").fill("Recent JF")
         authed_page.locator("#scanModeRecent").check()
-        # Wait for the JS populator (it loads the server list async).
-        authed_page.wait_for_timeout(500)
+        # Wait deterministically for the JS populator to add the
+        # jf-1 option before selecting it.
+        expect(authed_page.locator('#scheduleServer option[value="jf-1"]')).to_be_attached(timeout=3000)
         authed_page.locator("#scheduleServer").select_option("jf-1")
         # Submit — the form's primary button.
         save_btn = authed_page.locator(
             "#newScheduleModal button.btn-primary, #newScheduleModal button:has-text('Save')"
         ).last
-        save_btn.click()
-        authed_page.wait_for_timeout(800)
+        # Wait for POST to fire so the assertion below isn't racing it.
+        with authed_page.expect_request("**/api/schedules") as req_info:
+            save_btn.click()
+        req_info.value  # noqa: B018 — ensures the request landed
 
         assert captured, "POST /api/schedules never fired"
         body = captured[0]
@@ -165,15 +168,17 @@ class TestScheduleNonPlex:
         expect(authed_page.locator("#newScheduleForm")).to_be_visible(timeout=2000)
 
         authed_page.locator("#scheduleName").fill("Nightly Emby")
-        # Full library is the default scanMode; just pick the server.
-        authed_page.wait_for_timeout(500)
+        # Full library is the default scanMode; wait for the server
+        # populator before selecting.
+        expect(authed_page.locator('#scheduleServer option[value="emby-1"]')).to_be_attached(timeout=3000)
         authed_page.locator("#scheduleServer").select_option("emby-1")
 
         save_btn = authed_page.locator(
             "#newScheduleModal button.btn-primary, #newScheduleModal button:has-text('Save')"
         ).last
-        save_btn.click()
-        authed_page.wait_for_timeout(800)
+        with authed_page.expect_request("**/api/schedules") as req_info:
+            save_btn.click()
+        req_info.value  # noqa: B018 — ensures the request landed
 
         assert captured, "POST /api/schedules never fired"
         body = captured[0]
@@ -193,7 +198,10 @@ class TestScheduleServerDropdownVendorBadges:
         authed_page.wait_for_load_state("domcontentloaded")
         authed_page.locator('button:has-text("Add Schedule")').first.click()
         expect(authed_page.locator("#scheduleServer")).to_be_visible(timeout=2000)
-        authed_page.wait_for_timeout(600)
+        # Wait for the async populator to inject the test fixture's
+        # known server ids. The seeded mock from _seed_servers_for_schedule_modal
+        # always adds at least "plex-1" — pin on that.
+        expect(authed_page.locator('#scheduleServer option[value="plex-1"]')).to_be_attached(timeout=3000)
 
         option_texts = authed_page.locator("#scheduleServer option").all_text_contents()
         joined = " | ".join(option_texts)
