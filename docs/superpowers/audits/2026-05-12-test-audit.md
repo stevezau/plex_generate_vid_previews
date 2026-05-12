@@ -124,6 +124,44 @@ Each file is read line-by-line and checked against:
 
 **Batch 2 summary (5 files, 960 lines):** 0 HIGH, ~36 MED (dominated by page.request callsites — 31 in this batch alone), 0 LOW. Pattern is clear: every backend-real test that interacts with API endpoints uses `page.request.X()` instead of `requests`. The Phase 2.F batch will mass-swap these. No inline LOW fixes warranted; files are well-structured otherwise.
 
+### tests/e2e/test_journey_schedule_lifecycle.py (286 lines, 4 methods, 1 class)
+
+- **Findings:**
+  - **CLEAN** — this is the canary, already migrated to `requests` in commit `43a9db7`. Module-level `_AUTH_HEADERS` + `_API_TIMEOUT` + verbose comment block explaining the migration rationale. **Reference template** for the Phase 2.F batch — every other backend-real file should adopt the same shape.
+  - **LOW** (lines 96-100, 214-218, 248-252) — three non-canary tests still inject `backend_real_page` as a fixture but no longer use it (the test bodies use `requests` directly via the helpers). Could be removed for symmetry with `test_run_now_creates_job_in_active_panel` (line 137-140 which dropped the fixture). Defer to Phase 2 batch (unused-fixture cleanup) — low priority.
+  - Strong negative assertion: line 282 (`status_code == 404` for double-delete). Good.
+
+### tests/e2e/test_journey_schema_migration_boot.py (261 lines, 3 methods, 1 class)
+
+- **Findings:**
+  - **CLEAN** — uses `subprocess.Popen` directly (custom fixture, not `backend_real_app`), then verifies via on-disk `settings.json` read + `urllib.request` for the `/api/servers` cross-check (lines 196-208). NO `page.request` use at all.
+  - **Strong contract pinning**: every test asserts specific schema migration outcomes (frame_reuse defaults, media_servers synthesis, ttl_minutes preserved on no-op boot). Best-practice template for migration testing.
+  - Negative-case test (`test_boot_with_already_current_schema_is_a_noop`) deliberately seeds a non-default value (ttl_minutes=999) and asserts it survives — pins the "off-by-one re-runs migration" bug class explicitly.
+  - **LOW**: none.
+
+### tests/e2e/test_journey_settings_save_reload.py (136 lines, 2 methods, 1 class)
+
+- **Findings:**
+  - **MED, Criterion F** (line 106-113) — `backend_real_page.request.put(...)` for the log-level endpoint. Swap to `requests` in Phase 2.F.
+  - **Strong on-disk poll** (lines 53-75): polls the file until all three values appear, with a detailed failure message including the file contents. This is the right approach for "did the write actually flush" testing.
+  - **LOW** (line 116): `if resp.status == 404: pytest.skip(...)` — silent skip when endpoint missing. Reasonable but a comment explaining when this branch is expected to fire would help. Not blocking.
+
+### tests/e2e/test_journey_webhook_to_dashboard.py (207 lines, 2 methods, 1 class)
+
+- **Findings:**
+  - **MED, Criterion F** (lines 31, 91, 113, 143) — 4 `page.request.X()` callsites. None need browser-cookie state. Swap.
+  - **MED, Criterion F-SocketIO** (lines 64-78, 168-182) — SocketIO subscription pattern, same as test_journey_live_job_lifecycle. The TEST PURPOSE here is verifying SocketIO emit for webhook-spawned jobs, so dropping it isn't trivial. Decision deferred to Phase 2 — see batch 2 notes.
+  - **Strong contracts**: pins `file_count == 1`, `source == "sonarr"`, terminal state, debounce key extraction. The second test (`test_natural_debounce_fires_without_explicit_fire_now`) explicitly tests the silent-failure path where the Timer is started but the callback never runs. Excellent.
+
+### tests/e2e/test_login_page.py (29 lines, 3 methods, 1 class)
+
+- **Findings:**
+  - **MED, Criterion B** (line 15) — `assert focused in (...) or page.locator("#token").is_visible()` — the `or` clause makes this pass when *either* the autofocus check OR the locator is visible. Effectively tests "the token input exists somewhere on the page" which is the wrong contract for a test named `test_token_input_is_autofocused`. Fix: assert the autofocus specifically (`assert focused == "token"`) and let the test fail loudly if autofocus regressed.
+  - **MED, Criterion B** (line 22) — `to_contain_text("didn", ...)` is a vague substring match. Probably matches "didn't match" but would also pass on "didn", "didnt", "didns" — any string with that fragment. Tighten to the actual expected string ("didn't match" or whatever the canonical copy is).
+  - **LOW**: file is very short; finds are about assertion specificity, not structure.
+
+**Batch 3 summary (5 files, 919 lines):** 0 HIGH, ~10 MED (mostly page.request swaps deferred to Phase 2.F + 2 assertion-specificity issues in login_page), 1 LOW (unused-fixture cleanup in schedule_lifecycle). Notable wins: schedule_lifecycle is the reference template post-canary-fix; schema_migration_boot is a model for migration testing.
+
 ## tests/journeys/
 
 _(filled in during Phase 1B)_
