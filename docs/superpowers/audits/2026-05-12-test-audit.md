@@ -230,6 +230,44 @@ Each file is read line-by-line and checked against:
 
 **Batch 5 summary (5 files, 735 lines):** 0 HIGH, ~6 MED (4 in settings_page, 2 LOW in theme_toggle), 0 LOW notable. test_ui_hover_defer + test_ui_workers_panel are gold-standard reference files for render-contract pinning. test_settings_page has the only real assertion-specificity gap (token tests don't pin payload).
 
+### tests/e2e/test_webapp.py (174 lines, 10 methods, 5 classes)
+
+- **Findings:**
+  - **HIGH, Criterion G** (lines 56, 67, 71, 89, 93, 132, 143, 153, 169) — 9 `wait_for_timeout(N)` hardcoded sleeps (1-2 second blocks). This is the WORST offender file in the e2e suite for non-deterministic waits — these race the backend redirect/render and are likely candidates for `-n auto` flake. Replace with `page.wait_for_url(...)` / `expect(...).to_be_visible(...)` deterministic waits. **Batch fix in Phase 2.**
+  - **MED, Criterion B** (line 58) — `assert "/login" not in current_url` — proves a redirect happened, but accepts ANY non-login URL. Could be `/error`, `/setup`, `/`. Should pin the actual expected destination.
+  - **MED, Criterion B** (line 75) — same pattern: `"/login" not in current_url` after navigating to `/settings`. A regression that 302'd to `/setup` would pass; a regression that 500'd would fail (good) but for the wrong reason. Pin `current_url.endswith("/settings")` or `expect(page).to_have_url(...)`.
+  - **MED, Criterion B** (line 97) — `assert "/login" not in current_url or "/setup" in current_url` — the OR short-circuits: if `/login` is not in URL, the whole assertion is True regardless of the right operand. Effectively just `"/login" not in current_url`. Either the test is checking the wrong thing or the assertion is unintentionally permissive.
+  - **MED, Criterion F + A** (lines 106-120) — `page.request.get(/api/health)` and `page.request.get(/api/auth/status)` — Playwright IPC; swap to `requests.get(...)` per the canary pattern. Also line 113: `assert "status" in data or "ok" in str(data).lower()` accepts two different response shapes; pick the actual contract and pin it.
+  - **LOW** (line 35) — `page.locator("h1, h2, h3").first` matches 3 element types; not login-specific. Tighten.
+
+### tests/e2e/test_webhooks_automation.py (49 lines, 4 methods, 2 classes)
+
+- **Findings:**
+  - **CLEAN** — pure HTML assertion tests. No `page.request`, no `wait_for_timeout`. Good copy-regression pins (negative pattern at line 25 for the patronising line).
+  - **LOW, Criterion B** (line 43) — `assert rows.count() >= 4` is open-ended; should pin the exact decision-list shape rather than a lower-bound.
+
+### tests/e2e/test_wizard_emby_jellyfin_inline.py (96 lines, 2 methods, 2 classes)
+
+- **Findings:**
+  - **MED, Criterion A** (lines 61, 96) — `assert captured[0]["type"] == "emby"` / `"jellyfin"` — pins the vendor field but not the `url`, `name`, or auth payload the user typed. A regression that always sent `name="Emby"` instead of `"Test Emby"` would still pass. Add `assert captured[0]["url"] == "http://emby.local:8096"` and `assert captured[0]["name"] == "Test Emby"`.
+  - **MED, Criterion B** — only happy-path coverage. No auth-failure cell (mock returns 401), no save-failure cell. The `mediaServerAdded` → step-4 jump has no negative-edge contract test.
+  - Otherwise: deterministic `expect()` waits; no `wait_for_timeout`. Strong "no modal popup" negative-edge pin (line 43).
+
+### tests/e2e/test_wizard_full_flows.py (140 lines, 2 methods, 2 classes)
+
+- **Findings:**
+  - **MED, Criterion A** (lines 92-93, 139-140) — `assert captured_token, "set-token never fired"` / `assert called_complete` — pin call-happened, not call-contents. Both tests fill `newToken` + `confirmToken` with a specific value; `capture_setup_set_token` returns the request bodies (per the canary precedent in test_servers_page) — assert `captured_token[0]["token"]` matches the typed value.
+  - **MED, Criterion G** (lines 90, 138) — `page.wait_for_url("**/", timeout=5000)` is deterministic ✓. Good pattern; no MED here.
+  - The `import re` inside each test (lines 46, 111) — minor code-organization smell (top-of-module is the conventional spot). LOW — not blocking.
+  - The duplicate "/" route-stub block in both tests (lines 47-50, 113-116) — could be a fixture helper. LOW.
+
+### tests/e2e/test_wizard_step1_vendor_picker.py (104 lines, 7 methods, 2 classes)
+
+- **Findings:**
+  - **CLEAN** — strong vendor-picker matrix (all 3 vendors covered: plex/emby/jellyfin) + bottom-aligned Back from each vendor + Skip flow. Reference example for "branchy SUT, every cell covered". Pins both positive (panel visible) AND negative (other panels hidden + modal NOT in DOM, line 57) contracts.
+
+**Batch 6 summary (5 files, 563 lines):** 1 HIGH (test_webapp.py 9 hardcoded sleeps — top candidate for `-n auto` flake), ~10 MED (mix of weak-redirect-assertions, payload not pinned, B-matrix gaps in inline wizard, page.request swaps in webapp). test_wizard_step1_vendor_picker is a reference example for vendor-picker matrix coverage.
+
 ## tests/journeys/
 
 _(filled in during Phase 1B)_
