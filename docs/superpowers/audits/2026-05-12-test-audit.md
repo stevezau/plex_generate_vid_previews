@@ -268,6 +268,58 @@ Each file is read line-by-line and checked against:
 
 **Batch 6 summary (5 files, 563 lines):** 1 HIGH (test_webapp.py 9 hardcoded sleeps — top candidate for `-n auto` flake), ~10 MED (mix of weak-redirect-assertions, payload not pinned, B-matrix gaps in inline wizard, page.request swaps in webapp). test_wizard_step1_vendor_picker is a reference example for vendor-picker matrix coverage.
 
+### tests/e2e/test_wizard_step2_libraries.py (110 lines, 4 methods, 1 class)
+
+- **Findings:**
+  - **CLEAN** — strong state-machine pinning: pre-condition checked (line 81: `not_to_be_checked` + `to_be_disabled`), positive transition checked (line 85-87), inverse transition checked (lines 89-101: untick → disabled). Empty-grid edge covered (line 103). Reference example for "branchy state machine, every cell covered."
+  - **LOW** (line 86) — `to_have_class("library-card mb-0 selected")` is brittle to class-string reordering. `to_have_class(re.compile("selected"))` is more robust.
+  - No `page.request`, no `wait_for_timeout`. All `expect()` auto-retry.
+
+### tests/e2e/test_wizard_step3_paths.py (124 lines, 5 methods, 2 classes)
+
+- **Findings:**
+  - **MED, Criterion G** (lines 59, 71, 123) — three `wait_for_timeout(700)` for the 400 ms-debounced validator. These are load-bearing (must wait for debounce to fire) but `expect(cfg).to_have_class("form-control is-valid", timeout=2000)` auto-retries and would replace the hardcoded sleep with a deterministic poll. Phase 2 fix candidate.
+  - **LOW** (lines 60, 72, 124) — full-class-string assertions are brittle to reorder. Use `re.compile("is-valid")` / `re.compile("is-invalid")`.
+
+### tests/e2e/test_wizard_step4_processing.py (159 lines, 5 methods, 2 classes)
+
+- **Findings:**
+  - **MED, Criterion G** (line 140) — `wait_for_timeout(300)` after `#gpuRescanBtn.click()`. Replace with `wizard_page.wait_for_request("**/api/system/rescan-gpus")` (or `expect(callable: lambda: called)`).
+  - **LOW** (lines 124-125, mirror of settings_page line 64) — `opacity == "0.5"` couples to inline-style value. Same observation as batch 5.
+
+### tests/e2e/test_wizard_step5_security.py (149 lines, 7 methods, 2 classes)
+
+- **Findings:**
+  - **CLEAN — REFERENCE EXAMPLE** for criterion B (cover-the-matrix) AND criterion A (assert boundary kwargs). Covers the full 6-cell token-enforcement matrix: blank / short / mismatch / server-reject / valid / env-controlled. Line 116: `assert captured[0]["token"] == "brand-new-token-1"` — pins the actual payload, not just call-count. Line 148: `assert not captured` — pins the NEGATIVE contract (env-controlled MUST NOT POST set-token). This is the file other wizard tests should look like.
+
+**Batch 7 summary (4 files, 542 lines):** 0 HIGH, ~5 MED (mostly Phase-2 batch-fixable `wait_for_timeout` debounce-races), ~3 LOW. test_wizard_step5_security.py is the file every E2E test in the suite should look like (full state matrix + payload-pinning + negative-edge assertions).
+
+---
+
+## Phase 1A roll-up (34 files, ~5800 lines total)
+
+**Findings tally:**
+- HIGH: 1 (test_webapp.py — 9 hardcoded sleeps on real-server auth/redirect flow)
+- MED: ~80 (most are bookable into 4 Phase-2 batch fixes: F-swaps to `requests`, G-replacements of `wait_for_timeout` with deterministic `expect()`/`wait_for_request()`, A-tightening of payload assertions, B-filling matrix-gap cells)
+- LOW: ~15 (mostly assertion-specificity nits: full class-string matches, inline-style coupling)
+
+**Reference-example files (no findings; replicate these patterns):**
+- `test_wizard_step5_security.py` — matrix-coverage + payload-pinning + negative-edge
+- `test_wizard_step1_vendor_picker.py` — vendor matrix + negative-edge ("modal NOT in DOM")
+- `test_wizard_step2_libraries.py` — state-machine pre/post/inverse
+- `test_servers_jellyfin_trickplay.py` — 3-glyph state matrix
+- `test_preview_inspector.py` — regression-class pinning with negative URL pattern
+- `test_ui_hover_defer.py` — positive+inverse render-contract
+- `test_ui_workers_panel.py` — 4-cell render-state matrix
+- `test_servers_page.py` (`TestServersAPIIntegration` class) — legitimate `page.request` API-contract testing
+- `test_journey_schedule_lifecycle.py` — post-canary `requests` + jobs-API-poll template
+
+**Phase-2 fix batches that emerged:**
+- **G-batch (largest)**: 9 sleeps in test_webapp, 5 in test_schedules, 8 in test_servers_page, 3 in test_wizard_step3_paths, 1 in test_wizard_step4_processing, 3 in test_settings_page — ~30 hardcoded sleeps total. Most replaceable by `expect()` auto-retry or `wait_for_request()`.
+- **F-batch**: `page.request` → `requests` swaps in test_webapp + 40-ish callsites flagged earlier (excluded `TestServersAPIIntegration` which legitimately tests the API surface).
+- **A-batch**: payload-pinning in test_settings_page (token tests), test_wizard_emby_jellyfin_inline (url/name), test_wizard_full_flows (token value).
+- **B-batch**: matrix-gap cells in test_settings_page (mismatched tokens + failure path), test_wizard_emby_jellyfin_inline (auth-fail + save-fail), test_webapp (real redirect destinations).
+
 ## tests/journeys/
 
 _(filled in during Phase 1B)_
