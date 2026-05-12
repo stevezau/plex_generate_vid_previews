@@ -633,7 +633,11 @@ def retry_now(job_id):
     # to ``media_preview_generator.web.processing`` which doesn't exist.
     from media_preview_generator.processing.retry_queue import get_retry_scheduler
 
-    fired = get_retry_scheduler().fire_now(canonical_path)
+    # Fire this chain's specific Timer — keyed by ``(path, chain_id)``.
+    # A different chain for the same path (sibling Sonarr/Plex-echo
+    # pair) keeps its own pending Timer; only the chain the operator
+    # actually clicked is forced.
+    fired = get_retry_scheduler().fire_now(canonical_path, job_id)
     if not fired:
         return (
             jsonify(

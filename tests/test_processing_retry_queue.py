@@ -85,7 +85,12 @@ class TestRetrySchedulerSchedule:
         # State is cleaned up after firing.
         assert sched.pending_count() == 0
 
-    def test_schedule_replaces_existing_timer_for_same_path(self):
+    def test_schedule_replaces_existing_timer_for_same_path_and_same_chain(self):
+        """Replace semantics apply when the SAME chain (same chain_id)
+        reschedules itself for the next attempt — that's the normal
+        recursive flow in ``_callback``. The old Timer is cancelled and
+        the new one takes its slot.
+        """
         sched = RetryScheduler()
         first_callback_calls = 0
         second_callback_calls = 0
@@ -102,12 +107,60 @@ class TestRetrySchedulerSchedule:
             "media_preview_generator.processing.retry_queue._BACKOFF",
             (0.5, 0.5, 0.5),
         ):
-            sched.schedule("/canonical", first_cb, attempt=1)
-            sched.schedule("/canonical", second_cb, attempt=1)
+            sched.schedule("/canonical", first_cb, chain_id="chain-A", attempt=1)
+            sched.schedule("/canonical", second_cb, chain_id="chain-A", attempt=1)
             time.sleep(0.8)
 
         assert first_callback_calls == 0, "old timer should have been cancelled"
         assert second_callback_calls == 1
+
+    def test_schedule_two_chains_for_same_path_both_fire_independently(self):
+        """Different chains targeting the SAME canonical_path MUST coexist.
+
+        This is the job-i0sses regression (2026-05-12): nine Job rows sat
+        ``pending`` for hours because Sonarr's chain and the Plex echo's
+        chain both wanted a retry Timer for the same file, but the
+        scheduler was keyed by path alone — the second ``schedule`` call
+        cancelled the first's Timer and replaced its callback. The Job
+        whose callback got discarded was orphaned forever (no Timer
+        could ever update its status).
+
+        Fix: scheduler keyed by ``(canonical_path, chain_id)``. Two
+        distinct chain_ids for the same path get independent Timers.
+        Both fire, both callbacks invoke, both Jobs complete.
+        """
+        sched = RetryScheduler()
+        chain_a_calls: list[tuple[str, int]] = []
+        chain_b_calls: list[tuple[str, int]] = []
+
+        def cb_a(path, attempt):
+            chain_a_calls.append((path, attempt))
+
+        def cb_b(path, attempt):
+            chain_b_calls.append((path, attempt))
+
+        path = "/data/Movies/SharedByTwoChains.mkv"
+        with patch(
+            "media_preview_generator.processing.retry_queue._BACKOFF",
+            (0.1, 0.1, 0.1),
+        ):
+            assert sched.schedule(path, cb_a, chain_id="chain-sonarr", attempt=1) is True
+            assert sched.schedule(path, cb_b, chain_id="chain-plex-echo", attempt=1) is True
+            # Two distinct (path, chain_id) entries — both pending.
+            assert sched.pending_count() == 2, (
+                "Two chains for the same path with different chain_ids MUST hold two independent Timer slots."
+            )
+            time.sleep(0.5)
+
+        # Both Timers fired their own callback. Pre-fix, chain_a_calls
+        # would be empty (its callback was discarded when chain B
+        # replaced its slot) — the orphan-chain bug.
+        assert chain_a_calls == [(path, 1)], (
+            f"Chain A's callback MUST fire even when Chain B was scheduled for the same path. Got {chain_a_calls}."
+        )
+        assert chain_b_calls == [(path, 1)], chain_b_calls
+        # State cleaned up after both fire.
+        assert sched.pending_count() == 0
 
     def test_schedule_returns_false_after_max_attempts(self):
         """attempt > len(_BACKOFF) → give up, return False."""
@@ -312,8 +365,11 @@ class TestRetrySchedulerFireNow:
             sched.schedule("/race", cb, attempt=1)
             # Capture the generation token the Timer was scheduled with
             # so the simulated Timer-thread ``_fire`` uses the right one.
+            # Internal key is ``(canonical_path, chain_id)`` — this test
+            # omits chain_id so the slot is keyed by ``("/race", None)``.
+            race_key = ("/race", None)
             with sched._lock:
-                my_gen = sched._generations["/race"]
+                my_gen = sched._generations[race_key]
 
             timer_done = threading.Event()
 
@@ -321,7 +377,7 @@ class TestRetrySchedulerFireNow:
                 # Direct invocation simulates the Timer thread that has
                 # already started executing ``_fire`` when ``fire_now``
                 # arrives. Same args the real Timer would pass.
-                sched._fire("/race", cb, 1, my_gen)
+                sched._fire(race_key, cb, 1, my_gen)
                 timer_done.set()
 
             t = threading.Thread(target=simulated_timer_fire, daemon=True)
@@ -370,8 +426,11 @@ class TestRetrySchedulerFireNow:
             (60, 60, 60, 60, 60),
         ):
             sched.schedule("/rewrite", cb1, attempt=1)
+            # Internal key is ``(canonical_path, chain_id)`` — this test
+            # omits chain_id so the slot is keyed by ``("/rewrite", None)``.
+            rewrite_key = ("/rewrite", None)
             with sched._lock:
-                first_gen = sched._generations["/rewrite"]
+                first_gen = sched._generations[rewrite_key]
 
             # Re-schedule (bumps generation) while we still have the
             # first generation captured.
@@ -380,7 +439,7 @@ class TestRetrySchedulerFireNow:
             # Now simulate the old Timer-thread entering _fire with
             # its stale generation. It must NOT invoke cb1 (no winning
             # claim) AND must NOT wipe the new state.
-            sched._fire("/rewrite", cb1, 1, first_gen)
+            sched._fire(rewrite_key, cb1, 1, first_gen)
 
             # The new Timer's state must still be present and
             # fire_now'able with the NEW callback.
@@ -499,6 +558,7 @@ class TestScheduleRetryForUnindexed:
                 config=config,
                 item_id_by_server={"plex-1": "abc"},
                 attempt=1,
+                originating_job_id="stub-test-chain",
             )
             assert ok is True
             assert ran.wait(timeout=2)
@@ -580,6 +640,7 @@ class TestScheduleRetryForUnindexed:
                 item_id_by_server={originator_id: "abc"},
                 attempt=1,
                 server_id_filter=originator_id,
+                originating_job_id="stub-test-chain",
             )
             assert ok is True
             assert ran.wait(timeout=2)
@@ -672,6 +733,7 @@ class TestScheduleRetryForUnindexed:
                 config=config,
                 item_id_by_server=None,
                 attempt=1,
+                originating_job_id="stub-test-chain",
             )
             assert chain_complete.wait(timeout=2), (
                 "Retry queue did not chain — PUBLISHED_PENDING_REGISTRATION "
@@ -751,6 +813,7 @@ class TestScheduleRetryForUnindexed:
                 config=config,
                 item_id_by_server=None,
                 attempt=1,
+                originating_job_id="stub-test-chain",
             )
             assert chain_complete.wait(timeout=2)
             time.sleep(0.05)
@@ -824,6 +887,7 @@ class TestScheduleRetryForUnindexed:
                 config=config,
                 item_id_by_server=None,
                 attempt=1,
+                originating_job_id="stub-test-chain",
             )
             assert chain_complete.wait(timeout=2)
             time.sleep(0.05)  # let the chain-complete log run
@@ -876,6 +940,7 @@ class TestScheduleRetryForUnindexed:
                 registry=registry,
                 config=config,
                 attempt=1,
+                originating_job_id="stub-test-chain",
             )
             # Wait for full chain: len(_BACKOFF) attempts × 0.02s, plus padding.
             time.sleep(0.05 * len(_BACKOFF) + 0.5)
@@ -912,6 +977,7 @@ class TestScheduleRetryForUnindexed:
                 registry=registry,
                 config=config,
                 attempt=1,
+                originating_job_id="stub-test-chain",
             )
             assert ran.wait(timeout=2)
             # Give the timer thread a moment to finish its except branch +

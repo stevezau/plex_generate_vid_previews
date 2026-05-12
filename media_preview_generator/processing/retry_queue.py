@@ -67,12 +67,36 @@ BACKOFF_SCHEDULE: tuple[int, ...] = (60, 120, 300, 900, 3600)
 _BACKOFF = BACKOFF_SCHEDULE  # backwards-compat alias
 
 
+#: Sentinel key type for the scheduler's internal dicts. ``chain_id`` is
+#: the originating Job's UUID — typing as ``str | None`` keeps existing
+#: test code (which omits chain_id) working under a ``(path, None)`` slot.
+#: Production callers MUST pass a real chain_id so two concurrent chains
+#: for the same path get independent Timer slots.
+_ChainKey = tuple[str, str | None]
+
+
 class RetryScheduler:
-    """In-process timer-based retry queue keyed by canonical path."""
+    """In-process timer-based retry queue keyed by ``(canonical_path, chain_id)``.
+
+    Pre-2026-05-12 this was keyed by ``canonical_path`` alone. The
+    job-i0sses incident showed why that's wrong: when Sonarr/Radarr's
+    publish and a Plex echo's publish both arm a retry for the same
+    file, the second ``schedule`` call would replace the first's Timer
+    and discard the first chain's callback. The first chain was then
+    silently orphaned (no Timer would ever update its Job to
+    COMPLETED/FAILED). Nine Job rows sat ``pending`` for hours in
+    production before the bug was diagnosed.
+
+    Keying by ``(path, chain_id)`` lets two distinct chains (different
+    ``originating_job_id`` values) coexist for the same path; each gets
+    its own Timer and callback. The publisher pipeline is already
+    idempotent (``"outputs already fresh"`` short-circuit handles
+    duplicate FFmpeg work) so the duplicated retries are cheap.
+    """
 
     def __init__(self) -> None:
-        self._timers: dict[str, threading.Timer] = {}
-        self._attempts: dict[str, int] = {}
+        self._timers: dict[_ChainKey, threading.Timer] = {}
+        self._attempts: dict[_ChainKey, int] = {}
         # Parallel dict so ``fire_now`` can re-invoke the callback without
         # forcing every operator-action endpoint to reconstruct the
         # closure ``schedule_retry_for_unindexed`` builds (registry,
@@ -81,11 +105,11 @@ class RetryScheduler:
         # the only way to "fire the next retry now" was to wait out the
         # back-off; the modal's operator-action footer needs sub-second
         # response.
-        self._callbacks: dict[str, Callable[[str, int], None]] = {}
-        # Monotonic generation counter per (path, schedule) — each call
-        # to ``schedule`` assigns a fresh generation, passed into the
-        # Timer's ``_fire`` invocation. ``_fire`` checks it owns the
-        # current generation before invoking the callback so a stale
+        self._callbacks: dict[_ChainKey, Callable[[str, int], None]] = {}
+        # Monotonic generation counter per ``(path, chain_id, schedule)`` —
+        # each call to ``schedule`` assigns a fresh generation, passed
+        # into the Timer's ``_fire`` invocation. ``_fire`` checks it owns
+        # the current generation before invoking the callback so a stale
         # Timer whose state was already claimed by ``cancel`` /
         # ``fire_now`` / a subsequent ``schedule`` is a no-op. Without
         # this, two production races exist:
@@ -98,7 +122,7 @@ class RetryScheduler:
         #      stale ``_fire`` pops the NEWLY-written state, leaving
         #      the new Timer alive but with no callback registered.
         # The generation guard makes both into proven no-ops.
-        self._generations: dict[str, int] = {}
+        self._generations: dict[_ChainKey, int] = {}
         self._next_gen: int = 0
         self._lock = threading.RLock()
 
@@ -107,9 +131,17 @@ class RetryScheduler:
         canonical_path: str,
         callback: Callable[[str, int], None],
         *,
+        chain_id: str | None = None,
         attempt: int = 1,
     ) -> bool:
-        """Schedule (or replace) a retry for ``canonical_path``.
+        """Schedule (or replace) a retry for ``(canonical_path, chain_id)``.
+
+        ``chain_id`` is the originating Job's UUID. Production callers
+        MUST pass it — two distinct chains for the same path will
+        otherwise collide on the ``(path, None)`` slot (the legacy
+        single-key behaviour). The default ``None`` exists only to keep
+        the unit-test surface stable; ``schedule_retry_for_unindexed``
+        threads the originating_job_id through to here.
 
         ``attempt`` is the *upcoming* attempt number — ``1`` means the
         first retry after the initial publish. Returns ``True`` if a
@@ -118,15 +150,17 @@ class RetryScheduler:
         """
         if attempt < 1 or attempt > len(_BACKOFF):
             logger.info(
-                "Giving up on retry for {} after {} attempt(s)",
+                "Giving up on retry for {} (chain={}) after {} attempt(s)",
                 canonical_path,
+                (chain_id[:8] if chain_id else "<unkeyed>"),
                 attempt - 1,
             )
             return False
 
+        key: _ChainKey = (canonical_path, chain_id)
         delay = _BACKOFF[attempt - 1]
         with self._lock:
-            existing = self._timers.pop(canonical_path, None)
+            existing = self._timers.pop(key, None)
             if existing is not None:
                 existing.cancel()
 
@@ -136,43 +170,44 @@ class RetryScheduler:
             # this schedule, cancelled, or fire_now'd) return early.
             self._next_gen += 1
             my_gen = self._next_gen
-            timer = threading.Timer(delay, self._fire, args=(canonical_path, callback, attempt, my_gen))
+            timer = threading.Timer(delay, self._fire, args=(key, callback, attempt, my_gen))
             timer.daemon = True
-            self._timers[canonical_path] = timer
-            self._attempts[canonical_path] = attempt
+            self._timers[key] = timer
+            self._attempts[key] = attempt
             # Stash the callback alongside the timer so ``fire_now`` can
             # re-invoke it without rebuilding the closure.
-            self._callbacks[canonical_path] = callback
-            self._generations[canonical_path] = my_gen
+            self._callbacks[key] = callback
+            self._generations[key] = my_gen
             timer.start()
 
         logger.info(
-            "Scheduled retry #{} for {} in {}s",
+            "Scheduled retry #{} for {} (chain={}) in {}s",
             attempt,
             canonical_path,
+            (chain_id[:8] if chain_id else "<unkeyed>"),
             delay,
         )
         return True
 
-    def cancel(self, canonical_path: str) -> bool:
-        """Cancel any pending retry for ``canonical_path``.
+    def cancel(self, canonical_path: str, chain_id: str | None = None) -> bool:
+        """Cancel any pending retry for ``(canonical_path, chain_id)``.
 
         Returns ``True`` when there was a timer to cancel. Used when a
-        subsequent successful publish (perhaps via a different webhook
-        source) makes a pending retry redundant.
+        Job is cancelled by the operator (its chain becomes redundant).
         """
+        key: _ChainKey = (canonical_path, chain_id)
         with self._lock:
-            timer = self._timers.pop(canonical_path, None)
-            self._attempts.pop(canonical_path, None)
-            self._callbacks.pop(canonical_path, None)
-            self._generations.pop(canonical_path, None)
+            timer = self._timers.pop(key, None)
+            self._attempts.pop(key, None)
+            self._callbacks.pop(key, None)
+            self._generations.pop(key, None)
         if timer is None:
             return False
         timer.cancel()
         return True
 
-    def fire_now(self, canonical_path: str) -> bool:
-        """Fire the pending retry for ``canonical_path`` immediately.
+    def fire_now(self, canonical_path: str, chain_id: str | None = None) -> bool:
+        """Fire the pending retry for ``(canonical_path, chain_id)`` immediately.
 
         Used by the modal's "Retry now" operator action so the operator
         doesn't have to wait out the current back-off (which can be
@@ -183,26 +218,27 @@ class RetryScheduler:
         Race safety: all state pops and ``timer.cancel()`` happen under
         the single ``_lock``, so a concurrent Timer thread that has
         already entered ``_fire`` will see its own generation no longer
-        match ``self._generations[path]`` and bail out as a no-op
+        match ``self._generations[key]`` and bail out as a no-op
         (rather than double-firing the callback and creating two child
         attempt rows for one chain step).
 
         Returns ``True`` when a pending retry was fired; ``False`` when
-        nothing was scheduled for this path (chain already terminal,
-        cancelled, exhausted, or a different ``canonical_path`` was
-        captured at schedule time).
+        nothing was scheduled for ``(path, chain_id)`` (chain already
+        terminal, cancelled, exhausted, or callsite passed the wrong
+        chain_id).
         """
+        key: _ChainKey = (canonical_path, chain_id)
         with self._lock:
-            timer = self._timers.pop(canonical_path, None)
-            attempt = self._attempts.pop(canonical_path, None)
-            callback = self._callbacks.pop(canonical_path, None)
-            self._generations.pop(canonical_path, None)
+            timer = self._timers.pop(key, None)
+            attempt = self._attempts.pop(key, None)
+            callback = self._callbacks.pop(key, None)
+            self._generations.pop(key, None)
             if timer is None or callback is None or attempt is None:
                 return False
             # Cancel the timer while still holding the lock so a
             # concurrent Timer-thread ``_fire`` is ordered after this
             # pop — when it acquires the lock it'll see no generation
-            # for this path and early-out.
+            # for this key and early-out.
             timer.cancel()
         # Run on a fresh daemon thread so the HTTP handler that
         # triggered this can return ~immediately. Bypass ``_fire`` —
@@ -235,13 +271,13 @@ class RetryScheduler:
             )
 
     def pending_count(self) -> int:
-        """Number of canonical paths with a retry currently pending."""
+        """Number of ``(canonical_path, chain_id)`` slots with a retry currently pending."""
         with self._lock:
             return len(self._timers)
 
     def _fire(
         self,
-        canonical_path: str,
+        key: _ChainKey,
         callback: Callable[[str, int], None],
         attempt: int,
         my_gen: int,
@@ -252,22 +288,23 @@ class RetryScheduler:
         publisher can't kill the retry timer thread.
 
         Generation guard: ``my_gen`` is captured at schedule time. If
-        the current generation for this path has been bumped by a
-        subsequent ``schedule`` / ``cancel`` / ``fire_now``, this
-        Timer's invocation is stale and we return without invoking
-        the callback. Prevents the documented "two child attempt rows
-        for one chain step" race.
+        the current generation for this ``(path, chain_id)`` slot has
+        been bumped by a subsequent ``schedule`` / ``cancel`` /
+        ``fire_now``, this Timer's invocation is stale and we return
+        without invoking the callback. Prevents the documented "two
+        child attempt rows for one chain step" race.
         """
+        canonical_path, _chain_id = key
         with self._lock:
-            if self._generations.get(canonical_path) != my_gen:
+            if self._generations.get(key) != my_gen:
                 # Stale Timer — cancelled, replaced, or fire_now'd. The
                 # winning thread already invoked (or chose not to invoke)
                 # the callback; nothing for this Timer to do.
                 return
-            self._timers.pop(canonical_path, None)
-            self._attempts.pop(canonical_path, None)
-            self._callbacks.pop(canonical_path, None)
-            self._generations.pop(canonical_path, None)
+            self._timers.pop(key, None)
+            self._attempts.pop(key, None)
+            self._callbacks.pop(key, None)
+            self._generations.pop(key, None)
         try:
             callback(canonical_path, attempt)
         except Exception as exc:
@@ -304,9 +341,9 @@ def reset_retry_scheduler() -> None:
             # an in-flight _fire callback mutating the dict can't trip
             # "dictionary changed size during iteration" on .keys().
             with _singleton._lock:  # noqa: SLF001
-                paths = list(_singleton._timers.keys())  # noqa: SLF001
-            for path in paths:
-                _singleton.cancel(path)
+                keys = list(_singleton._timers.keys())  # noqa: SLF001
+            for path, chain_id in keys:
+                _singleton.cancel(path, chain_id)
         _singleton = None
 
 
@@ -697,7 +734,30 @@ def schedule_retry_for_unindexed(
 
     Returns the underlying scheduler's :meth:`RetryScheduler.schedule`
     result.
+
+    ``originating_job_id`` is REQUIRED in production. The underlying
+    ``RetryScheduler.schedule`` accepts ``chain_id=None`` for unit-test
+    convenience (the test surface predates per-chain keying), but a
+    None at this wrapper layer would silently collide with any other
+    concurrent chain on the same path that also forgot to pass one —
+    the exact orphan-chain regression the per-chain keying fixes.
+    Promoted to a load-bearing assertion so the production-wrapper
+    layer catches the footgun before it reaches the scheduler.
     """
+    if originating_job_id is None:
+        # Defensive: every production call site (multi_server.py:1497,
+        # multi_server.py:1881, retry_queue.py:867 self-recursive,
+        # app.py:378 boot resume) passes a non-None chain.id /
+        # job_id. A regression that drops the kwarg would silently
+        # collapse multiple chains onto the (path, None) slot. Fail
+        # loud so the bug is caught at the first firing instead of
+        # producing orphan PENDING jobs in production.
+        raise ValueError(
+            f"schedule_retry_for_unindexed for {canonical_path!r} requires "
+            f"originating_job_id (per-chain keying — see RetryScheduler "
+            f"docstring). Pre-2026-05-12 callers used path-only keying; "
+            f"see job-i0sses incident for the regression this guards."
+        )
     scheduler = get_retry_scheduler()
 
     def _callback(path: str, fired_attempt: int) -> None:
@@ -920,7 +980,14 @@ def schedule_retry_for_unindexed(
                 )
                 _complete_retry_attempt_job(attempt_job_id)
 
-    scheduled = scheduler.schedule(canonical_path, _callback, attempt=attempt)
+    # ``chain_id=originating_job_id``: each chain owns its own
+    # ``(path, chain_id)`` slot in the scheduler so two concurrent
+    # chains for the same path (e.g. Sonarr's original publish and a
+    # Plex echo's publish) get independent Timers. Without this the
+    # second call would replace the first's Timer and orphan the
+    # first chain — the job-i0sses regression. See ``RetryScheduler``
+    # docstring for the full background.
+    scheduled = scheduler.schedule(canonical_path, _callback, chain_id=originating_job_id, attempt=attempt)
     if scheduled:
         # Surface the pending retry to the user-visible Jobs panel.
         # ``BACKOFF_SCHEDULE`` indexes are 0-based; attempt is 1-based.

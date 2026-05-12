@@ -685,6 +685,7 @@ class TestPerAttemptJobSpawn:
                 config=MagicMock(),
                 item_id_by_server=None,
                 attempt=1,
+                originating_job_id="stub-test-chain",
             )
             assert done.wait(timeout=2)
             # Give the loguru `enqueue=True` sink time to drain.
@@ -764,6 +765,7 @@ class TestPerAttemptJobSpawn:
                 config=MagicMock(),
                 item_id_by_server=None,
                 attempt=1,
+                originating_job_id="stub-test-chain",
             )
             assert ready.wait(timeout=2)
             time.sleep(0.2)
@@ -817,6 +819,7 @@ class TestPerAttemptJobSpawn:
                 config=MagicMock(),
                 item_id_by_server=None,
                 attempt=1,
+                originating_job_id="stub-test-chain",
             )
             assert crashed.wait(timeout=2), "Dispatch must be invoked at least once"
             time.sleep(0.2)
@@ -973,6 +976,7 @@ class TestPerAttemptJobSpawn:
                 config=MagicMock(),
                 item_id_by_server=None,
                 attempt=1,
+                originating_job_id="stub-test-chain",
             )
             assert done.wait(timeout=2)
             time.sleep(0.2)
@@ -1066,6 +1070,7 @@ class TestPerAttemptJobSpawn:
                 config=MagicMock(),
                 item_id_by_server=None,
                 attempt=1,
+                originating_job_id="stub-test-chain",
             )
             assert done.wait(timeout=2)
             time.sleep(0.2)

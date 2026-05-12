@@ -1669,6 +1669,7 @@ class JobManager:
         """
         cancelled = False
         cancel_chain_path: str | None = None
+        cancel_chain_id: str | None = None
         cancel_children_of_chain: str | None = None
         with self._lock:
             job = self._jobs.get(job_id)
@@ -1692,6 +1693,7 @@ class JobManager:
                 # lock; nesting them is asking for a deadlock).
                 if job.config.get("is_retry_chain"):
                     cancel_chain_path = job.config.get("retry_chain_for")
+                    cancel_chain_id = job.id
                     cancel_children_of_chain = job.id
         # Outside the JobManager lock: tear down the retry queue + child
         # attempt rows. Both touch other locks (RetryScheduler._lock,
@@ -1701,7 +1703,11 @@ class JobManager:
             try:
                 from ..processing.retry_queue import get_retry_scheduler
 
-                get_retry_scheduler().cancel(cancel_chain_path)
+                # Cancel this chain's specific Timer — keyed by
+                # ``(path, chain_id)``. A different chain for the same
+                # path (e.g. a sibling Sonarr/Plex-echo pair) must NOT
+                # be torn down by this cancellation.
+                get_retry_scheduler().cancel(cancel_chain_path, cancel_chain_id)
             except Exception as exc:
                 logger.debug("Could not cancel retry Timer for {}: {}", cancel_chain_path, exc)
         if cancel_children_of_chain:

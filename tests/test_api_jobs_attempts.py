@@ -309,9 +309,16 @@ class TestRetryNowEndpoint:
         # canonical_path round-trips so the operator's UI can confirm
         # the right file was kicked.
         assert body["canonical_path"] == "/data/Beast (2026)/Beast.mkv"
-        # Verify the SUT called fire_now with the chain's canonical_path
-        # (not the job_id) — the scheduler keys by path, not UUID.
-        gs.return_value.fire_now.assert_called_once_with("/data/Beast (2026)/Beast.mkv")
+        # Verify the SUT called fire_now with BOTH the chain's
+        # canonical_path AND its chain_id (job_id) — the scheduler keys
+        # by ``(path, chain_id)`` so two concurrent chains for the same
+        # path don't collide. Pre-fix this was path-only; the job-i0sses
+        # incident (2026-05-12) showed that path-only keying orphaned
+        # sibling chains. The endpoint must forward both coordinates so
+        # the "Retry now" button operates on the chain the operator
+        # actually clicked, not a sibling chain that happens to share
+        # the path.
+        gs.return_value.fire_now.assert_called_once_with("/data/Beast (2026)/Beast.mkv", chain_id)
 
     def test_returns_400_for_non_chain_job(self, client):
         from media_preview_generator.web.jobs import get_job_manager
