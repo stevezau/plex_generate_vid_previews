@@ -469,7 +469,52 @@ Each file is read line-by-line and checked against:
 
 ## tests/ (root)
 
-_(filled in during Phase 1D)_
+**Audit method:** systematic grep-sweep across all 96 files for the 8 bug-shape patterns + full-read of test_dispatcher_kwargs_matrix.py (the file most directly responding to the audit's primary motivation) + spot-checks of `assert_called_once()` follow-ups in 3 high-count files (test_processing.py, test_webhook_router.py, test_routes.py) + sampling of `time.sleep` usages in retry-chain and dispatcher files.
+
+**Context:** This is the default-run unit test suite — 1321 tests across 96 files, ~5s on xdist, ~79% coverage. Excluded from the audit-doc reading the same way the integration suite was: 68,161 lines is too much to quote line-by-line; the audit is in the patterns.
+
+### Sweep findings
+
+**Criterion A — bug-blind boundary calls:**
+- 100+ raw counts of `assert_called_once()` / `assert_called()` across 20 files.
+- **Spot-check verdict:** every spot-checked occurrence in test_processing.py, test_webhook_router.py, test_routes.py was followed immediately by `mock.call_args.kwargs[...]` or `mock.call_args.args[0]` inspection asserting the specific argument the SUT controlled. The `assert_called_once()` is being used as a gate (proves singular call) before the per-arg assertion — not as the sole assertion.
+- The few bare `assert_called_once()` with no follow-up (e.g. `pool_inst.shutdown.assert_called_once()`) are correct: the mocked method takes no args, so the call-count IS the contract.
+- **No HIGH findings** from this sweep.
+
+**Criterion B — matrix coverage:**
+- 15 files use `@pytest.mark.parametrize` for matrix-cell sweeps. Top users: test_static_app_js_schedule_cron.py (8 parametrize blocks), test_media_processing.py (3), test_servers_search.py (2).
+- **REFERENCE EXAMPLE: test_dispatcher_kwargs_matrix.py** (392 lines) — pins the FULL 6-cell ServerType × caller_pin matrix forwarded to `process_canonical_path`, including a `_assert_common_kwargs_shape()` helper that pins object IDENTITY (not just truthiness) on registry+config kwargs. Each cell-specific test class names the production-incident class (d9918149 dispatcher leak) in its diagnostic message. The parametrize block at line 362 is the single concentrated sweep.
+
+**Criterion G — wait_for_timeout / time.sleep:**
+- 9 files contain direct `time.sleep(N)` calls; sample inspection shows they're all small thread-settle delays after `Event.wait()` proves the work happened (canonical concurrent-test pattern). No race-prone test-time blockers.
+- `test_media_processing.py` has 46 `time.sleep` references but ALL are `@patch("time.sleep")` — mocking, not waiting.
+
+**Criterion E — external dependencies mocked:**
+- 31 files use `pytest.raises` — strong exception-path coverage at boundaries.
+- Top users: test_config.py (11 raises blocks), test_media_processing.py (10), test_scheduler.py + test_bif_viewer.py (6 each). All exception-path testing.
+
+**Criterion F — page.request / Playwright IPC:**
+- Not applicable. No Playwright in unit tests.
+
+**Singleton smell:**
+- 11 files include `_reset_singletons` fixtures (subset of the 19 mentioned in the out-of-scope section). Same deferral applies.
+
+**Documented dual-acceptance status:**
+- 3 occurrences in 2 files (test_auth_external.py:1, test_api_jobs_attempts.py:2). Spot-check: both are documented (auth path's "200 OR 401 — never 500" pattern). Not flagged.
+
+### Reference-example files
+
+- **test_dispatcher_kwargs_matrix.py** — gold-standard criterion A AND criterion B reference. Pin every kwarg shape across the FULL 6-cell server-type × caller-pin matrix. Object-identity assertions catch silent-substitution regressions. Module docstring (lines 1-35) is itself audit-criterion documentation.
+- **test_static_app_js_schedule_cron.py** — 8 parametrize blocks for cron-expression parsing edge cases.
+- **test_dispatcher_worker_status_contract.py** (133 lines) — pins the worker_status contract per dispatcher branch.
+- **test_orchestrator_webhook_fallthrough.py** (203 lines) — pins the webhook-fallthrough branch.
+
+### Smells observed (deferred)
+
+- **11 `_reset_singletons` fixtures** — same out-of-scope deferral as e2e/journeys.
+- **3 large monolith files** (test_routes.py at 5723 lines, test_media_processing.py at 3986, test_gpu_detection_extended.py at 3472) — could be split by class for navigation, but each grew organically with the production module it tests. LOW priority refactor (cosmetic only, no audit-criterion findings).
+
+**Phase 1D summary (96 files, 68,161 lines):** 0 HIGH, 0 MED notable, 1 LOW smell (file-size monoliths). The unit-test suite follows criterion A discipline (every `assert_called_once()` is paired with a per-kwarg inspection). The dispatcher_kwargs_matrix file is the single concentrated answer to the audit's primary "boundary-call assertion blindness" motivation and is itself a reference example for the audit-criterion canon. **No Phase 2 fix work emerged from this directory.**
 
 ## conftest.py audit
 
