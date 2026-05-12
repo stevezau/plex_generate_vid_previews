@@ -1,21 +1,20 @@
 name: architecture-review
 
-# OPTIONAL fallback for contributors / forks that don't go through
-# Claude Code locally. Runs the same audit prompt that the
+# OPTIONAL fallback for PRs from contributors / forks that don't go
+# through Claude Code locally. Runs the same audit prompt that the
 # ``.claude/agents/architecture-review.md`` skill applies before every
 # commit the maintainer creates via Claude Code.
 #
 # THE PRIMARY PATH is the Claude Code skill — it runs as part of the
-# maintainer's existing subscription, no per-push API charge. This
-# workflow exists as a safety net for:
-#   * PRs from contributors not using Claude Code
-#   * Pushes that bypass Claude Code (force-push, direct GitHub edits)
-#   * Forks that want CI-side audits without a subscription
+# maintainer's existing subscription, no per-push API charge. The
+# maintainer's own pushes are already audited locally before they
+# land, so this workflow only fires on PRs (where outside contributors
+# can't have run the local agent) and manual dispatch.
 #
 # Workflow no-ops cleanly when ANTHROPIC_API_KEY isn't set, so the
 # default state (no key configured) costs $0 and runs nothing.
 #
-# Cost expectation when the key IS set: ~$0.05 per push at default
+# Cost expectation when the key IS set: ~$0.05 per PR audit at default
 # Sonnet 4.6 pricing with the 200KB diff cap. Hard spending limits
 # can be set in Anthropic console → Plans & Billing → Spend limit.
 #
@@ -24,12 +23,6 @@ name: architecture-review
 #                       silently skips (no failure, no comments).
 
 on:
-  push:
-    branches: [dev]
-    paths:
-      - 'media_preview_generator/**'
-      - 'tests/**'
-      - 'pyproject.toml'
   pull_request:
     branches: [dev, main]
     paths:
@@ -76,13 +69,15 @@ jobs:
         if: steps.gate.outputs.skip != 'true'
         id: diff
         run: |
-          # PR: diff against the base. Push: diff against the previous
-          # commit on the branch (single-commit-aware via HEAD~1).
+          # PR: diff against the base. workflow_dispatch (the only other
+          # reachable path now that ``push:`` is gone): ``github.event.before``
+          # is empty, so fall back to HEAD~1 — audits just the latest
+          # commit, which is the natural manual-trigger expectation.
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             BASE="${{ github.event.pull_request.base.sha }}"
           else
             BASE="${{ github.event.before }}"
-            if [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+            if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
               BASE="HEAD~1"
             fi
           fi
