@@ -865,6 +865,10 @@ def test_triggered_history_entry_includes_batch_metadata(
     mock_job = MagicMock()
     mock_job.id = "batch-job-123"
     mock_job_mgr.return_value.create_job.return_value = mock_job
+    # Job-at-batch-open: ``_schedule_webhook_job`` creates the Job, then
+    # ``_execute_webhook_job`` looks it up via ``get_job`` instead of
+    # creating a new one. Configure the lookup to return the same mock.
+    mock_job_mgr.return_value.get_job.return_value = mock_job
 
     mock_settings = MagicMock()
     mock_settings.get.side_effect = lambda key, default=None: [] if key == "selected_libraries" else default

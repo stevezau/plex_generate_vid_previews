@@ -1392,6 +1392,21 @@ class JobManager:
             if job:
                 job.config = dict(config)
                 self._persist_job(job)
+                self._emit_event("job_updated", job.to_dict())
+
+    def update_job_library_name(self, job_id: str, library_name: str) -> None:
+        """Update the displayed ``library_name`` of an existing job.
+
+        Used by the Job-at-batch-open webhook flow to flip the title from
+        the first-webhook's media name to ``"N files"`` once a debounce
+        batch picks up additional paths.
+        """
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job and job.library_name != library_name:
+                job.library_name = library_name
+                self._persist_job(job)
+                self._emit_event("job_updated", job.to_dict())
 
     def update_job_priority(self, job_id: str, priority: int) -> Job | None:
         """Update the dispatch priority of a job.
