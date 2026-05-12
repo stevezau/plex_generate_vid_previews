@@ -349,8 +349,12 @@ def _check_and_record_dedup(source: str, server_id: str | None, canonical_path: 
       bounded on long-running installs.
 
     Cross-source dispatches (Plex's ``library.new`` + Sonarr's import
-    webhook for the same file) are *intentionally* allowed to create
-    separate Jobs — they represent different events.
+    webhook for the same file) FALL THROUGH this check on purpose —
+    they're treated as separate dedup entries. The companion
+    :func:`_find_active_job_for_path` runs immediately after this in
+    ``_schedule_webhook_job`` and suppresses the cross-source case when
+    a sibling Job is still in flight (see that function's docstring for
+    the regression this guards against).
 
     Caller must hold ``_pending_lock``.
     """
@@ -363,6 +367,78 @@ def _check_and_record_dedup(source: str, server_id: str | None, canonical_path: 
     if last is not None and (now_ts - last) < _RECENT_DISPATCH_TTL_SECONDS:
         return int(now_ts - last)
     _recent_dispatches[dedup_key] = now_ts
+    return None
+
+
+def _find_active_job_for_path(canonical_path: str, incoming_source: str) -> str | None:
+    """Return the ID of an active (PENDING/RUNNING) Job that already
+    covers ``canonical_path`` from a DIFFERENT source than
+    ``incoming_source``, or ``None`` if none exist.
+
+    "Covers" means either:
+
+    * ``config.webhook_paths`` contains the path — fresh dispatch jobs
+      and chain rows both carry this.
+    * ``config.retry_chain_for`` equals the path — defense in depth for
+      legacy chain rows that may have lost their ``webhook_paths``.
+
+    Cross-source restriction: when Sonarr/Radarr imports a file, this
+    app generates tiles and triggers a Plex partial scan; Plex then
+    auto-scans and fires its own ``library.new`` webhook 30 s – 7 m
+    later for the SAME file. That's the "echo" we want to suppress.
+    Same-source duplicates are handled by ``_check_and_record_dedup``;
+    same-source different-server_id IS legitimate multi-server fan-out
+    (two Plex installs sharing storage, each emitting their own
+    library event for the same file) and MUST NOT be suppressed —
+    tested in
+    ``test_schedule_webhook_job_per_server_keeps_separate_batches``.
+
+    Without this helper, the Plex echo creates a SECOND Job for the
+    same path. Both Jobs call ``RetryScheduler.schedule`` on the same
+    path; the scheduler is path-keyed and has REPLACE semantics, so
+    only the LAST call's callback survives — the other Job's chain
+    callback is silently discarded and that Job sits in PENDING
+    forever. Nine such orphans were produced in the job-i0sses
+    incident on 2026-05-12 (sonarr/radarr → plex echoes within 60 s
+    of import).
+
+    Returns the suppressing Job's ID so callers can log + record
+    history for the operator. Read-only against ``JobManager`` —
+    caller does not need to hold ``_pending_lock``.
+
+    ``JobStatus`` is lazy-imported to avoid an import cycle at module
+    load (``web.jobs`` imports from this module in its own retry path).
+    ``get_job_manager`` is used via the module-level binding so test
+    patches on ``webhooks.get_job_manager`` apply consistently.
+    """
+    try:
+        jm = get_job_manager()
+        # Bound the scan to active rows. ``get_all_jobs`` returns every
+        # historical row (terminal + active) which on a long-running
+        # install is 10k+ entries — wasteful to walk under the hot
+        # ``_pending_lock``. The pending+running union is the entire
+        # "active" set, since CANCELLED, COMPLETED, FAILED, and PAUSED
+        # don't count as in-flight work that a webhook should attach to.
+        active_jobs = list(jm.get_pending_jobs()) + list(jm.get_running_jobs())
+        incoming = (incoming_source or "").lower()
+        for job in active_jobs:
+            cfg = job.config or {}
+            sibling_source = (cfg.get("source") or "").lower()
+            if sibling_source == incoming:
+                # Same-source: multi-server fan-out (different server_id
+                # but same source). The same-source dedup table handles
+                # the TTL case; this isn't an echo, don't suppress.
+                continue
+            paths = cfg.get("webhook_paths") or []
+            if canonical_path in paths:
+                return job.id
+            if cfg.get("retry_chain_for") == canonical_path:
+                return job.id
+    except Exception as exc:
+        # Best-effort: a JobManager failure (CLI / test context) must
+        # not break webhook ingestion. Log and let the caller proceed
+        # as if no active Job existed.
+        logger.debug("Echo-suppression lookup failed for {!r}: {}", canonical_path, exc)
     return None
 
 
@@ -811,9 +887,38 @@ def _schedule_webhook_job(
     # webhooks merging into the same batch use ``update_job_config`` /
     # ``update_job_library_name`` to refresh the displayed state.
     early_scan_job_id: str | None = None
+    echo_suppressed_by: str | None = None
     with _pending_lock:
         age_sec = _check_and_record_dedup(safe_source, server_id, normalized_path)
         dedup_skip = age_sec is not None
+
+        # Cross-source echo suppression: when Sonarr/Radarr imports a
+        # file, this app generates tiles and triggers a Plex partial
+        # scan; Plex then auto-scans and fires its OWN library.new
+        # webhook 30s-7m later for the same file. The dedup table above
+        # is keyed by (source, server_id, path) so it does NOT suppress
+        # cross-source echoes — they'd otherwise create a second Job,
+        # whose chain Timer races the sibling's in the path-keyed
+        # RetryScheduler and orphans whichever loses (job-i0sses
+        # incident, 2026-05-12: 9 orphan jobs from sonarr/radarr →
+        # plex echoes). Check JobManager for an active sibling and
+        # suppress if found.
+        #
+        # Lock-ordering invariant: this lookup runs while holding
+        # ``_pending_lock``, which ALSO serializes the ``create_job``
+        # call below in the fresh-batch branch. The two together make
+        # the check race-free — two simultaneous Plex echoes for the
+        # same path are serialized; whichever wins the lock first
+        # creates the Job and the second sees it via
+        # ``_find_active_job_for_path``. If anyone moves Job creation
+        # outside ``_pending_lock``, revisit this invariant: the
+        # lookup itself doesn't hold ``JobManager._lock`` (it calls
+        # ``get_pending_jobs`` / ``get_running_jobs`` which are
+        # lock-free reads of ``_jobs``).
+        if not dedup_skip:
+            echo_suppressed_by = _find_active_job_for_path(normalized_path, safe_source)
+            if echo_suppressed_by is not None:
+                dedup_skip = True
 
         if not dedup_skip:
             existing = _pending_timers.get(debounce_key)
@@ -920,10 +1025,30 @@ def _schedule_webhook_job(
             early_scan_job_id = batch["job_id"]
 
     if dedup_skip:
-        logger.info(
-            "Webhook: {} duplicate of '{}' ignored (already dispatched {}s ago)", safe_source, safe_title, age_sec
-        )
-        _add_history_entry(safe_source, "Download", safe_title, "deduped")
+        if echo_suppressed_by is not None:
+            logger.info(
+                "Webhook: {} echo for '{}' suppressed — sibling Job {} is already "
+                "in flight for the same path. See _find_active_job_for_path for "
+                "the regression this guards (orphan duplicate chains).",
+                safe_source,
+                safe_title,
+                echo_suppressed_by[:8],
+            )
+            _add_history_entry(
+                safe_source,
+                "Download",
+                safe_title,
+                "echo_suppressed",
+                job_id=echo_suppressed_by,
+            )
+        else:
+            logger.info(
+                "Webhook: {} duplicate of '{}' ignored (already dispatched {}s ago)",
+                safe_source,
+                safe_title,
+                age_sec,
+            )
+            _add_history_entry(safe_source, "Download", safe_title, "deduped")
         return False
 
     # Fire the early scan-nudge outside the debounce lock so a slow HTTP
