@@ -162,6 +162,42 @@ Each file is read line-by-line and checked against:
 
 **Batch 3 summary (5 files, 919 lines):** 0 HIGH, ~10 MED (mostly page.request swaps deferred to Phase 2.F + 2 assertion-specificity issues in login_page), 1 LOW (unused-fixture cleanup in schedule_lifecycle). Notable wins: schedule_lifecycle is the reference template post-canary-fix; schema_migration_boot is a model for migration testing.
 
+### tests/e2e/test_logs_page.py (35 lines, 2 methods, 1 class)
+
+- **Findings:**
+  - **MED, Criterion B** (line 27) — `assert authed_page.locator("h1, h2, h3, .container-fluid").first.is_visible()` — the CSS selector matches any of 4 elements; the test passes if ANY of `<h1>`/`<h2>`/`<h3>`/`.container-fluid` is visible. The test is named `test_logs_page_loads` but doesn't actually pin a logs-specific element. Tighten to `#logsContent` or whatever the page-specific identifier is.
+  - **Not Criterion F**: line 31's `page.request.get(/logs)` hits a *page* route (HTML response), not an API. Auth-redirect test; legitimate use.
+
+### tests/e2e/test_preview_inspector.py (202 lines, 5 methods, 3 classes)
+
+- **Findings:**
+  - **CLEAN** — all routing via `authed_page.route(...)` (HTTP boundary mocks). Strong contract pinning at lines 173-179: explicitly asserts the URL contains `index-sd.bif` AND NOT `.mkv`, pinning the exact regression class (Plex click-through sending the wrong path).
+  - **Cover-the-matrix**: covers Plex (line 38), multi-vendor 3-cell (line 64). Click-through test is Plex-specific because the regression was Plex-specific — appropriate scoping.
+
+### tests/e2e/test_schedules.py (202 lines, 3 methods, 2 classes)
+
+- **Findings:**
+  - **MED** (lines 121, 128, 169, 176, 196) — 5 `wait_for_timeout(N)` hardcoded sleeps. Same race pattern; batch suite-wide.
+  - **Cover-the-matrix**: line 200-202 covers all 3 vendor cells (PLEX, EMBY, JELLYFIN). Non-Plex schedule tests cover JF + Emby (2 cells; Plex covered separately in the wizard tests). Good.
+  - **Strong contracts**: server_id pinning (lines 132, 180), job_type pinning (lines 134, 183) — pins both the SUT-controlled fields.
+  - All routing via `authed_page.route(...)` ✓. No `page.request` backend API calls.
+
+### tests/e2e/test_servers_jellyfin_trickplay.py (116 lines, 3 methods, 1 class)
+
+- **Findings:**
+  - **CLEAN** — covers all 3 glyph states (critical/recommended/ok) in 3 tests; complete matrix coverage with specific class-name assertions (`text-danger`, `text-warning`, `text-success`). Tooltip content also pinned. Reference example for "branchy SUT, every cell covered" per `.claude/rules/testing.md:83-91`.
+
+### tests/e2e/test_servers_page.py (253 lines, 15 methods, 5 classes)
+
+- **Findings:**
+  - **MED** (lines 62, 109, 120, 130, 209, 221, 229, 252) — 8 `wait_for_timeout(N)` sleeps. Same pattern.
+  - **Not Criterion F** (lines 146, 160, 168) — three `page.request.X()` calls in `TestServersAPIIntegration` *are testing the API surface itself*, not using it for setup. This is the legitimate use of `page.request` — direct API contract verification. Could migrate to `requests` for IPC-stall safety but not strictly wrong.
+  - **MED** (line 175) — `assert response.status in (400, 404)` accepts two distinct contracts. The docstring justifies it ("both prove the route exists with sane validation") which is reasonable, but ideally the test would seed a real server so the validation step is reached deterministically. Borderline — not blocking.
+  - **MED** (line 64-65) — `if value: assert "/api/webhooks/incoming" in value` — only asserts when the input is non-empty. A regression that returns an empty string would silently pass. Should fail loudly: drop the `if value:` guard and let the empty case fail visibly.
+  - **Strong contracts** throughout the Add-Server flows: pins type + url after each save.
+
+**Batch 4 summary (5 files, 808 lines):** 0 HIGH, ~15 MED (mix of wait_for_timeout + 2 assertion-specificity), 0 LOW. test_servers_jellyfin_trickplay.py is a reference example for matrix coverage of a 3-state branch. test_preview_inspector.py pins regression class with negative-pattern assertions.
+
 ## tests/journeys/
 
 _(filled in during Phase 1B)_
