@@ -145,16 +145,16 @@
     password (it doesn't, but that's a trust you're making).</p>
 </template>
 
-<template id="infoRetryChainTpl">
+<template id="infoRetryChainJellyfinTpl">
     <p><strong>What's happening:</strong> tiles for this file are on disk,
     but the destination server hadn't indexed the file yet when this app
     tried to register the trickplay row. The app is auto-retrying — each
     attempt asks the server "do you have this file yet?" and finishes the
     registration as soon as the answer is yes.</p>
 
-    <p><strong>Why the wait:</strong> Jellyfin in particular has a
-    hard-coded ~45-second delay in its <code>LibraryMonitor</code> before
-    it processes a file event (intentional — gives writes time to settle,
+    <p><strong>Why the wait:</strong> Jellyfin has a hard-coded
+    ~45-second delay in its <code>LibraryMonitor</code> before it
+    processes a file event (intentional — gives writes time to settle,
     especially over the network). On top of that, Jellyfin has to fetch
     metadata, download poster/fanart, and probe the video before the item
     becomes registerable. Typical end-to-end: 1–5 minutes. Slow setups
@@ -180,4 +180,37 @@
     the Servers page — the row "Jellyfin's daily 'Generate Trickplay
     Images' task" flags this and offers a Disable button (safe when the
     Media Preview Bridge plugin is installed).</p>
+</template>
+
+<template id="infoRetryChainPlexTpl">
+    <p><strong>What's happening:</strong> tiles for this file are on disk,
+    but Plex hadn't picked up the file in its library yet when this app
+    tried to register the trickplay row. The app is auto-retrying — each
+    attempt asks Plex "do you have this file yet?" and finishes the
+    registration as soon as the answer is yes.</p>
+
+    <p><strong>Why the wait:</strong> Plex hasn't completed its library
+    scan for this folder yet. Usually 30 seconds to 5 minutes after the
+    file lands, longer if a full scheduled scan is already running or if
+    your library is large. Plex's auto-scan kicks in on filesystem
+    events; this app also sends a targeted partial-scan to nudge it.</p>
+
+    <p><strong>Backoff schedule:</strong></p>
+    <ul>
+        <li>Attempt 1 — 1 minute after the originating publish</li>
+        <li>Attempt 2 — 2 minutes later (3m total)</li>
+        <li>Attempt 3 — 5 minutes later (8m total)</li>
+        <li>Attempt 4 — 15 minutes later (23m total)</li>
+        <li>Attempt 5 — 60 minutes later (1h 23m total)</li>
+    </ul>
+
+    <p>After all five attempts, the chain marks FAILED. Re-trigger the
+    source webhook (Sonarr/Radarr "rescan" or this app's "Run scan now")
+    to start a fresh chain.</p>
+
+    <p><strong>If every chain exhausts:</strong> check your Plex library's
+    <em>Settings → Library → Scan my library automatically</em> is on, and
+    that the folder path actually maps to the file's location. A long-running
+    full scheduled scan can also delay incremental updates — look at Plex's
+    own Activity panel for in-progress library tasks.</p>
 </template>
