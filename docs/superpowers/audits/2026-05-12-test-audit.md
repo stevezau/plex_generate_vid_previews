@@ -435,7 +435,37 @@ Each file is read line-by-line and checked against:
 
 ## tests/integration/
 
-_(filled in during Phase 1C)_
+**Audit method:** systematic grep-sweep across all 27 files for the 8 bug-shape patterns + full-read of 13 representative files (test_e2e_setup_gate_non_plex.py, test_e2e_hdr_4k.py, test_e2e_symlinks.py, test_e2e_emby_visible.py, test_e2e_webhook_flood.py, test_e2e_in_place_upgrade_safety.py, test_e2e_path_unicode.py, test_e2e_settings_persistence.py, test_e2e_gpu_multi_server.py, test_e2e_plex_retry_live.py, test_e2e_multi_server.py, test_e2e_plex_visible.py, test_e2e_jellyfin_trickplay_fix.py, test_e2e_emby.py, test_e2e_jellyfin.py, test_e2e_per_server_webhook_pin.py, test_e2e_misc.py) + docstring scan of the remaining 10 files (test_e2e_three_server, test_e2e_failure_modes, test_e2e_webhook_shapes, test_e2e_smart_dedup, test_e2e_timing_budgets, test_e2e_frame_reuse_across_servers, test_e2e_edge_cases, test_e2e_full_pipeline, test_e2e_coverage, test_e2e_plex).
+
+**Context:** These tests are LIVE-Docker integration tests — gated by `@pytest.mark.integration` AND require `servers.env` (live Emby/Plex/Jellyfin containers from `docker-compose.test.yml`). They are excluded from the default `pytest` run (`-m "not gpu and not e2e and not integration"`). Conftest skips the whole directory if `servers.env` is missing.
+
+### Sweep findings
+
+- **No bug-blind assertions**: zero `assert_called_once()` or `assert_called()` patterns across all 27 files. Every mock spy captures arguments and asserts on the captured shape.
+- **No `page.request`**: not applicable; integration tests use `requests` directly or the Flask test_client. No Playwright IPC concerns.
+- **Sparse `time.sleep`**: 9 occurrences across 8 files. Every one is either (a) load-bearing for the test's purpose (waiting for a real container's library scan to surface a new item, polling for Jellyfin metadata to register), or (b) explicitly documented (e.g. `time.sleep(1.1)  # ensure mtime granularity catches up` in test_e2e_smart_dedup.py:251).
+- **Dual-acceptance status assertions**: 14 occurrences of `status_code in (200, 202)` / `status in ("published", "skipped")` across 8 files. Each is either:
+  - Documented contract floor (e.g. test_e2e_misc.py:133 "200 or 202 — never 401" — pins the SECURITY contract while accepting either successful response shape)
+  - Two-cell published/skipped acceptance reflecting the dispatcher's legitimate either-shape outcomes for already-published files
+  - Refresh-API tolerance for empty-204 vs 200 (Emby/Jellyfin reply variance)
+  None of these mask a regression class.
+
+### Smell observed (not blocking, deferred)
+
+- **MagicMock Config builder duplication**: every test file has a ~30-line `config = MagicMock(); config.plex_url = ...` builder that's near-identical across ~15 files. Each new test file adds another copy. Could be a shared fixture in `tests/integration/conftest.py`. LOW priority — duplicate-but-explicit is better than DRY-but-magical for integration tests.
+- **`fc_module._singleton = None` direct-reset**: 3 files reach into `frame_cache._singleton` directly instead of calling `reset_frame_cache()` (the public helper). Same pattern as e2e suite. Already documented in the out-of-scope section.
+
+### Reference-example files
+
+- **test_e2e_setup_gate_non_plex.py** — 7-cell matrix on the setup-gate (Jellyfin-only, Emby-only, both, disabled, missing creds, password-flow, empty).
+- **test_e2e_per_server_webhook_pin.py** — pins both edges (filter respected + universal-URL-fires-both-publishers + filter-to-non-owner returns NO_OWNERS). Three-cell matrix.
+- **test_e2e_in_place_upgrade_safety.py** — pins regression class via inode comparison (catches the silent retry-recreation mask). Reference example for "test the absence of an action with an inode anchor."
+- **test_e2e_webhook_flood.py** — 50 distinct webhooks → 50 distinct FFmpeg invocations + 50 sidecars. Anti-global-lock regression test.
+- **test_e2e_timing_budgets.py** — performance-budget tests that fail if functionally-correct code regresses to 10× slower. Catches the bug class from Emby Pass-0 (#44), eager Plex pre-connection, connection-pool race, Jellyfin overload-cascade (#51).
+- **test_e2e_plex_visible.py** — actual UI proof: docker-cp the BIF into the live Plex container, trigger scan, fetch the thumbnail byte-stream from `/library/parts/.../indexes/sd/0` and assert JPEG SOI. End-to-end UI verification.
+- **test_e2e_jellyfin_trickplay_fix.py** — end-to-end UI proof for Jellyfin: detect misconfig → apply fix → poll for Trickplay metadata to register → fetch tile sheet over HTTP → assert JPEG bytes.
+
+**Phase 1C summary (27 files, 8451 lines):** 0 HIGH, 0 MED notable, 2 LOW smells (MagicMock Config builder duplication, `fc_module._singleton` direct-reset). The entire integration suite is exceptionally well-documented and well-structured. Every test names its target regression class and asserts on contract shapes (not just call counts). The dual-acceptance status patterns are all documented; none mask a bug. **No Phase 2 fix work emerged from this directory.**
 
 ## tests/ (root)
 
