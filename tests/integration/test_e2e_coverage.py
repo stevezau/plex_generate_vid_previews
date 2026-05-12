@@ -135,10 +135,10 @@ class TestForceRegenerate:
     """``regenerate=True`` ignores the journal and re-runs FFmpeg."""
 
     def test_regenerate_runs_ffmpeg_even_with_fresh_outputs(self, emby_credentials, media_root, coverage_config):
-        from media_preview_generator.processing import frame_cache as fc_module
         from media_preview_generator.processing import multi_server as ms_module
+        from media_preview_generator.processing.frame_cache import reset_frame_cache
 
-        fc_module._singleton = None  # noqa: SLF001 — test override
+        reset_frame_cache()
 
         canonical = str(media_root / "Movies" / "Test Movie H264 (2024)" / "Test Movie H264 (2024).mkv")
         sidecar = Path(canonical).parent / "Test Movie H264 (2024)-320-5.bif"
@@ -167,10 +167,10 @@ class TestForceRegenerate:
             assert result.status is MultiServerStatus.PUBLISHED
             assert len(ffmpeg_calls) == 1
 
-            # Drop the singleton so the cache is "expired" — without
+            # Reset the singleton so the cache is "expired" — without
             # regenerate=True, the journal short-circuit would now skip
             # FFmpeg.
-            fc_module._singleton = None  # noqa: SLF001
+            reset_frame_cache()
 
             # With regenerate=True, FFmpeg MUST run again.
             forced = process_canonical_path(

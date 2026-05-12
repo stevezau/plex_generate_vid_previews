@@ -167,10 +167,10 @@ class TestGpuMultiPublisher:
             shutil.rmtree(trickplay_dir)
 
         # Reset frame cache so we don't hit cached CPU frames from earlier tests.
-        from media_preview_generator.processing import frame_cache as fc_module
         from media_preview_generator.processing import multi_server as ms_module
+        from media_preview_generator.processing.frame_cache import reset_frame_cache
 
-        fc_module._singleton = None  # noqa: SLF001 — test override
+        reset_frame_cache()
 
         original_generate = ms_module.generate_images
         captured_calls: list[dict] = []

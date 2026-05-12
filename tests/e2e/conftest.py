@@ -84,16 +84,14 @@ def _start_app(config_dir: str, port: int, extra_env: dict | None = None) -> sub
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
-    # 60s (was 20s): under high parallelism (xdist with many workers)
-    # the OS scheduler can't give every concurrent Flask boot enough
-    # CPU to finish in 20s. Flask boot involves GPU detection +
-    # JobManager (reads jobs.db) + APScheduler (SQLite jobstore) +
-    # SocketIO + module imports — ~2-3s wall on idle, but contention
-    # serialises chunks of it. 60s is enough headroom for 32 workers
-    # concurrently on a beefy local box (verified) while still
-    # failing fast on real boot bugs (anything >60s is genuinely
-    # stuck, not just slow).
-    if not wait_for_port(port, timeout=60):
+    # 30s: the canary fix (test_journey_schedule_lifecycle.py) proved
+    # the prior `-n auto` flake was the Playwright Python↔Node IPC,
+    # NOT Flask boot. With every API-contract test now using `requests`
+    # the IPC contention is gone, so subprocess startup runs at native
+    # speed (~2-3s wall on idle, ~5-10s under contention). 30s is
+    # enough headroom for 24-worker xdist while still failing fast on
+    # real boot bugs.
+    if not wait_for_port(port, timeout=30):
         stdout, stderr = proc.communicate(timeout=5)
         proc.kill()
         raise RuntimeError(f"App failed to start on port {port}.\nstdout: {stdout.decode()}\nstderr: {stderr.decode()}")

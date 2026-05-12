@@ -155,9 +155,9 @@ class TestWebhookFloodAcrossDistinctFiles:
         movies_dir, paths = flood_media_dir
 
         # Reset frame cache so previous tests can't shortcut us.
-        from media_preview_generator.processing import frame_cache as fc_module
+        from media_preview_generator.processing.frame_cache import reset_frame_cache
 
-        fc_module._singleton = None  # noqa: SLF001 — test fixture reset
+        reset_frame_cache()
 
         from media_preview_generator.processing import multi_server as ms_module
 

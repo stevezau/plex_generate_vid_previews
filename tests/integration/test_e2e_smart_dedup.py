@@ -128,12 +128,12 @@ class TestLateWebhookFollowsSonarr:
             emby_sidecar.unlink()
 
         from media_preview_generator.output.journal import _meta_path_for, clear_meta
-        from media_preview_generator.processing import frame_cache as fc_module
         from media_preview_generator.processing import multi_server as ms_module
+        from media_preview_generator.processing.frame_cache import reset_frame_cache
 
         # Reset the singleton cache so we're not reusing frames from a
         # prior test in the same session.
-        fc_module._singleton = None  # noqa: SLF001 — test override
+        reset_frame_cache()
 
         # Track FFmpeg invocations.
         original_generate = ms_module.generate_images
@@ -160,9 +160,9 @@ class TestLateWebhookFollowsSonarr:
             assert len(ffmpeg_calls) == 1
 
             # ----- Force the frame cache to "expire" -----
-            # Drop singleton so the next call rebuilds it; clears the in-memory
+            # Reset so the next call rebuilds it; clears the in-memory
             # entry. Equivalent to TTL having expired in production.
-            fc_module._singleton = None  # noqa: SLF001
+            reset_frame_cache()
 
             # ----- 2nd webhook (Plex's slow-arrival) -----
             second = process_canonical_path(
@@ -215,10 +215,10 @@ class TestSourceReplacedRegens:
         original_bytes = canonical_path_obj.read_bytes()
 
         from media_preview_generator.output.journal import _meta_path_for, clear_meta
-        from media_preview_generator.processing import frame_cache as fc_module
         from media_preview_generator.processing import multi_server as ms_module
+        from media_preview_generator.processing.frame_cache import reset_frame_cache
 
-        fc_module._singleton = None  # noqa: SLF001
+        reset_frame_cache()
 
         original_generate = ms_module.generate_images
         ffmpeg_calls = []
@@ -251,7 +251,7 @@ class TestSourceReplacedRegens:
             time.sleep(1.1)  # ensure mtime granularity catches up
             canonical_path_obj.touch()
 
-            fc_module._singleton = None  # noqa: SLF001 — clear frame cache
+            reset_frame_cache()
 
             # ----- 2nd publish: source changed, must regen -----
             second = process_canonical_path(
@@ -304,10 +304,10 @@ class TestRegenerateClearsJournal:
             emby_sidecar.unlink()
 
         from media_preview_generator.output.journal import _meta_path_for, clear_meta
-        from media_preview_generator.processing import frame_cache as fc_module
         from media_preview_generator.processing import multi_server as ms_module
+        from media_preview_generator.processing.frame_cache import reset_frame_cache
 
-        fc_module._singleton = None  # noqa: SLF001
+        reset_frame_cache()
 
         original_generate = ms_module.generate_images
         ffmpeg_calls = []
@@ -331,7 +331,7 @@ class TestRegenerateClearsJournal:
             assert _meta_path_for(emby_sidecar).exists()
             assert len(ffmpeg_calls) == 1
 
-            fc_module._singleton = None  # noqa: SLF001
+            reset_frame_cache()
 
             # 2nd with regenerate=True: ignore journal, run FFmpeg, re-stamp.
             second = process_canonical_path(

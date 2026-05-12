@@ -343,30 +343,13 @@ class TestDispatcherLookupPolicy:
             f"lookup received {received_path!r}, expected canonical path ending in 'Test (2024).mkv'"
         )
 
-    def test_plex_looks_up_when_no_hint(self, tmp_path, mock_config):
-        """Matrix completion: Plex bundle hash REQUIRES an item id.
-        Even without a hint, the dispatcher must pay for the lookup.
-        A regression that moved Plex into the "skip" branch would leave
-        every Plex webhook publish stuck on SKIPPED_NOT_IN_LIBRARY."""
-        mock_config.working_tmp_folder = str(tmp_path / "tmp")
-        with patch.object(EmbyApiClient, "resolve_remote_path_to_item_id", return_value="plex-item-7") as lookup_mock:
-            # Plex uses a different base class; this test focuses on the
-            # resolver branching, so _run will still patch the correct
-            # target via EmbyApiClient (the common ancestor). Plex's
-            # override isn't what we're asserting — the fact that a
-            # lookup occurred is.
-            self._run(tmp_path, mock_config, ServerType.PLEX, lookup_mock=lookup_mock)
-        # Plex's own resolve lives on PlexServer (not EmbyApiClient), so
-        # this mock won't fire even though the dispatcher's resolver
-        # should call it. Alternative assertion: verify we didn't
-        # short-circuit in `_make_item_id_resolver` by checking the
-        # worker progress callback was stamped with a "Resolving…" phase
-        # (the dispatcher only emits that when it actually hits the
-        # network). Skip: the existing `TestNotInLibraryRoutesToSkip::
-        # test_plex_returns_skipped_not_in_library_when_item_id_unresolvable`
-        # already pins this end-to-end with a real PlexServer mock.
-        # This row exists only to document the matrix entry — the
-        # rigorous assertion lives in the other test.
+    # Plex's "must look up when no hint" cell is covered by
+    # ``TestNotInLibraryRoutesToSkip::
+    # test_plex_returns_skipped_not_in_library_when_item_id_unresolvable``
+    # — that test uses a real PlexServer mock and pins the
+    # SKIPPED_NOT_IN_LIBRARY routing end-to-end. Adding a Plex-only row
+    # here would duplicate that assertion against a less-rigorous mock
+    # (PlexServer's resolver lives on PlexServer, not EmbyApiClient).
 
     def test_emby_honours_hint(self, tmp_path, mock_config):
         """Matrix completion: hint-first semantics apply to Emby too

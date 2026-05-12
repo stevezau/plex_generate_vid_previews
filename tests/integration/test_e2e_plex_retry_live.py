@@ -114,10 +114,10 @@ class TestSlowBackoffRetryAgainstLivePlex:
         """Simulate Plex 'not yet indexed' on first call, 'indexed' on retry."""
         canonical = str(media_root / "Movies" / "Test Movie H264 (2024)" / "Test Movie H264 (2024).mkv")
 
-        from media_preview_generator.processing import frame_cache as fc_module
+        from media_preview_generator.processing.frame_cache import reset_frame_cache
         from media_preview_generator.servers.plex import PlexServer
 
-        fc_module._singleton = None  # noqa: SLF001 — start with a clean cache
+        reset_frame_cache()  # start with a clean cache
 
         # Capture the live PlexServer's real bundle metadata so we can
         # return it on the second call.

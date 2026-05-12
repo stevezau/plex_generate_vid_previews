@@ -285,9 +285,9 @@ class TestPartialFailureIsolation:
             # the same relative structure.
             canonical = str(media_root / "Movies" / "Test Movie H264 (2024)" / "Test Movie H264 (2024).mkv")
 
-            from media_preview_generator.processing import frame_cache as fc_module
+            from media_preview_generator.processing.frame_cache import reset_frame_cache
 
-            fc_module._singleton = None  # noqa: SLF001 — clear cache between tests
+            reset_frame_cache()  # clear cache between tests
 
             result = process_canonical_path(
                 canonical_path=canonical,
