@@ -490,10 +490,19 @@
                         <span id="attemptsHint" class="badge attempts-state-chip d-none"></span>
                     </div>
                 </div>
-                <!-- Tabs -->
+                <!-- Tabs — Overview lands first by default so a multi-run
+                     chain shows summary + timeline before forcing the user
+                     into the raw log stream. ``showLogsModal`` honours the
+                     last-selected tab from localStorage so power users who
+                     prefer landing on Logs can do so by switching once. -->
                 <ul class="nav nav-tabs mb-3" id="jobDetailTabs" role="tablist">
                     <li class="nav-item" role="presentation">
-                        <button class="nav-link active" id="logsTab" data-bs-toggle="tab" data-bs-target="#logsTabPane" type="button" role="tab">
+                        <button class="nav-link active" id="overviewTab" data-bs-toggle="tab" data-bs-target="#overviewTabPane" type="button" role="tab" onclick="onOverviewTabActivated()">
+                            <i class="bi bi-speedometer2 me-1"></i>Overview
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="logsTab" data-bs-toggle="tab" data-bs-target="#logsTabPane" type="button" role="tab" onclick="onLogsTabActivated()">
                             <i class="bi bi-terminal me-1"></i>Logs
                         </button>
                     </li>
@@ -504,8 +513,14 @@
                     </li>
                 </ul>
                 <div class="tab-content" id="jobDetailTabContent">
+                    <!-- Overview Tab Pane -->
+                    <div class="tab-pane fade show active" id="overviewTabPane" role="tabpanel">
+                        <div id="overviewContent">
+                            <div class="text-muted small">Loading overview&hellip;</div>
+                        </div>
+                    </div>
                     <!-- Logs Tab Pane -->
-                    <div class="tab-pane fade show active" id="logsTabPane" role="tabpanel">
+                    <div class="tab-pane fade" id="logsTabPane" role="tabpanel">
                         <div class="d-flex justify-content-end align-items-center mb-2">
                             <div class="d-flex align-items-center gap-3">
                                 <div class="input-group input-group-sm" style="width: 250px;">
@@ -565,7 +580,7 @@
                             </div>
                             <small class="text-muted" id="fileResultsCount"></small>
                         </div>
-                        <div style="max-height: 500px; overflow-y: auto;">
+                        <div class="table-responsive" style="max-height: 500px; overflow-y: auto;">
                             <table class="table table-sm table-hover mb-0" id="fileResultsTable">
                                 <thead class="sticky-top">
                                     <tr>

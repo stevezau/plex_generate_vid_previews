@@ -262,6 +262,370 @@ async function onOperatorRetryNow() {
 // existing endpoint already handles chain semantics (cancel timer +
 // mark child attempts cancelled). Browser ``confirm()`` prevents a
 // stray click from killing a chain that's making progress.
+// ----------------------------------------------------------------------
+// Overview tab — Tier 2 of the modal rebuild.
+// ----------------------------------------------------------------------
+//
+// The Overview pane is the default landing for the modal so a multi-run
+// chain reads as a coherent dashboard (summary + publishers + timeline)
+// instead of dropping the operator into the raw log stream. Logs and
+// Files remain accessible as drill-downs.
+//
+// Composition (top to bottom):
+//   * Summary card    — large status icon + headline metrics (duration,
+//                       runs, frames if generated)
+//   * Publisher matrix— per-server rows with vendor logo, status pills,
+//                       last-action timestamp
+//   * Attempts timeline — horizontal lane per run, status-coloured bar
+//                       from started_at to completed_at, click to switch
+//   * Recent log tail — last 10 lines of the current attempt's log with
+//                       "Open full logs" jump button
+//
+// Renderer is invoked when the Overview tab is activated AND on the
+// 5 s poll loop for active chains.
+
+const _OVERVIEW_LAST_TAB_KEY = 'jobModalActiveTab';
+let _overviewTickInterval = null;
+
+function onOverviewTabActivated() {
+    try { localStorage.setItem(_OVERVIEW_LAST_TAB_KEY, 'overview'); } catch (e) { /* private mode */ }
+    _renderOverview();
+}
+
+function onLogsTabActivated() {
+    try { localStorage.setItem(_OVERVIEW_LAST_TAB_KEY, 'logs'); } catch (e) { /* private mode */ }
+}
+
+function _restoreLastTab() {
+    let last = null;
+    try { last = localStorage.getItem(_OVERVIEW_LAST_TAB_KEY); } catch (e) { /* private mode */ }
+    const tabId = last === 'logs' ? 'logsTab' : (last === 'files' ? 'filesTab' : 'overviewTab');
+    const btn = document.getElementById(tabId);
+    if (btn) {
+        const tab = new bootstrap.Tab(btn);
+        tab.show();
+    }
+}
+
+// Render the full Overview pane for the modal's current job.
+// Safe to call repeatedly — innerHTML replacement only.
+function _renderOverview() {
+    const root = document.getElementById('overviewContent');
+    if (!root) return;
+    const job = jobs.find(j => j.id === _logsModalJobId);
+    if (!job) {
+        root.innerHTML = '<div class="alert alert-warning small mb-0">Job not found in current snapshot — refresh the dashboard.</div>';
+        return;
+    }
+    root.innerHTML =
+        _renderOverviewSummaryCard(job)
+        + _renderOverviewReasonBanner(job)
+        + _renderOverviewPublishersCard(job)
+        + _renderOverviewTimelineCard(job)
+        + _renderOverviewLogPreviewCard(job);
+    // Wire up timeline-bar clicks to attempt switching (delegated)
+    _wireOverviewTimelineClicks();
+    // Start the per-second tick for live duration / countdown updates
+    if (_overviewTickInterval) clearInterval(_overviewTickInterval);
+    if (job.status === 'running' || job.status === 'pending') {
+        _overviewTickInterval = setInterval(_tickOverviewDurations, 1000);
+    }
+}
+
+function _tickOverviewDurations() {
+    // Update any data-elapsed-since spans inside the Overview pane.
+    // Cheaper than re-rendering the whole tree every second.
+    document.querySelectorAll('#overviewContent [data-elapsed-since]').forEach(el => {
+        const startStr = el.getAttribute('data-elapsed-since');
+        if (typeof formatElapsed === 'function' && startStr) {
+            el.textContent = formatElapsed(startStr);
+        }
+    });
+}
+
+function _renderOverviewSummaryCard(job) {
+    const cfg = job.config || {};
+    const meta = (typeof _statusMeta === 'function')
+        ? _statusMeta(job.status)
+        : { label: job.status || '?', cls: 'bg-secondary', tip: '' };
+    const isChain = !!cfg.is_retry_chain;
+    const totalRuns = isChain ? (cfg.retry_attempt || 0) + 1 : 1;
+    const maxRuns = isChain ? ((cfg.retry_max_attempts || 5) + 1) : 1;
+    const outcome = (job.progress && job.progress.outcome) || {};
+    const generated = outcome.generated || 0;
+    const skipped = (outcome.skipped_bif_exists || 0) + (outcome.skipped_output_exists || 0);
+    const failed = outcome.failed || 0;
+
+    const headline = '<div class="d-flex align-items-center gap-3 mb-2">'
+        + '<span class="badge ' + meta.cls + ' fs-6 px-3 py-2">'
+        +   '<i class="bi bi-circle-fill me-1" style="font-size: 0.6rem; vertical-align: middle;"></i>'
+        +   escapeHtmlText(meta.label)
+        + '</span>'
+        + '<div class="flex-grow-1">'
+        +   '<div class="h6 mb-0">' + escapeHtmlText(cfg.retry_basename || job.library_name || '(Unknown job)') + '</div>'
+        +   (meta.tip ? '<small class="text-muted">' + escapeHtmlText(meta.tip) + '</small>' : '')
+        + '</div>'
+        + '</div>';
+
+    const metrics = [];
+    const dur = _jobDurationLabel(job);
+    if (dur) {
+        const live = (job.status === 'running' || job.status === 'pending') && job.started_at;
+        metrics.push(_metricChip('clock', 'Duration',
+            live
+                ? '<span data-elapsed-since="' + escapeHtmlAttr(job.started_at) + '">' + escapeHtmlText(dur) + '</span>'
+                : escapeHtmlText(dur)));
+    }
+    if (isChain) {
+        metrics.push(_metricChip('arrow-clockwise', 'Runs', totalRuns + ' / ' + maxRuns + ' max'));
+    }
+    if (generated > 0) metrics.push(_metricChip('check-circle', 'Generated', String(generated)));
+    if (skipped > 0)   metrics.push(_metricChip('skip-forward', 'Skipped (already on disk)', String(skipped)));
+    if (failed > 0)    metrics.push(_metricChip('x-circle', 'Failed', String(failed)));
+    if (cfg.source)    metrics.push(_metricChip(_sourceIcon(cfg.source), 'Source', escapeHtmlText(cfg.source)));
+
+    return '<div class="card mb-3 job-modal-section">'
+        + '<div class="card-body p-3">'
+        +   headline
+        +   (metrics.length
+                ? '<div class="d-flex flex-wrap gap-2 small">' + metrics.join('') + '</div>'
+                : '')
+        + '</div>'
+        + '</div>';
+}
+
+function _metricChip(icon, label, value) {
+    return '<span class="badge bg-light text-dark border d-inline-flex align-items-center gap-1">'
+        + '<i class="bi bi-' + icon + '"></i>'
+        + '<span class="text-muted">' + escapeHtmlText(label) + ':</span>'
+        + ' ' + value
+        + '</span>';
+}
+
+// Inline retry-reason banner — surfaces *why* the chain is retrying
+// without forcing the operator to scroll the log. Derived from the
+// chain head's publishers + status + retry_eta (no extra API call).
+// Renders nothing for non-chain jobs or chains in terminal state.
+function _renderOverviewReasonBanner(job) {
+    const cfg = job.config || {};
+    const isChain = !!cfg.is_retry_chain;
+    if (!isChain) return '';
+    const status = job.status || '';
+    if (status !== 'pending' && status !== 'running') return '';
+    const publishers = Array.isArray(job.publishers) ? job.publishers : [];
+    // Identify which server(s) are causing the chain to retry. The
+    // most common shape: one or more servers with a
+    // ``published_pending_registration`` count > 0 (Jellyfin / Plex
+    // mid-scan), or ``skipped_not_indexed`` / ``skipped_not_in_library``
+    // (Plex hasn't analysed the file yet).
+    const stuck = [];
+    for (const p of publishers) {
+        const counts = (p && p.counts) || {};
+        const reasons = [];
+        if (counts.published_pending_registration > 0) reasons.push('trickplay registration pending');
+        if (counts.skipped_not_indexed > 0) reasons.push('source not yet scanned');
+        if (counts.skipped_not_in_library > 0) reasons.push('source not in library');
+        if (reasons.length) {
+            stuck.push({
+                name: p.server_name || (p.server_type || '').toUpperCase() || 'Server',
+                type: (p.server_type || '').toLowerCase(),
+                reasons,
+            });
+        }
+    }
+    if (!stuck.length) return '';
+    const items = stuck.map(s =>
+        '<li><strong>' + escapeHtmlText(s.name) + '</strong>: ' + escapeHtmlText(s.reasons.join(' / ')) + '</li>'
+    ).join('');
+    const retryEta = (job.progress && job.progress.retry_eta) || null;
+    const ra = cfg.retry_attempt || 0;
+    const rmax = cfg.retry_max_attempts || 5;
+    // ``retry_attempt = ra`` is the 1-indexed identity of the
+    // CURRENTLY-QUEUED retry firing (per ``_upsert_retry_chain_job``
+    // in processing/retry_queue.py — schedule() sets retry_attempt to
+    // the upcoming attempt's number, not the count of completed
+    // retries). Run ordinal = ra + 1 because Run 1 is the original
+    // (retry_attempt=0); retry #1 is Run 2. Max runs = rmax + 1 for
+    // the same reason (original is not a retry).
+    //
+    // Earlier draft used ``ra + 2`` which is off-by-one (caught by
+    // architecture review HIGH finding) — would have shipped "Run 3
+    // is queued" while attempt #1 was scheduled.
+    const headline = retryEta
+        ? 'Run ' + (ra + 1) + ' of ' + (rmax + 1) + ' is queued — once the upstream catches up, this chain will close.'
+        : 'Waiting for the upstream server to catch up.';
+    return '<div class="alert alert-warning small d-flex mb-3 job-modal-section" role="status">'
+        + '<i class="bi bi-hourglass-split me-2" style="font-size: 1.1rem;"></i>'
+        + '<div class="flex-grow-1">'
+        +   '<strong>Why this chain is still going:</strong> '
+        +   escapeHtmlText(headline)
+        +   '<ul class="mb-0 mt-1" style="padding-left: 1.25rem;">' + items + '</ul>'
+        + '</div>'
+        + '</div>';
+}
+
+function _renderOverviewPublishersCard(job) {
+    // Reuse the existing per-publisher block renderer — keeps the
+    // Overview consistent with the header strip a user sees in the
+    // logs tab. The block already labels itself "Chain totals" for
+    // chains, so we hide its own header here and supply a card header
+    // for visual hierarchy.
+    const body = (typeof _renderPublishersBlock === 'function')
+        ? _renderPublishersBlock(job)
+        : '';
+    if (!body) return '';
+    return '<div class="card mb-3 job-modal-section">'
+        + '<div class="card-header py-2 bg-body-tertiary">'
+        +   '<i class="bi bi-broadcast me-1"></i>'
+        +   '<strong>Server results</strong>'
+        + '</div>'
+        + '<div class="card-body p-3">' + body + '</div>'
+        + '</div>';
+}
+
+function _renderOverviewTimelineCard(job) {
+    const cfg = job.config || {};
+    const isChain = !!cfg.is_retry_chain;
+    // The timeline is most valuable for chains; for single-run jobs it
+    // would be one bar, which is just visual noise.
+    if (!isChain) return '';
+    return '<div class="card mb-3 job-modal-section">'
+        + '<div class="card-header py-2 bg-body-tertiary d-flex align-items-center justify-content-between">'
+        +   '<div><i class="bi bi-bar-chart-steps me-1"></i><strong>Attempts timeline</strong></div>'
+        +   '<small class="text-muted">Click a bar to switch attempts</small>'
+        + '</div>'
+        + '<div class="card-body p-3">'
+        +   '<div id="attemptsTimeline" class="attempts-timeline" role="navigation" aria-label="Retry attempts timeline">'
+        +     '<div class="text-muted small">Loading timeline&hellip;</div>'
+        +   '</div>'
+        + '</div>'
+        + '</div>';
+}
+
+function _renderOverviewLogPreviewCard(job) {
+    const last = _rawLogs.slice(-10);
+    if (!last.length) {
+        // Don't render an empty card; cleaner than a "no logs" message.
+        return '';
+    }
+    const lines = last.map(line => colorizeLogLine(line)).join('\n');
+    return '<div class="card mb-3 job-modal-section">'
+        + '<div class="card-header py-2 bg-body-tertiary d-flex align-items-center justify-content-between">'
+        +   '<div><i class="bi bi-terminal me-1"></i><strong>Recent log</strong> <small class="text-muted">(last ' + last.length + ' lines)</small></div>'
+        +   '<button type="button" class="btn btn-sm btn-link p-0" onclick="onSwitchToLogsTab()">'
+        +     'Open full logs <i class="bi bi-chevron-right"></i></button>'
+        + '</div>'
+        + '<div class="card-body p-2">'
+        +   '<pre class="log-viewer mb-0" style="max-height: 200px; overflow-y: auto; font-size: 0.8rem;">' + lines + '</pre>'
+        + '</div>'
+        + '</div>';
+}
+
+function onSwitchToLogsTab() {
+    const btn = document.getElementById('logsTab');
+    if (btn) {
+        const tab = new bootstrap.Tab(btn);
+        tab.show();
+    }
+}
+
+// Populate the timeline once attempts data has been fetched. Called by
+// the existing attempts-dropdown load path so we don't duplicate the
+// API call. The timeline shares the active-attempt selection with the
+// pill row.
+function _renderAttemptsTimeline(attempts, max_attempts) {
+    const root = document.getElementById('attemptsTimeline');
+    if (!root) return;
+    if (!attempts || !attempts.length) {
+        root.innerHTML = '<div class="text-muted small">No attempts yet.</div>';
+        return;
+    }
+    // Compute the time window: chain start to chain end (or now if active)
+    const starts = attempts.map(a => _toMs(a.created_at)).filter(t => t > 0);
+    const ends = attempts.map(a => _toMs(a.completed_at) || Date.now()).filter(t => t > 0);
+    const tMin = Math.min.apply(null, starts);
+    const tMax = Math.max.apply(null, ends);
+    const span = Math.max(1, tMax - tMin);
+    // Render lanes — one row per attempt
+    let html = '<div class="attempts-timeline-axis small text-muted mb-1 d-flex justify-content-between">'
+        + '<span>' + escapeHtmlText(_formatTimelineTimestamp(tMin)) + '</span>'
+        + '<span>' + escapeHtmlText(_formatTimelineTimestamp(tMax)) + ' (' + escapeHtmlText(_formatAttemptDuration(Math.round(span / 1000))) + ')</span>'
+        + '</div>';
+    for (let i = 0; i < attempts.length; i++) {
+        const a = attempts[i];
+        const start = _toMs(a.created_at) || tMin;
+        const end = _toMs(a.completed_at) || Date.now();
+        const leftPct = ((start - tMin) / span) * 100;
+        const widthPct = Math.max(0.5, ((end - start) / span) * 100);
+        const statusCls = _ATTEMPT_STATUS_CLASS[a.status] || 'btn-outline-secondary';
+        const fillCls = statusCls.replace('btn-outline-', 'attempts-timeline-bar-');
+        const isActive = (_logsModalAttemptId === a.id) || (_logsModalAttemptId === null && a.is_originating);
+        const dur = _formatAttemptDuration(a.duration_sec);
+        const runOrdinal = a.is_originating ? 1 : (a.retry_attempt + 1);
+        const label = (a.is_originating ? 'Run 1 (original)' : 'Run ' + runOrdinal + ' (retry #' + a.retry_attempt + ')')
+            + ' · ' + a.status + (dur ? ' · ' + dur : '');
+        const safeId = escapeHtmlAttr(a.id || '');
+        const deleted = a.is_originating && !a.id;
+        html += '<div class="attempts-timeline-lane d-flex align-items-center gap-2 mb-1">'
+            + '<span class="attempts-timeline-label text-muted small" style="width: 70px; flex-shrink: 0;">'
+            +   'Run ' + runOrdinal
+            + '</span>'
+            + '<div class="attempts-timeline-track flex-grow-1 position-relative">'
+            +   (deleted
+                ? '<div class="attempts-timeline-bar attempts-timeline-bar-secondary" style="width: 100%; opacity: 0.4;" title="Run 1 (deleted by retention)">deleted</div>'
+                : '<button type="button" class="attempts-timeline-bar ' + fillCls + (isActive ? ' active' : '') + '"'
+                    + ' style="left: ' + leftPct.toFixed(2) + '%; width: ' + widthPct.toFixed(2) + '%;"'
+                    + ' data-attempt-id="' + safeId + '"'
+                    + ' title="' + escapeHtmlAttr(label) + '"'
+                    + ' aria-label="' + escapeHtmlAttr(label) + '">'
+                    + (a.is_originating ? '<i class="bi bi-play-fill"></i>' : '<i class="bi bi-arrow-clockwise"></i>')
+                + '</button>')
+            + '</div>'
+            + '<span class="attempts-timeline-duration text-muted small font-monospace" style="width: 60px; text-align: right; flex-shrink: 0;">'
+            +   escapeHtmlText(dur || '—')
+            + '</span>'
+            + '</div>';
+    }
+    root.innerHTML = html;
+}
+
+function _toMs(isoStr) {
+    if (!isoStr) return 0;
+    const t = new Date(isoStr).getTime();
+    return Number.isFinite(t) ? t : 0;
+}
+
+function _formatTimelineTimestamp(ms) {
+    if (!ms) return '';
+    const d = new Date(ms);
+    // Hours:minutes:seconds, local time — enough granularity for retry
+    // chains (which complete in minutes to hours).
+    const pad = (n) => String(n).padStart(2, '0');
+    return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+}
+
+function _wireOverviewTimelineClicks() {
+    const root = document.getElementById('attemptsTimeline');
+    if (!root) return;
+    root.addEventListener('click', function (ev) {
+        const bar = ev.target.closest('button.attempts-timeline-bar');
+        if (!bar || bar.disabled) return;
+        const attemptId = bar.getAttribute('data-attempt-id');
+        if (!attemptId) return;
+        // Reuse the pill-row's selection handler — keep both UIs in sync.
+        const pill = document.querySelector('button.attempts-pill[data-attempt-id="' + CSS.escape(attemptId) + '"]');
+        if (pill) {
+            pill.click();
+        } else {
+            // Pill row not rendered (e.g. Overview shown before attempts
+            // loaded). Set the state directly.
+            _logsModalAttemptId = attemptId;
+            refreshLogs();
+        }
+        _renderOverview();
+    });
+}
+
 async function onOperatorCancelChain() {
     if (!_logsModalJobId) return;
     if (!confirm('Cancel this retry chain? Any pending back-off timer will be dropped and in-flight attempts will receive a cancellation signal.')) {
@@ -354,12 +718,11 @@ function showLogsModal(jobId) {
     var pFooter = document.getElementById('filePaginationFooter');
     if (pFooter) pFooter.classList.add('d-none');
 
-    // Reset to Logs tab
-    var logsTabBtn = document.getElementById('logsTab');
-    if (logsTabBtn) {
-        var tab = new bootstrap.Tab(logsTabBtn);
-        tab.show();
-    }
+    // Restore the user's last-selected tab from localStorage. Default
+    // is Overview — the Tier-2 landing for multi-run chains. Power
+    // users who switched to Logs / Files last time get back there
+    // without a re-click.
+    _restoreLastTab();
 
     const job = jobs.find(j => j.id === targetId);
     const isRunning = job && job.status === 'running';
@@ -399,6 +762,12 @@ function showLogsModal(jobId) {
             // until the user closed and reopened.
             const _polled = jobs.find(j => j.id === targetId);
             _updateOperatorActions(_polled);
+            // If Overview is the active tab, re-render its summary +
+            // recent-log preview so the dashboard stays live without
+            // forcing the user back to Logs.
+            const _overviewActive = document.getElementById('overviewTabPane') &&
+                document.getElementById('overviewTabPane').classList.contains('active');
+            if (_overviewActive) _renderOverview();
         }, 5000);
     }
 
@@ -411,9 +780,19 @@ function showLogsModal(jobId) {
             clearInterval(_chainStateTickInterval);
             _chainStateTickInterval = null;
         }
+        if (_overviewTickInterval) {
+            clearInterval(_overviewTickInterval);
+            _overviewTickInterval = null;
+        }
         _logsModalJobId = null;
         _logsModalAttemptId = null;
     }, { once: true });
+
+    // Render Overview once the modal is open (so any DOM refs inside
+    // Overview cards resolve correctly) — separate from the tab
+    // restore because the Bootstrap Tab.show() doesn't fire the
+    // ``shown`` event synchronously.
+    _renderOverview();
 }
 
 function scrollLogsTo(position) {
@@ -915,6 +1294,10 @@ async function _loadAttemptsDropdown(chainId) {
             _logsModalAttemptId = null;
         }
         _renderChainStateChip(chainId);
+        // Feed the Overview's timeline component with the same data.
+        // Both the pill row and the timeline render from the
+        // attempts list — they're two views of the same state.
+        _renderAttemptsTimeline(attempts, max);
         refreshLogs();
     } catch (error) {
         console.error('Failed to load attempts:', error);
@@ -963,6 +1346,9 @@ async function _refreshAttemptsDropdown(chainId) {
         // retry_eta might have changed since modal-open (new firing,
         // completion, exhaustion) and the poll caught it.
         _renderChainStateChip(chainId);
+        // Re-render the Overview timeline with the fresh attempts data
+        // so the bars reflect new firings without a manual refresh.
+        _renderAttemptsTimeline(attempts, max);
     } catch (error) {
         // Silent — user has last-good UI; next tick will retry.
         console.debug('Attempts poll-refresh failed:', error);
@@ -998,6 +1384,13 @@ function onAttemptSelected(button) {
     if (filesTabBtn && filesTabBtn.classList.contains('active')) {
         refreshFileResults();
     }
+    // Re-render the Overview pane only if it's the active tab —
+    // otherwise we'd arm a 1-second tick interval against a hidden
+    // DOM (single-instance via clear-before-set, but still wasted
+    // CPU on every modal-open with an active retry chain).
+    const overviewActive = document.getElementById('overviewTabPane') &&
+        document.getElementById('overviewTabPane').classList.contains('active');
+    if (overviewActive && typeof _renderOverview === 'function') _renderOverview();
 }
 
 function _updateEarlierLogsButton() {
