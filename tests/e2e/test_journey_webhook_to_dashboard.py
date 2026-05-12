@@ -54,32 +54,17 @@ class TestWebhookToDashboard:
     @pytest.mark.parametrize("backend_real_app", [{"webhook_delay": 30}], indirect=True)
     def test_sonarr_webhook_creates_pending_batch_then_fire_now_dispatches(
         self,
-        backend_real_page,
         backend_real_app: tuple[str, str],
     ) -> None:
         app_url, _ = backend_real_app
 
-        # Open dashboard so SocketIO is connected and we can observe job_created.
-        # Open our own SocketIO connection — the dashboard's `socket` var is
-        # module-scoped and inaccessible from the page evaluate context.
-        backend_real_page.goto(f"{app_url}/")
-        backend_real_page.wait_for_load_state("domcontentloaded")
-        backend_real_page.wait_for_function("() => typeof io === 'function'", timeout=5000)
-        backend_real_page.evaluate(
-            """
-            window.__capturedEvents = [];
-            window.__testSocket = io('/jobs', { transports: ['polling'] });
-            ['job_created', 'job_started', 'job_completed', 'job_failed'].forEach(name => {
-                window.__testSocket.on(name, (data) => {
-                    window.__capturedEvents.push({event: name, data: data});
-                });
-            });
-            """
-        )
-        backend_real_page.wait_for_function(
-            "() => window.__testSocket && window.__testSocket.connected === true",
-            timeout=10000,
-        )
+        # Observe job creation via /api/jobs polling instead of browser-side
+        # SocketIO subscription. Each page.evaluate() roundtrip uses the
+        # Playwright Python↔Node IPC pipe; polling that pipe in a loop is
+        # what crashed xdist workers under -n auto. The SocketIO emit
+        # itself is verified in test_journey_live_job_lifecycle.py — here
+        # we only need to observe that a job materialised, which the
+        # backend's /api/jobs response gives us directly.
 
         # 1. POST a real Sonarr-shaped payload to the real webhook endpoint.
         webhook_path = "/data/TV/Test Series/S01E02.mkv"
@@ -122,28 +107,41 @@ class TestWebhookToDashboard:
         )
         assert fire_resp.status_code in (200, 202), f"fire-now: {fire_resp.status_code} {fire_resp.text}"
 
-        # 4. A new job should appear via SocketIO + via the jobs list.
+        # 4. A new job should appear in /api/jobs (polling, no SocketIO).
+        # Filter is_retry=False — when no servers are configured the
+        # dispatcher fast-skips the path and the retry-queue spawns a
+        # child retry job with the same webhook_paths. The contract we're
+        # verifying is the PARENT (the one fire-now spawned), not its
+        # retry child.
         deadline = time.monotonic() + 15
         job_id = None
         while time.monotonic() < deadline:
-            captured = backend_real_page.evaluate("window.__capturedEvents || []")
-            for ev in captured:
-                if ev["event"] == "job_created":
-                    job_id = ev["data"].get("id")
-                    break
+            jobs_resp = requests.get(
+                f"{app_url}/api/jobs?page=0",
+                headers=_AUTH_HEADERS,
+                timeout=_API_TIMEOUT,
+            )
+            if jobs_resp.ok:
+                for job in jobs_resp.json().get("jobs", []):
+                    cfg = job.get("config") or {}
+                    if webhook_path in cfg.get("webhook_paths", []) and not cfg.get("is_retry"):
+                        job_id = job.get("id")
+                        break
             if job_id:
                 break
             time.sleep(0.2)
 
         assert job_id is not None, (
-            "fire-now dispatched but the dashboard never observed a job_created event. "
-            "Either the webhook batch dispatcher silently dropped the job, or SocketIO "
-            "didn't relay it. Captured: " + str(backend_real_page.evaluate("window.__capturedEvents || []"))
+            "fire-now dispatched but no parent Job ever appeared in /api/jobs for the webhook path. "
+            "Either the webhook batch dispatcher silently dropped the job, or JobManager "
+            "didn't record it."
         )
 
         # 5. Job should reach a terminal state (no servers configured -> the
         #    orchestrator marks unresolved and completes/fails fast).
-        deadline = time.monotonic() + 30
+        # 10s budget — global pytest timeout is 30s; steps 1-4 already
+        # consumed ~5-10s. Empty-server jobs reach terminal in <1s typically.
+        deadline = time.monotonic() + 10
         terminal = False
         while time.monotonic() < deadline:
             r = requests.get(
@@ -159,7 +157,6 @@ class TestWebhookToDashboard:
 
     def test_natural_debounce_fires_without_explicit_fire_now(
         self,
-        backend_real_page,
         backend_real_app: tuple[str, str],
     ) -> None:
         """Without clicking fire-now, the 1s debounce timer must still fire.
@@ -169,40 +166,35 @@ class TestWebhookToDashboard:
         """
         app_url, _ = backend_real_app
 
-        backend_real_page.goto(f"{app_url}/")
-        backend_real_page.wait_for_load_state("domcontentloaded")
-        backend_real_page.wait_for_function("() => typeof io === 'function'", timeout=5000)
-        backend_real_page.evaluate(
-            """
-            window.__capturedEvents = [];
-            window.__testSocket = io('/jobs', { transports: ['polling'] });
-            ['job_created'].forEach(name => {
-                window.__testSocket.on(name, (data) => {
-                    window.__capturedEvents.push({event: name, data: data});
-                });
-            });
-            """
-        )
-        backend_real_page.wait_for_function(
-            "() => window.__testSocket && window.__testSocket.connected === true",
-            timeout=10000,
-        )
-
-        # POST the webhook and DO NOT call fire-now.
+        # POST the webhook and DO NOT call fire-now. Observe via /api/jobs
+        # polling — no browser SocketIO subscription (would crash xdist
+        # workers under -n auto via Playwright IPC).
+        webhook_path = "/data/TV/Show Two/S02E03.mkv"
         resp = _post_sonarr_webhook(
             app_url,
-            "/data/TV/Show Two/S02E03.mkv",
+            webhook_path,
             series_title="Show Two",
         )
         assert resp.ok
 
-        # With webhook_delay=1 (seeded), the natural timer should fire within ~3s.
+        # With webhook_delay=1 (seeded), the natural timer should fire
+        # within ~3s and produce a parent Job visible in /api/jobs.
+        # is_retry=False filter — see test above for rationale.
         deadline = time.monotonic() + 8
         observed = False
         while time.monotonic() < deadline:
-            captured = backend_real_page.evaluate("window.__capturedEvents || []")
-            if any(ev["event"] == "job_created" for ev in captured):
-                observed = True
+            jobs_resp = requests.get(
+                f"{app_url}/api/jobs?page=0",
+                headers=_AUTH_HEADERS,
+                timeout=_API_TIMEOUT,
+            )
+            if jobs_resp.ok:
+                for job in jobs_resp.json().get("jobs", []):
+                    cfg = job.get("config") or {}
+                    if webhook_path in cfg.get("webhook_paths", []) and not cfg.get("is_retry"):
+                        observed = True
+                        break
+            if observed:
                 break
             time.sleep(0.2)
 

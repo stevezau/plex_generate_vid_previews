@@ -172,70 +172,80 @@ class TestPauseResumeScan:
 
     def test_pause_resume_emits_socketio_state_change(
         self,
-        backend_real_page,
         backend_real_app: tuple[str, str],
     ) -> None:
         """Pause/resume must emit `processing_paused_changed` over SocketIO.
 
         That event drives the UI button swap in renderGlobalPauseResume().
         If the emit drops, the button label desyncs from the actual state.
+
+        Uses a python-socketio client (not Playwright-driven browser
+        observation) so the SocketIO subscription doesn't go through
+        the Playwright Python↔Node IPC pipe — the pipe stalls under
+        ``-n auto`` parallelism and crashes the xdist worker. The
+        contract we're verifying (server emits event on pause/resume)
+        is identical regardless of which client receives it.
         """
+        import socketio
+
+        from .conftest import _capture_session_cookie
+
         app_url, _ = backend_real_app
 
-        backend_real_page.goto(f"{app_url}/")
-        backend_real_page.wait_for_load_state("domcontentloaded")
-        backend_real_page.wait_for_function("() => typeof io === 'function'", timeout=5000)
-        backend_real_page.evaluate(
-            """
-            window.__capturedEvents = [];
-            window.__testSocket = io('/jobs', { transports: ['polling'] });
-            ['processing_paused_changed'].forEach(name => {
-                window.__testSocket.on(name, (data) => {
-                    window.__capturedEvents.push({event: name, data: data});
-                });
-            });
-            """
-        )
-        backend_real_page.wait_for_function(
-            "() => window.__testSocket && window.__testSocket.connected === true",
-            timeout=10000,
-        )
+        # The /jobs namespace requires Flask-session auth on connect —
+        # capture a session cookie via a real /login POST.
+        cookie = _capture_session_cookie(app_url)
+        cookie_header = f"{cookie['name']}={cookie['value']}"
 
-        requests.post(
-            f"{app_url}/api/processing/pause",
-            headers=_AUTH_HEADERS,
-            timeout=_API_TIMEOUT,
+        captured: list[dict] = []
+        client = socketio.Client(reconnection=False)
+
+        @client.on("processing_paused_changed", namespace="/jobs")
+        def _on_paused_changed(data):
+            captured.append(data)
+
+        client.connect(
+            app_url,
+            namespaces=["/jobs"],
+            transports=["polling"],
+            wait_timeout=10,
+            headers={"Cookie": cookie_header},
         )
+        try:
+            requests.post(
+                f"{app_url}/api/processing/pause",
+                headers=_AUTH_HEADERS,
+                timeout=_API_TIMEOUT,
+            )
 
-        deadline = time.monotonic() + 5
-        observed_pause = False
-        while time.monotonic() < deadline:
-            captured = backend_real_page.evaluate("window.__capturedEvents || []")
-            if any(ev["event"] == "processing_paused_changed" and ev["data"].get("paused") is True for ev in captured):
-                observed_pause = True
-                break
-            time.sleep(0.2)
+            deadline = time.monotonic() + 5
+            observed_pause = False
+            while time.monotonic() < deadline:
+                if any(d.get("paused") is True for d in captured):
+                    observed_pause = True
+                    break
+                time.sleep(0.1)
 
-        assert observed_pause, (
-            "Pause did not emit processing_paused_changed(paused=True) over SocketIO. "
-            "The pause endpoint flipped state but the UI never gets notified, so the "
-            "button label desyncs from the actual server state."
-        )
+            assert observed_pause, (
+                "Pause did not emit processing_paused_changed(paused=True) over SocketIO. "
+                "The pause endpoint flipped state but the UI never gets notified, so the "
+                "button label desyncs from the actual server state."
+            )
 
-        # And resume must emit the inverse.
-        backend_real_page.evaluate("window.__capturedEvents = [];")
-        requests.post(
-            f"{app_url}/api/processing/resume",
-            headers=_AUTH_HEADERS,
-            timeout=_API_TIMEOUT,
-        )
-        deadline = time.monotonic() + 5
-        observed_resume = False
-        while time.monotonic() < deadline:
-            captured = backend_real_page.evaluate("window.__capturedEvents || []")
-            if any(ev["event"] == "processing_paused_changed" and ev["data"].get("paused") is False for ev in captured):
-                observed_resume = True
-                break
-            time.sleep(0.2)
+            captured.clear()
+            requests.post(
+                f"{app_url}/api/processing/resume",
+                headers=_AUTH_HEADERS,
+                timeout=_API_TIMEOUT,
+            )
+            deadline = time.monotonic() + 5
+            observed_resume = False
+            while time.monotonic() < deadline:
+                if any(d.get("paused") is False for d in captured):
+                    observed_resume = True
+                    break
+                time.sleep(0.1)
 
-        assert observed_resume, "Resume did not emit processing_paused_changed(paused=False)."
+            assert observed_resume, "Resume did not emit processing_paused_changed(paused=False)."
+        finally:
+            client.disconnect()

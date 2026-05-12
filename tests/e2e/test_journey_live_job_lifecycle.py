@@ -42,104 +42,100 @@ class TestLiveJobLifecycle:
 
     def test_job_lifecycle_emits_progress_then_complete_via_real_socketio(
         self,
-        backend_real_page: Page,
         backend_real_app: tuple[str, str],
     ) -> None:
+        """SocketIO events fire for the full job lifecycle.
+
+        Uses a python-socketio client (not Playwright-driven browser
+        observation) so the subscription doesn't go through Playwright's
+        Python↔Node IPC pipe — the pipe stalls under ``-n auto`` and
+        crashes xdist workers. The contract we're verifying (server
+        emits ``job_created`` + a terminal event) is identical regardless
+        of which client receives it.
+        """
+        import socketio
+
+        from .conftest import _capture_session_cookie
+
         app_url, _ = backend_real_app
 
-        # Open the dashboard FIRST so SocketIO connects before we POST the job.
-        # Otherwise the `job_created` and `job_completed` events fire before the
-        # client subscribes and the test can't observe them.
-        backend_real_page.goto(f"{app_url}/")
-        backend_real_page.wait_for_load_state("domcontentloaded")
+        # Subscribe BEFORE POSTing the job so we don't miss early events.
+        # The /jobs namespace's `connect` handler calls is_authenticated()
+        # which checks the Flask session cookie — capture one via a real
+        # /login POST and pass it through the SocketIO connect headers.
+        cookie = _capture_session_cookie(app_url)
+        cookie_header = f"{cookie['name']}={cookie['value']}"
 
-        # The dashboard's own ``socket`` variable is module-scoped (let socket = null)
-        # so we can't observe its events from the page context. Open a SECOND
-        # SocketIO connection on the same /jobs namespace via the global ``io``
-        # client lib, and subscribe to the events we care about.
-        # transports: ['polling'] matches the dashboard + the server's
-        # allow_upgrades=False config.
-        backend_real_page.wait_for_function("() => typeof io === 'function'", timeout=5000)
-        backend_real_page.evaluate(
-            """
-            window.__capturedEvents = [];
-            window.__testSocket = io('/jobs', { transports: ['polling'] });
-            ['job_created', 'job_started', 'job_progress',
-             'job_completed', 'job_failed', 'worker_update'].forEach(name => {
-                window.__testSocket.on(name, (data) => {
-                    window.__capturedEvents.push({event: name, data: data});
-                });
-            });
-            """
-        )
-        # Wait for our test socket to connect before POSTing.
-        backend_real_page.wait_for_function(
-            "() => window.__testSocket && window.__testSocket.connected === true",
-            timeout=10000,
-        )
+        captured: list[dict] = []
+        client = socketio.Client(reconnection=False)
 
-        # POST a real manual job through Flask. file_paths must be under the
-        # MEDIA_ROOT allowlist (default "/" so /tmp works). The path doesn't
-        # need to exist — with no servers configured the orchestrator marks
-        # it unresolved and completes quickly without any FFmpeg work.
-        # Use requests (not page.request) to avoid the Playwright IPC stall.
-        post_resp = requests.post(
-            f"{app_url}/api/jobs/manual",
-            headers=_AUTH_JSON_HEADERS,
-            data='{"file_paths": ["/tmp/nonexistent_e2e_job.mkv"]}',
-            timeout=_API_TIMEOUT,
-        )
-        assert post_resp.ok, f"POST /api/jobs/manual failed: {post_resp.status_code} {post_resp.text}"
-        job = post_resp.json()
-        job_id = job["id"]
-        assert job_id, "Backend did not return a job id"
+        def _record(event_name):
+            def handler(data):
+                captured.append({"event": event_name, "data": data})
 
-        # Wait for the dashboard's REAL DOM to reflect the job arriving.
-        # `loadJobs()` is invoked by the `job_created` SocketIO handler.
-        # The active-jobs container should populate within a few SocketIO
-        # ticks. The basename of our path becomes the job's display label.
+            return handler
+
+        for name in ("job_created", "job_started", "job_progress", "job_completed", "job_failed", "worker_update"):
+            client.on(name, _record(name), namespace="/jobs")
+
+        client.connect(
+            app_url,
+            namespaces=["/jobs"],
+            transports=["polling"],
+            wait_timeout=10,
+            headers={"Cookie": cookie_header},
+        )
         try:
-            backend_real_page.wait_for_function(
-                """(jobId) => {
-                    const evs = window.__capturedEvents || [];
-                    return evs.some(e => e.event === 'job_created'
-                        && e.data && e.data.id === jobId);
-                }""",
-                arg=job_id,
-                timeout=10000,
+            # POST a real manual job through Flask. file_paths must be under
+            # the MEDIA_ROOT allowlist (default "/" so /tmp works). The path
+            # doesn't need to exist — with no servers configured the
+            # orchestrator marks it unresolved and completes quickly.
+            post_resp = requests.post(
+                f"{app_url}/api/jobs/manual",
+                headers=_AUTH_JSON_HEADERS,
+                data='{"file_paths": ["/tmp/nonexistent_e2e_job.mkv"]}',
+                timeout=_API_TIMEOUT,
             )
-        except Exception:
-            captured = backend_real_page.evaluate("window.__capturedEvents || []")
-            raise AssertionError(
-                f"Backend never emitted a job_created event for job {job_id} "
-                f"that the dashboard observed. Captured: {captured}"
-            ) from None
+            assert post_resp.ok, f"POST /api/jobs/manual failed: {post_resp.status_code} {post_resp.text}"
+            job_id = post_resp.json()["id"]
+            assert job_id, "Backend did not return a job id"
 
-        # Real backend should drive the lifecycle to completion (or failure).
-        # The dispatcher with no Plex + no servers + a single webhook_path will
-        # finish near-instantly. We accept either job_completed OR job_failed
-        # — both prove the orchestrator->JobManager->SocketIO chain works.
-        # What we DON'T accept: jobs stuck in PENDING with no terminal event.
-        deadline = time.monotonic() + 30
-        terminal_event = None
-        while time.monotonic() < deadline:
-            captured = backend_real_page.evaluate("window.__capturedEvents || []")
-            for ev in captured:
-                if ev["event"] in ("job_completed", "job_failed") and ev["data"].get("id") == job_id:
-                    terminal_event = ev
+            # Wait for the job_created event for our specific job.
+            deadline = time.monotonic() + 10
+            saw_created = False
+            while time.monotonic() < deadline:
+                if any(e["event"] == "job_created" and e["data"].get("id") == job_id for e in captured):
+                    saw_created = True
                     break
-            if terminal_event:
-                break
-            time.sleep(0.25)
+                time.sleep(0.1)
+            assert saw_created, f"Backend never emitted a job_created event for job {job_id}. Captured: {captured}"
 
-        assert terminal_event is not None, (
-            f"Real backend never emitted job_completed or job_failed for {job_id} within 30s. "
-            f"Captured events: {backend_real_page.evaluate('window.__capturedEvents || []')}"
-        )
+            # Real backend should drive the lifecycle to completion (or failure).
+            # The dispatcher with no Plex + no servers + a single webhook_path
+            # finishes near-instantly. We accept either job_completed OR
+            # job_failed — both prove the orchestrator→JobManager→SocketIO
+            # chain works. What we DON'T accept: jobs stuck in PENDING with
+            # no terminal event.
+            deadline = time.monotonic() + 30
+            terminal_event = None
+            while time.monotonic() < deadline:
+                for ev in captured:
+                    if ev["event"] in ("job_completed", "job_failed") and ev["data"].get("id") == job_id:
+                        terminal_event = ev
+                        break
+                if terminal_event:
+                    break
+                time.sleep(0.25)
 
-        # The terminal event payload must include the SAME job id (drift would
-        # mean the dashboard's removeActiveJob() never fires for our job).
-        assert terminal_event["data"]["id"] == job_id
+            assert terminal_event is not None, (
+                f"Real backend never emitted job_completed or job_failed for {job_id} within 30s. "
+                f"Captured events: {captured}"
+            )
+            # The terminal event payload must include the SAME job id (drift
+            # would mean the dashboard's removeActiveJob() never fires).
+            assert terminal_event["data"]["id"] == job_id
+        finally:
+            client.disconnect()
 
         # And the REAL backend's job-stats endpoint must reflect the new total.
         stats_resp = requests.get(
@@ -161,7 +157,6 @@ class TestLiveJobLifecycle:
 
         backend_real_page.goto(f"{app_url}/")
         backend_real_page.wait_for_load_state("domcontentloaded")
-        backend_real_page.wait_for_function("() => typeof io === 'function'", timeout=5000)
 
         post_resp = requests.post(
             f"{app_url}/api/jobs/manual",
