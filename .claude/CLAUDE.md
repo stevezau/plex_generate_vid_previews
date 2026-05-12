@@ -14,8 +14,26 @@ gunicorn media_preview_generator.web.wsgi:app --bind 0.0.0.0:8080 --worker-class
 # Test — default runs parallel (xdist), excludes gpu + e2e, keeps coverage
 pytest                                          # ~5s, 1321 tests, ~79% cov
 pytest --no-cov tests/test_config.py            # Single file, skip coverage
-pytest -m e2e -n 0 --no-cov                     # Run Playwright e2e serially
+pytest -m e2e -n 8 --no-cov                     # E2E: cap at 8 workers, NOT -n auto (see below)
+pytest -m e2e -n 0 --no-cov                     # E2E serial (also fine)
 pytest -n 0                                     # Serial mode (for debugging)
+```
+
+**E2E parallelism cap:** Do NOT run `pytest -m e2e -n auto` on a multi-core box.
+Each xdist worker spawns ~5 chromium processes; each chrome process reserves
+~1.4 TB virtual memory (chrome's normal V8 heap reservation). With 24 workers
+× 5 = ~120 chrome processes, the system's virtual-memory commit ceiling
+(set by `vm.overcommit_memory=0` to ~50% of physical RAM) is exceeded. The
+kernel OOM killer fires and picks chrome-headless (oom_score_adj=300) as
+victim, killing browser processes mid-test → "Not properly terminated"
+xdist failures. Verified via journalctl kernel logs during diagnostic runs
+in commit f856944 follow-up.
+
+The CI ships a different pattern: pytest-shard splits the e2e suite across
+4 GitHub Actions runners, each running `-n 0` (serial) on its own ~30-test
+slice. Locally, `-n 8` is empirically stable (verified 33/33 pass).
+
+```bash
 
 # Lint and format
 ruff check . --fix

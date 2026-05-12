@@ -553,6 +553,47 @@ Three conftest files, read line-by-line:
 
 ---
 
+## Root cause: `pytest -m e2e -n auto` failures (definitively diagnosed)
+
+**Cause:** Linux kernel global OOM killer kills `chrome-headless` processes
+mid-test when too many run concurrently.
+
+**Evidence captured during diagnostic runs (commit f856944 follow-up):**
+
+```
+journalctl kernel logs showed:
+  20:38:15 Out of memory: Killed process 3770424 (chrome-headless) total-vm:1459960220kB ... oom_score_adj:300
+  20:38:15 Out of memory: Killed process 3770025 (chrome-headless) total-vm:1459916648kB ... oom_score_adj:300
+  20:38:28 Out of memory: Killed process 3760516 (chrome-headless) ... oom_score_adj:200
+  ...
+  20:28:03 Out of memory: Killed process 8030 (EmbyServer) total-vm:292401808kB ... oom_score_adj:0
+  20:28:03 Out of memory: Killed process 5645 (xdg-permission-) ...
+  20:28:03 Out of memory: Killed process 5671 (dbus-daemon) ...
+  [+12 system processes — kernel went on a rampage]
+```
+
+**Mechanism:**
+1. `pytest -m e2e -n auto` spawns 24 workers on a 32-core box.
+2. Each worker spawns ~5 chromium processes (browser + renderer + GPU + utility + network) → ~120 chrome processes total.
+3. Each chrome process reserves ~1.4 TB virtual memory (chrome's normal V8 heap reservation). Physical RAM use per process is small (~30 MB) but virtual is enormous.
+4. Linux's `vm.overcommit_memory=0` (heuristic, default) refuses commits beyond ~50% of physical RAM (~31 GB on this 62 GB box).
+5. When the 50th-ish chrome process tries to mmap past the commit ceiling, kernel fires global OOM.
+6. Kernel picks the highest `oom_score_adj` victim. Chrome explicitly sets `oom_score_adj=300` on its children so they're killed FIRST (the design intent — Chrome wants to lose tabs rather than wedge the OS).
+7. Chrome dies → Playwright Python's IPC pipe to the node driver breaks → worker's test fails or wedges → pytest-xdist sees EOF on the execnet channel and reports `node down: Not properly terminated`.
+
+**Ruled out via independent experiments:**
+- ❌ Chromium under high parallelism alone (24 bare Playwright sessions pass clean — no Flask, no pytest)
+- ❌ Flask boot timeout (raising 30s→60s helped, but doesn't fix it)
+- ❌ Singleton state pollution between tests (workers are separate processes; no cross-pollination)
+- ❌ Python worker OOM kill (no Python processes in OOM victim list — only chrome-headless)
+- ❌ SIGSEGV / SIGABRT in workers (faulthandler enabled; no crash output)
+- ❌ Catchable signals to workers (custom SIGTERM/SIGPIPE/etc trap plugin caught nothing)
+
+**The fix:**
+- Local dev: cap at `-n 8` (verified 33/33 stable). Documented in CLAUDE.md.
+- CI: pytest-shard already splits across 4 GitHub Actions runners, each running `-n 0` serial.
+- NOT a code bug. Genuine OS-level virtual-memory exhaustion under 24-worker chromium concurrency.
+
 ## Out of scope (intentionally deferred)
 
 - **The 19 `_reset_singletons` fixtures** spread across the test suite. Each is a manual scrub of module-level globals in production modules (`webhooks._pending_timers`, `retry_queue._singleton`, `settings_manager._settings_manager`, etc.). The proper fix is migrating those singletons to `app.extensions["..."]` (Flask-standard pattern). User declined this refactor (~3-5 day cost, 175 `get_settings_manager` callsites alone) earlier in the same session.
