@@ -50,6 +50,127 @@ function _logsTargetId() {
     return _logsModalAttemptId || _logsModalJobId;
 }
 
+// Map a webhook ``source`` value to a Bootstrap-icon glyph. Falls back
+// to a generic globe so unknown sources still render with consistent
+// visual weight. Centralised so future sources (e.g. ``schedule``,
+// ``manual``) only need one place to register.
+const _SOURCE_ICON = {
+    plex:     'play-circle',
+    radarr:   'film',
+    sonarr:   'tv',
+    schedule: 'calendar-event',
+    manual:   'person',
+    webhook:  'plug',
+};
+function _sourceIcon(source) {
+    return _SOURCE_ICON[(source || '').toLowerCase()] || 'globe2';
+}
+
+// Compute the wall-clock duration of a job — ``started_at`` (or
+// ``created_at`` when start is missing) to ``completed_at`` (or now
+// when status is ``running``/``pending``). Returns a short string
+// ("6s", "1m 8s", "2h 14m") or ``''`` when no timestamps are
+// available.
+//
+// Terminal-status guard: jobs that ended ``failed``/``cancelled`` can
+// have ``completed_at`` missing (worker crash, scheduler kill). Without
+// the guard, the duration chip would tick monotonically every time the
+// operator re-opened the modal, reading "2h 14m" for a job that
+// actually failed 6s in. For terminal jobs missing the end timestamp
+// we return ``''`` instead of pretending the job is still running.
+function _jobDurationLabel(job) {
+    if (!job) return '';
+    const startStr = job.started_at || job.created_at;
+    if (!startStr) return '';
+    const start = new Date(startStr).getTime();
+    if (!Number.isFinite(start)) return '';
+    const endStr = job.completed_at;
+    let end;
+    if (endStr) {
+        end = new Date(endStr).getTime();
+        if (!Number.isFinite(end)) return '';
+    } else if (job.status === 'running' || job.status === 'pending') {
+        end = Date.now();
+    } else {
+        // Terminal status with no completion timestamp — duration is
+        // unknown; don't fabricate a runaway clock from Date.now().
+        return '';
+    }
+    const secs = Math.max(0, Math.round((end - start) / 1000));
+    return _formatAttemptDuration(secs);
+}
+
+// Operator-grade modal header. Three rows:
+//   Row 1 — entity title (``library_name`` / ``retry_basename``) + status badge.
+//   Row 2 — up to four conditional chips: source (when ``cfg.source``),
+//           server (when ``job.server_name``), duration (when timestamps
+//           are available), runs (when ``isChain``).
+//   Row 3 — Job ID line lives separately in ``#logsJobId`` for copy/paste
+//           and future deep-linking; not part of this helper.
+// Falls back to the generic "Job Details" string when ``job`` is missing
+// (``undefined`` or ``null``). Real-world trigger: the modal was re-opened
+// after the job was cleaned from history mid-poll, so
+// ``jobs.find(j => j.id === targetId)`` returned ``undefined``. The
+// ``if (!job)`` guard handles both shapes.
+function _renderModalHeader(job) {
+    const headerEl = document.getElementById('logsModalHeader');
+    if (!headerEl) return;
+    if (!job) {
+        headerEl.innerHTML = '<h5 class="modal-title mb-0"><i class="bi bi-file-text me-2"></i>Job Details</h5>';
+        return;
+    }
+    const cfg = job.config || {};
+    const isChain = !!cfg.is_retry_chain;
+    const title = cfg.retry_basename || job.library_name || '(Unknown job)';
+    const meta = (typeof _statusMeta === 'function')
+        ? _statusMeta(job.status)
+        : { label: job.status || '?', cls: 'bg-secondary', tip: '' };
+    const statusBadge = `<span class="badge ${meta.cls} ms-2 align-self-center"`
+        + (meta.tip ? ` title="${escapeHtmlAttr(meta.tip)}"` : '')
+        + `>${escapeHtmlText(meta.label)}</span>`;
+
+    const chips = [];
+    if (cfg.source) {
+        chips.push('<span class="badge bg-light text-dark border">'
+            + '<i class="bi bi-' + _sourceIcon(cfg.source) + ' me-1"></i>'
+            + escapeHtmlText(cfg.source) + '</span>');
+    }
+    if (job.server_name) {
+        chips.push('<span class="badge bg-light text-dark border">'
+            + escapeHtmlText(job.server_name) + '</span>');
+    }
+    const dur = _jobDurationLabel(job);
+    if (dur) {
+        chips.push('<span class="badge bg-light text-dark border">'
+            + '<i class="bi bi-clock me-1"></i>' + escapeHtmlText(dur) + '</span>');
+    }
+    if (isChain) {
+        // ``retry_attempt`` counts retries — 0 means "originating dispatch
+        // only", 1 means "original + 1 retry", etc. Total runs is N+1.
+        const ra = cfg.retry_attempt || 0;
+        const rmax = cfg.retry_max_attempts || 5;
+        const totalRuns = ra + 1;
+        const runsLabel = ra
+            ? totalRuns + ' run' + (totalRuns === 1 ? '' : 's')
+                + ' · 1 original + ' + ra + ' retr' + (ra === 1 ? 'y' : 'ies')
+            : '1 run · original only';
+        chips.push('<span class="badge bg-light text-dark border">'
+            + '<i class="bi bi-arrow-clockwise me-1"></i>' + escapeHtmlText(runsLabel)
+            + ' <span class="text-muted">/ ' + (rmax + 1) + ' max</span></span>');
+    }
+
+    headerEl.innerHTML =
+        '<div class="d-flex align-items-baseline flex-wrap gap-2">'
+        +   '<h5 class="modal-title mb-0">'
+        +     '<i class="bi bi-file-text me-2"></i>' + escapeHtmlText(title)
+        +   '</h5>'
+        +   statusBadge
+        + '</div>'
+        + (chips.length
+            ? '<div class="d-flex flex-wrap gap-2 small mt-1">' + chips.join('') + '</div>'
+            : '');
+}
+
 function showLogsModal(jobId) {
     const targetId = jobId || _lastNotifiedJobId;
     if (!targetId) return;
@@ -61,6 +182,11 @@ function showLogsModal(jobId) {
 
     // Phase H8: render the per-publisher header for this job.
     const _job = jobs.find(j => j.id === targetId);
+    // Operator header — title (library / retry basename), status badge,
+    // chips for source / server / duration / run count. Replaces the
+    // generic "Job Details" string with the entity name so an operator
+    // can identify the job at a glance.
+    _renderModalHeader(_job);
     const _hdr = document.getElementById('logsModalPublishers');
     if (_hdr) _hdr.innerHTML = _job ? _renderPublishersBlock(_job) : '';
 
@@ -460,42 +586,54 @@ const _ATTEMPT_STATUS_CLASS = {
 };
 
 // Build one <button> pill for the Attempts row. Handles three shapes:
-//   1. Regular per-attempt firing — label "Attempt N" with status colour.
-//   2. Originating dispatch (a.is_originating === true) — label "Original"
-//      with a distinct style (bordered + icon) so the user reads it as the
-//      first run, not just another retry.
+//   1. Originating dispatch (a.is_originating === true) — label is the
+//      run ordinal ``1`` prefixed with a ``bi-play-fill`` icon so it shares
+//      the same ordinal scheme as the retries below it. Tooltip spells out
+//      "Run 1 (original dispatch)".
+//   2. Retry firing — label is the run ordinal N prefixed with a
+//      ``bi-arrow-clockwise`` icon (run 2 = first retry, run 3 = second
+//      retry, etc.). Tooltip: "Run N (retry #N-1)".
 //   3. Deleted-original sentinel (a.id === null AND a.is_originating)
-//      — disabled pill labelled "Original (deleted)" with greyed-out styling.
+//      — disabled pill labelled "Run 1 (deleted)" with greyed-out styling.
+//
+// The previous nomenclature ("Original" vs "Attempt 1") forced operators
+// to mentally translate — "Attempt 1" actually meant *first retry*, not
+// the first run. Run-based ordinals eliminate that mismatch: every pill
+// carries the same N-of-M counter and the operator reads the chain as a
+// sequence.
 //
 // Each pill carries its status colour via Bootstrap btn-outline-* classes —
 // the user sees green/red/amber at a glance and can spot the failure point
 // without opening every attempt. Tooltip provides the full label
-// (status + duration + timestamp) on hover.
+// (run ordinal + status + duration) on hover.
 function _renderAttemptOption(a, max) {
-    const glyph = _ATTEMPT_STATUS_GLYPH[a.status] || '?';
     const clsBase = _ATTEMPT_STATUS_CLASS[a.status] || 'btn-outline-secondary';
     const dur = _formatAttemptDuration(a.duration_sec);
     const durSuffix = dur ? ' · ' + dur : '';
+    // Run ordinal: original = run 1, retry #1 = run 2, ... For the
+    // originating dispatch ``retry_attempt`` is 0; numbered retries
+    // are 1-based already.
+    const runOrdinal = a.is_originating ? 1 : (a.retry_attempt + 1);
+    const maxRuns = max + 1;
     if (a.is_originating && !a.id) {
         // Sentinel — disabled pill, no value, can't be selected.
         return '<button type="button" class="btn btn-sm btn-outline-secondary disabled" disabled'
-            + ' title="Original dispatch is no longer available (likely cleaned by retention policy)">'
-            + '<i class="bi bi-slash-circle me-1"></i>Original (deleted)</button>';
+            + ' title="Run 1 (original dispatch) is no longer available — likely cleaned by retention policy">'
+            + '<i class="bi bi-slash-circle me-1"></i>Run 1 (deleted)</button>';
     }
     let label;
     let tooltip;
     if (a.is_originating) {
-        // The originating dispatch — distinct icon (play-fill = "first
-        // run") + clear "Original" label so it reads differently from
-        // the numbered retry pills next to it.
-        label = '<i class="bi bi-play-fill me-1"></i>Original';
-        tooltip = 'Original dispatch — ' + a.status + durSuffix;
+        label = '<i class="bi bi-play-fill me-1"></i>1';
+        tooltip = 'Run 1 (original dispatch) · ' + a.status + durSuffix;
     } else {
-        // Compact attempt pill: "1", "2", "3" with status glyph.
-        // Full "Attempt N of M — status · duration" lives in the tooltip
-        // so hover reveals it without bloating the pill itself.
-        label = glyph + ' ' + a.retry_attempt;
-        tooltip = 'Attempt ' + a.retry_attempt + ' of ' + max + ' — ' + a.status + durSuffix;
+        // ``bi-arrow-clockwise`` glyph tells the operator this is a retry
+        // firing, not the original. The ordinal is the run number
+        // (1-based across the chain), so a retry pill rendered as
+        // ``↻ 2`` reads as "run 2, which is retry #1".
+        label = '<i class="bi bi-arrow-clockwise me-1"></i>' + runOrdinal;
+        tooltip = 'Run ' + runOrdinal + ' of ' + maxRuns
+            + ' (retry #' + a.retry_attempt + ') · ' + a.status + durSuffix;
     }
     return '<button type="button" class="btn btn-sm ' + clsBase + ' attempts-pill"'
         + ' data-attempt-id="' + escapeHtml(a.id) + '"'
@@ -554,8 +692,13 @@ function _renderChainStateChip(chainId) {
     // so users can drill into the explanation without leaving the modal.
     // The delegated click handler in app.js routes ``.info-icon`` clicks
     // to the global info modal regardless of where they appear.
+    // Plex vs Jellyfin variant picked via ``_pickRetryInfoTpl`` so the
+    // copy matches the chain's actual server type.
+    const _tplId = (typeof _pickRetryInfoTpl === 'function')
+        ? _pickRetryInfoTpl(job)
+        : 'infoRetryChainJellyfinTpl';
     const _infoIcon = ' <button type="button" class="info-icon info-icon-more btn btn-link p-0 ms-1 align-baseline"'
-        + ' data-explain-template="infoRetryChainTpl"'
+        + ' data-explain-template="' + _tplId + '"'
         + ' data-explain-title="Why this file is auto-retrying"'
         + ' title="What is this? — click for details"'
         + ' aria-label="About retry chain"'
@@ -904,7 +1047,8 @@ function renderFileResultsTable(files) {
         var fileName = f.file || '';
         var shortName = fileName.split('/').pop() || fileName;
         var reason = escapeHtml(f.reason || '');
-        var worker = escapeHtml(f.worker || '');
+        var workerRaw = f.worker || '';
+        var workerBadge = _compactWorkerBadge(workerRaw);
         // D9 \u2014 per-server pills tell the user which server each file
         // landed on. For single-server installs it's one pill; for
         // multi-server fan-out it's one per target.
@@ -953,10 +1097,30 @@ function renderFileResultsTable(files) {
             + '<td><span class="badge ' + meta.badge + '">' + meta.label + '</span></td>'
             + '<td>' + serversHtml + '</td>'
             + '<td><small class="text-muted" title="' + reason + '">' + reason + '</small></td>'
-            + '<td><small class="text-muted">' + worker + '</small></td>'
+            + '<td>' + workerBadge + '</td>'
             + '</tr>';
     }
     tbody.innerHTML = html;
+}
+
+// Compact two-character worker badge for the Files table — "G0" / "C3".
+// The full "GPU Worker 1 (NVIDIA TITAN RTX)" string was eating ~10% of
+// the table's width and crowded the filename column on Sonarr/Radarr
+// release-group basenames. Hover-tooltip preserves the full label so the
+// info isn't lost; click target stays the table row.
+function _compactWorkerBadge(worker) {
+    if (!worker) return '';
+    var match = String(worker).match(/^(GPU|CPU)\s+Worker\s+(\d+)/i);
+    if (!match) {
+        // Unknown format — fall back to the original muted-text rendering
+        // so future worker classes don't silently vanish from the column.
+        return '<small class="text-muted">' + escapeHtml(worker) + '</small>';
+    }
+    var prefix = match[1].toUpperCase() === 'GPU' ? 'G' : 'C';
+    var idx = match[2];
+    return '<span class="badge bg-light text-dark border font-monospace"'
+        + ' title="' + escapeHtmlAttr(worker) + '" style="font-size: 0.7rem;">'
+        + prefix + idx + '</span>';
 }
 
 // D9 \u2014 render the per-server attribution pills for a file row. Each

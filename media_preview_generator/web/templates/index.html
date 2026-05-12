@@ -445,9 +445,17 @@
 <div class="modal fade" id="logsModal" tabindex="-1">
     <div class="modal-dialog modal-xl modal-dialog-scrollable">
         <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title"><i class="bi bi-file-text me-2"></i>Job Details</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            <div class="modal-header pb-2">
+                <!-- Header is a three-line block, not a generic "Job Details" string:
+                       Line 1 — entity title (library_name / retry_basename) + status badge
+                       Line 2 — quick-glance metadata chips (source · server · duration · runs)
+                       Line 3 — Job ID (muted, kept for copy/paste + deep-link sharing)
+                     Renderer: ``_renderModalHeader(job)`` in job_modal.js. Falls back to
+                     the generic "Job Details" string when the job is unknown. -->
+                <div class="modal-title flex-grow-1" id="logsModalHeader">
+                    <h5 class="mb-0"><i class="bi bi-file-text me-2"></i>Job Details</h5>
+                </div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
                 <div class="d-flex justify-content-between align-items-center mb-2">
@@ -561,11 +569,18 @@
                             <table class="table table-sm table-hover mb-0" id="fileResultsTable">
                                 <thead class="sticky-top">
                                     <tr>
-                                        <th style="width: 42%">File</th>
-                                        <th style="width: 13%">Outcome</th>
-                                        <th style="width: 13%">Servers</th>
-                                        <th style="width: 22%">Details</th>
-                                        <th style="width: 10%">Worker</th>
+                                        <!-- Column widths rebalanced for long file basenames
+                                             (Sonarr/Radarr release-group suffixes routinely
+                                             push paths past 80 chars). File grows to 50%;
+                                             Worker shrinks to 6% and renders as a compact
+                                             monospace badge (``G0`` / ``C3``) — still useful
+                                             for diagnosing which GPU/CPU index handled a
+                                             file, but no longer eating prime real-estate. -->
+                                        <th style="width: 50%">File</th>
+                                        <th style="width: 12%">Outcome</th>
+                                        <th style="width: 14%">Servers</th>
+                                        <th style="width: 18%">Details</th>
+                                        <th style="width: 6%">Worker</th>
                                     </tr>
                                 </thead>
                                 <tbody id="fileResultsBody">
