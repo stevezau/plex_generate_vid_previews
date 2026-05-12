@@ -518,7 +518,38 @@ Each file is read line-by-line and checked against:
 
 ## conftest.py audit
 
-_(filled in during Phase 1.5)_
+Three conftest files, read line-by-line:
+
+### tests/conftest.py (959 lines)
+
+- **Module-level import-time scheduler swap** (lines 29-40) — replaces `_sched_mod.SQLAlchemyJobStore` with an in-memory drop-in BEFORE any test runs. Documented WHY: every Flask-app-suite test creates a per-test SQLite DB; MemoryJobStore is a drop-in because no test exercises cross-restart jobstore persistence. Borderline production-tree edit, but well-isolated to the test surface and explicit.
+- **Autouse frame-cache reset** (line 43-61) — `_reset_frame_cache_between_tests` calls `reset_frame_cache()` before AND after every test. Handles the singleton's `base_dir` lock that fails when consecutive tests construct it with different paths.
+- **Four autouse neutralisers** (lines 357-507):
+  1. `_neutralize_prewarm_caches` — replaces `_prewarm_caches` with a no-op. Documented: the real function spawns 2 daemon threads per `create_app()` call.
+  2. `_neutralize_setup_logging` — same shape; documented: ~800 handler add/removes accumulate at teardown and race pytest's stdout capture.
+  3. `_neutralize_real_world_calls` — stubs `plex_server()` + `detect_all_gpus()` at source. Prevents accidental connection to a developer's real Plex (observed: 9949 media files retrieved in a 34s test run).
+  4. `_sync_start_job_async` — replaces `threading.Thread` (only inside `job_runner` module) with a synchronous shim. Prevents daemon-thread leaks at teardown. Opt-out markers (`real_prewarm`, `real_logging`, `real_plex_server`, `real_gpu_detection`, `real_job_async`) provided for tests that need the real behaviour.
+- **Shared helpers `_pi` + `_pi_list` + `_pi_list_or_passthrough` + `_ms`** (lines 520-599) — formerly duplicated across 6 test modules, now centralised. The `_pi` helper has a D31 guardrail (raises ValueError when given a URL-form Plex key) so new tests can't accidentally pass the legacy URL form that caused the D31 production regression.
+- **VCR/pytest-recording fixtures** (lines 615-959) — aggressive PII scrubbing on request URIs (LAN IPs, Plex direct cert hostnames), response bodies (machineIdentifier, friendlyName, ServerId, ServerName), headers (X-Plex-Token, X-Emby-Token, Authorization, Cookie, Set-Cookie). Synthetic-test-stack carve-out (`/em-media/`, `/jf-media/`, `/media/Movies/Test ` prefixes) preserves enough structure for HIT cassettes to function while still scrubbing fingerprintable attributes. Defensive fallback strips Directory/Video/Episode/Movie elements wholesale on non-synthetic responses (defends against "developer accidentally pointed PLEX_URL at their live server" → cassette commit).
+
+**Findings:** CLEAN — exemplary conftest design. Every autouse fixture documents its WHY + motivation incident. Opt-out markers cover the legitimate "I want the real thing" cases. Helpers have a guardrail at the level where bugs would otherwise enter the suite.
+
+### tests/integration/conftest.py (119 lines)
+
+- Already reviewed in Phase 1C. Session-scoped `servers_env` skip-if-missing pattern, per-vendor credential fixtures (`emby_credentials` / `plex_credentials` / `jellyfin_credentials`), `media_root` fixture with skip-if-missing, autouse `reset_frame_cache` per test. Clean.
+
+### tests/e2e/conftest.py (449 lines)
+
+- **Two session-scoped Flask subprocess fixtures** (`app_url`, `app_url_wizard`) — long-lived subprocesses per xdist worker. The wizard fixture uses `worker_id` for per-worker isolation under `-n auto`. Documented: function-scoped subprocesses caused 4min of overhead + ~120s of subprocess churn that destabilised `-n auto` on beefy local boxes.
+- **`_reset_wizard_state` autouse fixture** — POSTs to the test-only `/api/__test/reset` endpoint (registered when `MPG_TEST_RESET=1`) before each wizard test. Documented timeout (10s) and best-effort error handling (auth failures fall through silently rather than crashing tests).
+- **Session cookie capture** via real `/login` form POST → cookie_jar → injected into Playwright contexts. Documented why session-scoped (Flask-Limiter rate-limits `/login` after ~5 logins; the signed cookie remains valid across resets because the secret key doesn't change).
+- **`backend_real_app`** (function-scoped) — Flask subprocess with NO `page.route()` defaults; real backend wiring (scheduler, JobManager, webhook timers, real APScheduler). Fake FFmpeg/ffprobe shim via PATH override so the real subprocess.run calls succeed instantly. Documented why function-scoped (in-flight Timer threads + APScheduler state aren't fully reset by the test endpoint).
+- **`accept_app_confirm` helper** — clicks the in-app `appConfirm` Bootstrap modal's OK button. Documented: the app uses a custom modal, NOT `window.confirm()`, so `page.on('dialog', ...)` is a no-op.
+- **Boot timeout 60s** (line 96) — documented: under high parallelism (xdist with many workers) the OS scheduler can't give every concurrent Flask boot enough CPU to finish in 20s. The comment explicitly says "60s is enough headroom for 32 workers concurrently on a beefy local box (verified)."
+
+**Findings:** CLEAN — every fixture's lifespan and scope decision is documented with the motivating incident. The `60s timeout` is a Phase 1A finding (the canary fix proved that Playwright IPC was the actual bottleneck, not Flask boot) — could be tightened back to 20s now that the canary uses `requests` instead of `page.request`. **MED — Phase 2 candidate**: re-evaluate the 60s boot timeout post-canary-fix.
+
+**Phase 1.5 summary (3 files, 1527 lines):** 0 HIGH, 1 MED (60s e2e boot timeout — re-evaluate post-canary). The conftest files are reference examples for production-aware test scaffolding. The four autouse neutralisers in tests/conftest.py (`_neutralize_prewarm_caches`, `_neutralize_setup_logging`, `_neutralize_real_world_calls`, `_sync_start_job_async`) document the exact "production code does scary things by default — neutralise with opt-out markers" pattern that any new test scaffolding in this codebase should follow.
 
 ---
 
