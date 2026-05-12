@@ -490,19 +490,14 @@
                         <span id="attemptsHint" class="badge attempts-state-chip d-none"></span>
                     </div>
                 </div>
-                <!-- Tabs — Overview lands first by default so a multi-run
-                     chain shows summary + timeline before forcing the user
-                     into the raw log stream. ``showLogsModal`` honours the
-                     last-selected tab from localStorage so power users who
-                     prefer landing on Logs can do so by switching once. -->
+                <!-- Tabs — Logs is the default landing. The simplification
+                     pass dropped a separate "Overview" tab whose four
+                     cards duplicated content already visible above the
+                     tabs (header / Servers strip / Attempts pills /
+                     chain-state chip). -->
                 <ul class="nav nav-tabs mb-3" id="jobDetailTabs" role="tablist">
                     <li class="nav-item" role="presentation">
-                        <button class="nav-link active" id="overviewTab" data-bs-toggle="tab" data-bs-target="#overviewTabPane" type="button" role="tab" onclick="onOverviewTabActivated()">
-                            <i class="bi bi-speedometer2 me-1"></i>Overview
-                        </button>
-                    </li>
-                    <li class="nav-item" role="presentation">
-                        <button class="nav-link" id="logsTab" data-bs-toggle="tab" data-bs-target="#logsTabPane" type="button" role="tab" onclick="onLogsTabActivated()">
+                        <button class="nav-link active" id="logsTab" data-bs-toggle="tab" data-bs-target="#logsTabPane" type="button" role="tab" onclick="onLogsTabActivated()">
                             <i class="bi bi-terminal me-1"></i>Logs
                         </button>
                     </li>
@@ -513,33 +508,9 @@
                     </li>
                 </ul>
                 <div class="tab-content" id="jobDetailTabContent">
-                    <!-- Overview Tab Pane -->
-                    <div class="tab-pane fade show active" id="overviewTabPane" role="tabpanel">
-                        <div id="overviewContent">
-                            <div class="text-muted small">Loading overview&hellip;</div>
-                        </div>
-                    </div>
                     <!-- Logs Tab Pane -->
-                    <div class="tab-pane fade" id="logsTabPane" role="tabpanel">
-                        <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
-                            <!-- Log level filter (Tier 3.14) — segmented
-                                 control hides lines below the chosen
-                                 severity via CSS class toggling. The
-                                 colorizeLogLine classifier already adds
-                                 log-level-{debug,info,warning,error,critical}
-                                 to each line, so the filter is just a
-                                 CSS variable swap. Persisted in
-                                 localStorage as ``jobModalLogLevel``. -->
-                            <div class="btn-group btn-group-sm" role="group" aria-label="Log level filter">
-                                <input type="radio" class="btn-check" name="logLevelFilter" id="logLevelAll" value="all" checked onchange="onLogLevelChange(this.value)">
-                                <label class="btn btn-outline-secondary" for="logLevelAll" title="Show all log lines">All</label>
-                                <input type="radio" class="btn-check" name="logLevelFilter" id="logLevelInfo" value="info" onchange="onLogLevelChange(this.value)">
-                                <label class="btn btn-outline-secondary" for="logLevelInfo" title="Hide DEBUG lines">INFO+</label>
-                                <input type="radio" class="btn-check" name="logLevelFilter" id="logLevelWarn" value="warn" onchange="onLogLevelChange(this.value)">
-                                <label class="btn btn-outline-secondary" for="logLevelWarn" title="Show only WARNING / ERROR / CRITICAL">WARN+</label>
-                                <input type="radio" class="btn-check" name="logLevelFilter" id="logLevelErr" value="error" onchange="onLogLevelChange(this.value)">
-                                <label class="btn btn-outline-secondary" for="logLevelErr" title="Show only ERROR / CRITICAL">ERROR+</label>
-                            </div>
+                    <div class="tab-pane fade show active" id="logsTabPane" role="tabpanel">
+                        <div class="d-flex justify-content-end align-items-center mb-2 flex-wrap gap-2">
                             <div class="d-flex align-items-center gap-3 flex-wrap">
                                 <div class="input-group input-group-sm" style="width: 250px;">
                                     <span class="input-group-text"><i class="bi bi-search"></i></span>

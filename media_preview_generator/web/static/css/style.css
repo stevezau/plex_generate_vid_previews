@@ -1338,98 +1338,9 @@ html[data-bs-theme="light"] .log-level-critical { color: #b02a37; }
 }
 
 /* ──────────────────────────────────────────────────────────────────────
- * Overview tab — section cards + attempts timeline
- * (Tier 2 of the job-modal UX rebuild)
- * ────────────────────────────────────────────────────────────────────── */
-
-/* Subtle shadow + tighter card-body padding so the Overview's
-   stacked sections read as a dashboard, not a wall of headings. */
-.job-modal-section {
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
-}
-html[data-bs-theme="dark"] .job-modal-section {
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
-}
-
-/* Horizontal timeline of retry attempts. Each lane is one row; the
-   bar's left/width is computed by JS as a percentage of the chain's
-   total duration. Click swaps the active attempt (synced with the
-   pill row in the attempts bar above the tabs). */
-.attempts-timeline {
-    min-height: 4rem;
-}
-.attempts-timeline-axis {
-    /* Hairline border under the axis labels so the timeline reads as
-       a chart, not a stack of bars. */
-    border-bottom: 1px dashed var(--bs-border-color);
-    padding-bottom: 0.25rem;
-}
-.attempts-timeline-lane {
-    /* Stacked bars sit inside this. Lane height stays consistent so
-       the timeline scans top-to-bottom evenly even with very-short
-       runs (which would otherwise collapse the row). */
-    min-height: 1.75rem;
-}
-.attempts-timeline-track {
-    /* Inner bar's left/width are percentages of this track. */
-    position: relative;
-    height: 1.5rem;
-    background: var(--bs-tertiary-bg);
-    border-radius: 0.25rem;
-    overflow: hidden;
-}
-.attempts-timeline-bar {
-    position: absolute;
-    top: 0;
-    height: 100%;
-    border: none;
-    border-radius: 0.25rem;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: white;
-    font-size: 0.75rem;
-    font-weight: 500;
-    padding: 0 0.35rem;
-    transition: filter 0.1s ease-out, transform 0.08s ease-out;
-    /* Minimum visual width — extremely short runs (e.g. 0.0s cache
-       hits) would render as a 0-px sliver otherwise. */
-    min-width: 1.6rem;
-}
-.attempts-timeline-bar:hover:not(:disabled) {
-    filter: brightness(1.1);
-    transform: translateY(-1px);
-    z-index: 1;
-}
-.attempts-timeline-bar.active {
-    outline: 2px solid rgba(var(--bs-primary-rgb, 13, 110, 253), 0.65);
-    outline-offset: 1px;
-    z-index: 2;
-}
-/* Status-coloured fill — mirrors the pill row's btn-outline-* mapping
-   in _ATTEMPT_STATUS_CLASS but here we want SOLID colours so the bar
-   reads as a duration block, not a wireframe pill. */
-/* Log level filter — hides lines below the chosen severity via
-   data-attr on the logs container. Five severity levels mapped to
-   numeric weights; the CSS rules below cascade to hide anything
-   strictly less severe than the selected threshold. */
-#logsContent[data-log-level="info"]    .log-level-debug    { display: none; }
-#logsContent[data-log-level="warn"]    .log-level-debug,
-#logsContent[data-log-level="warn"]    .log-level-info     { display: none; }
-#logsContent[data-log-level="error"]   .log-level-debug,
-#logsContent[data-log-level="error"]   .log-level-info,
-#logsContent[data-log-level="error"]   .log-level-warning  { display: none; }
-
-.attempts-timeline-bar-success    { background-color: var(--bs-success); }
-.attempts-timeline-bar-danger     { background-color: var(--bs-danger); }
-.attempts-timeline-bar-secondary  { background-color: var(--bs-secondary); }
-.attempts-timeline-bar-primary    { background-color: var(--bs-primary); }
-.attempts-timeline-bar-warning    { background-color: var(--bs-warning); color: #212529; }
-
-/* ──────────────────────────────────────────────────────────────────────
- * Mobile-responsive job-modal layout
- * (Tier 2.10 of the modal rebuild — phone-friendly at < 768 px)
+ * Mobile-responsive job-modal layout (< 768 px)
+ * Survivor of the Tier 2.10 work after the simplification pass dropped
+ * the Overview tab + timeline + log-level filter blocks above.
  * ────────────────────────────────────────────────────────────────────── */
 @media (max-width: 767.98px) {
     /* The 5-column Files table doesn't fit a phone viewport without
@@ -1445,10 +1356,10 @@ html[data-bs-theme="dark"] .job-modal-section {
     #fileResultsTable + div {
         max-height: 60vh !important;
     }
-    /* Modal footer with 7+ action buttons (Retry now / Cancel chain /
-       Open BIF / Copy / Download / Refresh / Close) needs to stack.
-       The footer is flex-wrap already; reduce padding so stacked
-       buttons fit without pushing content off-screen. */
+    /* Modal footer with the operator-action buttons (Retry now / Cancel
+       chain / Open BIF) + Copy / Download / Refresh / Close needs to
+       stack. The footer is flex-wrap already; reduce padding so
+       stacked buttons fit without pushing content off-screen. */
     .modal-footer.flex-wrap > .btn,
     .modal-footer.flex-wrap > a {
         flex: 1 1 calc(50% - 0.5rem);
@@ -1456,13 +1367,6 @@ html[data-bs-theme="dark"] .job-modal-section {
     }
     .modal-footer.flex-wrap > .btn-secondary[data-bs-dismiss="modal"] {
         flex: 1 1 100%;  /* Close gets its own row at the bottom */
-    }
-    /* Attempts timeline lanes — collapse the per-lane labels onto
-       the bar itself so the timeline doesn't lose half the bar width
-       to a "Run N" label column. */
-    .attempts-timeline-label,
-    .attempts-timeline-duration {
-        display: none !important;
     }
     /* Pill row pills shrink slightly so 5+ pills still fit one row. */
     .attempts-pill {

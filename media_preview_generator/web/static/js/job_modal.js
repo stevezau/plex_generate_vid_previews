@@ -262,702 +262,15 @@ async function onOperatorRetryNow() {
 // existing endpoint already handles chain semantics (cancel timer +
 // mark child attempts cancelled). Browser ``confirm()`` prevents a
 // stray click from killing a chain that's making progress.
-// ----------------------------------------------------------------------
-// Overview tab — Tier 2 of the modal rebuild.
-// ----------------------------------------------------------------------
-//
-// The Overview pane is the default landing for the modal so a multi-run
-// chain reads as a coherent dashboard (summary + publishers + timeline)
-// instead of dropping the operator into the raw log stream. Logs and
-// Files remain accessible as drill-downs.
-//
-// Composition (top to bottom):
-//   * Summary card    — large status icon + headline metrics (duration,
-//                       runs, frames if generated)
-//   * Publisher matrix— per-server rows with vendor logo, status pills,
-//                       last-action timestamp
-//   * Attempts timeline — horizontal lane per run, status-coloured bar
-//                       from started_at to completed_at, click to switch
-//   * Recent log tail — last 10 lines of the current attempt's log with
-//                       "Open full logs" jump button
-//
-// Renderer is invoked when the Overview tab is activated AND on the
-// 5 s poll loop for active chains.
+// Overview tab + timeline + retry-reason banner + recent-log preview +
+// log-level filter + SSE streaming + keyboard shortcuts were stripped in
+// the simplification pass. They duplicated content already visible above
+// the tabs (header / Servers strip / Attempts pills / chain-state chip)
+// and added three concurrent state-update channels (poll + SSE + ticks)
+// for a homelab tool. The header + above-tabs strip + Logs / Files tabs
+// are sufficient. ``RetryScheduler.fire_now`` and its endpoint stay
+// because they power the still-useful "Retry now" footer button.
 
-const _OVERVIEW_LAST_TAB_KEY = 'jobModalActiveTab';
-let _overviewTickInterval = null;
-
-function onOverviewTabActivated() {
-    try { localStorage.setItem(_OVERVIEW_LAST_TAB_KEY, 'overview'); } catch (e) { /* private mode */ }
-    _renderOverview();
-    _replaceModalState(_logsModalJobId, _logsModalAttemptId, 'overview');
-}
-
-function onLogsTabActivated() {
-    try { localStorage.setItem(_OVERVIEW_LAST_TAB_KEY, 'logs'); } catch (e) { /* private mode */ }
-    _replaceModalState(_logsModalJobId, _logsModalAttemptId, 'logs');
-}
-
-// Log level filter (Tier 3.14) — drives a data-attr on #logsContent
-// that the CSS in style.css uses to hide lines below the chosen
-// severity. Persisted in localStorage so an operator's "I only care
-// about WARN+" preference survives modal reopen.
-const _LOG_LEVEL_KEY = 'jobModalLogLevel';
-function onLogLevelChange(value) {
-    const el = document.getElementById('logsContent');
-    if (!el) return;
-    if (value === 'all') {
-        el.removeAttribute('data-log-level');
-    } else {
-        el.setAttribute('data-log-level', value);
-    }
-    try { localStorage.setItem(_LOG_LEVEL_KEY, value); } catch (e) { /* private mode */ }
-}
-function _restoreLogLevel() {
-    let saved = 'all';
-    try { saved = localStorage.getItem(_LOG_LEVEL_KEY) || 'all'; } catch (e) { /* private mode */ }
-    const radioId = saved === 'info' ? 'logLevelInfo'
-        : saved === 'warn' ? 'logLevelWarn'
-        : saved === 'error' ? 'logLevelErr'
-        : 'logLevelAll';
-    const radio = document.getElementById(radioId);
-    if (radio) {
-        radio.checked = true;
-        onLogLevelChange(saved);
-    }
-}
-
-function _restoreLastTab() {
-    let last = null;
-    try { last = localStorage.getItem(_OVERVIEW_LAST_TAB_KEY); } catch (e) { /* private mode */ }
-    const tabId = last === 'logs' ? 'logsTab' : (last === 'files' ? 'filesTab' : 'overviewTab');
-    const btn = document.getElementById(tabId);
-    if (btn) {
-        const tab = new bootstrap.Tab(btn);
-        tab.show();
-    }
-}
-
-// Render the full Overview pane for the modal's current job.
-// Safe to call repeatedly — innerHTML replacement only.
-function _renderOverview() {
-    const root = document.getElementById('overviewContent');
-    if (!root) return;
-    const job = jobs.find(j => j.id === _logsModalJobId);
-    if (!job) {
-        root.innerHTML = '<div class="alert alert-warning small mb-0">Job not found in current snapshot — refresh the dashboard.</div>';
-        return;
-    }
-    root.innerHTML =
-        _renderOverviewSummaryCard(job)
-        + _renderOverviewReasonBanner(job)
-        + _renderOverviewPublishersCard(job)
-        + _renderOverviewTimelineCard(job)
-        + _renderOverviewLogPreviewCard(job);
-    // Wire up timeline-bar clicks to attempt switching (delegated)
-    _wireOverviewTimelineClicks();
-    // Start the per-second tick for live duration / countdown updates
-    if (_overviewTickInterval) clearInterval(_overviewTickInterval);
-    if (job.status === 'running' || job.status === 'pending') {
-        _overviewTickInterval = setInterval(_tickOverviewDurations, 1000);
-    }
-}
-
-function _tickOverviewDurations() {
-    // Update any data-elapsed-since spans inside the Overview pane.
-    // Cheaper than re-rendering the whole tree every second.
-    document.querySelectorAll('#overviewContent [data-elapsed-since]').forEach(el => {
-        const startStr = el.getAttribute('data-elapsed-since');
-        if (typeof formatElapsed === 'function' && startStr) {
-            el.textContent = formatElapsed(startStr);
-        }
-    });
-}
-
-function _renderOverviewSummaryCard(job) {
-    const cfg = job.config || {};
-    const meta = (typeof _statusMeta === 'function')
-        ? _statusMeta(job.status)
-        : { label: job.status || '?', cls: 'bg-secondary', tip: '' };
-    const isChain = !!cfg.is_retry_chain;
-    const totalRuns = isChain ? (cfg.retry_attempt || 0) + 1 : 1;
-    const maxRuns = isChain ? ((cfg.retry_max_attempts || 5) + 1) : 1;
-    const outcome = (job.progress && job.progress.outcome) || {};
-    const generated = outcome.generated || 0;
-    const skipped = (outcome.skipped_bif_exists || 0) + (outcome.skipped_output_exists || 0);
-    const failed = outcome.failed || 0;
-
-    const headline = '<div class="d-flex align-items-center gap-3 mb-2">'
-        + '<span class="badge ' + meta.cls + ' fs-6 px-3 py-2">'
-        +   '<i class="bi bi-circle-fill me-1" style="font-size: 0.6rem; vertical-align: middle;"></i>'
-        +   escapeHtmlText(meta.label)
-        + '</span>'
-        + '<div class="flex-grow-1">'
-        +   '<div class="h6 mb-0">' + escapeHtmlText(cfg.retry_basename || job.library_name || '(Unknown job)') + '</div>'
-        +   (meta.tip ? '<small class="text-muted">' + escapeHtmlText(meta.tip) + '</small>' : '')
-        + '</div>'
-        + '</div>';
-
-    const metrics = [];
-    const dur = _jobDurationLabel(job);
-    if (dur) {
-        const live = (job.status === 'running' || job.status === 'pending') && job.started_at;
-        metrics.push(_metricChip('clock', 'Duration',
-            live
-                ? '<span data-elapsed-since="' + escapeHtmlAttr(job.started_at) + '">' + escapeHtmlText(dur) + '</span>'
-                : escapeHtmlText(dur)));
-    }
-    if (isChain) {
-        metrics.push(_metricChip('arrow-clockwise', 'Runs', totalRuns + ' / ' + maxRuns + ' max'));
-    }
-    if (generated > 0) metrics.push(_metricChip('check-circle', 'Generated', String(generated)));
-    if (skipped > 0)   metrics.push(_metricChip('skip-forward', 'Skipped (already on disk)', String(skipped)));
-    if (failed > 0)    metrics.push(_metricChip('x-circle', 'Failed', String(failed)));
-    if (cfg.source)    metrics.push(_metricChip(_sourceIcon(cfg.source), 'Source', escapeHtmlText(cfg.source)));
-
-    return '<div class="card mb-3 job-modal-section">'
-        + '<div class="card-body p-3">'
-        +   headline
-        +   (metrics.length
-                ? '<div class="d-flex flex-wrap gap-2 small">' + metrics.join('') + '</div>'
-                : '')
-        + '</div>'
-        + '</div>';
-}
-
-function _metricChip(icon, label, value) {
-    return '<span class="badge bg-light text-dark border d-inline-flex align-items-center gap-1">'
-        + '<i class="bi bi-' + icon + '"></i>'
-        + '<span class="text-muted">' + escapeHtmlText(label) + ':</span>'
-        + ' ' + value
-        + '</span>';
-}
-
-// Inline retry-reason banner — surfaces *why* the chain is retrying
-// without forcing the operator to scroll the log. Derived from the
-// chain head's publishers + status + retry_eta (no extra API call).
-// Renders nothing for non-chain jobs or chains in terminal state.
-function _renderOverviewReasonBanner(job) {
-    const cfg = job.config || {};
-    const isChain = !!cfg.is_retry_chain;
-    if (!isChain) return '';
-    const status = job.status || '';
-    if (status !== 'pending' && status !== 'running') return '';
-    const publishers = Array.isArray(job.publishers) ? job.publishers : [];
-    // Identify which server(s) are causing the chain to retry. The
-    // most common shape: one or more servers with a
-    // ``published_pending_registration`` count > 0 (Jellyfin / Plex
-    // mid-scan), or ``skipped_not_indexed`` / ``skipped_not_in_library``
-    // (Plex hasn't analysed the file yet).
-    const stuck = [];
-    for (const p of publishers) {
-        const counts = (p && p.counts) || {};
-        const reasons = [];
-        if (counts.published_pending_registration > 0) reasons.push('trickplay registration pending');
-        if (counts.skipped_not_indexed > 0) reasons.push('source not yet scanned');
-        if (counts.skipped_not_in_library > 0) reasons.push('source not in library');
-        if (reasons.length) {
-            stuck.push({
-                name: p.server_name || (p.server_type || '').toUpperCase() || 'Server',
-                type: (p.server_type || '').toLowerCase(),
-                reasons,
-            });
-        }
-    }
-    if (!stuck.length) return '';
-    const items = stuck.map(s =>
-        '<li><strong>' + escapeHtmlText(s.name) + '</strong>: ' + escapeHtmlText(s.reasons.join(' / ')) + '</li>'
-    ).join('');
-    const retryEta = (job.progress && job.progress.retry_eta) || null;
-    const ra = cfg.retry_attempt || 0;
-    const rmax = cfg.retry_max_attempts || 5;
-    // ``retry_attempt = ra`` is the 1-indexed identity of the
-    // CURRENTLY-QUEUED retry firing (per ``_upsert_retry_chain_job``
-    // in processing/retry_queue.py — schedule() sets retry_attempt to
-    // the upcoming attempt's number, not the count of completed
-    // retries). Run ordinal = ra + 1 because Run 1 is the original
-    // (retry_attempt=0); retry #1 is Run 2. Max runs = rmax + 1 for
-    // the same reason (original is not a retry).
-    //
-    // Earlier draft used ``ra + 2`` which is off-by-one (caught by
-    // architecture review HIGH finding) — would have shipped "Run 3
-    // is queued" while attempt #1 was scheduled.
-    const headline = retryEta
-        ? 'Run ' + (ra + 1) + ' of ' + (rmax + 1) + ' is queued — once the upstream catches up, this chain will close.'
-        : 'Waiting for the upstream server to catch up.';
-    return '<div class="alert alert-warning small d-flex mb-3 job-modal-section" role="status">'
-        + '<i class="bi bi-hourglass-split me-2" style="font-size: 1.1rem;"></i>'
-        + '<div class="flex-grow-1">'
-        +   '<strong>Why this chain is still going:</strong> '
-        +   escapeHtmlText(headline)
-        +   '<ul class="mb-0 mt-1" style="padding-left: 1.25rem;">' + items + '</ul>'
-        + '</div>'
-        + '</div>';
-}
-
-function _renderOverviewPublishersCard(job) {
-    // Reuse the existing per-publisher block renderer — keeps the
-    // Overview consistent with the header strip a user sees in the
-    // logs tab. The block already labels itself "Chain totals" for
-    // chains, so we hide its own header here and supply a card header
-    // for visual hierarchy.
-    const body = (typeof _renderPublishersBlock === 'function')
-        ? _renderPublishersBlock(job)
-        : '';
-    if (!body) return '';
-    return '<div class="card mb-3 job-modal-section">'
-        + '<div class="card-header py-2 bg-body-tertiary">'
-        +   '<i class="bi bi-broadcast me-1"></i>'
-        +   '<strong>Server results</strong>'
-        + '</div>'
-        + '<div class="card-body p-3">' + body + '</div>'
-        + '</div>';
-}
-
-function _renderOverviewTimelineCard(job) {
-    const cfg = job.config || {};
-    const isChain = !!cfg.is_retry_chain;
-    // The timeline is most valuable for chains; for single-run jobs it
-    // would be one bar, which is just visual noise.
-    if (!isChain) return '';
-    return '<div class="card mb-3 job-modal-section">'
-        + '<div class="card-header py-2 bg-body-tertiary d-flex align-items-center justify-content-between">'
-        +   '<div><i class="bi bi-bar-chart-steps me-1"></i><strong>Attempts timeline</strong></div>'
-        +   '<small class="text-muted">Click a bar to switch attempts</small>'
-        + '</div>'
-        + '<div class="card-body p-3">'
-        +   '<div id="attemptsTimeline" class="attempts-timeline" role="navigation" aria-label="Retry attempts timeline">'
-        +     '<div class="text-muted small">Loading timeline&hellip;</div>'
-        +   '</div>'
-        + '</div>'
-        + '</div>';
-}
-
-function _renderOverviewLogPreviewCard(job) {
-    const last = _rawLogs.slice(-10);
-    if (!last.length) {
-        // Don't render an empty card; cleaner than a "no logs" message.
-        return '';
-    }
-    const lines = last.map(line => colorizeLogLine(line)).join('\n');
-    return '<div class="card mb-3 job-modal-section">'
-        + '<div class="card-header py-2 bg-body-tertiary d-flex align-items-center justify-content-between">'
-        +   '<div><i class="bi bi-terminal me-1"></i><strong>Recent log</strong> <small class="text-muted">(last ' + last.length + ' lines)</small></div>'
-        +   '<button type="button" class="btn btn-sm btn-link p-0" onclick="onSwitchToLogsTab()">'
-        +     'Open full logs <i class="bi bi-chevron-right"></i></button>'
-        + '</div>'
-        + '<div class="card-body p-2">'
-        +   '<pre class="log-viewer mb-0" style="max-height: 200px; overflow-y: auto; font-size: 0.8rem;">' + lines + '</pre>'
-        + '</div>'
-        + '</div>';
-}
-
-function onSwitchToLogsTab() {
-    const btn = document.getElementById('logsTab');
-    if (btn) {
-        const tab = new bootstrap.Tab(btn);
-        tab.show();
-    }
-}
-
-// Populate the timeline once attempts data has been fetched. Called by
-// the existing attempts-dropdown load path so we don't duplicate the
-// API call. The timeline shares the active-attempt selection with the
-// pill row.
-function _renderAttemptsTimeline(attempts, max_attempts) {
-    const root = document.getElementById('attemptsTimeline');
-    if (!root) return;
-    if (!attempts || !attempts.length) {
-        root.innerHTML = '<div class="text-muted small">No attempts yet.</div>';
-        return;
-    }
-    // Compute the time window: chain start to chain end (or now if active)
-    const starts = attempts.map(a => _toMs(a.created_at)).filter(t => t > 0);
-    const ends = attempts.map(a => _toMs(a.completed_at) || Date.now()).filter(t => t > 0);
-    const tMin = Math.min.apply(null, starts);
-    const tMax = Math.max.apply(null, ends);
-    const span = Math.max(1, tMax - tMin);
-    // Render lanes — one row per attempt
-    let html = '<div class="attempts-timeline-axis small text-muted mb-1 d-flex justify-content-between">'
-        + '<span>' + escapeHtmlText(_formatTimelineTimestamp(tMin)) + '</span>'
-        + '<span>' + escapeHtmlText(_formatTimelineTimestamp(tMax)) + ' (' + escapeHtmlText(_formatAttemptDuration(Math.round(span / 1000))) + ')</span>'
-        + '</div>';
-    for (let i = 0; i < attempts.length; i++) {
-        const a = attempts[i];
-        const start = _toMs(a.created_at) || tMin;
-        const end = _toMs(a.completed_at) || Date.now();
-        const leftPct = ((start - tMin) / span) * 100;
-        const widthPct = Math.max(0.5, ((end - start) / span) * 100);
-        const statusCls = _ATTEMPT_STATUS_CLASS[a.status] || 'btn-outline-secondary';
-        const fillCls = statusCls.replace('btn-outline-', 'attempts-timeline-bar-');
-        const isActive = (_logsModalAttemptId === a.id) || (_logsModalAttemptId === null && a.is_originating);
-        const dur = _formatAttemptDuration(a.duration_sec);
-        const runOrdinal = a.is_originating ? 1 : (a.retry_attempt + 1);
-        const label = (a.is_originating ? 'Run 1 (original)' : 'Run ' + runOrdinal + ' (retry #' + a.retry_attempt + ')')
-            + ' · ' + a.status + (dur ? ' · ' + dur : '');
-        const safeId = escapeHtmlAttr(a.id || '');
-        const deleted = a.is_originating && !a.id;
-        html += '<div class="attempts-timeline-lane d-flex align-items-center gap-2 mb-1">'
-            + '<span class="attempts-timeline-label text-muted small" style="width: 70px; flex-shrink: 0;">'
-            +   'Run ' + runOrdinal
-            + '</span>'
-            + '<div class="attempts-timeline-track flex-grow-1 position-relative">'
-            +   (deleted
-                ? '<div class="attempts-timeline-bar attempts-timeline-bar-secondary" style="width: 100%; opacity: 0.4;" title="Run 1 (deleted by retention)">deleted</div>'
-                : '<button type="button" class="attempts-timeline-bar ' + fillCls + (isActive ? ' active' : '') + '"'
-                    + ' style="left: ' + leftPct.toFixed(2) + '%; width: ' + widthPct.toFixed(2) + '%;"'
-                    + ' data-attempt-id="' + safeId + '"'
-                    + ' title="' + escapeHtmlAttr(label) + '"'
-                    + ' aria-label="' + escapeHtmlAttr(label) + '">'
-                    + (a.is_originating ? '<i class="bi bi-play-fill"></i>' : '<i class="bi bi-arrow-clockwise"></i>')
-                + '</button>')
-            + '</div>'
-            + '<span class="attempts-timeline-duration text-muted small font-monospace" style="width: 60px; text-align: right; flex-shrink: 0;">'
-            +   escapeHtmlText(dur || '—')
-            + '</span>'
-            + '</div>';
-    }
-    root.innerHTML = html;
-}
-
-function _toMs(isoStr) {
-    if (!isoStr) return 0;
-    const t = new Date(isoStr).getTime();
-    return Number.isFinite(t) ? t : 0;
-}
-
-function _formatTimelineTimestamp(ms) {
-    if (!ms) return '';
-    const d = new Date(ms);
-    // Hours:minutes:seconds, local time — enough granularity for retry
-    // chains (which complete in minutes to hours).
-    const pad = (n) => String(n).padStart(2, '0');
-    return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
-}
-
-function _wireOverviewTimelineClicks() {
-    const root = document.getElementById('attemptsTimeline');
-    if (!root) return;
-    root.addEventListener('click', function (ev) {
-        const bar = ev.target.closest('button.attempts-timeline-bar');
-        if (!bar || bar.disabled) return;
-        const attemptId = bar.getAttribute('data-attempt-id');
-        if (!attemptId) return;
-        // Reuse the pill-row's selection handler — keep both UIs in sync.
-        const pill = document.querySelector('button.attempts-pill[data-attempt-id="' + CSS.escape(attemptId) + '"]');
-        if (pill) {
-            pill.click();
-        } else {
-            // Pill row not rendered (e.g. Overview shown before attempts
-            // loaded). Set the state directly.
-            _logsModalAttemptId = attemptId;
-            refreshLogs();
-        }
-        _renderOverview();
-    });
-}
-
-// ----------------------------------------------------------------------
-// Keyboard shortcuts (Tier 3.12)
-// ----------------------------------------------------------------------
-// Power-user navigation. Bindings:
-//   [ / ]   previous / next attempt (chain only)
-//   1 / 2 / 3   switch to Overview / Logs / Files tab
-//   /       focus the active tab's search input
-//   j / k   scroll the logs viewport line-by-line (vim-style)
-//   g / G   top / bottom of the logs viewport
-//   c       copy the current log buffer to clipboard
-//   r       refresh logs
-//   ?       open the shortcuts cheatsheet popover
-//
-// Handler registered on modal-shown, deregistered on modal-hidden so
-// other contexts (settings page, dashboard tables) aren't affected.
-
-let _jobModalKeyHandler = null;
-
-function _enableJobModalKeyboard() {
-    if (_jobModalKeyHandler) return;  // idempotent
-    _jobModalKeyHandler = _onJobModalKeydown;
-    document.addEventListener('keydown', _jobModalKeyHandler);
-}
-
-function _disableJobModalKeyboard() {
-    if (!_jobModalKeyHandler) return;
-    document.removeEventListener('keydown', _jobModalKeyHandler);
-    _jobModalKeyHandler = null;
-}
-
-function _onJobModalKeydown(ev) {
-    // Don't intercept when the user is typing in an input. The search
-    // boxes + URL fields would otherwise lose every character.
-    const tag = (ev.target && ev.target.tagName) || '';
-    const isInput = tag === 'INPUT' || tag === 'TEXTAREA' || (ev.target && ev.target.isContentEditable);
-    // Modifier-aware: ignore when Ctrl / Meta / Alt are pressed so we
-    // don't fight browser shortcuts (Cmd-C copy, etc.). Shift is OK —
-    // we use it for `G` (Shift-g).
-    if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
-
-    // Allow `/` even when an input is focused so the operator can
-    // re-focus a search box from anywhere in the modal. Everything
-    // else suppresses on input focus.
-    if (isInput && ev.key !== 'Escape') return;
-
-    switch (ev.key) {
-        case '[':
-            _shortcutSwitchAttempt(-1);
-            ev.preventDefault();
-            break;
-        case ']':
-            _shortcutSwitchAttempt(+1);
-            ev.preventDefault();
-            break;
-        case '1':
-            _shortcutSwitchTab('overviewTab');
-            ev.preventDefault();
-            break;
-        case '2':
-            _shortcutSwitchTab('logsTab');
-            ev.preventDefault();
-            break;
-        case '3':
-            _shortcutSwitchTab('filesTab');
-            ev.preventDefault();
-            break;
-        case '/':
-            _shortcutFocusSearch();
-            ev.preventDefault();
-            break;
-        case 'j':
-            _shortcutScrollLogs(20);
-            ev.preventDefault();
-            break;
-        case 'k':
-            _shortcutScrollLogs(-20);
-            ev.preventDefault();
-            break;
-        case 'g':
-            _shortcutScrollLogs('top');
-            ev.preventDefault();
-            break;
-        case 'G':
-            _shortcutScrollLogs('bottom');
-            ev.preventDefault();
-            break;
-        case 'c':
-            if (typeof copyLogs === 'function') copyLogs();
-            ev.preventDefault();
-            break;
-        case 'r':
-            if (typeof refreshLogs === 'function') refreshLogs();
-            ev.preventDefault();
-            break;
-        case '?':
-            _shortcutShowCheatsheet();
-            ev.preventDefault();
-            break;
-        default:
-            // No binding — let the event through.
-            return;
-    }
-}
-
-function _shortcutSwitchAttempt(direction) {
-    const wrap = document.getElementById('attemptsDropdown');
-    if (!wrap) return;
-    const pills = Array.from(wrap.querySelectorAll('button.attempts-pill'));
-    if (!pills.length) return;
-    const activeIdx = pills.findIndex(p => p.classList.contains('active'));
-    const nextIdx = Math.max(0, Math.min(pills.length - 1,
-        (activeIdx >= 0 ? activeIdx : 0) + direction));
-    if (nextIdx === activeIdx || nextIdx < 0) return;
-    pills[nextIdx].click();
-}
-
-function _shortcutSwitchTab(tabId) {
-    const btn = document.getElementById(tabId);
-    if (!btn) return;
-    const tab = new bootstrap.Tab(btn);
-    tab.show();
-}
-
-function _shortcutFocusSearch() {
-    // Focus the search input on the currently active tab.
-    const filesActive = document.getElementById('filesTabPane') &&
-        document.getElementById('filesTabPane').classList.contains('active');
-    const targetId = filesActive ? 'fileResultsSearch' : 'logsSearchInput';
-    const el = document.getElementById(targetId);
-    if (el) el.focus();
-}
-
-function _shortcutScrollLogs(arg) {
-    const el = document.getElementById('logsContent');
-    if (!el) return;
-    if (arg === 'top') {
-        el.scrollTo({ top: 0, behavior: 'smooth' });
-    } else if (arg === 'bottom') {
-        el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
-    } else {
-        // arg is a pixel delta (positive = down, negative = up).
-        el.scrollBy({ top: arg, behavior: 'auto' });
-    }
-}
-
-function _shortcutShowCheatsheet() {
-    // Render the cheatsheet as a Bootstrap modal-within-modal. Built
-    // inline rather than as a Jinja partial so the shortcut table
-    // stays next to the handler that implements it — a future binding
-    // addition surfaces the documentation right next to the code.
-    let modal = document.getElementById('jobModalShortcutsModal');
-    if (!modal) {
-        const html =
-            '<div class="modal fade" id="jobModalShortcutsModal" tabindex="-1">'
-          +   '<div class="modal-dialog modal-dialog-centered">'
-          +     '<div class="modal-content">'
-          +       '<div class="modal-header py-2">'
-          +         '<h6 class="modal-title"><i class="bi bi-keyboard me-2"></i>Keyboard shortcuts</h6>'
-          +         '<button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>'
-          +       '</div>'
-          +       '<div class="modal-body">'
-          +         '<table class="table table-sm mb-0">'
-          +           '<tbody>'
-          +             _kbRow('[', ']', 'Switch attempt (prev / next)')
-          +             _kbRow('1', '2 / 3', 'Switch tab (Overview / Logs / Files)')
-          +             _kbRow('/', '', 'Focus search on active tab')
-          +             _kbRow('j', 'k', 'Scroll logs down / up')
-          +             _kbRow('g', 'Shift-G', 'Top / bottom of logs')
-          +             _kbRow('c', '', 'Copy current log buffer to clipboard')
-          +             _kbRow('r', '', 'Refresh logs')
-          +             _kbRow('?', '', 'Show this cheatsheet')
-          +           '</tbody>'
-          +         '</table>'
-          +       '</div>'
-          +     '</div>'
-          +   '</div>'
-          + '</div>';
-        document.body.insertAdjacentHTML('beforeend', html);
-        modal = document.getElementById('jobModalShortcutsModal');
-    }
-    new bootstrap.Modal(modal).show();
-}
-
-function _kbRow(key1, key2, label) {
-    const kbd = (k) => k
-        ? '<kbd class="border bg-body-tertiary text-body px-2 py-1 rounded">' + escapeHtmlText(k) + '</kbd>'
-        : '';
-    const keys = [kbd(key1), kbd(key2)].filter(Boolean).join(' <span class="text-muted">/</span> ');
-    return '<tr><td class="text-nowrap">' + keys + '</td><td>' + escapeHtmlText(label) + '</td></tr>';
-}
-
-// ----------------------------------------------------------------------
-// SSE log streaming (Tier 3.11)
-// ----------------------------------------------------------------------
-// Replaces the 5 s polling cadence with sub-second push for the
-// currently-targeted attempt's log file. Polling stays armed as the
-// fallback channel — if SSE errors out (proxy timeout, server
-// thread starvation), we silently degrade.
-
-let _logStreamEventSource = null;
-let _logStreamFallbackActive = false;
-
-function _startLogStream(jobId) {
-    _stopLogStream();
-    if (typeof EventSource === 'undefined') {
-        // Old browsers (or environments without SSE) — polling is the
-        // only path. Leave the polling interval armed; do nothing.
-        _logStreamFallbackActive = true;
-        _updateStreamingChip('polling');
-        return;
-    }
-    const targetId = _logsTargetId() || jobId;
-    if (!targetId) return;
-    const url = '/api/jobs/' + encodeURIComponent(targetId)
-        + '/logs/stream?offset=' + (_logsKnownCount || 0);
-    try {
-        _logStreamEventSource = new EventSource(url);
-    } catch (e) {
-        console.debug('EventSource construction failed; falling back to polling.', e);
-        _logStreamFallbackActive = true;
-        _updateStreamingChip('polling');
-        return;
-    }
-    _logStreamEventSource.addEventListener('line', (ev) => {
-        // Push the new line through the same renderer the polling
-        // path uses so colourisation / level classes / search filter
-        // / auto-scroll all behave identically.
-        const line = ev.data || '';
-        _rawLogs.push(line);
-        _logsKnownCount = _rawLogs.length;
-        _logsTotalLines = Math.max(_logsTotalLines, _logsKnownCount);
-        const container = document.getElementById('logsContent');
-        if (container) {
-            if (container.textContent === 'No logs available') container.innerHTML = '';
-            container.insertAdjacentHTML('beforeend', colorizeLogLine(line) + '\n');
-            const auto = document.getElementById('logsAutoScroll');
-            if (auto && auto.checked) container.scrollTop = container.scrollHeight;
-        }
-    });
-    _logStreamEventSource.addEventListener('hb', () => {
-        // Heartbeat — no payload, just confirms the connection is alive.
-        _updateStreamingChip('live');
-    });
-    _logStreamEventSource.addEventListener('reconnect', () => {
-        // Server-initiated graceful close after 60 s connection cap.
-        // Re-open immediately so the client doesn't pay EventSource's
-        // ~3 s default reconnect backoff.
-        _restartLogStream();
-    });
-    _logStreamEventSource.onerror = () => {
-        // Persistent failure (network blip, auth lost, server gone).
-        // Drop to polling-only mode so the modal still gets updates,
-        // and surface the change in the footer chip.
-        console.debug('SSE log stream errored; falling back to 5 s polling.');
-        _stopLogStream();
-        _logStreamFallbackActive = true;
-        _updateStreamingChip('polling');
-    };
-    _updateStreamingChip('live');
-}
-
-function _stopLogStream() {
-    if (_logStreamEventSource) {
-        try { _logStreamEventSource.close(); } catch (e) { /* already closed */ }
-        _logStreamEventSource = null;
-    }
-    _logStreamFallbackActive = false;
-}
-
-function _restartLogStream() {
-    if (!_logsModalJobId) return;
-    _startLogStream(_logsTargetId() || _logsModalJobId);
-}
-
-function _updateStreamingChip(mode) {
-    // Renders a small status chip in the modal footer ('live' green dot
-    // while SSE is connected; amber 'polling' on fallback). Created
-    // lazily so the chip doesn't appear on non-streaming jobs.
-    const footer = document.querySelector('#logsModal .modal-footer');
-    if (!footer) return;
-    let chip = document.getElementById('logStreamModeChip');
-    if (!chip) {
-        chip = document.createElement('span');
-        chip.id = 'logStreamModeChip';
-        chip.className = 'badge me-2';
-        // Insert before the first action button so it sits at the
-        // left of the footer's right cluster.
-        const firstBtn = footer.querySelector('.btn');
-        if (firstBtn) footer.insertBefore(chip, firstBtn);
-        else footer.appendChild(chip);
-    }
-    if (mode === 'live') {
-        chip.className = 'badge bg-success me-2';
-        chip.innerHTML = '<i class="bi bi-circle-fill me-1" style="font-size: 0.5rem; vertical-align: middle;"></i>live';
-        chip.title = 'SSE stream connected — log lines push sub-second';
-    } else {
-        chip.className = 'badge bg-warning text-dark me-2';
-        chip.innerHTML = '<i class="bi bi-arrow-clockwise me-1"></i>polling';
-        chip.title = 'SSE unavailable — falling back to 5 s polling';
-    }
-}
 
 async function onOperatorCancelChain() {
     if (!_logsModalJobId) return;
@@ -991,7 +304,9 @@ function _pushModalState(jobId, attemptId, tab) {
     const params = new URLSearchParams();
     params.set('job', jobId);
     if (attemptId) params.set('attempt', attemptId);
-    if (tab && tab !== 'overview') params.set('tab', tab);
+    // Elide ``tab=logs`` because Logs is the SSR-default landing tab —
+    // shortest URL pleads the most-common case.
+    if (tab && tab !== 'logs') params.set('tab', tab);
     const url = window.location.pathname + '?' + params.toString();
     try {
         history.pushState({ modal: 'jobDetails', jobId, attemptId, tab }, '', url);
@@ -1003,7 +318,9 @@ function _replaceModalState(jobId, attemptId, tab) {
     const params = new URLSearchParams();
     params.set('job', jobId);
     if (attemptId) params.set('attempt', attemptId);
-    if (tab && tab !== 'overview') params.set('tab', tab);
+    // Elide ``tab=logs`` because Logs is the SSR-default landing tab —
+    // shortest URL pleads the most-common case.
+    if (tab && tab !== 'logs') params.set('tab', tab);
     const url = window.location.pathname + '?' + params.toString();
     try {
         history.replaceState({ modal: 'jobDetails', jobId, attemptId, tab }, '', url);
@@ -1115,16 +432,13 @@ function showLogsModal(jobId) {
     var pFooter = document.getElementById('filePaginationFooter');
     if (pFooter) pFooter.classList.add('d-none');
 
-    // Tab selection — deep-link param wins, else fall back to the
-    // user's last-selected tab from localStorage (default Overview).
+    // Tab selection — deep-link param wins. Otherwise we land on the
+    // SSR default (Logs). Tier 2 had localStorage tab-restore via
+    // _restoreLastTab; that's gone with the Overview tab.
     if (_deepLinkTab) {
-        const btnId = _deepLinkTab === 'logs' ? 'logsTab'
-            : _deepLinkTab === 'files' ? 'filesTab'
-            : 'overviewTab';
+        const btnId = _deepLinkTab === 'files' ? 'filesTab' : 'logsTab';
         const btn = document.getElementById(btnId);
         if (btn) new bootstrap.Tab(btn).show();
-    } else {
-        _restoreLastTab();
     }
     // Push the deep-link URL state so reload / back navigation works.
     _pushModalState(targetId, _deepLinkAttempt, _deepLinkTab);
@@ -1149,13 +463,7 @@ function showLogsModal(jobId) {
     // this gated only on ``isRunning`` captured at modal-open time,
     // meaning a modal opened during a PENDING window never saw later
     // attempts spawn.
-    // SSE-first log streaming (Tier 3.11): open an EventSource for
-    // active jobs so new lines push sub-second. The 5 s polling loop
-    // stays as a fallback (kicked off when EventSource errors out)
-    // AND for everything that doesn't stream (attempts dropdown,
-    // file results, operator-action visibility).
     if (isRunning || isChainRow) {
-        _startLogStream(targetId);
         logsRefreshInterval = setInterval(function() {
             pollNewLogs();
             // D27 — always refresh files (not just when the Files tab is
@@ -1173,12 +481,6 @@ function showLogsModal(jobId) {
             // until the user closed and reopened.
             const _polled = jobs.find(j => j.id === targetId);
             _updateOperatorActions(_polled);
-            // If Overview is the active tab, re-render its summary +
-            // recent-log preview so the dashboard stays live without
-            // forcing the user back to Logs.
-            const _overviewActive = document.getElementById('overviewTabPane') &&
-                document.getElementById('overviewTabPane').classList.contains('active');
-            if (_overviewActive) _renderOverview();
         }, 5000);
     }
 
@@ -1191,27 +493,10 @@ function showLogsModal(jobId) {
             clearInterval(_chainStateTickInterval);
             _chainStateTickInterval = null;
         }
-        if (_overviewTickInterval) {
-            clearInterval(_overviewTickInterval);
-            _overviewTickInterval = null;
-        }
-        _disableJobModalKeyboard();
-        _stopLogStream();
         _popModalState();
         _logsModalJobId = null;
         _logsModalAttemptId = null;
     }, { once: true });
-
-    // Render Overview once the modal is open (so any DOM refs inside
-    // Overview cards resolve correctly) — separate from the tab
-    // restore because the Bootstrap Tab.show() doesn't fire the
-    // ``shown`` event synchronously.
-    _renderOverview();
-    // Restore the log-level filter selection from localStorage.
-    _restoreLogLevel();
-    // Register keyboard shortcuts (Tier 3.12) — see _onJobModalKeydown
-    // for the binding table.
-    _enableJobModalKeyboard();
 }
 
 function scrollLogsTo(position) {
@@ -1727,10 +1012,6 @@ async function _loadAttemptsDropdown(chainId) {
             _logsModalAttemptId = null;
         }
         _renderChainStateChip(chainId);
-        // Feed the Overview's timeline component with the same data.
-        // Both the pill row and the timeline render from the
-        // attempts list — they're two views of the same state.
-        _renderAttemptsTimeline(attempts, max);
         refreshLogs();
     } catch (error) {
         console.error('Failed to load attempts:', error);
@@ -1779,9 +1060,6 @@ async function _refreshAttemptsDropdown(chainId) {
         // retry_eta might have changed since modal-open (new firing,
         // completion, exhaustion) and the poll caught it.
         _renderChainStateChip(chainId);
-        // Re-render the Overview timeline with the fresh attempts data
-        // so the bars reflect new firings without a manual refresh.
-        _renderAttemptsTimeline(attempts, max);
     } catch (error) {
         // Silent — user has last-good UI; next tick will retry.
         console.debug('Attempts poll-refresh failed:', error);
@@ -1805,9 +1083,6 @@ function onAttemptSelected(button) {
     document.getElementById('logsContent').innerHTML = '<span class="text-muted">Loading…</span>';
     _updateEarlierLogsButton();
     refreshLogs();
-    // Restart the SSE log stream so it points at the new attempt's
-    // log file (the stream is per-targetId).
-    if (typeof _restartLogStream === 'function') _restartLogStream();
     // Refresh the Files tab too: per-file results are written per
     // dispatch Job (each retry firing has its own JSONL), so the user
     // sees DIFFERENT files for attempt 1 vs attempt 5 (the latter
@@ -1820,22 +1095,12 @@ function onAttemptSelected(button) {
     if (filesTabBtn && filesTabBtn.classList.contains('active')) {
         refreshFileResults();
     }
-    // Re-render the Overview pane only if it's the active tab —
-    // otherwise we'd arm a 1-second tick interval against a hidden
-    // DOM (single-instance via clear-before-set, but still wasted
-    // CPU on every modal-open with an active retry chain).
-    const overviewActive = document.getElementById('overviewTabPane') &&
-        document.getElementById('overviewTabPane').classList.contains('active');
-    if (overviewActive && typeof _renderOverview === 'function') _renderOverview();
     // Update the URL's ``attempt=`` param so a copy-link points at the
-    // newly-selected attempt.
-    const activeTab = document.getElementById('logsTabPane') &&
-        document.getElementById('logsTabPane').classList.contains('active')
-        ? 'logs'
-        : (document.getElementById('filesTabPane') &&
-           document.getElementById('filesTabPane').classList.contains('active')
-            ? 'files' : 'overview');
-    _replaceModalState(_logsModalJobId, _logsModalAttemptId, activeTab);
+    // newly-selected attempt. Tab detection: Logs is the only fallback
+    // (no Overview tab post-simplification).
+    const filesActive = document.getElementById('filesTabPane') &&
+        document.getElementById('filesTabPane').classList.contains('active');
+    _replaceModalState(_logsModalJobId, _logsModalAttemptId, filesActive ? 'files' : 'logs');
 }
 
 function _updateEarlierLogsButton() {
@@ -1948,11 +1213,19 @@ function _fileOutcomeMeta(key) {
     return { label: m.label, badge: m.cls };
 }
 
+function onLogsTabActivated() {
+    // Mirror onFilesTabActivated so the URL reflects whichever tab is
+    // visible. Without this, the deep-link contract is asymmetric:
+    // clicking Files updates the URL; clicking Logs leaves the URL
+    // pointing at the previous tab. Sharing the URL would then re-open
+    // the modal on the wrong pane.
+    _replaceModalState(_logsModalJobId, _logsModalAttemptId, 'logs');
+}
+
 function onFilesTabActivated() {
     if (!_fileResultsLoaded) {
         refreshFileResults();
     }
-    try { localStorage.setItem(_OVERVIEW_LAST_TAB_KEY, 'files'); } catch (e) { /* private mode */ }
     _replaceModalState(_logsModalJobId, _logsModalAttemptId, 'files');
 }
 
