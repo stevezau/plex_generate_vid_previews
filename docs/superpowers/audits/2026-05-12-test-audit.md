@@ -373,6 +373,66 @@ Each file is read line-by-line and checked against:
 
 **Batch 9 summary (3 files, 1011 lines):** 0 HIGH, 0 MED, 0 LOW. All three are clean. Webhook-debounce-to-job is the canonical example for "test reaches into production module globals → refactor target for WebhookDebouncer."
 
+### tests/journeys/test_journey_max_concurrent_gate.py (734 lines, 8 methods, 1 class)
+
+- **Findings:**
+  - **CLEAN — REFERENCE EXAMPLE** for concurrency journey tests. 8-cell matrix (basic cap / drain on complete / priority at gate / FIFO within priority / cancel while waiting / pause skips gate / runtime cap change / run_processing raises / startup flood) directly from the approved plan. Each test uses a `threading.Event`-driven `_BlockingRunProcessing` stub so the test controls release timing — the gate's whole behavior is observable from the test.
+  - Strong contract pinning: line 290-293 asserts the FULL counter `(3 of 3 busy)`, not just the `"Queued —"` prefix (avoids the "starts-with" weakness).
+  - Sophisticated teardown (lines 70-128): drains daemon `run_job` threads with timeout + `notify_all()` poke to wake stuck acquirers. This is the kind of thread-leak prevention that justifies the eventual app.extensions migration (each test could just throw away its app).
+  - LOW: `time.sleep(0.5)/(1.5)/(1.0)` at lines 588, 632, 720 — these are load-bearing waits for "no admit within poll tick" (gate's poll interval is 1s). Testing the *absence* of an action requires a real wait; not flake-prone.
+  - Uses `_reset_singletons` + reaches `jr_mod._inflight_jobs` + `gate_mod._gate._cond` (lines 80-86, 115-116) — deferred (out-of-scope).
+
+### tests/journeys/test_journey_jellyfin_zero_item_id.py (1070 lines, ~24 methods, 9 classes)
+
+- **Findings:**
+  - **CLEAN — REFERENCE EXAMPLE** for matrix coverage on per-vendor dispatcher behavior. Section C (TestDispatcherLookupPolicy) covers the 6-cell matrix: Emby/Jellyfin-no-plugin/Jellyfin-with-plugin/Plex × hint/no-hint.
+  - Strong kwargs-discipline assertions: line 336-344 asserts the canonical path's tail (`endswith "Test (2024).mkv"`) on the lookup call; line 979-1002 captures full `(method, url, params)` tuples and asserts the `path=` query param on the plugin call AND `searchTerm=` on the base fallback — explicit anti-D31 (substring-only) pattern.
+  - Section G perf-proof test: `slow_lookup` blocks 30s; the test asserts `elapsed < 2.0` — catches accidental Pass-2 invocation by *not* completing, not by mock-call-count. Reference example for "test the cost, not just the call."
+  - **LOW** (line 359-369) — `test_plex_looks_up_when_no_hint` has a comment saying "the rigorous assertion lives in another test" and does not actually assert a load-bearing condition on its own. Document-only matrix-row. Either tighten to a real assert or remove and add a single comment elsewhere noting Plex's coverage location.
+  - Atomic-publish tests (Section B + Section F's restore-on-mid-swap) cover the "rename race" regression class with sentinel-tile observation.
+
+### tests/journeys/test_journey_start_job_async_branches.py (894 lines, 8 methods, 6 classes)
+
+- **Findings:**
+  - **CLEAN — GOLD-STANDARD REFERENCE for criterion A (assert kwargs the SUT controls).** Module docstring (lines 23-25) explicitly references the D34 regression that hid for months because tests only checked call_count. Every test in this file pins specific kwargs:
+    - `kwargs["job_id"]`, `cancel_check` + `pause_check` callable presence (basic dispatch)
+    - `JobStatus.RUNNING` snapshot inside the run (gate-flip timing pin)
+    - `on_dispatch_start` invocation (regression of live bug job 91c20505)
+    - `is_retry=True, retry_attempt=1, parent_job_id, library_name="Retry: <parent>"` (retry-spawn)
+    - `config.regenerate_thumbnails=True` (force_generate propagation)
+    - `config.webhook_item_id_hints` byte-for-byte equality (Plex-less install protection)
+    - `config.server_id_filter` + `config.plex_url` projection (pinned-server view)
+    - `file_result.reason` containing per-path hint (audit P4 multi-path regression)
+  - This is the file other journey tests should look like.
+  - Uses `_reset_singletons` — deferred.
+
+**Batch 10 summary (3 files, 2698 lines):** 0 HIGH, 0 MED, 1 LOW (test_plex_looks_up_when_no_hint placeholder row). All three are reference examples for concurrency, matrix coverage, and kwargs-discipline respectively.
+
+---
+
+## Phase 1B roll-up (10 files, 4798 lines)
+
+**Findings tally:**
+- HIGH: 0
+- MED: 0
+- LOW: 1 (placeholder test row in jellyfin_zero_item_id)
+
+**Reference-example files (the whole journey suite is exemplary):**
+- `test_adapter_path_contract.py` — exact-byte-string contract pinning per adapter
+- `test_journey_auth_header_precedence.py` — 11-cell matrix on auth precedence with body-shape pins
+- `test_journey_multi_server_partial_unreachable.py` — partial-failure + total-failure mirror with diagnostic-message pin
+- `test_journey_schedule_run_now.py` — 5 contract points + negative 404 case
+- `test_journey_cancel_running_job.py` — cancel-mid-flight + cancel-then-bail with `threading.Event` synchronization
+- `test_journey_sonarr_to_published.py` — strict-equality library_name + dedup
+- `test_journey_webhook_debounce_to_job.py` — real-wiring chain, mocks only at orchestrator boundary
+- `test_journey_max_concurrent_gate.py` — 8-cell concurrency matrix with thread-leak teardown
+- `test_journey_jellyfin_zero_item_id.py` — per-vendor 6-cell matrix + perf-proof + kwargs discipline
+- `test_journey_start_job_async_branches.py` — gold standard for criterion A (asserts kwargs SUT controls)
+
+**Common pattern across all 10:** every file's `_reset_singletons` fixture reaches into production-tree module globals (`_job_manager`, `_schedule_manager`, `_pending_timers`, `_pending_batches`, `_inflight_jobs`, `_gate._cond`). The 19-fixture duplication smell is concentrated in this directory. Same out-of-scope refactor noted earlier (app.extensions migration) applies.
+
+**Phase 2 fix items from Phase 1B:** 1 LOW (placeholder Plex row in jellyfin_zero_item_id) — not worth a fix batch on its own; pick up as one-liner during a later sweep.
+
 ## tests/integration/
 
 _(filled in during Phase 1C)_
