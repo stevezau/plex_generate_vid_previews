@@ -4,7 +4,7 @@ import math
 import os
 from datetime import datetime
 
-from flask import jsonify, request, session
+from flask import Response, jsonify, request, session
 from loguru import logger
 
 from ..auth import (
@@ -950,6 +950,84 @@ def get_job_logs(job_id):
             "log_cleared_by_retention": log_cleared_by_retention,
         }
     )
+
+
+@api.route("/jobs/<job_id>/logs/stream", methods=["GET"])
+@api_token_required
+def stream_job_logs(job_id):
+    """Server-Sent Events stream of a job's log lines (Tier 3.11 SSE).
+
+    Replaces the 5 s polling cadence with sub-second push for active
+    jobs. Each new log line that hits the JobManager's in-memory buffer
+    is flushed to the client as ``event: line\\ndata: <line>\\n\\n``.
+    A ``hb`` heartbeat fires every 15 s so proxies (nginx + Cloudflare
+    both default-timeout idle SSE at ~60 s) don't tear the connection.
+
+    Connection lifetime is capped at 60 s — clients reconnect via
+    ``EventSource``'s native auto-reconnect. This prevents a single
+    long-lived modal from pinning a gunicorn thread (the project runs
+    with ``--workers 1 --worker-class gthread``; SSE connections
+    block a thread for their entire lifetime, so an unbounded cap
+    would exhaust the thread pool under multi-operator load).
+
+    Query params:
+        offset: 0-based line index to start from. The client passes
+            the current ``_logsKnownCount`` so the server only streams
+            *new* lines (idempotent reconnects).
+
+    Returns:
+        ``text/event-stream`` response. ``404`` when ``job_id`` is
+        unknown.
+    """
+    import time
+
+    job_manager = get_job_manager()
+    job = job_manager.get_job(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+
+    start_offset = max(0, request.args.get("offset", default=0, type=int))
+
+    def _event_stream():
+        next_offset = start_offset
+        deadline = time.monotonic() + 60.0  # connection cap (see docstring)
+        last_heartbeat = time.monotonic()
+        # Initial flush: send whatever's already past ``start_offset``
+        # in one shot so the client doesn't see a momentary blank gap
+        # between reconnect and the first new line.
+        first = job_manager.get_logs_paginated(job_id, offset=next_offset, limit=5000)
+        for line in first.get("lines") or []:
+            yield "event: line\ndata: " + line.replace("\n", " ") + "\n\n"
+        next_offset = first.get("offset", next_offset) + len(first.get("lines") or [])
+        while time.monotonic() < deadline:
+            page = job_manager.get_logs_paginated(job_id, offset=next_offset, limit=500)
+            lines = page.get("lines") or []
+            if lines:
+                for line in lines:
+                    yield "event: line\ndata: " + line.replace("\n", " ") + "\n\n"
+                next_offset += len(lines)
+                last_heartbeat = time.monotonic()
+            else:
+                # No new lines — emit a heartbeat every 15 s.
+                if time.monotonic() - last_heartbeat > 15.0:
+                    yield "event: hb\ndata: \n\n"
+                    last_heartbeat = time.monotonic()
+                # Sleep briefly so we don't burn CPU polling the
+                # in-memory log buffer.
+                time.sleep(0.25)
+        # Tell the client the connection is ending normally so it
+        # reconnects without an error backoff.
+        yield "event: reconnect\ndata: \n\n"
+
+    response = Response(_event_stream(), mimetype="text/event-stream")
+    # Defeat any intermediary buffering — both nginx (proxy_buffering)
+    # and Cloudflare default to buffering responses, which collapses
+    # SSE into a single chunk at end-of-connection. Setting
+    # ``X-Accel-Buffering: no`` is the nginx convention; CF observes
+    # ``Cache-Control: no-transform``.
+    response.headers["X-Accel-Buffering"] = "no"
+    response.headers["Cache-Control"] = "no-cache, no-transform"
+    return response
 
 
 @api.route("/jobs/<job_id>/files", methods=["GET"])

@@ -848,6 +848,117 @@ function _kbRow(key1, key2, label) {
     return '<tr><td class="text-nowrap">' + keys + '</td><td>' + escapeHtmlText(label) + '</td></tr>';
 }
 
+// ----------------------------------------------------------------------
+// SSE log streaming (Tier 3.11)
+// ----------------------------------------------------------------------
+// Replaces the 5 s polling cadence with sub-second push for the
+// currently-targeted attempt's log file. Polling stays armed as the
+// fallback channel — if SSE errors out (proxy timeout, server
+// thread starvation), we silently degrade.
+
+let _logStreamEventSource = null;
+let _logStreamFallbackActive = false;
+
+function _startLogStream(jobId) {
+    _stopLogStream();
+    if (typeof EventSource === 'undefined') {
+        // Old browsers (or environments without SSE) — polling is the
+        // only path. Leave the polling interval armed; do nothing.
+        _logStreamFallbackActive = true;
+        _updateStreamingChip('polling');
+        return;
+    }
+    const targetId = _logsTargetId() || jobId;
+    if (!targetId) return;
+    const url = '/api/jobs/' + encodeURIComponent(targetId)
+        + '/logs/stream?offset=' + (_logsKnownCount || 0);
+    try {
+        _logStreamEventSource = new EventSource(url);
+    } catch (e) {
+        console.debug('EventSource construction failed; falling back to polling.', e);
+        _logStreamFallbackActive = true;
+        _updateStreamingChip('polling');
+        return;
+    }
+    _logStreamEventSource.addEventListener('line', (ev) => {
+        // Push the new line through the same renderer the polling
+        // path uses so colourisation / level classes / search filter
+        // / auto-scroll all behave identically.
+        const line = ev.data || '';
+        _rawLogs.push(line);
+        _logsKnownCount = _rawLogs.length;
+        _logsTotalLines = Math.max(_logsTotalLines, _logsKnownCount);
+        const container = document.getElementById('logsContent');
+        if (container) {
+            if (container.textContent === 'No logs available') container.innerHTML = '';
+            container.insertAdjacentHTML('beforeend', colorizeLogLine(line) + '\n');
+            const auto = document.getElementById('logsAutoScroll');
+            if (auto && auto.checked) container.scrollTop = container.scrollHeight;
+        }
+    });
+    _logStreamEventSource.addEventListener('hb', () => {
+        // Heartbeat — no payload, just confirms the connection is alive.
+        _updateStreamingChip('live');
+    });
+    _logStreamEventSource.addEventListener('reconnect', () => {
+        // Server-initiated graceful close after 60 s connection cap.
+        // Re-open immediately so the client doesn't pay EventSource's
+        // ~3 s default reconnect backoff.
+        _restartLogStream();
+    });
+    _logStreamEventSource.onerror = () => {
+        // Persistent failure (network blip, auth lost, server gone).
+        // Drop to polling-only mode so the modal still gets updates,
+        // and surface the change in the footer chip.
+        console.debug('SSE log stream errored; falling back to 5 s polling.');
+        _stopLogStream();
+        _logStreamFallbackActive = true;
+        _updateStreamingChip('polling');
+    };
+    _updateStreamingChip('live');
+}
+
+function _stopLogStream() {
+    if (_logStreamEventSource) {
+        try { _logStreamEventSource.close(); } catch (e) { /* already closed */ }
+        _logStreamEventSource = null;
+    }
+    _logStreamFallbackActive = false;
+}
+
+function _restartLogStream() {
+    if (!_logsModalJobId) return;
+    _startLogStream(_logsTargetId() || _logsModalJobId);
+}
+
+function _updateStreamingChip(mode) {
+    // Renders a small status chip in the modal footer ('live' green dot
+    // while SSE is connected; amber 'polling' on fallback). Created
+    // lazily so the chip doesn't appear on non-streaming jobs.
+    const footer = document.querySelector('#logsModal .modal-footer');
+    if (!footer) return;
+    let chip = document.getElementById('logStreamModeChip');
+    if (!chip) {
+        chip = document.createElement('span');
+        chip.id = 'logStreamModeChip';
+        chip.className = 'badge me-2';
+        // Insert before the first action button so it sits at the
+        // left of the footer's right cluster.
+        const firstBtn = footer.querySelector('.btn');
+        if (firstBtn) footer.insertBefore(chip, firstBtn);
+        else footer.appendChild(chip);
+    }
+    if (mode === 'live') {
+        chip.className = 'badge bg-success me-2';
+        chip.innerHTML = '<i class="bi bi-circle-fill me-1" style="font-size: 0.5rem; vertical-align: middle;"></i>live';
+        chip.title = 'SSE stream connected — log lines push sub-second';
+    } else {
+        chip.className = 'badge bg-warning text-dark me-2';
+        chip.innerHTML = '<i class="bi bi-arrow-clockwise me-1"></i>polling';
+        chip.title = 'SSE unavailable — falling back to 5 s polling';
+    }
+}
+
 async function onOperatorCancelChain() {
     if (!_logsModalJobId) return;
     if (!confirm('Cancel this retry chain? Any pending back-off timer will be dropped and in-flight attempts will receive a cancellation signal.')) {
@@ -1038,7 +1149,13 @@ function showLogsModal(jobId) {
     // this gated only on ``isRunning`` captured at modal-open time,
     // meaning a modal opened during a PENDING window never saw later
     // attempts spawn.
+    // SSE-first log streaming (Tier 3.11): open an EventSource for
+    // active jobs so new lines push sub-second. The 5 s polling loop
+    // stays as a fallback (kicked off when EventSource errors out)
+    // AND for everything that doesn't stream (attempts dropdown,
+    // file results, operator-action visibility).
     if (isRunning || isChainRow) {
+        _startLogStream(targetId);
         logsRefreshInterval = setInterval(function() {
             pollNewLogs();
             // D27 — always refresh files (not just when the Files tab is
@@ -1079,6 +1196,7 @@ function showLogsModal(jobId) {
             _overviewTickInterval = null;
         }
         _disableJobModalKeyboard();
+        _stopLogStream();
         _popModalState();
         _logsModalJobId = null;
         _logsModalAttemptId = null;
@@ -1687,6 +1805,9 @@ function onAttemptSelected(button) {
     document.getElementById('logsContent').innerHTML = '<span class="text-muted">Loading…</span>';
     _updateEarlierLogsButton();
     refreshLogs();
+    // Restart the SSE log stream so it points at the new attempt's
+    // log file (the stream is per-targetId).
+    if (typeof _restartLogStream === 'function') _restartLogStream();
     // Refresh the Files tab too: per-file results are written per
     // dispatch Job (each retry firing has its own JSONL), so the user
     // sees DIFFERENT files for attempt 1 vs attempt 5 (the latter
