@@ -446,25 +446,25 @@
     <div class="modal-dialog modal-xl modal-dialog-scrollable">
         <div class="modal-content">
             <div class="modal-header pb-2">
-                <!-- Header is a three-line block, not a generic "Job Details" string:
-                       Line 1 — entity title (library_name / retry_basename) + status badge
-                       Line 2 — quick-glance metadata chips (source · server · duration · runs)
-                       Line 3 — Job ID (muted, kept for copy/paste + deep-link sharing)
+                <!-- Header is a two-row block:
+                       Row 1 — entity title (library_name / retry_basename) + status badge
+                               + Job-ID (right-aligned, small monospace, copy-on-click)
+                       Row 2 — quick-glance metadata chips (source · server · duration · runs)
                      Renderer: ``_renderModalHeader(job)`` in job_modal.js. Falls back to
-                     the generic "Job Details" string when the job is unknown. -->
+                     a generic "Job Details" title when the job is missing
+                     (undefined/null — e.g. modal re-opened after the job was
+                     cleaned from history mid-poll). -->
                 <div class="modal-title flex-grow-1" id="logsModalHeader">
                     <h5 class="mb-0"><i class="bi bi-file-text me-2"></i>Job Details</h5>
                 </div>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
-                <div class="d-flex justify-content-between align-items-center mb-2">
-                    <small class="text-muted" id="logsJobId">Job ID: -</small>
-                </div>
-                <!-- Phase H8: per-publisher status header above the tabs so a
-                     user diagnosing a multi-server job sees "Plex ✓, Emby ✗"
-                     before having to scan the log stream. Empty for legacy jobs. -->
-                <div id="logsModalPublishers" class="mb-2"></div>
+                <!-- Per-publisher status strip above the tabs so a user diagnosing
+                     a multi-server job sees "Plex ✓, Emby ✗" before having to
+                     scan the log stream. Empty for legacy jobs. ``mb-3`` keeps
+                     the gap consistent with the attempts strip below. -->
+                <div id="logsModalPublishers" class="mb-3"></div>
                 <!-- Attempts switcher for retry-chain rows — sits ABOVE
                      the tabs strip so it scopes BOTH Logs and Files.
                      Hidden by default; ``showLogsModal`` un-hides
@@ -525,6 +525,12 @@
                                 </div>
                             </div>
                         </div>
+                        <!-- Attempt-scope subtitle — populated by JS only
+                             when the modal targets a chain AND the user
+                             has picked a non-originating retry. Tells the
+                             reader "you're looking at Run N's log, not the
+                             chain's originating dispatch". -->
+                        <div id="logsSubtitle" class="small text-muted mb-2 d-none"></div>
                         <div class="position-relative">
                             <div id="logsEarlierWrap" class="text-center d-none mb-1">
                                 <button class="btn btn-sm btn-outline-secondary" id="logsLoadEarlierBtn" onclick="loadEarlierLogs()">

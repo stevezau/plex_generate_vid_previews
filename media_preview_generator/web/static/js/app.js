@@ -1564,23 +1564,23 @@ function _renderPublishersBlock(job) {
     // status row that the modal's Attempts block now renders directly
     // below this section. Removed — the publisher row stays compact.
     //
-    // Label disambiguation: for chain heads the publishers object
-    // reflects the *latest aggregate* (post-final-attempt state), not
-    // the per-attempt snapshot. The "Chain totals" label makes that
-    // scope explicit so an operator who switched to an earlier attempt
-    // via the pill row doesn't misread the chain-level numbers as
-    // belonging to that specific run. True per-attempt scoping
-    // requires per-attempt publisher persistence at the JobManager
-    // level — out of scope here.
+    // Label: single word ``Servers`` either way. For chain heads the
+    // publishers object reflects the *latest aggregate* (post-final-
+    // attempt state), so we add a hover-tooltip explaining the scope
+    // when the modal targets a chain — quieter than a bold parenthetical
+    // count in the visible label. True per-attempt scoping requires
+    // per-attempt publisher persistence at the JobManager level — out
+    // of scope here.
     const cfg = (job && job.config) || {};
     const isChain = !!cfg.is_retry_chain;
-    let label = 'Servers:';
+    let tipAttr = '';
     if (isChain) {
         const ra = cfg.retry_attempt || 0;
         const totalRuns = ra + 1;
-        label = 'Chain totals (' + totalRuns + ' run' + (totalRuns === 1 ? '' : 's') + '):';
+        tipAttr = ' title="Aggregated across all ' + totalRuns + ' run'
+            + (totalRuns === 1 ? '' : 's') + ' of this chain"';
     }
-    return `<div class="mt-3 pt-2 border-top"><strong class="me-2">${escapeHtmlText(label)}</strong>${lines}</div>`;
+    return `<div class="mt-3 pt-2 border-top"><strong class="me-2"${tipAttr}>Servers</strong>${lines}</div>`;
 }
 
 // Pick the retry-chain info-modal template matching the Job's server

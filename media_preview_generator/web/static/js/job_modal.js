@@ -159,17 +159,83 @@ function _renderModalHeader(job) {
             + ' <span class="text-muted">/ ' + (rmax + 1) + ' max</span></span>');
     }
 
+    // Job-ID block on the right of the title row — small monospace,
+    // copy-on-click. Keeps the ID accessible (deep-link sharing,
+    // operator copy/paste, ``aria-describedby`` reference) without
+    // dedicating a whole sub-row to muted text. The id stays
+    // ``logsJobId`` so the modal's ``aria-describedby`` keeps working.
+    const jid = escapeHtmlText(job.id || '');
+    const jidBlock = '<div class="ms-auto d-flex align-items-center gap-1 text-muted small font-monospace" id="logsJobId">'
+        + '<span title="Job ID">' + jid + '</span>'
+        + '<button type="button" class="btn btn-link btn-sm p-0 ms-1" title="Copy Job ID" aria-label="Copy Job ID"'
+        + ' onclick="onCopyJobId(\'' + escapeHtmlAttr(job.id || '') + '\', this)">'
+        + '<i class="bi bi-clipboard"></i>'
+        + '</button>'
+        + '</div>';
+
     headerEl.innerHTML =
         '<div class="d-flex align-items-baseline flex-wrap gap-2">'
         +   '<h5 class="modal-title mb-0">'
         +     '<i class="bi bi-file-text me-2"></i>' + escapeHtmlText(title)
         +   '</h5>'
         +   statusBadge
+        +   jidBlock
         + '</div>'
         + (chips.length
             ? '<div class="d-flex flex-wrap gap-2 small mt-1">' + chips.join('') + '</div>'
             : '');
 }
+
+// Attempt-scope subtitle above the Logs viewer — orients the reader
+// when they're looking at a per-retry log instead of the originating
+// dispatch's. Hidden for non-chain jobs and for the originating
+// attempt (the chain head's UUID itself). Reads the currently-active
+// pill via its `[data-attempt-id]` so we don't need to re-fetch the
+// attempts API for a label.
+function _renderLogsSubtitle() {
+    const el = document.getElementById('logsSubtitle');
+    if (!el) return;
+    const job = jobs.find(j => j.id === _logsModalJobId);
+    const isChain = !!(job && job.config && job.config.is_retry_chain);
+    if (!isChain || !_logsModalAttemptId || _logsModalAttemptId === _logsModalJobId) {
+        el.classList.add('d-none');
+        el.innerHTML = '';
+        return;
+    }
+    const pill = document.querySelector('button.attempts-pill[data-attempt-id="' + CSS.escape(_logsModalAttemptId) + '"]');
+    if (!pill) {
+        el.classList.add('d-none');
+        el.innerHTML = '';
+        return;
+    }
+    // The pill's title attribute already carries the canonical label
+    // ("Run N of M (retry #N-1) · status · duration"). Reuse it so
+    // the subtitle stays in lockstep with the pill copy.
+    const label = pill.getAttribute('title') || pill.getAttribute('aria-label') || 'Selected attempt';
+    el.classList.remove('d-none');
+    el.innerHTML = '<i class="bi bi-funnel me-1"></i>Showing logs for '
+        + '<strong>' + escapeHtmlText(label) + '</strong>';
+}
+
+// Copy the Job ID to the clipboard and flash the button to confirm.
+// Reuses the ``navigator.clipboard.writeText`` pattern already used by
+// ``copyLogs()`` (~line 1500). Falls back silently when the clipboard
+// API is unavailable (HTTP context, very old browsers).
+function onCopyJobId(jobId, btn) {
+    if (!jobId) return;
+    try {
+        navigator.clipboard.writeText(jobId);
+    } catch (e) { /* silently no-op */ }
+    if (btn) {
+        const icon = btn.querySelector('i');
+        if (icon) {
+            const orig = icon.className;
+            icon.className = 'bi bi-clipboard-check text-success';
+            setTimeout(() => { icon.className = orig; }, 1200);
+        }
+    }
+}
+window.onCopyJobId = onCopyJobId;
 
 // Find the first BIF path on disk across all servers' publisher rows.
 // Used by the "Open BIF" footer action so the operator gets one-click
@@ -366,7 +432,9 @@ function showLogsModal(jobId) {
     _initialDeepLinkAttempt = null;
     _initialDeepLinkTab = null;
 
-    document.getElementById('logsJobId').textContent = `Job ID: ${targetId}`;
+    // ``#logsJobId`` is rendered inside ``_renderModalHeader`` now (no
+    // standalone row). The aria-describedby on the modal still points
+    // at the id; the JS-rendered element carries it.
     document.getElementById('logsSearchInput').value = '';
 
     // Phase H8: render the per-publisher header for this job.
@@ -378,6 +446,9 @@ function showLogsModal(jobId) {
     _renderModalHeader(_job);
     const _hdr = document.getElementById('logsModalPublishers');
     if (_hdr) _hdr.innerHTML = _job ? _renderPublishersBlock(_job) : '';
+    // Clear any leftover attempt-scope subtitle from a previous modal
+    // open. _loadAttemptsDropdown re-renders it for chains.
+    _renderLogsSubtitle();
     // Operator-action footer buttons (Retry now / Cancel chain /
     // Open BIF) — visibility derived from current chain state. Re-run
     // on every showLogsModal so a stale "Retry now" from a previously
@@ -1012,6 +1083,7 @@ async function _loadAttemptsDropdown(chainId) {
             _logsModalAttemptId = null;
         }
         _renderChainStateChip(chainId);
+        _renderLogsSubtitle();
         refreshLogs();
     } catch (error) {
         console.error('Failed to load attempts:', error);
@@ -1055,6 +1127,7 @@ async function _refreshAttemptsDropdown(chainId) {
             const target = wrap.querySelector(`button[data-attempt-id="${CSS.escape(targetId)}"]`);
             if (target) _setActivePill(target);
             _logsModalAttemptId = targetId;
+            _renderLogsSubtitle();
         }
         // Re-render the chain-state chip — the chain Job's status /
         // retry_eta might have changed since modal-open (new firing,
@@ -1082,6 +1155,7 @@ function onAttemptSelected(button) {
     _logsKnownCount = 0;
     document.getElementById('logsContent').innerHTML = '<span class="text-muted">Loading…</span>';
     _updateEarlierLogsButton();
+    _renderLogsSubtitle();
     refreshLogs();
     // Refresh the Files tab too: per-file results are written per
     // dispatch Job (each retry firing has its own JSONL), so the user

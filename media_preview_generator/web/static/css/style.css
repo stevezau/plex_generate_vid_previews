@@ -1260,10 +1260,17 @@ html[data-bs-theme="light"] ::-webkit-scrollbar-thumb:hover {
     white-space: pre-wrap;
     scroll-behavior: smooth;
     word-break: break-all;
-    line-height: 1.5;
+    /* Tighter line-height so consecutive ``[time] INFO -`` lines pack
+       more densely — pre-fix the 1.5 default left a visible blank gap
+       between every line that read as "log entries are far apart"
+       rather than "scannable stream". */
+    line-height: 1.35;
 }
 
-.log-line { display: block; padding: 1px 0; }
+/* ``padding: 0`` on log-line so the new line-height controls density.
+   The 1 px y-padding previously here partially defeated the line-height
+   tightening above. */
+.log-line { display: block; padding: 0; }
 html[data-bs-theme="dark"] .log-line:hover { background-color: rgba(255, 255, 255, 0.05); }
 html[data-bs-theme="light"] .log-line:hover { background-color: rgba(0, 0, 0, 0.05); }
 .log-level-debug { color: #6c757d; }
