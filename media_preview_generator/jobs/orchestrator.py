@@ -1548,6 +1548,37 @@ def _build_path_mapping_mismatch_hints(unresolved_paths: list[str], server_confi
     return hints
 
 
+def _classify_processing_mode(config) -> str:
+    """Decide which processing phase ``run_processing`` should execute.
+
+    Returns one of:
+
+    * ``"webhook_paths"`` — the job has a concrete path list; dispatch via
+      :func:`_run_webhook_paths_phase`.
+    * ``"refuse_malformed_webhook"`` — the job is webhook-origin
+      (``webhook_source`` set) but ``webhook_paths`` is empty / None.
+      The caller MUST NOT fall through to a full library scan: doing so
+      attributes a 100k+ item scan to a Job that the UI presents as a
+      single-file webhook entry. See Job e7968486 (May 2026): one Sonarr
+      webhook for one TV episode triggered eight separate full-library
+      scans across eleven container restarts because the original
+      "Job-at-batch-open" refactor forgot to persist ``webhook_paths``
+      in ``job.config``. The webhook-side fix closes the primary hole;
+      this branch is defense in depth against any future code path that
+      ships a webhook job without paths.
+    * ``"full_scan"`` — no webhook markers at all; legitimate scheduled
+      or manual full-library scan.
+
+    Pure function; only reads attributes on ``config``. Tested in
+    ``tests/test_orchestrator_webhook_fallthrough.py``.
+    """
+    if getattr(config, "webhook_paths", None):
+        return "webhook_paths"
+    if getattr(config, "webhook_source", None):
+        return "refuse_malformed_webhook"
+    return "full_scan"
+
+
 def _run_webhook_paths_phase(
     config,
     registry,
@@ -1879,6 +1910,27 @@ def run_processing(
         sid_filter = sid_filter if isinstance(sid_filter, str) and sid_filter else None
         _pinned_entry, pinned_type = _resolve_pinned_server(sid_filter)
 
+        # Defense in depth (BEFORE either full-scan branch): a job marked
+        # as webhook-origin but missing webhook_paths is malformed —
+        # likely an auto-requeue after restart where the path list got
+        # lost. Refuse outright; never let a webhook job degrade into a
+        # full-library scan. See Job e7968486 (May 2026) for the
+        # regression this guards. Tested in
+        # tests/test_orchestrator_webhook_fallthrough.py.
+        if _classify_processing_mode(config) == "refuse_malformed_webhook":
+            logger.error(
+                "Refusing to run job as full library scan: it carries a webhook "
+                "source ({!r}) but no webhook_paths. Most likely cause: the job "
+                "was created by a webhook, persisted without webhook_paths in "
+                "job.config, then revived after a container restart with the path "
+                "list lost. Re-trigger the originating webhook to process the "
+                "original file. See Job e7968486 (May 2026) for the regression "
+                "this guards against.",
+                getattr(config, "webhook_source", None),
+            )
+            empty_outcome = {r.value: 0 for r in ProcessingResult}
+            return {"outcome": empty_outcome, "error": "webhook_paths_missing"}
+
         if _should_use_multi_server_full_scan(config, pinned_type):
             library_ids = list(getattr(config, "plex_library_ids", None) or [])
             outcome_counts = _run_full_scan_multi_server(
@@ -2049,7 +2101,17 @@ def run_processing(
                     pause_check=pause_check,
                 )
 
-        if getattr(config, "webhook_paths", None):
+        # ``_classify_processing_mode`` here picks between
+        # "webhook_paths" and "full_scan" — the "refuse_malformed_webhook"
+        # case was already short-circuited at the top of run_processing
+        # (before the multi-server fast path), so the third branch below
+        # is intentionally unreachable today. Keeping it as an explicit
+        # AssertionError instead of an open ``else`` makes the invariant
+        # load-bearing: if some future edit lifts the early refusal,
+        # this site will fail loudly instead of silently degrading
+        # malformed webhook jobs into a Plex full scan.
+        mode = _classify_processing_mode(config)
+        if mode == "webhook_paths":
             webhook_resolution_payload = _run_webhook_paths_phase(
                 config,
                 registry,
@@ -2062,7 +2124,7 @@ def run_processing(
                 aggregate_outcome=aggregate_outcome,
             )
             return_data = {"webhook_resolution": webhook_resolution_payload}
-        else:
+        elif mode == "full_scan":
             ok = _run_plex_full_scan_phase(
                 config,
                 registry,
@@ -2074,6 +2136,11 @@ def run_processing(
             )
             if not ok:
                 return {"outcome": aggregate_outcome}
+        else:
+            raise AssertionError(
+                f"Unreachable: refuse_malformed_webhook should have been caught "
+                f"by the early refusal at the top of run_processing — got mode={mode!r}"
+            )
 
         summary = _format_outcome_summary(aggregate_outcome)
         if totals["cancelled"]:

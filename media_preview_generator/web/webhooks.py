@@ -37,6 +37,50 @@ _pending_lock = threading.Lock()
 _recent_dispatches: dict[tuple[str, str], float] = {}
 _RECENT_DISPATCH_TTL_SECONDS = 600
 
+
+def reset_webhook_debounce() -> None:
+    """Test-only: cancel pending debounce Timers + wipe debounce state.
+
+    Called by ``/api/__test/reset`` so a session-scoped Flask subprocess
+    can be reused across e2e tests without one test's in-flight webhook
+    state contaminating the next. Three pieces of module-level state
+    must go together:
+
+    * ``_pending_timers`` — ``threading.Timer`` instances scheduled by
+      ``_schedule_webhook_job``. If left running, a Timer scheduled by
+      Test A's webhook will fire 60 s later inside Test B's
+      JobManager — producing the *"webhook debounce never fired"*
+      symptom documented in commit ``3179358``.
+    * ``_pending_batches`` — the payload-aggregation dict keyed by
+      debounce source. Even if the Timer is cancelled, a surviving
+      batch entry makes the next ``_schedule_webhook_job`` call for
+      the same source ATTACH to the orphan batch instead of starting
+      a fresh one — and that batch has no live Timer to fire it.
+      Verified via ``/api/webhooks/pending`` probe (2026-05-12): the
+      dict entry survives reset even after the Timer thread is gone.
+    * ``_recent_dispatches`` — the 600 s TTL dedup table. Without
+      clearing, Test B's first webhook for ``/data/foo.mkv`` is seen
+      as a "duplicate of a recent dispatch" from Test A and silently
+      dropped, producing the *"schedules-list assertions saw stale
+      rows"* symptom from the same commit.
+
+    All three live under ``_pending_lock``; cancel + clear atomically.
+    Caller must already hold ``MPG_TEST_RESET=1`` gate.
+    """
+    with _pending_lock:
+        for timer in _pending_timers.values():
+            try:
+                timer.cancel()
+            except Exception:
+                # Best-effort — a Timer mid-execution (rare; fires after
+                # 60 s default) may raise on cancel. Continue so the
+                # rest of the cleanup still runs.
+                pass
+        _pending_timers.clear()
+        _pending_batches.clear()
+        _recent_dispatches.clear()
+
+
 # In-memory log of received webhook events, persisted to disk on each write.
 _HISTORY_MAX = 100
 _webhook_history: deque = deque(maxlen=_HISTORY_MAX)
@@ -752,6 +796,7 @@ def _schedule_webhook_job(
     delay = int(settings.get("webhook_delay", 60))
     debounce_key = _debounce_key(safe_source, server_id)
     normalized_path = os.path.normpath(normalized_input_path).replace("\\", "/")
+    basename = os.path.basename(normalized_path)
 
     # NOTE: _schedule_webhook_job uses _check_and_record_dedup ONLY as a
     # "have I already created a Job for this path very recently?" guard —
@@ -759,6 +804,13 @@ def _schedule_webhook_job(
     # multiple paths from the same season-pack import will all be debounced
     # into one Job. The dedup catches *re-imports* (Sonarr re-firing after
     # an upgrade) within TTL, not the in-flight batch.
+    #
+    # Job-at-batch-open: a fresh batch creates the Job inside this lock so
+    # the early scan-nudge that fires right after lock release can attach
+    # its log lines to a real Job, not the global loguru sink. Subsequent
+    # webhooks merging into the same batch use ``update_job_config`` /
+    # ``update_job_library_name`` to refresh the displayed state.
+    early_scan_job_id: str | None = None
     with _pending_lock:
         age_sec = _check_and_record_dedup(safe_source, server_id, normalized_path)
         dedup_skip = age_sec is not None
@@ -769,15 +821,52 @@ def _schedule_webhook_job(
                 existing.cancel()
 
             batch = _pending_batches.get(debounce_key)
-            if not batch:
+            is_fresh_batch = batch is None
+
+            if is_fresh_batch:
+                # Pull server-context resolution forward so the Job can be
+                # created with the correct pinned-server fields. Previously
+                # this happened inside ``_execute_webhook_job`` 60s later.
+                b_sid, b_sname, b_stype = _resolve_webhook_server_context(server_id)
+
+                job_manager = get_job_manager()
+                job = job_manager.create_job(
+                    library_name=safe_title,
+                    config={
+                        "source": source,
+                        "path_count": 1,
+                        "webhook_basenames": [basename],
+                        # webhook_paths MUST be persisted at batch-open.
+                        # If the container restarts during the debounce
+                        # window, requeue_interrupted_jobs revives the
+                        # Job with this exact ``job.config``; without
+                        # ``webhook_paths`` here the orchestrator's
+                        # branch at ``run_processing`` falls through to
+                        # _run_plex_full_scan_phase under the webhook's
+                        # Job ID. See Job e7968486 (May 2026): one
+                        # Sonarr webhook for one TV episode produced
+                        # eight full-library scans of 128k items each
+                        # across eleven revivals.
+                        "webhook_paths": [normalized_path],
+                    },
+                    server_id=b_sid,
+                    server_name=b_sname,
+                    server_type=b_stype,
+                )
+                job_manager.add_log(
+                    job.id,
+                    f"INFO - Webhook accepted from {source}: {safe_title} — processing in ~{delay}s",
+                )
                 batch = {
                     "source": source,
                     "file_paths": set(),
                     "titles": [],
                     "server_id": server_id,
                     "deleted_paths": set(),
+                    "job_id": job.id,
                 }
                 _pending_batches[debounce_key] = batch
+
             batch["file_paths"].add(normalized_path)
             batch["titles"].append(safe_title)
             if deleted_paths:
@@ -788,6 +877,39 @@ def _schedule_webhook_job(
                     if old:
                         batch["deleted_paths"].add(old)
 
+            path_count = len(batch["file_paths"])
+
+            # On batch-merge, refresh the Job's config + library_name so
+            # the UI reflects the growing batch. Skipped on the fresh-batch
+            # path because ``create_job`` already set both correctly.
+            if not is_fresh_batch:
+                job_manager = get_job_manager()
+                batch_paths_sorted = sorted(batch["file_paths"])
+                batch_basenames = [os.path.basename(p) for p in batch_paths_sorted]
+                job_manager.update_job_config(
+                    batch["job_id"],
+                    {
+                        "source": source,
+                        "path_count": path_count,
+                        "webhook_basenames": batch_basenames[:_HISTORY_FILES_PREVIEW_CAP],
+                        # Persist the full path list (no display-cap) so
+                        # a restart-revival still finds every path the
+                        # batch had accumulated. See the matching
+                        # comment in the fresh-batch branch above.
+                        "webhook_paths": batch_paths_sorted,
+                    },
+                )
+                # Flip single-title → "N files" once the batch grows past 1.
+                if path_count > 1:
+                    job_manager.update_job_library_name(
+                        batch["job_id"],
+                        f"{path_count} files",
+                    )
+                job_manager.add_log(
+                    batch["job_id"],
+                    f"INFO - Webhook merged into batch: {safe_title} (batch now has {path_count} path(s))",
+                )
+
             fire_at = datetime.now(timezone.utc).timestamp() + delay
             batch["fire_at"] = fire_at
 
@@ -795,7 +917,7 @@ def _schedule_webhook_job(
             timer.daemon = True
             _pending_timers[debounce_key] = timer
             timer.start()
-            path_count = len(batch["file_paths"])
+            early_scan_job_id = batch["job_id"]
 
     if dedup_skip:
         logger.info(
@@ -804,10 +926,81 @@ def _schedule_webhook_job(
         _add_history_entry(safe_source, "Download", safe_title, "deduped")
         return False
 
+    # Fire the early scan-nudge outside the debounce lock so a slow HTTP
+    # call to the destination server can't block other inbound webhooks.
+    # Per-path: every webhook that joins a batch gets its own scan-nudge
+    # for *just its path* (idempotent and cheap; late-joining files in a
+    # season-pack get their own head start).
+    if early_scan_job_id is not None:
+        _kick_early_scan(normalized_path, server_id, early_scan_job_id)
+
     logger.info(
         "Webhook: {} imported '{}' — scheduling job with {} path(s) in {}s", safe_source, safe_title, path_count, delay
     )
     return True
+
+
+def _kick_early_scan(path: str, server_id_filter: str | None, job_id: str) -> None:
+    """Fire a path-only ``trigger_refresh`` on each owning server.
+
+    Runs on a daemon thread so the webhook handler returns immediately;
+    log lines attach to ``job_id`` via :meth:`JobManager.add_log` so the
+    operator sees the head-start activity inside the Job's own log.
+
+    Best-effort: per-server exceptions are surfaced into the Job log and
+    swallowed. The authoritative refresh still fires post-publish inside
+    :func:`process_canonical_path` — this is purely a head-start that
+    lets the server begin indexing during the file-stability delay
+    window instead of waiting until processing begins.
+    """
+
+    def _run() -> None:
+        job_manager = get_job_manager()
+        try:
+            from ..jobs.orchestrator import _resolve_webhook_path_to_canonical
+            from ..servers.registry import ServerRegistry
+
+            settings = get_settings_manager()
+            media_servers = settings.get("media_servers") or []
+            registry = ServerRegistry.from_settings(media_servers)
+            canonical_path, matches = _resolve_webhook_path_to_canonical(path, registry.configs())
+            if server_id_filter:
+                matches = [m for m in matches if m.server_id == server_id_filter]
+            if not matches:
+                job_manager.add_log(
+                    job_id,
+                    f"INFO - Early scan-nudge: no configured server owns {path!r} (skipping head-start)",
+                )
+                return
+            for match in matches:
+                server = registry.get(match.server_id)
+                if server is None:
+                    continue
+                try:
+                    server.trigger_refresh(item_id=None, remote_path=canonical_path)
+                    job_manager.add_log(
+                        job_id,
+                        f"INFO - Early scan-nudge sent to {server.name} for {canonical_path}",
+                    )
+                except Exception as exc:
+                    job_manager.add_log(
+                        job_id,
+                        f"WARNING - Early scan-nudge on {server.name} failed for {canonical_path}: {exc}",
+                    )
+                    logger.debug(
+                        "Early scan-nudge failed on {} for {}: {}",
+                        server.name,
+                        canonical_path,
+                        exc,
+                    )
+        except Exception as exc:
+            logger.debug("Early-scan kickoff aborted for job {}: {}", job_id, exc)
+            try:
+                job_manager.add_log(job_id, f"WARNING - Early scan-nudge: aborted with error: {exc}")
+            except Exception:
+                pass
+
+    threading.Thread(target=_run, daemon=True, name=f"early-scan-{job_id[:8]}").start()
 
 
 def _execute_webhook_job(debounce_key: str) -> None:
@@ -861,18 +1054,41 @@ def _execute_webhook_job(debounce_key: str) -> None:
         batch_server_id = batch.get("server_id")
         b_sid, b_sname, b_stype = _resolve_webhook_server_context(batch_server_id)
 
+        # Job-at-batch-open: ``_schedule_webhook_job`` created the Job up
+        # front so the early scan-nudge could log to it. Look it up here
+        # rather than creating a new one. The library_name and config get
+        # one final refresh in case the batch grew or shrank since open.
         job_manager = get_job_manager()
-        job = job_manager.create_job(
-            library_name=library_display,
-            config={
-                "source": source,
-                "path_count": len(webhook_paths),
-                "webhook_basenames": basenames[:_HISTORY_FILES_PREVIEW_CAP],
-            },
-            server_id=b_sid,
-            server_name=b_sname,
-            server_type=b_stype,
-        )
+        existing_job_id = batch.get("job_id")
+        job = job_manager.get_job(existing_job_id) if existing_job_id else None
+        if job is None:
+            logger.warning(
+                "Webhook batch '{}' references missing job {!r} — recreating. "
+                "Most likely the Job was deleted from the UI before the debounce timer fired.",
+                debounce_key,
+                existing_job_id,
+            )
+            job = job_manager.create_job(
+                library_name=library_display,
+                config={
+                    "source": source,
+                    "path_count": len(webhook_paths),
+                    "webhook_basenames": basenames[:_HISTORY_FILES_PREVIEW_CAP],
+                },
+                server_id=b_sid,
+                server_name=b_sname,
+                server_type=b_stype,
+            )
+        else:
+            job_manager.update_job_library_name(job.id, library_display)
+            job_manager.update_job_config(
+                job.id,
+                {
+                    "source": source,
+                    "path_count": len(webhook_paths),
+                    "webhook_basenames": basenames[:_HISTORY_FILES_PREVIEW_CAP],
+                },
+            )
         settings = get_settings_manager()
         # ``selected_libraries`` is a Plex-only filter (the dispatch path
         # uses it to scope a Plex full-scan to specific Section IDs).
