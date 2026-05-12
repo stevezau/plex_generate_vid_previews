@@ -59,10 +59,14 @@ class TestServersPageWebhookBlock:
         expect(servers_page.locator("#webhookUrl")).to_be_visible()
 
     def test_webhook_url_populated_with_incoming_path(self, servers_page: Page):
-        servers_page.wait_for_timeout(1500)
+        # The webhook URL is populated by JS after page load. Pin the
+        # contract: the input must be non-empty AND contain the
+        # incoming-webhook path. A regression returning an empty
+        # string would now fail loudly (previously the `if value:`
+        # guard let that case silently pass).
+        expect(servers_page.locator("#webhookUrl")).not_to_have_value("", timeout=3000)
         value = servers_page.locator("#webhookUrl").input_value()
-        if value:
-            assert "/api/webhooks/incoming" in value
+        assert "/api/webhooks/incoming" in value, f"Expected /api/webhooks/incoming in URL; got {value!r}"
 
 
 def _force_open_wizard(page: Page) -> None:
@@ -106,36 +110,27 @@ class TestAddServerModal:
     def test_picking_emby_shows_auth_method_picker(self, servers_page: Page):
         _force_open_wizard(servers_page)
         servers_page.locator('.server-type-btn[data-type="emby"]').click()
-        servers_page.wait_for_timeout(300)
-
-        # Step-connect should now be visible.
-        connect_classes = servers_page.locator("#step-connect").get_attribute("class") or ""
-        assert "d-none" not in connect_classes
+        # Deterministic: wait for the JS to strip d-none on the connect step.
+        expect(servers_page.locator("#step-connect")).to_be_visible(timeout=2000)
         # Emby supports password + api_key auth, so the picker is shown.
-        assert "d-none" not in (servers_page.locator("#auth-method-section").get_attribute("class") or "")
+        expect(servers_page.locator("#auth-method-section")).to_be_visible(timeout=1000)
 
     def test_picking_jellyfin_shows_auth_method_picker(self, servers_page: Page):
         _force_open_wizard(servers_page)
         servers_page.locator('.server-type-btn[data-type="jellyfin"]').click()
-        servers_page.wait_for_timeout(300)
-
-        connect_classes = servers_page.locator("#step-connect").get_attribute("class") or ""
-        assert "d-none" not in connect_classes
+        expect(servers_page.locator("#step-connect")).to_be_visible(timeout=2000)
         # Jellyfin adds Quick Connect to the auth picker.
-        assert servers_page.locator("#auth-quick").count() == 1
+        expect(servers_page.locator("#auth-quick")).to_be_attached(timeout=1000)
 
     def test_picking_plex_shows_oauth_section(self, servers_page: Page):
         _force_open_wizard(servers_page)
         servers_page.locator('.server-type-btn[data-type="plex"]').click()
-        servers_page.wait_for_timeout(300)
-
-        connect_classes = servers_page.locator("#step-connect").get_attribute("class") or ""
-        assert "d-none" not in connect_classes
-        # Plex has its own auth path; auth-fields-token-plex should
-        # have d-none stripped.
-        assert "d-none" not in (servers_page.locator("#auth-fields-token-plex").get_attribute("class") or "")
+        expect(servers_page.locator("#step-connect")).to_be_visible(timeout=2000)
+        # Plex has its own auth path; auth-fields-token-plex must
+        # be visible (d-none stripped by the wizard JS).
+        expect(servers_page.locator("#auth-fields-token-plex")).to_be_visible(timeout=1000)
         # And the manual-token input is in the DOM.
-        assert servers_page.locator("#plexToken").count() == 1
+        expect(servers_page.locator("#plexToken")).to_be_attached()
 
 
 @pytest.mark.e2e
@@ -205,8 +200,10 @@ class TestServersAddFlows:
         servers_page.locator("#plexConfigFolder").fill("/plex")
         servers_page.locator("#step-connect-test").click()
         expect(servers_page.locator("#connectResult")).to_contain_text("Test Plex", timeout=3000)
-        servers_page.locator("#step-result-save").click()
-        servers_page.wait_for_timeout(500)
+        # Wait for POST so the assertions don't race the request.
+        with servers_page.expect_request("**/api/servers") as req_info:
+            servers_page.locator("#step-result-save").click()
+        req_info.value  # noqa: B018
         assert captured, "POST /api/servers never fired"
         assert captured[0]["type"] == "plex"
         assert captured[0]["url"] == "http://plex.local:32400"
@@ -218,17 +215,22 @@ class TestServersAddFlows:
 
         _force_open_wizard(servers_page)
         servers_page.locator('.server-type-btn[data-type="emby"]').click()
-        servers_page.wait_for_timeout(200)
+        # Wait for the connect step to be ready before filling.
+        expect(servers_page.locator("#serverUrl")).to_be_visible(timeout=2000)
         servers_page.locator("#serverUrl").fill("http://emby.local:8096")
         servers_page.locator("#serverName").fill("Emby Test")
         servers_page.locator("#authUsername").fill("admin")
         servers_page.locator("#authPassword").fill("hunter2")
         servers_page.locator("#step-connect-test").click()
         expect(servers_page.locator("#connectResult")).to_contain_text("Connected")
-        servers_page.locator("#step-result-save").click()
-        servers_page.wait_for_timeout(500)
+        with servers_page.expect_request("**/api/servers") as req_info:
+            servers_page.locator("#step-result-save").click()
+        req_info.value  # noqa: B018
         assert captured
         assert captured[0]["type"] == "emby"
+        # Tighten: pin the URL the user typed, not just the vendor.
+        assert captured[0]["url"] == "http://emby.local:8096"
+        assert captured[0]["name"] == "Emby Test"
 
     def test_refresh_libraries_button_calls_endpoint(self, authed_page: Page, app_url: str) -> None:
         mock_servers_list(
@@ -248,6 +250,7 @@ class TestServersAddFlows:
         authed_page.goto(f"{app_url}/servers")
         authed_page.wait_for_load_state("domcontentloaded")
         expect(authed_page.locator("#serverList")).to_contain_text("Home", timeout=3000)
-        authed_page.locator(".refresh-libraries-btn").first.click()
-        authed_page.wait_for_timeout(500)
+        with authed_page.expect_request("**/api/servers/*/refresh-libraries") as req_info:
+            authed_page.locator(".refresh-libraries-btn").first.click()
+        req_info.value  # noqa: B018
         assert called, "POST /api/servers/<id>/refresh-libraries never fired"
