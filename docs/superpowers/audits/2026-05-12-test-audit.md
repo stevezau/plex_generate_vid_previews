@@ -50,7 +50,41 @@ Each file is read line-by-line and checked against:
 
 ## tests/e2e/
 
-_(filled in during Phase 1A)_
+### tests/e2e/test_dashboard.py (118 lines, 6 methods, 4 classes)
+
+- **Findings:**
+  - **MED** (line 106) — `assert any("cpu_threads" in (c or {}) for c in captured)` pins the *key* but not the *value*. After clicking the `+`, `cpu_threads` should be `2`. A regression that sent `cpu_threads: 0` would pass this test. Fix: also assert `c["cpu_threads"] == 2`. Batch in Phase 2.1 (bug-blind kwarg).
+  - **MED** (line 105) — hardcoded `wait_for_timeout(300)` for "POST to land". Race-y under load. Should `wait_for_request` instead. Batch in Phase 2.3-equivalent (deterministic waits). Common pattern in e2e file; will be batched suite-wide.
+  - **LOW** — none worth fixing inline; file is clean.
+
+### tests/e2e/test_dashboard_modals.py (266 lines, 6 methods, 4 classes)
+
+- **Findings:**
+  - **MED** (line 81) — `assert captured, "POST /api/jobs never fired"` pins the call happened, not the body. A regression that sent an empty body would pass. Fix: assert `body.get("library_ids")` or similar (cf. the Jellyfin test at line 167-175 which DOES pin specifics — use that as the template).
+  - **MED** (lines 71, 80, 150, 165, 236, 262) — multiple `wait_for_timeout(N)` hardcoded sleeps. Same class as test_dashboard.py:105. Batch suite-wide.
+  - **MED** (line 250-266 `test_manual_trigger_dropdown_shows_vendor_in_option_text`) — matrix-coverage gap: only Plex + Jellyfin tested. Emby cell omitted with no docstring explaining why. Either add Emby row or add comment per `.claude/rules/testing.md:90`.
+  - Good practice example: lines 167-175 (Jellyfin full-scan test) — pin specific values (`library_ids == ["lib-1"]`, `"server_id" not in body`). This is the template for fixing the line 81 finding.
+
+### tests/e2e/test_folder_picker.py (103 lines, 5 methods, 1 class)
+
+- **Findings:**
+  - **MED** (line 92) — `expect(...).not_to_have_value("/")` passes for ANY non-`"/"` value. Vague. The test name says "drills in" so the value should match the clicked folder's path. Tighten to `expect(...).to_have_value("/data")` or similar.
+  - **MED** (lines 67, 78, 89, 91) — `wait_for_timeout(300)` × 4. Same race pattern as test_dashboard*. Batch.
+  - **LOW** — clean otherwise.
+
+### tests/e2e/test_journey_bif_viewer_with_real_frames.py (261 lines, 2 methods, 1 class)
+
+- **Findings:**
+  - **MED, Criterion F** (lines 160-167, 249-253) — uses `page.request.get(...)` for backend API calls (`/api/bif/info`, `/api/bif/frame`). Both pass `X-Auth-Token` header — no browser cookie state needed. Same Playwright IPC stall class as the canary. Fix: swap to `requests`. Batch in Phase 2.F.
+  - **Strong assertions throughout**: JPEG magic-byte check, `naturalWidth > 0`, frame count = 5 are all SUT-specific contracts. Excellent test design — use as a reference for what good e2e looks like.
+
+### tests/e2e/test_journey_cancel_kill_running_job.py (191 lines, 3 methods, 1 class)
+
+- **Findings:**
+  - **MED, Criterion F** (lines 24-31, 41-44, 81-84, 123-126, 138-141, 173-176) — six `page.request.X()` backend API calls. None need browser cookie state. Swap to `requests`. Batch in Phase 2.F.
+  - **Strong assertions**: line 147 pins exact log-line text ("Cancellation requested by user"); line 186 pins exact DOM element absence. Good contracts.
+
+**Batch 1 summary (5 files, 939 lines):** 0 HIGH, 11 MED, 0 LOW. The dominant patterns are (a) hardcoded `wait_for_timeout` sleeps and (b) `page.request.X()` for backend API calls. No inline LOW fixes warranted in this batch — files are already clean on naming, AAA, imports, types.
 
 ## tests/journeys/
 
