@@ -1554,7 +1554,37 @@ function _renderPublishersBlock(job) {
     // (auto-retrying)" and (b) the inline countdown + retry-chain
     // status row that the modal's Attempts block now renders directly
     // below this section. Removed — the publisher row stays compact.
-    return `<div class="mt-3 pt-2 border-top"><strong class="me-2">Servers:</strong>${lines}</div>`;
+    //
+    // Label disambiguation: for chain heads the publishers object
+    // reflects the *latest aggregate* (post-final-attempt state), not
+    // the per-attempt snapshot. The "Chain totals" label makes that
+    // scope explicit so an operator who switched to an earlier attempt
+    // via the pill row doesn't misread the chain-level numbers as
+    // belonging to that specific run. True per-attempt scoping
+    // requires per-attempt publisher persistence at the JobManager
+    // level — out of scope here.
+    const cfg = (job && job.config) || {};
+    const isChain = !!cfg.is_retry_chain;
+    let label = 'Servers:';
+    if (isChain) {
+        const ra = cfg.retry_attempt || 0;
+        const totalRuns = ra + 1;
+        label = 'Chain totals (' + totalRuns + ' run' + (totalRuns === 1 ? '' : 's') + '):';
+    }
+    return `<div class="mt-3 pt-2 border-top"><strong class="me-2">${escapeHtmlText(label)}</strong>${lines}</div>`;
+}
+
+// Pick the retry-chain info-modal template matching the Job's server
+// type. Plex's wait reason (library scan latency) and Jellyfin's wait
+// reason (LibraryMonitor + Generate Trickplay Images task) are
+// different enough that one tooltip can't honestly describe both —
+// the previous unified template buried Plex users in Jellyfin-specific
+// detail that didn't apply to their setup. Each chain Job carries a
+// single server_type because the retry queue keys by
+// (canonical_path, server_id), so per-chain branching is unambiguous.
+function _pickRetryInfoTpl(job) {
+    const t = (job && job.server_type || '').toLowerCase();
+    return t === 'plex' ? 'infoRetryChainPlexTpl' : 'infoRetryChainJellyfinTpl';
 }
 
 // Retry chip rendered next to the title on retry-chain rows. Shows
@@ -1582,14 +1612,14 @@ function _renderRetryChip(job) {
     const attempt = typeof cfg.retry_attempt === 'number' ? cfg.retry_attempt : 0;
     // Trailing info-icon opens the shared #globalInfoModal with the
     // full retry-chain explanation (what's happening, why the wait,
-    // backoff schedule, when it gives up). Same rich content the chain-
-    // state chip in the Job Details modal links to — single source of
-    // truth lives in ``_shared_info_templates.html#infoRetryChainTpl``.
+    // backoff schedule, when it gives up). Source of truth lives in
+    // ``_shared_info_templates.html`` — Plex/Jellyfin variants picked
+    // via ``_pickRetryInfoTpl`` above.
     return ' <span class="badge bg-warning text-dark ms-1 d-inline-flex align-items-center" '
         + 'title="Auto-retrying — click ⓘ for details">'
         + '<i class="bi bi-arrow-clockwise me-1"></i>Retry ' + attempt + '/' + max
         + ' <button type="button" class="info-icon info-icon-more btn btn-link p-0 ms-1 align-baseline text-dark"'
-        + ' data-explain-template="infoRetryChainTpl"'
+        + ' data-explain-template="' + _pickRetryInfoTpl(job) + '"'
         + ' data-explain-title="Why this file is auto-retrying"'
         + ' title="What is this? — click for details"'
         + ' aria-label="About retry chain">'

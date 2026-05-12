@@ -73,6 +73,33 @@ class RetryScheduler:
     def __init__(self) -> None:
         self._timers: dict[str, threading.Timer] = {}
         self._attempts: dict[str, int] = {}
+        # Parallel dict so ``fire_now`` can re-invoke the callback without
+        # forcing every operator-action endpoint to reconstruct the
+        # closure ``schedule_retry_for_unindexed`` builds (registry,
+        # config, item_id_by_server, server_id_filter, display_name,
+        # source, originating_job_id — seven captured values). Pre-fix
+        # the only way to "fire the next retry now" was to wait out the
+        # back-off; the modal's operator-action footer needs sub-second
+        # response.
+        self._callbacks: dict[str, Callable[[str, int], None]] = {}
+        # Monotonic generation counter per (path, schedule) — each call
+        # to ``schedule`` assigns a fresh generation, passed into the
+        # Timer's ``_fire`` invocation. ``_fire`` checks it owns the
+        # current generation before invoking the callback so a stale
+        # Timer whose state was already claimed by ``cancel`` /
+        # ``fire_now`` / a subsequent ``schedule`` is a no-op. Without
+        # this, two production races exist:
+        #   1) ``fire_now`` cancels the Timer outside the lock — if the
+        #      Timer expired in that microsecond window, the Timer's
+        #      ``_fire`` and the spawned daemon both invoke the
+        #      callback (the exact "two child attempt rows for one
+        #      chain step" the inline comment warns about).
+        #   2) Schedule re-write while old Timer is mid-``_fire`` — the
+        #      stale ``_fire`` pops the NEWLY-written state, leaving
+        #      the new Timer alive but with no callback registered.
+        # The generation guard makes both into proven no-ops.
+        self._generations: dict[str, int] = {}
+        self._next_gen: int = 0
         self._lock = threading.RLock()
 
     def schedule(
@@ -103,10 +130,20 @@ class RetryScheduler:
             if existing is not None:
                 existing.cancel()
 
-            timer = threading.Timer(delay, self._fire, args=(canonical_path, callback, attempt))
+            # Generation token: each schedule assigns a fresh one. The
+            # Timer's ``_fire`` checks it owns the current generation
+            # before invoking the callback — stale Timers (replaced by
+            # this schedule, cancelled, or fire_now'd) return early.
+            self._next_gen += 1
+            my_gen = self._next_gen
+            timer = threading.Timer(delay, self._fire, args=(canonical_path, callback, attempt, my_gen))
             timer.daemon = True
             self._timers[canonical_path] = timer
             self._attempts[canonical_path] = attempt
+            # Stash the callback alongside the timer so ``fire_now`` can
+            # re-invoke it without rebuilding the closure.
+            self._callbacks[canonical_path] = callback
+            self._generations[canonical_path] = my_gen
             timer.start()
 
         logger.info(
@@ -127,25 +164,110 @@ class RetryScheduler:
         with self._lock:
             timer = self._timers.pop(canonical_path, None)
             self._attempts.pop(canonical_path, None)
+            self._callbacks.pop(canonical_path, None)
+            self._generations.pop(canonical_path, None)
         if timer is None:
             return False
         timer.cancel()
         return True
+
+    def fire_now(self, canonical_path: str) -> bool:
+        """Fire the pending retry for ``canonical_path`` immediately.
+
+        Used by the modal's "Retry now" operator action so the operator
+        doesn't have to wait out the current back-off (which can be
+        15 minutes or 1 hour deep in the chain). Cancels the pending
+        timer and invokes the original callback on a fresh daemon
+        thread so the HTTP request handler returns immediately.
+
+        Race safety: all state pops and ``timer.cancel()`` happen under
+        the single ``_lock``, so a concurrent Timer thread that has
+        already entered ``_fire`` will see its own generation no longer
+        match ``self._generations[path]`` and bail out as a no-op
+        (rather than double-firing the callback and creating two child
+        attempt rows for one chain step).
+
+        Returns ``True`` when a pending retry was fired; ``False`` when
+        nothing was scheduled for this path (chain already terminal,
+        cancelled, exhausted, or a different ``canonical_path`` was
+        captured at schedule time).
+        """
+        with self._lock:
+            timer = self._timers.pop(canonical_path, None)
+            attempt = self._attempts.pop(canonical_path, None)
+            callback = self._callbacks.pop(canonical_path, None)
+            self._generations.pop(canonical_path, None)
+            if timer is None or callback is None or attempt is None:
+                return False
+            # Cancel the timer while still holding the lock so a
+            # concurrent Timer-thread ``_fire`` is ordered after this
+            # pop — when it acquires the lock it'll see no generation
+            # for this path and early-out.
+            timer.cancel()
+        # Run on a fresh daemon thread so the HTTP handler that
+        # triggered this can return ~immediately. Bypass ``_fire`` —
+        # we already claimed the slot under the lock; routing through
+        # ``_fire`` would just hit its early-return guard.
+        thread = threading.Thread(
+            target=self._invoke_callback_safely,
+            args=(canonical_path, callback, attempt),
+            daemon=True,
+            name=f"retry-fire-now-{canonical_path[-30:]}",
+        )
+        thread.start()
+        return True
+
+    def _invoke_callback_safely(self, canonical_path: str, callback: Callable[[str, int], None], attempt: int) -> None:
+        """Run a retry callback with the same swallow-and-log protection
+        ``_fire`` provides. Used by ``fire_now`` to invoke the callback
+        outside the Timer-thread entry point.
+        """
+        try:
+            callback(canonical_path, attempt)
+        except Exception as exc:
+            logger.exception(
+                "Forced retry for {} hit an unexpected error and was abandoned ({}: {}). "
+                "This file won't be retried again automatically — re-trigger it via webhook or by re-running "
+                "the relevant library job. Please report this with the traceback above as it indicates a bug.",
+                canonical_path,
+                type(exc).__name__,
+                exc,
+            )
 
     def pending_count(self) -> int:
         """Number of canonical paths with a retry currently pending."""
         with self._lock:
             return len(self._timers)
 
-    def _fire(self, canonical_path: str, callback: Callable[[str, int], None], attempt: int) -> None:
+    def _fire(
+        self,
+        canonical_path: str,
+        callback: Callable[[str, int], None],
+        attempt: int,
+        my_gen: int,
+    ) -> None:
         """Timer thread entry point. Cleans up state then runs the callback.
 
         Exceptions in the callback are caught + logged so a buggy
         publisher can't kill the retry timer thread.
+
+        Generation guard: ``my_gen`` is captured at schedule time. If
+        the current generation for this path has been bumped by a
+        subsequent ``schedule`` / ``cancel`` / ``fire_now``, this
+        Timer's invocation is stale and we return without invoking
+        the callback. Prevents the documented "two child attempt rows
+        for one chain step" race.
         """
         with self._lock:
+            if self._generations.get(canonical_path) != my_gen:
+                # Stale Timer — cancelled, replaced, or fire_now'd. The
+                # winning thread already invoked (or chose not to invoke)
+                # the callback; nothing for this Timer to do.
+                return
             self._timers.pop(canonical_path, None)
             self._attempts.pop(canonical_path, None)
+            self._callbacks.pop(canonical_path, None)
+            self._generations.pop(canonical_path, None)
         try:
             callback(canonical_path, attempt)
         except Exception as exc:

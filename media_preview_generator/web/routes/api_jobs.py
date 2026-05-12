@@ -596,6 +596,62 @@ def cancel_job(job_id):
     return jsonify((updated or job).to_dict())
 
 
+@api.route("/jobs/<job_id>/retry-now", methods=["POST"])
+@api_token_required
+def retry_now(job_id):
+    """Fire the next pending retry attempt immediately.
+
+    Operator action surfaced in the modal footer for chain heads whose
+    back-off countdown is currently inflight. Pre-fix the operator had
+    to wait out the back-off (which deep in a chain is 15 min / 1 h)
+    even when they knew the upstream server had caught up — typical
+    case: Jellyfin's library scan completed but the chain is still
+    waiting through the next scheduled retry.
+
+    Only valid on chain heads (``is_retry_chain``). Returns:
+        200 + updated Job dict on successful fire
+        404 when ``job_id`` is unknown
+        400 when the job is not a chain head
+        409 when no retry is currently pending (chain is terminal,
+            cancelled, or between attempts but not awaiting a back-off)
+    """
+    job_manager = get_job_manager()
+    job = job_manager.get_job(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    if not job.config.get("is_retry_chain"):
+        return jsonify({"error": "Not a retry-chain job"}), 400
+    canonical_path = job.config.get("retry_chain_for")
+    if not canonical_path:
+        return jsonify({"error": "Chain has no canonical_path"}), 400
+
+    # Lazy import — the retry queue pulls in the multi-server pipeline
+    # via its own internal imports; loading it at module-init would
+    # bloat the route module's startup cost. Same pattern used by
+    # cancel_job in jobs.py. Absolute import because ``routes`` is
+    # ``media_preview_generator.web.routes``; two dots would resolve
+    # to ``media_preview_generator.web.processing`` which doesn't exist.
+    from media_preview_generator.processing.retry_queue import get_retry_scheduler
+
+    fired = get_retry_scheduler().fire_now(canonical_path)
+    if not fired:
+        return (
+            jsonify(
+                {
+                    "error": "No pending retry to fire",
+                    "hint": (
+                        "The chain may be terminal, cancelled, or currently mid-firing. "
+                        "Refresh the modal to see the latest state."
+                    ),
+                }
+            ),
+            409,
+        )
+
+    job_manager.add_log(job_id, "INFO - Retry forced by operator (Retry now)")
+    return jsonify({"fired": True, "job_id": job_id, "canonical_path": canonical_path})
+
+
 @api.route("/jobs/<job_id>/pause", methods=["POST"])
 @api_token_required
 def pause_job(job_id):

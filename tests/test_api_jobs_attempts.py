@@ -267,6 +267,101 @@ class TestAttemptsEndpoint:
         )
 
 
+class TestRetryNowEndpoint:
+    """``POST /api/jobs/<id>/retry-now`` — operator action that fires the
+    pending back-off retry immediately. Powers the modal footer's
+    "Retry now" button.
+
+    The endpoint's contract:
+        200 + ``{"fired": True, ...}`` on successful fire
+        404 when ``job_id`` is unknown
+        400 when the job exists but is not a chain head
+        409 when nothing is scheduled (chain terminal/cancelled/mid-firing)
+        401/403 without auth
+    """
+
+    def test_fires_pending_retry_for_chain_head(self, client):
+        from media_preview_generator.web.jobs import get_job_manager
+
+        jm = get_job_manager()
+        chain_id, _ = _seed_chain_with_attempts(
+            jm,
+            canonical_path="/data/Beast (2026)/Beast.mkv",
+            basename="Beast (2026)",
+            num_attempts=1,
+        )
+
+        # The seed helper doesn't actually schedule a Timer; mock
+        # fire_now so the endpoint thinks one was pending. This is the
+        # right boundary to mock — the endpoint forwards to
+        # RetryScheduler and reports the result; the scheduler's own
+        # behaviour is exercised in TestRetrySchedulerFireNow.
+        with patch("media_preview_generator.processing.retry_queue.get_retry_scheduler") as gs:
+            gs.return_value.fire_now.return_value = True
+            resp = client.post(f"/api/jobs/{chain_id}/retry-now", headers=_headers())
+
+        assert resp.status_code == 200, (
+            f"Successful retry-now must return 200; got {resp.status_code} {resp.get_data(as_text=True)!r}"
+        )
+        body = resp.get_json()
+        assert body["fired"] is True
+        assert body["job_id"] == chain_id
+        # canonical_path round-trips so the operator's UI can confirm
+        # the right file was kicked.
+        assert body["canonical_path"] == "/data/Beast (2026)/Beast.mkv"
+        # Verify the SUT called fire_now with the chain's canonical_path
+        # (not the job_id) — the scheduler keys by path, not UUID.
+        gs.return_value.fire_now.assert_called_once_with("/data/Beast (2026)/Beast.mkv")
+
+    def test_returns_400_for_non_chain_job(self, client):
+        from media_preview_generator.web.jobs import get_job_manager
+
+        jm = get_job_manager()
+        job = jm.create_job(library_name="Regular Job", config={})
+        try:
+            resp = client.post(f"/api/jobs/{job.id}/retry-now", headers=_headers())
+            assert resp.status_code == 400
+            assert resp.get_json()["error"] == "Not a retry-chain job"
+        finally:
+            jm.delete_job(job.id)
+
+    def test_returns_404_for_unknown_id(self, client):
+        resp = client.post(
+            "/api/jobs/00000000-0000-0000-0000-000000000000/retry-now",
+            headers=_headers(),
+        )
+        assert resp.status_code == 404
+
+    def test_returns_409_when_no_pending_retry(self, client):
+        """A chain head whose timer has already fired (or was cancelled)
+        has nothing for ``fire_now`` to invoke. The endpoint surfaces
+        this as 409 so the UI can show "Already running" / "Chain
+        terminal" instead of silently no-op'ing.
+        """
+        from media_preview_generator.web.jobs import get_job_manager
+
+        jm = get_job_manager()
+        chain_id, _ = _seed_chain_with_attempts(
+            jm,
+            canonical_path="/data/done.mkv",
+            basename="Done",
+            num_attempts=1,
+        )
+
+        with patch("media_preview_generator.processing.retry_queue.get_retry_scheduler") as gs:
+            gs.return_value.fire_now.return_value = False
+            resp = client.post(f"/api/jobs/{chain_id}/retry-now", headers=_headers())
+
+        assert resp.status_code == 409
+        body = resp.get_json()
+        assert body["error"] == "No pending retry to fire"
+        assert "hint" in body
+
+    def test_requires_auth(self, client):
+        resp = client.post("/api/jobs/00000000-0000-0000-0000-000000000000/retry-now")
+        assert resp.status_code in (401, 403), f"retry-now must require auth; got {resp.status_code}"
+
+
 class TestOriginatingDispatchFilter:
     """Single-row-per-file UX: when a chain row references an
     ``originating_job_id``, that worker-pool dispatch Job is hidden

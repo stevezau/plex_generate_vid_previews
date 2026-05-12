@@ -608,8 +608,33 @@
                     </div>
                 </div>
             </div>
-            <div class="modal-footer">
+            <div class="modal-footer flex-wrap gap-2">
                 <small class="text-muted me-auto" id="logsLineCount"></small>
+                <!-- Operator-action buttons. ``showLogsModal`` /
+                     ``_updateOperatorActions`` toggle visibility based
+                     on the job's current chain state so an irrelevant
+                     button (e.g. "Retry now" on a completed chain) is
+                     hidden rather than rendered disabled — disabled
+                     controls invite repeated clicks before the operator
+                     reads the tooltip. -->
+                <button type="button" class="btn btn-warning d-none"
+                        id="opActionRetryNow" onclick="onOperatorRetryNow()"
+                        title="Fire the next pending retry attempt immediately (skip the back-off)"
+                        aria-label="Retry the chain now">
+                    <i class="bi bi-lightning-charge-fill me-1"></i>Retry now
+                </button>
+                <button type="button" class="btn btn-outline-danger d-none"
+                        id="opActionCancelChain" onclick="onOperatorCancelChain()"
+                        title="Cancel this retry chain — pending retry timer is dropped and any in-flight attempts get a cancellation signal"
+                        aria-label="Cancel this retry chain">
+                    <i class="bi bi-x-octagon me-1"></i>Cancel chain
+                </button>
+                <a class="btn btn-outline-secondary d-none"
+                   id="opActionOpenBif" href="#" target="_blank" rel="noopener"
+                   title="Open this job's first generated BIF in the Preview Inspector"
+                   aria-label="Open first BIF in Preview Inspector">
+                    <i class="bi bi-eye me-1"></i>Open BIF
+                </a>
                 <button type="button" class="btn btn-outline-secondary" onclick="copyLogs()" title="Copy to clipboard">
                     <i class="bi bi-clipboard me-1"></i>Copy
                 </button>

@@ -211,6 +211,224 @@ class TestRetrySchedulerCancel:
         assert sched.cancel("/never-scheduled") is False
 
 
+class TestRetrySchedulerFireNow:
+    """``fire_now`` powers the modal's "Retry now" operator action — it
+    cancels the pending back-off timer and invokes the original callback
+    immediately so the operator doesn't have to wait through a 5-minute
+    (or 1-hour) back-off after the underlying server has clearly caught
+    up.
+    """
+
+    def test_fire_now_invokes_callback_immediately(self):
+        sched = RetryScheduler()
+        cb_done = threading.Event()
+        seen = {}
+
+        def cb(path, attempt):
+            seen["path"] = path
+            seen["attempt"] = attempt
+            cb_done.set()
+
+        # Schedule with a long delay so the test fails clearly if
+        # fire_now silently waits for the timer instead of invoking
+        # directly.
+        with patch(
+            "media_preview_generator.processing.retry_queue._BACKOFF",
+            (60, 60, 60, 60, 60),
+        ):
+            sched.schedule("/data/foo.mkv", cb, attempt=2)
+            assert sched.fire_now("/data/foo.mkv") is True
+            # Must complete in << back-off; 2s is generous for thread
+            # spin-up under CI contention but well under the 60s back-off.
+            assert cb_done.wait(timeout=2.0), "fire_now did not invoke callback within 2s"
+
+        assert seen == {"path": "/data/foo.mkv", "attempt": 2}
+        # State cleared after fire — pending_count drops to 0 and the
+        # timer is no longer tracked.
+        assert sched.pending_count() == 0
+        assert sched.cancel("/data/foo.mkv") is False
+
+    def test_fire_now_returns_false_when_nothing_pending(self):
+        sched = RetryScheduler()
+        assert sched.fire_now("/data/never-scheduled.mkv") is False
+
+    def test_fire_now_suppresses_timer_double_fire(self):
+        """Happy-path no-race smoke: ``fire_now`` cancels the Timer
+        cleanly when the Timer is nowhere near firing.
+        """
+        sched = RetryScheduler()
+        call_count = 0
+        call_lock = threading.Lock()
+
+        def cb(path, attempt):
+            nonlocal call_count
+            with call_lock:
+                call_count += 1
+
+        with patch(
+            "media_preview_generator.processing.retry_queue._BACKOFF",
+            (0.3, 0.3, 0.3, 0.3, 0.3),
+        ):
+            sched.schedule("/x", cb, attempt=1)
+            assert sched.fire_now("/x") is True
+            time.sleep(0.6)
+
+        with call_lock:
+            assert call_count == 1, (
+                f"fire_now() must cancel the underlying Timer to prevent double-firing; "
+                f"got {call_count} invocations (expected exactly 1)."
+            )
+
+    def test_fire_now_and_timer_concurrent_invocation_runs_callback_exactly_once(self):
+        """**The race-window pin** — Shape #4. Pre-fix architecture
+        review (HIGH finding): ``fire_now`` called ``timer.cancel()``
+        OUTSIDE the lock, leaving a microsecond window where a Timer
+        already mid-firing entered ``_fire`` concurrently with the
+        daemon thread ``fire_now`` spawned. Both threads then raced
+        past the per-path pops and both invoked the callback —
+        producing two child attempt rows for one chain step.
+
+        This test directly simulates that race by invoking ``_fire``
+        on a thread concurrently with ``fire_now`` (rather than
+        relying on real Timer-fire timing, which is too jittery to
+        reliably hit the microsecond window). Removing the generation
+        guard from ``_fire`` makes this test fail; the bug-blind
+        version of this test that just schedules with 0.3s and calls
+        ``fire_now`` passes even when the cancel is removed entirely.
+        """
+        sched = RetryScheduler()
+        call_count = 0
+        call_lock = threading.Lock()
+
+        def cb(path, attempt):
+            nonlocal call_count
+            with call_lock:
+                call_count += 1
+
+        with patch(
+            "media_preview_generator.processing.retry_queue._BACKOFF",
+            (60, 60, 60, 60, 60),
+        ):
+            sched.schedule("/race", cb, attempt=1)
+            # Capture the generation token the Timer was scheduled with
+            # so the simulated Timer-thread ``_fire`` uses the right one.
+            with sched._lock:
+                my_gen = sched._generations["/race"]
+
+            timer_done = threading.Event()
+
+            def simulated_timer_fire():
+                # Direct invocation simulates the Timer thread that has
+                # already started executing ``_fire`` when ``fire_now``
+                # arrives. Same args the real Timer would pass.
+                sched._fire("/race", cb, 1, my_gen)
+                timer_done.set()
+
+            t = threading.Thread(target=simulated_timer_fire, daemon=True)
+            t.start()
+            # Race fire_now against the in-flight _fire. One of the two
+            # must claim the slot; the other must early-return without
+            # invoking the callback.
+            sched.fire_now("/race")
+            timer_done.wait(timeout=2.0)
+            # Drain the fire_now daemon by yielding briefly.
+            time.sleep(0.05)
+
+        with call_lock:
+            assert call_count == 1, (
+                f"Race between Timer-thread _fire and fire_now caused double invocation "
+                f"(count={call_count}). The generation-token guard in _fire must early-out "
+                f"when its generation has been claimed by a competing fire_now."
+            )
+
+    def test_schedule_rewrite_makes_stale_timer_a_noop(self):
+        """**Schedule rewrite race pin** — MED finding from arch review.
+        Pre-fix: ``schedule()`` re-write would pop+cancel the old Timer
+        AFTER writing new state. If the old Timer was already mid-
+        ``_fire``, its lock-protected pops would wipe the NEWLY written
+        state, leaving the new Timer alive but with no callback in
+        ``_callbacks``. A subsequent ``fire_now`` would then return
+        False (409 "no pending retry") even though a Timer was live.
+
+        With the generation guard, the old ``_fire`` checks its
+        generation no longer matches and bails before popping anything.
+        """
+        sched = RetryScheduler()
+        first_cb_calls = 0
+        second_cb_calls = 0
+
+        def cb1(path, attempt):
+            nonlocal first_cb_calls
+            first_cb_calls += 1
+
+        def cb2(path, attempt):
+            nonlocal second_cb_calls
+            second_cb_calls += 1
+
+        with patch(
+            "media_preview_generator.processing.retry_queue._BACKOFF",
+            (60, 60, 60, 60, 60),
+        ):
+            sched.schedule("/rewrite", cb1, attempt=1)
+            with sched._lock:
+                first_gen = sched._generations["/rewrite"]
+
+            # Re-schedule (bumps generation) while we still have the
+            # first generation captured.
+            sched.schedule("/rewrite", cb2, attempt=2)
+
+            # Now simulate the old Timer-thread entering _fire with
+            # its stale generation. It must NOT invoke cb1 (no winning
+            # claim) AND must NOT wipe the new state.
+            sched._fire("/rewrite", cb1, 1, first_gen)
+
+            # The new Timer's state must still be present and
+            # fire_now'able with the NEW callback.
+            assert sched.fire_now("/rewrite") is True
+            time.sleep(0.1)
+
+        assert first_cb_calls == 0, (
+            "Stale Timer for the re-scheduled path must not invoke its callback — "
+            "the generation guard in _fire should early-return."
+        )
+        assert second_cb_calls == 1, (
+            "After a schedule re-write, fire_now must successfully invoke the NEW callback. "
+            "Pre-fix the stale _fire would wipe the newly-written state, leaving "
+            "fire_now to return False even though a Timer was live."
+        )
+
+    def test_schedule_overwrite_drops_stale_callback(self):
+        """Re-scheduling the same path replaces both the timer and the
+        callback. Without the callbacks-dict update, a stale closure
+        could be re-invoked by a later fire_now — leaking the previous
+        ``schedule_retry_for_unindexed`` closure's captured registry
+        across chain reschedules.
+        """
+        sched = RetryScheduler()
+        first_calls = 0
+        second_calls = 0
+
+        def cb1(path, attempt):
+            nonlocal first_calls
+            first_calls += 1
+
+        def cb2(path, attempt):
+            nonlocal second_calls
+            second_calls += 1
+
+        with patch(
+            "media_preview_generator.processing.retry_queue._BACKOFF",
+            (60, 60, 60, 60, 60),
+        ):
+            sched.schedule("/x", cb1, attempt=1)
+            sched.schedule("/x", cb2, attempt=2)  # replaces cb1
+            assert sched.fire_now("/x") is True
+            time.sleep(0.5)
+
+        assert first_calls == 0, "Stale cb1 must not be invoked after re-schedule overwrites it"
+        assert second_calls == 1
+
+
 @pytest.mark.slow
 class TestSchedulerSingleton:
     def test_get_retry_scheduler_is_singleton(self):

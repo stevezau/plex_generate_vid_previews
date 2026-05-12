@@ -171,6 +171,120 @@ function _renderModalHeader(job) {
             : '');
 }
 
+// Find the first BIF path on disk across all servers' publisher rows.
+// Used by the "Open BIF" footer action so the operator gets one-click
+// access to scrub the generated preview right from the modal. Returns
+// '' when no BIF was generated (or only-skipped jobs where output_path
+// isn't on the publisher row).
+function _firstBifPathFromJob(job) {
+    if (!job || !Array.isArray(job.publishers)) return '';
+    for (let i = 0; i < job.publishers.length; i++) {
+        const p = job.publishers[i];
+        // Per-publisher aggregate doesn't carry output paths — those
+        // live in the per-file results. ``last_bif_path`` is a forward-
+        // compat field; today we fall back to scanning the file results
+        // if it's absent (caller may choose to do its own lookup).
+        if (p && p.last_bif_path) return p.last_bif_path;
+    }
+    return '';
+}
+
+// Toggle the footer's operator-action buttons based on chain state.
+// Hide-vs-disable: a disabled button invites repeated clicks before the
+// operator reads the tooltip; hiding clearly signals "not available
+// right now". The full set of buttons is rendered hidden in the
+// template — we just flip ``d-none``.
+//
+// State -> visible buttons:
+//   * Chain pending (back-off countdown active) -> Retry now + Cancel chain + Open BIF
+//   * Chain running                              -> Cancel chain + Open BIF
+//   * Chain completed/failed/cancelled (terminal)-> Open BIF (only if any BIF on disk)
+//   * Non-chain (single dispatch)                -> Open BIF (only if any BIF on disk)
+function _updateOperatorActions(job) {
+    const retryBtn = document.getElementById('opActionRetryNow');
+    const cancelBtn = document.getElementById('opActionCancelChain');
+    const openBifBtn = document.getElementById('opActionOpenBif');
+    if (!retryBtn || !cancelBtn || !openBifBtn) return;
+
+    // Start hidden — each branch below opts in.
+    retryBtn.classList.add('d-none');
+    cancelBtn.classList.add('d-none');
+    openBifBtn.classList.add('d-none');
+    if (!job) return;
+
+    const cfg = job.config || {};
+    const isChain = !!cfg.is_retry_chain;
+    const status = job.status || '';
+    const progress = job.progress || {};
+    const hasPendingRetry = isChain && status === 'pending' && progress.retry_eta;
+    const isActiveChain = isChain && (status === 'pending' || status === 'running');
+
+    if (hasPendingRetry) retryBtn.classList.remove('d-none');
+    if (isActiveChain) cancelBtn.classList.remove('d-none');
+
+    const bif = _firstBifPathFromJob(job);
+    if (bif) {
+        openBifBtn.href = '/bif-viewer?bif=' + encodeURIComponent(bif);
+        openBifBtn.classList.remove('d-none');
+    } else {
+        openBifBtn.removeAttribute('href');
+    }
+}
+
+// "Retry now" footer button — POST /api/jobs/<id>/retry-now and refresh
+// the modal state on success. The endpoint already invokes the retry
+// callback on a fresh thread, so the call returns ~immediately and the
+// modal's poll loop picks up the new attempt row within 5s.
+async function onOperatorRetryNow() {
+    if (!_logsModalJobId) return;
+    const btn = document.getElementById('opActionRetryNow');
+    if (btn) { btn.disabled = true; btn.classList.add('disabled'); }
+    try {
+        await apiPost('/api/jobs/' + encodeURIComponent(_logsModalJobId) + '/retry-now', {});
+        // Force-refresh the attempts dropdown so the new firing row
+        // appears without waiting the full 5s poll interval.
+        _refreshAttemptsDropdown(_logsModalJobId);
+        // Update operator-action visibility — once fired, the chain is
+        // briefly running and ``retry_eta`` clears, so "Retry now"
+        // should hide. Re-read the job from the global list.
+        const refreshed = jobs.find(j => j.id === _logsModalJobId);
+        _updateOperatorActions(refreshed);
+    } catch (err) {
+        console.error('retry-now failed:', err);
+        const msg = (err && err.message) ? err.message : 'Retry-now request failed';
+        alert(msg);
+    } finally {
+        if (btn) { btn.disabled = false; btn.classList.remove('disabled'); }
+    }
+}
+
+// "Cancel chain" footer button — POST /api/jobs/<id>/cancel. The
+// existing endpoint already handles chain semantics (cancel timer +
+// mark child attempts cancelled). Browser ``confirm()`` prevents a
+// stray click from killing a chain that's making progress.
+async function onOperatorCancelChain() {
+    if (!_logsModalJobId) return;
+    if (!confirm('Cancel this retry chain? Any pending back-off timer will be dropped and in-flight attempts will receive a cancellation signal.')) {
+        return;
+    }
+    const btn = document.getElementById('opActionCancelChain');
+    if (btn) { btn.disabled = true; btn.classList.add('disabled'); }
+    try {
+        await apiPost('/api/jobs/' + encodeURIComponent(_logsModalJobId) + '/cancel', {});
+        // The global jobs poll picks up the new status within ~1s;
+        // refresh the attempts dropdown immediately so the modal
+        // reflects the cancellation without waiting.
+        _refreshAttemptsDropdown(_logsModalJobId);
+        const refreshed = jobs.find(j => j.id === _logsModalJobId);
+        _updateOperatorActions(refreshed);
+    } catch (err) {
+        console.error('cancel-chain failed:', err);
+        alert((err && err.message) ? err.message : 'Cancel request failed');
+    } finally {
+        if (btn) { btn.disabled = false; btn.classList.remove('disabled'); }
+    }
+}
+
 function showLogsModal(jobId) {
     const targetId = jobId || _lastNotifiedJobId;
     if (!targetId) return;
@@ -189,6 +303,11 @@ function showLogsModal(jobId) {
     _renderModalHeader(_job);
     const _hdr = document.getElementById('logsModalPublishers');
     if (_hdr) _hdr.innerHTML = _job ? _renderPublishersBlock(_job) : '';
+    // Operator-action footer buttons (Retry now / Cancel chain /
+    // Open BIF) — visibility derived from current chain state. Re-run
+    // on every showLogsModal so a stale "Retry now" from a previously
+    // pending chain doesn't bleed into the next modal open.
+    _updateOperatorActions(_job);
 
     // Retry-chain rows show the Attempts dropdown so the user can flip
     // between per-firing logs (each is a real Job with its own log
@@ -273,6 +392,13 @@ function showLogsModal(jobId) {
             // appear in the dropdown without user intervention. Preserves
             // the currently-selected option (no auto-switch).
             if (isChainRow) _refreshAttemptsDropdown(targetId);
+            // Operator-action visibility — re-derive from the latest
+            // job snapshot in the global ``jobs`` list. Without this,
+            // a chain that transitioned ``pending`` → ``completed``
+            // mid-modal would still show "Retry now" / "Cancel chain"
+            // until the user closed and reopened.
+            const _polled = jobs.find(j => j.id === targetId);
+            _updateOperatorActions(_polled);
         }, 5000);
     }
 
