@@ -58,7 +58,12 @@ class TestEmbyInline:
         # listener short-circuits past steps 2+3 for non-Plex saves.
         expect(wizard_page.locator('div.setup-step[data-step="4"]')).to_have_class("setup-step active")
         assert captured, "POST /api/servers never fired"
+        # Pin the full payload shape, not just the vendor type. A regression
+        # that mangled the URL or name fields would otherwise pass call-count
+        # but break the user's actual save.
         assert captured[0]["type"] == "emby"
+        assert captured[0]["url"] == "http://emby.local:8096"
+        assert captured[0]["name"] == "Test Emby"
 
 
 @pytest.mark.e2e
@@ -93,4 +98,7 @@ class TestJellyfinInline:
 
         expect(wizard_page.locator('div.setup-step[data-step="4"]')).to_have_class("setup-step active")
         assert captured, "POST /api/servers never fired"
+        # Pin the full payload shape (same rationale as the Emby test above).
         assert captured[0]["type"] == "jellyfin"
+        assert captured[0]["url"] == "http://jellyfin.local:8096"
+        assert captured[0]["name"] == "Test Jellyfin"
