@@ -108,9 +108,16 @@ class TestSettingsAuth:
         authed_page.locator("#customAuthToken").fill("brand-new-tok-1")
         authed_page.locator("#customAuthTokenConfirm").fill("brand-new-tok-1")
         authed_page.evaluate("void setCustomToken()")
-        accept_app_confirm(authed_page)
-        authed_page.wait_for_timeout(500)
+        with authed_page.expect_request("**/api/token/set") as req_info:
+            accept_app_confirm(authed_page)
+        req_info.value  # noqa: B018 — the request landed
         assert captured, "POST /api/token/set never fired"
+        # Pin the payload: the token field must equal the typed value.
+        # A regression that always sent an empty/wrong token would have
+        # silently passed the call-count check (audit P2 finding).
+        assert captured[0].get("token") == "brand-new-tok-1", (
+            f"POST /api/token/set body must carry the typed token; got {captured[0]!r}"
+        )
 
     def test_regenerate_token_button_calls_endpoint(self, authed_page: Page, app_url: str) -> None:
         mock_settings_get(authed_page)
@@ -127,8 +134,9 @@ class TestSettingsAuth:
         # Playwright's auto-await on returned Promises doesn't deadlock
         # waiting for the modal to resolve before we've clicked OK.
         authed_page.evaluate("void regenerateToken()")
-        accept_app_confirm(authed_page)
-        authed_page.wait_for_timeout(500)
+        with authed_page.expect_request("**/api/token/regenerate") as req_info:
+            accept_app_confirm(authed_page)
+        req_info.value  # noqa: B018 — the request landed
         assert called, "POST /api/token/regenerate never fired"
 
 
@@ -153,8 +161,9 @@ class TestSettingsBackupsPanel:
         # plain click on it posts the newest backup filename. Restore
         # is gated by an appConfirm modal — accept it to fire the POST.
         settings_page.locator("#backupRestorePanel button:has-text('Restore')").first.click()
-        accept_app_confirm(settings_page)
-        settings_page.wait_for_timeout(500)
+        with settings_page.expect_request("**/api/settings/backups/restore") as req_info:
+            accept_app_confirm(settings_page)
+        req_info.value  # noqa: B018 — the request landed
         assert captured, "POST /api/settings/backups/restore never fired"
         assert captured[0]["file"] == "settings.json"
         # Newest entry is the timestamped one.
