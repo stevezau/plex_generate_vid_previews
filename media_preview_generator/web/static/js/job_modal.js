@@ -290,10 +290,12 @@ let _overviewTickInterval = null;
 function onOverviewTabActivated() {
     try { localStorage.setItem(_OVERVIEW_LAST_TAB_KEY, 'overview'); } catch (e) { /* private mode */ }
     _renderOverview();
+    _replaceModalState(_logsModalJobId, _logsModalAttemptId, 'overview');
 }
 
 function onLogsTabActivated() {
     try { localStorage.setItem(_OVERVIEW_LAST_TAB_KEY, 'logs'); } catch (e) { /* private mode */ }
+    _replaceModalState(_logsModalJobId, _logsModalAttemptId, 'logs');
 }
 
 // Log level filter (Tier 3.14) — drives a data-attr on #logsContent
@@ -869,11 +871,72 @@ async function onOperatorCancelChain() {
     }
 }
 
+// Push the current modal state onto the browser history so the URL
+// reflects what's visible. Enables (a) browser back/forward navigation
+// inside the modal, (b) shareable URLs that deep-link a teammate
+// straight to a specific attempt/tab.
+function _pushModalState(jobId, attemptId, tab) {
+    if (!jobId) return;
+    const params = new URLSearchParams();
+    params.set('job', jobId);
+    if (attemptId) params.set('attempt', attemptId);
+    if (tab && tab !== 'overview') params.set('tab', tab);
+    const url = window.location.pathname + '?' + params.toString();
+    try {
+        history.pushState({ modal: 'jobDetails', jobId, attemptId, tab }, '', url);
+    } catch (e) { /* old browsers / file:// — silently no-op */ }
+}
+
+function _replaceModalState(jobId, attemptId, tab) {
+    if (!jobId) return;
+    const params = new URLSearchParams();
+    params.set('job', jobId);
+    if (attemptId) params.set('attempt', attemptId);
+    if (tab && tab !== 'overview') params.set('tab', tab);
+    const url = window.location.pathname + '?' + params.toString();
+    try {
+        history.replaceState({ modal: 'jobDetails', jobId, attemptId, tab }, '', url);
+    } catch (e) { /* silently no-op */ }
+}
+
+function _popModalState() {
+    // On modal close, strip our query params so the back/forward
+    // stack doesn't accumulate stale states.
+    if (window.location.search.includes('job=')) {
+        try {
+            history.pushState({}, '', window.location.pathname);
+        } catch (e) { /* silently no-op */ }
+    }
+}
+
+// On initial page load: if the URL has ``?job=<id>`` params, auto-open
+// the modal. Run after the jobs list has populated so jobs.find()
+// resolves correctly.
+function _autoOpenModalFromUrl() {
+    const params = new URLSearchParams(window.location.search);
+    const jobId = params.get('job');
+    if (!jobId) return;
+    const attemptId = params.get('attempt');
+    const tab = params.get('tab');
+    // Stash for showLogsModal to pick up via _initialDeepLinkAttempt/Tab.
+    _initialDeepLinkAttempt = attemptId;
+    _initialDeepLinkTab = tab;
+    showLogsModal(jobId);
+}
+let _initialDeepLinkAttempt = null;
+let _initialDeepLinkTab = null;
+
 function showLogsModal(jobId) {
     const targetId = jobId || _lastNotifiedJobId;
     if (!targetId) return;
     _logsModalJobId = targetId;
     _logsModalAttemptId = null;
+    // Deep-link override: a ?attempt= param takes precedence over the
+    // default "newest attempt" selection. Consumed once per modal open.
+    const _deepLinkAttempt = _initialDeepLinkAttempt;
+    const _deepLinkTab = _initialDeepLinkTab;
+    _initialDeepLinkAttempt = null;
+    _initialDeepLinkTab = null;
 
     document.getElementById('logsJobId').textContent = `Job ID: ${targetId}`;
     document.getElementById('logsSearchInput').value = '';
@@ -905,6 +968,9 @@ function showLogsModal(jobId) {
         if (isChainRow) {
             // Wrap manages its own inner flex layout; we only toggle visibility.
             _attemptsWrap.classList.remove('d-none');
+            // Stash any deep-link attempt-id so the loader picks it over
+            // the default newest-selectable.
+            if (_deepLinkAttempt) _pendingAttemptSelection = _deepLinkAttempt;
             _loadAttemptsDropdown(targetId);
         } else {
             _attemptsWrap.classList.add('d-none');
@@ -938,11 +1004,19 @@ function showLogsModal(jobId) {
     var pFooter = document.getElementById('filePaginationFooter');
     if (pFooter) pFooter.classList.add('d-none');
 
-    // Restore the user's last-selected tab from localStorage. Default
-    // is Overview — the Tier-2 landing for multi-run chains. Power
-    // users who switched to Logs / Files last time get back there
-    // without a re-click.
-    _restoreLastTab();
+    // Tab selection — deep-link param wins, else fall back to the
+    // user's last-selected tab from localStorage (default Overview).
+    if (_deepLinkTab) {
+        const btnId = _deepLinkTab === 'logs' ? 'logsTab'
+            : _deepLinkTab === 'files' ? 'filesTab'
+            : 'overviewTab';
+        const btn = document.getElementById(btnId);
+        if (btn) new bootstrap.Tab(btn).show();
+    } else {
+        _restoreLastTab();
+    }
+    // Push the deep-link URL state so reload / back navigation works.
+    _pushModalState(targetId, _deepLinkAttempt, _deepLinkTab);
 
     const job = jobs.find(j => j.id === targetId);
     const isRunning = job && job.status === 'running';
@@ -1005,6 +1079,7 @@ function showLogsModal(jobId) {
             _overviewTickInterval = null;
         }
         _disableJobModalKeyboard();
+        _popModalState();
         _logsModalJobId = null;
         _logsModalAttemptId = null;
     }, { once: true });
@@ -1483,6 +1558,12 @@ function _formatRetryRemaining(seconds) {
     return rm ? `${h}h ${rm}m` : `${h}h`;
 }
 
+// Deep-link override consumed once by ``_loadAttemptsDropdown``.
+// Set by ``showLogsModal`` when the URL carries an ``?attempt=`` param;
+// cleared after the loader picks it up so subsequent reloads default
+// back to the newest-selectable.
+let _pendingAttemptSelection = null;
+
 async function _loadAttemptsDropdown(chainId) {
     const wrap = document.getElementById('attemptsDropdown');
     if (!wrap) return;
@@ -1505,10 +1586,18 @@ async function _loadAttemptsDropdown(chainId) {
         wrap.innerHTML = html;
         // Default-select the LATEST selectable pill (skip the deleted
         // sentinel which has no id). Attempts are sorted ascending so
-        // the last is newest.
+        // the last is newest. A pending deep-link selection from a
+        // ``?attempt=`` URL param takes precedence over this default.
         let defaultIdx = -1;
-        for (let i = attempts.length - 1; i >= 0; i--) {
-            if (attempts[i].id) { defaultIdx = i; break; }
+        if (_pendingAttemptSelection) {
+            const found = attempts.findIndex(a => a.id === _pendingAttemptSelection);
+            if (found >= 0) defaultIdx = found;
+            _pendingAttemptSelection = null;
+        }
+        if (defaultIdx < 0) {
+            for (let i = attempts.length - 1; i >= 0; i--) {
+                if (attempts[i].id) { defaultIdx = i; break; }
+            }
         }
         if (defaultIdx >= 0) {
             const target = wrap.querySelector(`button[data-attempt-id="${CSS.escape(attempts[defaultIdx].id)}"]`);
@@ -1617,6 +1706,15 @@ function onAttemptSelected(button) {
     const overviewActive = document.getElementById('overviewTabPane') &&
         document.getElementById('overviewTabPane').classList.contains('active');
     if (overviewActive && typeof _renderOverview === 'function') _renderOverview();
+    // Update the URL's ``attempt=`` param so a copy-link points at the
+    // newly-selected attempt.
+    const activeTab = document.getElementById('logsTabPane') &&
+        document.getElementById('logsTabPane').classList.contains('active')
+        ? 'logs'
+        : (document.getElementById('filesTabPane') &&
+           document.getElementById('filesTabPane').classList.contains('active')
+            ? 'files' : 'overview');
+    _replaceModalState(_logsModalJobId, _logsModalAttemptId, activeTab);
 }
 
 function _updateEarlierLogsButton() {
@@ -1733,6 +1831,8 @@ function onFilesTabActivated() {
     if (!_fileResultsLoaded) {
         refreshFileResults();
     }
+    try { localStorage.setItem(_OVERVIEW_LAST_TAB_KEY, 'files'); } catch (e) { /* private mode */ }
+    _replaceModalState(_logsModalJobId, _logsModalAttemptId, 'files');
 }
 
 async function refreshFileResults() {

@@ -684,9 +684,18 @@ async function loadJobs() {
         if (jobPage > jobTotalPages) {
             jobPage = jobTotalPages;
         }
+        const wasFirstLoad = !jobsLoadedOnce;
         jobsLoadedOnce = true;
         updateJobQueue();
         renderJobPagination();
+
+        // Deep-link auto-open (Tier 3.15 of job-modal rebuild): if the
+        // page was loaded with ``?job=<id>`` in the URL, pop the modal
+        // open now that jobs.find() can resolve. Run only on the
+        // initial load — subsequent polls don't re-open the modal.
+        if (wasFirstLoad && typeof _autoOpenModalFromUrl === 'function') {
+            _autoOpenModalFromUrl();
+        }
 
         // Update active jobs section. Include PENDING jobs that have
         // a current_item message — those are in pre-dispatch work
