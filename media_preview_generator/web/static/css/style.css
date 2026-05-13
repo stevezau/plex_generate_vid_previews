@@ -2110,3 +2110,94 @@ html[data-bs-theme="light"] .form-range::-webkit-slider-thumb:active {
 html[data-bs-theme="light"] .form-range::-moz-range-thumb:active {
     background-color: #c98a0b;
 }
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Senior-design polish pass — round 3 long-tail.
+ * Final cleanup after the 28-screenshot audit. Each rule below was
+ * either confirmed real via Playwright measurement or visible in the
+ * captured screenshots. All scoped to avoid dark/light regressions.
+ * ────────────────────────────────────────────────────────────────────── */
+
+/* Mobile body inset — Bootstrap's container-fluid uses 12px padding
+ * on each side. Apple HIG / Material guidelines suggest 16-20px on
+ * phones for comfortable touch targets near edges. Bump to 16px at
+ * < 576px so content doesn't kiss the bezel. */
+@media (max-width: 575.98px) {
+    body > main.container-fluid {
+        padding-left: 16px;
+        padding-right: 16px;
+    }
+}
+
+/* KPI tile shadow in light mode. Round 1 polish bumped the bg to
+ * slate-100 + slate-200 border so tiles render; adding a soft drop
+ * shadow gives them genuine lift over the page bg (--bs-body-bg is
+ * slate-200 — same tone as the tile border, which makes the edges
+ * disappear without a shadow). */
+html[data-bs-theme="light"] .kpi-tile {
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+/* Pagination disabled state. Default Bootstrap disabled pagination
+ * shows the chevrons at near-full opacity in light mode — looks
+ * like enabled-but-unhovered. Bump to 0.4 so they read as disabled. */
+.page-item.disabled .page-link {
+    opacity: 0.4;
+}
+
+/* Log viewer floating jump-to-top / jump-to-bottom buttons. The
+ * arrows float bottom-right with no chrome — on light bg they were
+ * disembodied glyphs. Give them a circular surface so they read as
+ * controls. The container is forced dark in light mode now (see
+ * pages/logs.css light-mode terminal block) so we tune the floating
+ * controls against that dark surface. */
+.log-nav-btns .btn {
+    background-color: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.15);
+    color: #e2e8f0;
+    border-radius: 50%;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+.log-nav-btns .btn:hover {
+    background-color: rgba(255, 255, 255, 0.15);
+    color: #fff;
+}
+
+/* Servers cards — visual separator between primary actions (Edit /
+ * Refresh) and the destructive Delete button. Pre-fix the trash
+ * button floated right of the secondary buttons with no semantic
+ * gap, making accidental clicks more likely. */
+.server-card .btn-outline-danger,
+#serverList .btn-outline-danger {
+    margin-left: 0.5rem;
+    border-left-width: 1px;
+}
+
+/* Setup wizard step connector thickness. The 1px line between
+ * progress dots was barely visible against the page bg in light mode.
+ * Bump to 2px and use the border token so it picks up the slate
+ * value in light, slate-translucent in dark. */
+.setup-progress .step-connector {
+    height: 2px;
+    background-color: var(--bs-border-color);
+}
+.setup-progress .step-connector.completed {
+    background-color: var(--plex-orange);
+}
+
+/* Preview Inspector inactive tab — give it explicit secondary color
+ * and a visible affordance on hover so the dual-tab toggle reads as
+ * an actual toggle, not a single chip with a label next to it. */
+#bif-viewer-page .nav-pills .nav-link:not(.active),
+.bif-viewer-tabs .nav-link:not(.active) {
+    color: var(--bs-secondary-color);
+}
+.preview-inspector-header ~ .row .nav-pills .nav-link:not(.active):hover {
+    background-color: var(--bs-tertiary-bg);
+    color: var(--bs-body-color);
+}
