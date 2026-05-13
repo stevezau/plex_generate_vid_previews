@@ -2,6 +2,7 @@
 
 import json as _json
 import os
+import pathlib
 import re as _re
 import threading
 import time
@@ -609,50 +610,111 @@ def get_log_history():
 _GITHUB_RELEASES_URL = "https://api.github.com/repos/stevezau/media_preview_generator/releases"
 _RELEASES_CACHE: dict = {"result": None, "fetched_at": 0.0}
 _RELEASES_CACHE_TTL = 3600
+# gthread worker → N concurrent dashboard loads can race the cache populate;
+# the lock keeps two threads from both parsing the 50KB bundle (or worse,
+# both firing the 5s GH request) on a cold start.
+_RELEASES_CACHE_LOCK = threading.Lock()
+_RELEASE_NOTES_BUNDLE = pathlib.Path(__file__).resolve().parents[2] / "release_notes.json"
+
+
+def _load_bundled_releases() -> list[dict] | None:
+    """Read the bundled ``release_notes.json`` produced by ``scripts/refresh_release_notes.py``.
+
+    Returns ``None`` when the bundle is missing or unparseable so callers
+    fall back to the live GitHub fetch. The bundle is the fast path —
+    docker images ship it pre-generated, so the dashboard's "What's new"
+    modal needs no network call and is immune to GitHub-API rate limits.
+
+    Entries here are already in the shape :func:`_fetch_github_releases`
+    returns (``version``, ``name``, ``date``, ``body``, ``url``).
+    """
+    try:
+        if not _RELEASE_NOTES_BUNDLE.is_file():
+            return None
+        data = _json.loads(_RELEASE_NOTES_BUNDLE.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        logger.debug("Could not read bundled release notes at {}: {}", _RELEASE_NOTES_BUNDLE, e)
+        return None
+    if not isinstance(data, list) or not data:
+        return None
+    return data
 
 
 def _fetch_github_releases(limit: int = 10) -> list:
-    """Fetch recent GitHub releases with TTL caching.
+    """Return recent release entries, preferring the in-image bundle.
+
+    Resolution order:
+
+    1. **In-memory cache** with ``_RELEASES_CACHE_TTL``-second TTL — once
+       warm, neither the bundle read nor any network call happens for an
+       hour.
+    2. **Bundled JSON** (``media_preview_generator/release_notes.json``,
+       refreshed by ``scripts/refresh_release_notes.py`` at release prep)
+       — zero network, instant.
+    3. **Live GitHub API** — 5s timeout fallback for older containers
+       built before the bundle existed and for source checkouts where the
+       maintainer hasn't run the refresh script yet.
+
+    Thread-safety: ``_RELEASES_CACHE_LOCK`` serialises cache populates so
+    concurrent dashboard loads (gthread worker, N threads) only do the
+    bundle parse / GH fetch once. Cache reads happen outside the lock
+    after the double-check, since the GIL makes the dict ``result`` read
+    atomic.
 
     Args:
         limit: Max releases to return.
 
     Returns:
-        List of dicts with version, date, and body (markdown).
+        List of dicts with version, name, date, body (markdown), url.
     """
     now = time.monotonic()
-    if _RELEASES_CACHE["result"] is not None and (now - _RELEASES_CACHE["fetched_at"]) < _RELEASES_CACHE_TTL:
-        return _RELEASES_CACHE["result"][:limit]
+    cached = _RELEASES_CACHE["result"]
+    if cached is not None and (now - _RELEASES_CACHE["fetched_at"]) < _RELEASES_CACHE_TTL:
+        return cached[:limit]
 
-    import requests as req
+    with _RELEASES_CACHE_LOCK:
+        # Re-check inside the lock — another thread may have populated
+        # while we were waiting.
+        now = time.monotonic()
+        cached = _RELEASES_CACHE["result"]
+        if cached is not None and (now - _RELEASES_CACHE["fetched_at"]) < _RELEASES_CACHE_TTL:
+            return cached[:limit]
 
-    try:
-        resp = req.get(
-            _GITHUB_RELEASES_URL,
-            headers={"User-Agent": "media-preview-generator"},
-            params={"per_page": limit},
-            timeout=5,
-        )
-        resp.raise_for_status()
-        entries = []
-        for rel in resp.json():
-            if rel.get("draft"):
-                continue
-            entries.append(
-                {
-                    "version": (rel.get("tag_name") or "").lstrip("v"),
-                    "name": rel.get("name") or rel.get("tag_name") or "",
-                    "date": rel.get("published_at") or "",
-                    "body": rel.get("body") or "",
-                    "url": rel.get("html_url") or "",
-                }
+        bundled = _load_bundled_releases()
+        if bundled is not None:
+            _RELEASES_CACHE["fetched_at"] = now
+            _RELEASES_CACHE["result"] = bundled
+            return bundled[:limit]
+
+        import requests as req
+
+        try:
+            resp = req.get(
+                _GITHUB_RELEASES_URL,
+                headers={"User-Agent": "media-preview-generator"},
+                params={"per_page": limit},
+                timeout=5,
             )
-        _RELEASES_CACHE["result"] = entries
-        _RELEASES_CACHE["fetched_at"] = time.monotonic()
-        return entries[:limit]
-    except Exception as e:
-        logger.debug("Failed to fetch GitHub releases: {}", e)
-        return []
+            resp.raise_for_status()
+            entries = []
+            for rel in resp.json():
+                if rel.get("draft"):
+                    continue
+                entries.append(
+                    {
+                        "version": (rel.get("tag_name") or "").lstrip("v"),
+                        "name": rel.get("name") or rel.get("tag_name") or "",
+                        "date": rel.get("published_at") or "",
+                        "body": rel.get("body") or "",
+                        "url": rel.get("html_url") or "",
+                    }
+                )
+            _RELEASES_CACHE["fetched_at"] = time.monotonic()
+            _RELEASES_CACHE["result"] = entries
+            return entries[:limit]
+        except Exception as e:
+            logger.debug("Failed to fetch GitHub releases: {}", e)
+            return []
 
 
 @api.route("/system/whats-new")

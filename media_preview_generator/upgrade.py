@@ -20,6 +20,36 @@ from loguru import logger
 _CURRENT_SCHEMA_VERSION = 11
 
 
+# -------------------------------------------------------------------------
+# User-facing summary of each migration.
+#
+# The per-note strings each ``_migrate_to_vN`` returns are written for the
+# loguru INFO line (goes to /logs and prod telemetry) — they reference
+# internal keys, schema versions, and the precise bug a migration patches.
+# Those are deliberately developer-y so an oncaller can diff settings.json
+# against a log line. The user never needs to read them.
+#
+# The dashboard's "Settings migrated" notification reads the strings here
+# instead. Keep entries one short sentence, plain English, no "vN:" prefix,
+# no key names a user wouldn't recognise from the UI. Missing entries mean
+# "this migration ran but has nothing user-visible to call out" — the
+# notification still tells them the schema bumped and points at the
+# backup; that's enough on its own.
+# -------------------------------------------------------------------------
+_USER_FACING_NOTES: dict[int, str] = {
+    7: (
+        "Your Plex configuration was upgraded to the new multi-server format. "
+        "You can now add Jellyfin or Emby alongside Plex from Settings → Servers — "
+        "your existing Plex setup is unchanged."
+    ),
+    11: (
+        "Frame-reuse caching is now on by default. When the same frame shows up "
+        "across multiple files, it's reused instead of re-encoded — saves time on "
+        "large libraries. Tunable under Settings → Performance."
+    ),
+}
+
+
 class SchemaDowngradeError(RuntimeError):
     """Raised when settings.json was written by a newer binary than this one.
 
@@ -258,42 +288,44 @@ def _migrate_schema(sm) -> None:
     if current == _CURRENT_SCHEMA_VERSION:
         return
 
-    all_notes: list[str] = []
+    log_notes: list[str] = []
+    user_notes: list[str] = []
+
+    def _run(target_v: int, fn) -> None:
+        notes = fn(sm)
+        log_notes.extend(notes)
+        # A migration may run without producing notes (e.g., the user
+        # already has the new keys from a partial upgrade). Don't emit
+        # a user-facing note in that case — the schema bump alone isn't
+        # interesting enough to surface in the dashboard.
+        if notes and (msg := _USER_FACING_NOTES.get(target_v)):
+            user_notes.append(msg)
 
     if current < 2:
-        all_notes += _migrate_to_v2(sm)
-
+        _run(2, _migrate_to_v2)
     if current < 3:
-        all_notes += _migrate_to_v3(sm)
-
+        _run(3, _migrate_to_v3)
     if current < 4:
-        all_notes += _migrate_to_v4(sm)
-
+        _run(4, _migrate_to_v4)
     if current < 5:
-        all_notes += _migrate_to_v5(sm)
-
+        _run(5, _migrate_to_v5)
     if current < 6:
-        all_notes += _migrate_to_v6(sm)
-
+        _run(6, _migrate_to_v6)
     if current < 7:
-        all_notes += _migrate_to_v7(sm)
-
+        _run(7, _migrate_to_v7)
     if current < 8:
-        all_notes += _migrate_to_v8(sm)
-
+        _run(8, _migrate_to_v8)
     if current < 9:
-        all_notes += _migrate_to_v9(sm)
-
+        _run(9, _migrate_to_v9)
     if current < 10:
-        all_notes += _migrate_to_v10(sm)
-
+        _run(10, _migrate_to_v10)
     if current < 11:
-        all_notes += _migrate_to_v11(sm)
+        _run(11, _migrate_to_v11)
 
     sm.set("_schema_version", _CURRENT_SCHEMA_VERSION)
 
-    if all_notes:
-        logger.info("Settings schema migrated to v{}: {}", _CURRENT_SCHEMA_VERSION, ", ".join(all_notes))
+    if log_notes:
+        logger.info("Settings schema migrated to v{}: {}", _CURRENT_SCHEMA_VERSION, ", ".join(log_notes))
         # J5: drop a one-shot flag the dashboard's notification bell reads
         # so the user sees a single "we migrated your config" card on next
         # login. Dismissal removes the flag (see notifications.py).
@@ -308,7 +340,7 @@ def _migrate_schema(sm) -> None:
                 "to": _CURRENT_SCHEMA_VERSION,
                 "at": _dt.now(_tz.utc).isoformat(),
                 "backup": bak_path,
-                "notes": all_notes,
+                "notes": user_notes,
             },
         )
 

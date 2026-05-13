@@ -3,6 +3,7 @@
 Tests env var migration, schema migrations, and GPU config building.
 """
 
+import json
 from unittest.mock import patch
 
 import pytest
@@ -1486,3 +1487,181 @@ class TestMigrateToV11:
         notes = _migrate_to_v11(settings_manager)
         assert notes == []
         assert settings_manager.get("frame_reuse") == existing
+
+
+class TestMigrationNoticeUserFacingSplit:
+    """The dashboard's "Settings migrated" card must render the user-facing
+    summary strings from ``_USER_FACING_NOTES``, not the developer-facing
+    per-note log strings returned by each ``_migrate_to_vN``.
+
+    The dev strings ("v7: synthesised media_servers[0] from legacy
+    plex_* settings") were leaking into the user notification before this
+    split. For a major release that fires on every 3.7.5 upgrader, the
+    first impression cannot be schema jargon.
+    """
+
+    @pytest.fixture
+    def temp_config_dir(self, tmp_path):
+        return str(tmp_path)
+
+    @pytest.fixture
+    def settings_manager(self, temp_config_dir):
+        from media_preview_generator.web.settings_manager import SettingsManager
+
+        return SettingsManager(config_dir=temp_config_dir)
+
+    def test_v7_v11_emit_friendly_user_strings_not_log_strings(self, settings_manager):
+        """Full migration chain on a 3.7.5-shaped settings.json must save
+        the friendly copy in ``_pending_migration_notice.notes``, never the
+        dev log strings."""
+        from media_preview_generator.upgrade import _migrate_schema
+
+        settings_manager.apply_changes(
+            updates={
+                "_schema_version": 6,
+                "plex_url": "http://plex:32400",
+                "plex_token": "tok",
+            }
+        )
+        _migrate_schema(settings_manager)
+
+        notice = settings_manager.get("_pending_migration_notice")
+        assert isinstance(notice, dict)
+        notes = notice.get("notes") or []
+        # Exactly 2 entries — one from v7, one from v11. Pinning the count
+        # catches a regression where extra raw dev strings get appended on
+        # top of the friendly ones.
+        assert len(notes) == 2, f"expected 2 user notes (v7+v11), got {len(notes)}: {notes}"
+        joined = " ".join(notes)
+        assert "multi-server format" in joined, f"v7 user-facing note missing: {notes}"
+        assert "Frame-reuse" in joined, f"v11 user-facing note missing: {notes}"
+        assert not any("synthesised" in n for n in notes), (
+            f"Dev-facing 'synthesised' string leaked into user notice: {notes}"
+        )
+        assert not any(n.startswith("v7:") or n.startswith("v11:") for n in notes), (
+            f"Dev 'vN:' prefix leaked into user notice: {notes}"
+        )
+
+    def test_unmapped_migration_produces_no_user_note(self, settings_manager):
+        """A migration without a ``_USER_FACING_NOTES`` entry must be silent
+        in the dashboard, not leak its dev log copy. Guards against a future
+        migration that forgets to add a user message."""
+        from media_preview_generator import upgrade as upgrade_mod
+
+        original = upgrade_mod._USER_FACING_NOTES
+        try:
+            upgrade_mod._USER_FACING_NOTES = {7: original[7]}  # drop v11
+            settings_manager.apply_changes(
+                updates={
+                    "_schema_version": 6,
+                    "plex_url": "http://plex:32400",
+                    "plex_token": "tok",
+                }
+            )
+            upgrade_mod._migrate_schema(settings_manager)
+        finally:
+            upgrade_mod._USER_FACING_NOTES = original
+
+        notice = settings_manager.get("_pending_migration_notice") or {}
+        notes = notice.get("notes") or []
+        # Exactly one user-facing note (v7's, since v11 was unmapped).
+        # Pinning the count is the real invariant: any leak — dev string,
+        # accidental dupe, anything — produces a count != 1.
+        assert len(notes) == 1, f"expected 1 user note (v7 only), got {len(notes)}: {notes}"
+        assert "multi-server" in notes[0], f"v7 user note missing: {notes}"
+
+
+class TestReleaseNotesBundle:
+    """The What's New popup must read the bundled ``release_notes.json``
+    when present (no network call) and fall back to the live GitHub API
+    only when the bundle is absent or unparseable."""
+
+    def test_bundle_present_returns_bundled_entries_without_network(self, tmp_path, monkeypatch):
+        from media_preview_generator.web.routes import api_system
+
+        bundle = [
+            {
+                "version": "9.9.9",
+                "name": "Test release",
+                "date": "2030-01-01T00:00:00Z",
+                "body": "test body",
+                "url": "https://example.test/v9.9.9",
+            }
+        ]
+        bundle_path = tmp_path / "release_notes.json"
+        bundle_path.write_text(json.dumps(bundle))
+
+        monkeypatch.setattr(api_system, "_RELEASE_NOTES_BUNDLE", bundle_path)
+        monkeypatch.setitem(api_system._RELEASES_CACHE, "result", None)
+        monkeypatch.setitem(api_system._RELEASES_CACHE, "fetched_at", 0.0)
+
+        import requests
+
+        def _no_network(*_args, **_kwargs):
+            raise AssertionError("bundle present — must not call GitHub")
+
+        monkeypatch.setattr(requests, "get", _no_network)
+
+        out = api_system._fetch_github_releases(limit=10)
+        assert out == bundle
+
+    def test_bundle_missing_falls_back_to_github(self, tmp_path, monkeypatch):
+        from media_preview_generator.web.routes import api_system
+
+        missing = tmp_path / "no-such-file.json"
+        monkeypatch.setattr(api_system, "_RELEASE_NOTES_BUNDLE", missing)
+        monkeypatch.setitem(api_system._RELEASES_CACHE, "result", None)
+        monkeypatch.setitem(api_system._RELEASES_CACHE, "fetched_at", 0.0)
+
+        class FakeResp:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return [
+                    {
+                        "tag_name": "v8.8.8",
+                        "name": "fallback",
+                        "published_at": "2030-01-01T00:00:00Z",
+                        "body": "from gh",
+                        "html_url": "https://example.test/v8.8.8",
+                        "draft": False,
+                    }
+                ]
+
+        called = {"n": 0}
+
+        def fake_get(url, **_kwargs):
+            called["n"] += 1
+            return FakeResp()
+
+        import requests
+
+        monkeypatch.setattr(requests, "get", fake_get)
+
+        out = api_system._fetch_github_releases(limit=10)
+        assert called["n"] == 1, "GH fallback must run when bundle missing"
+        assert out[0]["version"] == "8.8.8"
+
+    def test_bundle_unparseable_falls_back_to_github(self, tmp_path, monkeypatch):
+        from media_preview_generator.web.routes import api_system
+
+        broken = tmp_path / "release_notes.json"
+        broken.write_text("not json {{{")
+        monkeypatch.setattr(api_system, "_RELEASE_NOTES_BUNDLE", broken)
+        monkeypatch.setitem(api_system._RELEASES_CACHE, "result", None)
+        monkeypatch.setitem(api_system._RELEASES_CACHE, "fetched_at", 0.0)
+
+        class FakeResp:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return []
+
+        import requests
+
+        monkeypatch.setattr(requests, "get", lambda *_a, **_k: FakeResp())
+
+        out = api_system._fetch_github_releases(limit=10)
+        assert out == []
