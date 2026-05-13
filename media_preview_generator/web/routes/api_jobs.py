@@ -1114,12 +1114,28 @@ def get_worker_statuses():
     Returns callback-driven statuses when a job is actively pushing
     updates, otherwise falls back to querying the global dispatcher's
     pool directly so workers are visible even when idle.
+
+    The fallback only fires when **no job is running**. Jobs
+    f66231a8 / 8cd02fa6 hit a UI regression where the dashboard's
+    Workers panel "jumped around" mid-scan because the multi-server
+    dispatcher's slot IDs are 1-based (``GPU_1..GPU_4``) while the
+    legacy fallback returns 0-based IDs (``GPU_0..GPU_3``). The UI
+    keys cards by ``worker_id`` so the two ID schemes produce
+    different DOM identities — any moment ``_worker_statuses`` was
+    transiently empty (e.g. between job start and the dispatcher's
+    first emit) the API flipped to the legacy 0-based set, then back
+    to 1-based on the next poll, and cards swapped places each
+    refresh. The two schemes are an implementation detail that was
+    never supposed to be compared at the UI layer; the contract now
+    is "while a job is running, its dispatcher is the sole source of
+    truth — show whatever it has, even if briefly empty, rather than
+    mixing in an idle-pool snapshot from a different numbering."
     """
     try:
         job_manager = get_job_manager()
         workers = job_manager.get_worker_statuses()
 
-        if not workers:
+        if not workers and not job_manager.get_running_jobs():
             workers = _get_dispatcher_worker_statuses()
 
         return jsonify({"workers": [w.to_dict() if hasattr(w, "to_dict") else w for w in workers]})

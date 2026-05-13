@@ -565,6 +565,27 @@ def _dispatch_processable_items(
     gpu_slots: list[dict] = []
     _seq_state = {"slot": 0, "gpu": 0, "cpu": 0}
 
+    # The dashboard renderer (``app.js:2393-2438``) gates the
+    # progress bar / speed / ETA rendering on ``ffmpeg_started``:
+    # when ``False`` it hides those elements and shows a "Working…"
+    # placeholder (or the ``current_phase`` text when present).
+    # Without these fields on the multi-server slot dict,
+    # ``WorkerStatus`` falls back to ``False`` / ``""`` and the panel
+    # renders "Working…" for the entire run even when speed/ETA are
+    # flowing through the API — the symptom job 2395774d reproduced
+    # live.
+    #
+    # ``ffmpeg_started`` mirrors the legacy ``WorkerPool`` field
+    # (``worker.py:128`` / flipped in ``worker.py:1624``) and is
+    # flipped True by ``_slot_progress_callback`` below on the first
+    # progress tick, reset False in ``_release_slot``.
+    #
+    # ``current_phase`` is a forward-compat placeholder — no callsite
+    # writes it yet. The legacy worker populates it from log-line
+    # parsing (``worker.py:397``) for nicer pre-FFmpeg labels like
+    # "Resolving item id on EmbyTest…" / "Reusing cached frames";
+    # threading those through ``process_canonical_path`` is a separate
+    # piece of work. Empty string degrades gracefully to "Working…".
     def _build_gpu_slot(gpu_type: str, gpu_device: str | None, gpu_info: dict | object) -> dict:
         _seq_state["slot"] += 1
         _seq_state["gpu"] += 1
@@ -581,6 +602,8 @@ def _dispatch_processable_items(
             "progress_percent": 0,
             "speed": "0.0x",
             "remaining_time": 0,
+            "ffmpeg_started": False,
+            "current_phase": "",
             "_claimed_by": None,
             "_pending_removal": False,
         }
@@ -601,6 +624,8 @@ def _dispatch_processable_items(
             "progress_percent": 0,
             "speed": "0.0x",
             "remaining_time": 0,
+            "ffmpeg_started": False,
+            "current_phase": "",
             "_claimed_by": None,
             "_pending_removal": False,
         }
@@ -698,6 +723,14 @@ def _dispatch_processable_items(
             slot["current_title"] = ""
             slot["_claimed_by"] = None
             slot["progress_percent"] = 0
+            # Reset the FFmpeg-phase flags so the NEXT item this slot
+            # picks up starts in the pre-FFmpeg "Working…" state until
+            # its own progress callback flips them back. Without this
+            # reset, a slot that just finished a real FFmpeg pass keeps
+            # ``ffmpeg_started=True`` and the UI shows the previous
+            # item's stale speed/ETA on the new (pre-FFmpeg) item.
+            slot["ffmpeg_started"] = False
+            slot["current_phase"] = ""
             # If the poller marked this slot for removal while it was
             # busy, drop it now that it's free — the panel sees one
             # fewer row on the next snapshot.
@@ -999,6 +1032,16 @@ def _dispatch_processable_items(
                     slot["speed"] = speed
                 if remaining_time is not None:
                     slot["remaining_time"] = remaining_time
+                # First progress tick means FFmpeg is actually running
+                # and producing measurable output — flip the UI out of
+                # its pre-FFmpeg "Working…" branch so the user sees the
+                # real progress bar + speed + ETA. Mirrors the legacy
+                # ``WorkerPool._update_worker_progress`` (``worker.py:1624``).
+                # Reset on slot release (see ``_release_slot``) so a
+                # cache-hit / skipped-FFmpeg item that follows starts
+                # back in the "Working…" branch instead of inheriting
+                # the previous item's progress.
+                slot["ffmpeg_started"] = True
             # Don't emit a snapshot per progress tick — that'd drown
             # the SocketIO emit queue at 5+ updates/sec/worker. Slot
             # state is mutated in place; the panel picks up the

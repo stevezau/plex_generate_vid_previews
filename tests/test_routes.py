@@ -1150,6 +1150,56 @@ class TestJobsAPI:
             assert entry["ffmpeg_started"] is False, entry
             assert entry["current_phase"] == "", entry
 
+    def test_workers_endpoint_skips_legacy_fallback_when_a_job_is_running(self, client):
+        """Job 8cd02fa6 / f66231a8 regression — the dashboard's Workers
+        panel "jumped around" mid-scan because the API endpoint fell
+        back to the legacy ``Dispatcher`` pool (0-based IDs:
+        ``GPU_0..GPU_3``) any time ``_worker_statuses`` was briefly
+        empty, then returned the multi-server dispatcher's 1-based
+        IDs (``GPU_1..GPU_4``) the next moment. The UI keys cards by
+        ``worker_id``, so the two sets produced different DOM
+        identities and cards appeared/disappeared each poll.
+
+        Contract: when a job is actively running, the running job's
+        dispatcher is the sole source of truth for the Workers
+        panel. If it hasn't emitted yet (or is between emits), the
+        endpoint must return an empty list — the panel renders
+        "No active workers" briefly until the next emit lands.
+        Falling back to the legacy idle pool would mix two
+        numbering schemes."""
+        from media_preview_generator.web.jobs import Job, JobStatus, get_job_manager
+
+        jm = get_job_manager()
+        # Sanity: no statuses, no running jobs → fallback fires.
+        jm.clear_worker_statuses()
+        resp = client.get("/api/jobs/workers", headers=_api_headers())
+        idle_workers = resp.get_json()["workers"]
+
+        # Now create a running job — same state of _worker_statuses
+        # (empty), but a job is alive. The endpoint MUST NOT fall
+        # back to the legacy pool in this state.
+        job = Job(id="job-pretend-running", status=JobStatus.RUNNING, created_at="2026-05-14T00:00:00Z")
+        with jm._lock:
+            jm._jobs[job.id] = job
+            jm._running_job_ids.add(job.id)
+        try:
+            resp_during_job = client.get("/api/jobs/workers", headers=_api_headers())
+            workers_during_job = resp_during_job.get_json()["workers"]
+        finally:
+            with jm._lock:
+                jm._jobs.pop(job.id, None)
+                jm._running_job_ids.discard(job.id)
+
+        assert workers_during_job == [], (
+            f"With a job running and no multi-server emits yet, the workers endpoint must "
+            f"return an empty list — the legacy fallback's worker IDs (0..N-1) collide with "
+            f"the multi-server dispatcher's IDs (1..N) and cause the Workers panel to "
+            f"flip cards each poll. Got: {workers_during_job!r}. The pre-job fallback "
+            f"contract (used when no jobs are running) still returns {len(idle_workers)} "
+            f"workers, so the fallback path itself isn't broken — just gated on "
+            f"``not job_manager.get_running_jobs()``."
+        )
+
     def test_synth_idle_workers_match_dispatcher_idle_shape(self, client):
         """Parity guard: ``_build_idle_workers_from_config`` (used before
         any pool exists) and ``JobDispatcher._build_worker_statuses``

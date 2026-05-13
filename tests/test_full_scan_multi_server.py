@@ -2609,6 +2609,198 @@ class TestProgressEmissionInCompletionOrder:
         _time.sleep(0)  # let any daemon poller threads finish their tick
 
 
+class TestWorkerFFmpegStartedFlag:
+    """Job 2395774d regression: the dashboard Workers panel rendered
+    "Working…" for every multi-server worker instead of the real
+    speed/ETA/progress bar, even while the API was returning live
+    values like ``speed='28.5x', eta='3m 58s', progress_percent=3.2``.
+
+    Direct browser inspection confirmed app.js:2393-2438 gates the
+    progress-bar / speed / ETA rendering on ``worker.ffmpeg_started``;
+    when it's ``False`` the renderer hides those elements and replaces
+    the percent text with ``"Working…"`` or the (also-absent)
+    ``current_phase``. The legacy ``WorkerPool`` flips
+    ``worker.ffmpeg_started = True`` the first time
+    ``_update_worker_progress`` is called (``worker.py:1624``).
+    The multi-server dispatcher's ``_slot_progress_callback``
+    updated ``progress_percent`` / ``speed`` / ``remaining_time``
+    in place but never flipped the flag, so the UI stayed in the
+    pre-FFmpeg "Working…" branch for the entire run.
+    """
+
+    def test_slot_marks_ffmpeg_started_when_progress_callback_fires(self, tmp_path):
+        """Pins BOTH edges of the contract:
+
+        * before the progress callback fires, processing snapshots must
+          carry ``ffmpeg_started=False`` so the renderer stays on the
+          "Working…" branch — guards against an accidental
+          ``ffmpeg_started=True`` default in ``_build_*_slot`` that
+          would silently break the pre-FFmpeg fallback;
+        * after the progress callback fires, the snapshot flips to
+          ``ffmpeg_started=True`` so the UI swaps in the live
+          progress/speed/ETA — the fix this test exists to enforce.
+        """
+        import time as _time
+
+        from media_preview_generator.jobs.orchestrator import _dispatch_processable_items
+        from media_preview_generator.processing.multi_server import MultiServerStatus
+
+        cfg = _server_config("srv-a", ServerType.JELLYFIN)
+        items = [(cfg, ProcessableItem(canonical_path="/data/x.mkv", server_id="srv-a", title="X"))]
+
+        snapshots: list = []
+
+        def _wcb(workers_list):
+            snapshots.append(list(workers_list))
+
+        def _pcp_two_phase(*, canonical_path, progress_callback=None, **kwargs):
+            # Phase 1 — pre-FFmpeg setup (no progress yet). The poller
+            # heartbeat fires every 1.5 s, so 1.7 s here guarantees at
+            # least one snapshot lands with ffmpeg_started=False.
+            _time.sleep(1.7)
+            # Phase 2 — FFmpeg progress starts flowing; positional
+            # signature mirrors what ``ffmpeg_runner`` actually sends.
+            if progress_callback:
+                progress_callback(42.0, 100.0, 200.0, "5.2x", 50.0)
+            # Phase 3 — FFmpeg keeps running long enough for a second
+            # poller tick to capture the post-flip state.
+            _time.sleep(1.7)
+            return SimpleNamespace(
+                publishers=[],
+                canonical_path=canonical_path,
+                status=MultiServerStatus.PUBLISHED,
+                message="",
+            )
+
+        with patch(
+            "media_preview_generator.processing.multi_server.process_canonical_path",
+            side_effect=_pcp_two_phase,
+        ):
+            _dispatch_processable_items(
+                items=items,
+                config=_config(cpu_threads=1),
+                registry=MagicMock(),
+                selected_gpus=[],
+                label="full scan",
+                worker_callback=_wcb,
+            )
+
+        processing_snapshots = [snap for snap in snapshots if any(w.get("status") == "processing" for w in snap)]
+        pre_ffmpeg_processing = [
+            snap
+            for snap in processing_snapshots
+            if any(w.get("status") == "processing" and not w.get("ffmpeg_started") for w in snap)
+        ]
+        post_ffmpeg_processing = [
+            snap
+            for snap in processing_snapshots
+            if any(w.get("status") == "processing" and w.get("ffmpeg_started") for w in snap)
+        ]
+        assert pre_ffmpeg_processing, (
+            f"No 'processing & ffmpeg_started=False' snapshot observed BEFORE the progress "
+            f"callback fired. If ``_build_*_slot`` defaulted the flag to True the UI would "
+            f"skip its pre-FFmpeg 'Working…' branch and show '0% @ 0.0x' instead. "
+            f"All processing snapshots: {processing_snapshots!r}"
+        )
+        assert post_ffmpeg_processing, (
+            f"No 'processing & ffmpeg_started=True' snapshot observed AFTER the progress "
+            f"callback fired. The renderer gates speed/ETA/progress on this flag "
+            f"(app.js:2393-2438); without the flip the panel renders 'Working…' despite "
+            f"real FFmpeg progress — job 2395774d's symptom. All snapshots: {snapshots!r}"
+        )
+
+    def test_slot_resets_ffmpeg_started_between_items(self, tmp_path):
+        """Two items back-to-back through a single slot:
+
+        * item 1 fires a progress callback (slot flips ``ffmpeg_started=True``);
+        * item 2 is a cache-hit / skipped-FFmpeg path that never fires
+          a progress callback;
+        * ``_release_slot`` between them MUST reset the flag, otherwise
+          item 2's in-flight snapshot inherits item 1's stale ``True``
+          and the UI shows the previous item's speed/ETA on a brand
+          new (pre-FFmpeg) item. Pin this directly — without the test
+          a future refactor could drop the reset line and no other
+          test would notice.
+        """
+        import time as _time
+
+        from media_preview_generator.jobs.orchestrator import _dispatch_processable_items
+        from media_preview_generator.processing.multi_server import MultiServerStatus
+
+        cfg = _server_config("srv-a", ServerType.JELLYFIN)
+        items = [
+            (cfg, ProcessableItem(canonical_path="/data/item1.mkv", server_id="srv-a", title="Item1")),
+            (cfg, ProcessableItem(canonical_path="/data/item2.mkv", server_id="srv-a", title="Item2")),
+        ]
+
+        snapshots: list = []
+
+        def _wcb(workers_list):
+            snapshots.append(list(workers_list))
+
+        call_count = {"n": 0}
+
+        def _pcp(*, canonical_path, progress_callback=None, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                # Item 1 — real FFmpeg pass; flips the flag True.
+                if progress_callback:
+                    progress_callback(80.0, 160.0, 200.0, "7.1x", 20.0)
+                _time.sleep(1.7)
+            else:
+                # Item 2 — cache-hit / skipped-FFmpeg; no progress
+                # callback. Hold open long enough for the poller to
+                # capture an in-flight snapshot of the (reset) state.
+                _time.sleep(1.7)
+            return SimpleNamespace(
+                publishers=[],
+                canonical_path=canonical_path,
+                status=MultiServerStatus.PUBLISHED,
+                message="",
+            )
+
+        with patch(
+            "media_preview_generator.processing.multi_server.process_canonical_path",
+            side_effect=_pcp,
+        ):
+            _dispatch_processable_items(
+                items=items,
+                config=_config(cpu_threads=1),
+                registry=MagicMock(),
+                selected_gpus=[],
+                label="full scan",
+                worker_callback=_wcb,
+            )
+
+        item1_processing = [
+            snap
+            for snap in snapshots
+            if any(w.get("status") == "processing" and w.get("current_title") == "Item1" for w in snap)
+        ]
+        item2_processing = [
+            snap
+            for snap in snapshots
+            if any(w.get("status") == "processing" and w.get("current_title") == "Item2" for w in snap)
+        ]
+        assert item1_processing, f"no 'processing' snapshot for item 1: {snapshots!r}"
+        assert any(
+            w.get("current_title") == "Item1" and w.get("ffmpeg_started") for snap in item1_processing for w in snap
+        ), (
+            f"Item 1 fired its progress callback but no snapshot ever observed "
+            f"ffmpeg_started=True for it. Item-1 processing snapshots: {item1_processing!r}"
+        )
+        assert item2_processing, f"no 'processing' snapshot for item 2: {snapshots!r}"
+        for snap in item2_processing:
+            for w in snap:
+                if w.get("current_title") == "Item2":
+                    assert not w.get("ffmpeg_started"), (
+                        f"Item 2 is a cache-hit / no-FFmpeg item and never fired a progress "
+                        f"callback, but its in-flight snapshot has ffmpeg_started=True — "
+                        f"_release_slot must reset the flag between items so item 2 doesn't "
+                        f"inherit item 1's flipped state. Snapshot: {w!r}"
+                    )
+
+
 class TestWorkerSnapshotEmitThrottle:
     """Job 8cd02fa6 regression: a 10k-item Jellyfin full scan with mostly
     "already fresh — skip FFmpeg" no-op items completes each item in ~50 ms.
