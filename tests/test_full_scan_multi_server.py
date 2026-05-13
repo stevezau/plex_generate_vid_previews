@@ -1224,9 +1224,18 @@ class TestParallelismRespectsPerDeviceWorkerCount:
                 message="",
             )
 
-        with patch(
-            "media_preview_generator.processing.multi_server.process_canonical_path",
-            side_effect=_slow,
+        # Disable the snapshot throttle so per-item transitions are
+        # observable in this 100 ms test (production cadence is 1 Hz
+        # — see ``_WORKER_EMIT_THROTTLE_S``). Throttle is irrelevant
+        # to what this test is checking (peak concurrent slot
+        # transitions); keeping it on would mask the "all 4 active
+        # at once" moment behind the throttle window.
+        with (
+            patch("media_preview_generator.jobs.orchestrator._WORKER_EMIT_THROTTLE_S", 0.0),
+            patch(
+                "media_preview_generator.processing.multi_server.process_canonical_path",
+                side_effect=_slow,
+            ),
         ):
             _dispatch_processable_items(
                 items=items,
@@ -2598,3 +2607,160 @@ class TestProgressEmissionInCompletionOrder:
         # exception swallowed by the background thread.
         assert dispatch_result.get("counts") is not None
         _time.sleep(0)  # let any daemon poller threads finish their tick
+
+
+class TestWorkerSnapshotEmitThrottle:
+    """Job 8cd02fa6 regression: a 10k-item Jellyfin full scan with mostly
+    "already fresh — skip FFmpeg" no-op items completes each item in ~50 ms.
+    With 4 workers that's ~80 items/sec × 2 transitions (claim + release) =
+    ~160 ``worker_update`` SocketIO emits per second. The browser event
+    loop can't keep up, the dashboard Workers panel never renders cleanly,
+    and the user sees an empty panel despite the backend having full
+    per-worker speed/eta data.
+
+    Plex's legacy ``WorkerPool`` already throttles emits to ≈1 Hz
+    (``worker.py:1245`` — ``if current_time - last_worker_update >= 1.0``).
+    The multi-server dispatcher should do the same. The original
+    intent is even documented in ``orchestrator.py``'s comment block
+    claiming the path is ``1Hz throttled`` — but the actual code only
+    throttles the periodic poller, not per-item transitions.
+    """
+
+    def test_snapshot_emits_are_throttled_under_fast_item_flood(self, tmp_path):
+        import time as _time
+
+        from media_preview_generator.jobs.orchestrator import _dispatch_processable_items
+        from media_preview_generator.processing.multi_server import MultiServerStatus
+
+        cfg = _server_config("srv-a", ServerType.JELLYFIN)
+        N = 200
+        items = [
+            (cfg, ProcessableItem(canonical_path=f"/data/m{i}.mkv", server_id="srv-a", title=f"M{i}")) for i in range(N)
+        ]
+
+        snapshots: list = []
+        start = _time.monotonic()
+
+        def _wcb(workers_list):
+            snapshots.append((_time.monotonic() - start, list(workers_list)))
+
+        with patch(
+            "media_preview_generator.processing.multi_server.process_canonical_path",
+            return_value=SimpleNamespace(
+                publishers=[],
+                canonical_path="/x",
+                status=MultiServerStatus.PUBLISHED,
+                message="",
+            ),
+        ):
+            _dispatch_processable_items(
+                items=items,
+                config=_config(cpu_threads=4),
+                registry=MagicMock(),
+                selected_gpus=[],
+                label="full scan",
+                worker_callback=_wcb,
+            )
+
+        elapsed = _time.monotonic() - start
+        # Budget: ~1 emit/sec on the throttled path, plus the forced
+        # leading emit at dispatch start and the forced final emit at
+        # dispatch end. A 200-no-op-item run completes in well under
+        # 1 second on any modern box, so the realistic ceiling is
+        # leading + trailing-on-close + slack = ~5.
+        expected_max = max(6, int(elapsed) + 4)
+        assert len(snapshots) <= expected_max, (
+            f"Expected ≤{expected_max} worker snapshots in {elapsed:.2f}s under 1 Hz throttle; "
+            f"got {len(snapshots)}. Without throttle a 200-item fast-no-op dispatch fires "
+            f"~400+ emits — that's the flood pattern job 8cd02fa6 reproduced "
+            f"(dashboard Workers panel never settled long enough to render)."
+        )
+        # And the throttle must not be so aggressive it suppresses everything —
+        # the user still needs to see SOMETHING in the panel.
+        non_empty_snapshots = [snap for _, snap in snapshots if snap]
+        assert non_empty_snapshots, (
+            f"Throttle suppressed every emit. Got {len(snapshots)} snapshot(s), "
+            f"all empty. The leading-edge emit at dispatch start must always fire."
+        )
+
+    def test_snapshot_emits_continue_during_long_running_items(self, tmp_path):
+        """A scan with slow items (4K FFmpeg passes that take 30s+) must still
+        produce periodic snapshots so the user sees speed/ETA tick forward. The
+        throttle limits cadence but cannot starve the user — the
+        ``_poller_loop``'s 1.5 s heartbeat passes the 1 Hz throttle naturally.
+
+        Asserts via timestamps so the test would actually fail if someone
+        removed the poller's ``_emit_worker_snapshot()`` call — the
+        initial force emit and the leading-edge claim emit both land in
+        the first ~100 ms, so counting "snapshots so far" can't tell
+        the difference between "poller fired" and "only initial fired."
+        """
+        import threading as _threading
+        import time as _time
+
+        from media_preview_generator.jobs.orchestrator import _dispatch_processable_items
+        from media_preview_generator.processing.multi_server import MultiServerStatus
+
+        cfg = _server_config("srv-a", ServerType.JELLYFIN)
+        items = [
+            (cfg, ProcessableItem(canonical_path=f"/data/m{i}.mkv", server_id="srv-a", title=f"M{i}")) for i in range(2)
+        ]
+
+        snapshots: list[tuple[float, list[dict]]] = []
+        release = _threading.Event()
+
+        start = _time.monotonic()
+
+        def _wcb(workers_list):
+            snapshots.append((_time.monotonic() - start, list(workers_list)))
+
+        def _slow(canonical_path, **kwargs):
+            release.wait(timeout=6.0)
+            return SimpleNamespace(
+                publishers=[],
+                canonical_path=canonical_path,
+                status=MultiServerStatus.PUBLISHED,
+                message="",
+            )
+
+        done = _threading.Event()
+
+        def _run():
+            try:
+                with patch(
+                    "media_preview_generator.processing.multi_server.process_canonical_path",
+                    side_effect=_slow,
+                ):
+                    _dispatch_processable_items(
+                        items=items,
+                        config=_config(cpu_threads=2),
+                        registry=MagicMock(),
+                        selected_gpus=[],
+                        label="full scan",
+                        worker_callback=_wcb,
+                    )
+            finally:
+                done.set()
+
+        runner = _threading.Thread(target=_run, daemon=True)
+        runner.start()
+        try:
+            # Capture snapshots arriving AFTER t=2.0 — past the initial
+            # force emit (t≈0) and the leading-edge claim emit (t≈0).
+            # Only the 1.5 s poller heartbeat can populate that window
+            # while items are blocked.
+            _time.sleep(3.2)
+            late_snapshots = [snap for ts, snap in snapshots if ts >= 2.0]
+        finally:
+            release.set()
+            assert done.wait(timeout=5.0)
+            runner.join(timeout=5.0)
+
+        assert late_snapshots, (
+            f"No snapshots arrived between t=2.0 s and t=3.2 s while both items "
+            f"were blocked. Only the poller's 1.5 s heartbeat can produce them "
+            f"in that window — if this assertion ever regresses, the poller's "
+            f"``_emit_worker_snapshot()`` call has been removed. All observed "
+            f"snapshots (ts, slot_count): "
+            f"{[(round(ts, 2), len(snap)) for ts, snap in snapshots]}"
+        )

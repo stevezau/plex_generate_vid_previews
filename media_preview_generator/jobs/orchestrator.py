@@ -16,6 +16,14 @@ from ..processing.generator import ProcessingResult, clear_failures, log_failure
 from ..servers.ownership import apply_webhook_prefixes, find_owning_servers
 from .worker import WorkerPool
 
+# Max cadence for worker-snapshot SocketIO emits during a multi-server
+# dispatch. See the long comment in ``_dispatch_processable_items`` —
+# 1 Hz matches the legacy ``WorkerPool`` (``worker.py:1245``). Exposed
+# as a module-level constant so tests that observe transient
+# "processing" snapshots can ``monkeypatch.setattr`` it down to a few
+# milliseconds without exercising the production cadence.
+_WORKER_EMIT_THROTTLE_S = 1.0
+
 
 def _resolve_webhook_path_to_canonical(path: str, server_configs: list) -> tuple[str, list]:
     """Resolve a webhook-source path to a canonical server-view path + its owners.
@@ -705,9 +713,43 @@ def _dispatch_processable_items(
         with _slots_lock:
             return [{k: v for k, v in s.items() if not k.startswith("_")} for s in gpu_slots]
 
-    def _emit_worker_snapshot() -> None:
+    # ── Worker-snapshot emit throttle ─────────────────────────────────
+    # Cap snapshot emits at ~1 Hz. Pre-fix every slot claim + release
+    # called ``_emit_worker_snapshot`` immediately, so a full-library
+    # scan whose first phase is mostly "already fresh — skip FFmpeg"
+    # no-op items (each completing in ~50 ms with 4 workers → ~80 items/sec
+    # → ~160 transitions/sec) flooded the SocketIO connection. Each
+    # emit also spawned a fresh thread in ``JobManager._emit_event``,
+    # so the dashboard's browser-side event loop couldn't keep up and
+    # the Workers panel never settled long enough to render — job
+    # 8cd02fa6 reproducer.
+    #
+    # Same pattern the legacy ``WorkerPool`` already uses at
+    # ``worker.py:1245`` — "skip if <1 s since the last emit." The
+    # poller heartbeat fires every 1.5 s (> throttle) so the panel
+    # never stalls for longer than the heartbeat window even on a
+    # sustained flood. ``force=True`` bypasses the throttle for the
+    # three events the user must see immediately:
+    #   * initial dispatch banner — show the configured slots as idle
+    #   * final dispatch end — capture the all-idle terminal state
+    #   * poller-driven slot-count changes — rows added/removed
+    # Forced emits do NOT consume the throttle budget so a genuine
+    # transition immediately afterwards still produces its own emit,
+    # and the panel shows the very first claim even on sub-second
+    # dispatches.
+    throttle_s = _WORKER_EMIT_THROTTLE_S
+    _emit_state: dict = {"last_non_force_monotonic": 0.0}
+    _emit_state_lock = threading.Lock()
+
+    def _emit_worker_snapshot(force: bool = False) -> None:
         if not worker_callback:
             return
+        with _emit_state_lock:
+            if not force:
+                now = time.monotonic()
+                if now - _emit_state["last_non_force_monotonic"] < throttle_s:
+                    return
+                _emit_state["last_non_force_monotonic"] = now
         try:
             worker_callback(_snapshot_slots())
         except Exception as exc:
@@ -822,7 +864,9 @@ def _dispatch_processable_items(
                 removed,
                 _concurrency_state["target"],
             )
-            _emit_worker_snapshot()
+            # Slot-count changed — bypass the 1 Hz throttle so the
+            # panel reflects the new row count immediately.
+            _emit_worker_snapshot(force=True)
 
     def _poller_loop() -> None:
         while not _poller_stop.wait(1.5):
@@ -832,7 +876,8 @@ def _dispatch_processable_items(
             # ~1.5s. Without this, the snapshot only fires at task
             # start / end and during settings reconciliation, leaving
             # the panel frozen at "0% @ 0.0x" through 30s+ FFmpeg
-            # passes for multi-server full scans.
+            # passes for multi-server full scans. Throttled at 1 Hz —
+            # 1.5 s ≥ throttle so the heartbeat always passes through.
             _emit_worker_snapshot()
 
     def _process_one(index_and_item):
@@ -955,10 +1000,12 @@ def _dispatch_processable_items(
                 if remaining_time is not None:
                     slot["remaining_time"] = remaining_time
             # Don't emit a snapshot per progress tick — that'd drown
-            # the SocketIO emit queue at 5+ updates/sec/worker. The
-            # _emit_worker_snapshot at the top + bottom of this task
-            # captures status changes; periodic snapshots come from the
-            # dispatcher poll thread (1Hz throttled).
+            # the SocketIO emit queue at 5+ updates/sec/worker. Slot
+            # state is mutated in place; the panel picks up the
+            # latest speed/remaining_time on the next snapshot. All
+            # ``_emit_worker_snapshot`` calls (claim, release, poller
+            # heartbeat) share the 1 Hz throttle defined inside this
+            # function — see the long comment near ``_emit_worker_snapshot``.
 
         # Bind the worker thread's failure-tracking scope to this
         # job so any FFmpeg failure inside ``process_canonical_path``
@@ -1029,6 +1076,13 @@ def _dispatch_processable_items(
     # only the surviving rows; the failures were just a number on the
     # summary chip with no per-file attribution.
     indexed_items = list(enumerate(items))
+    # Force the initial worker snapshot so the dashboard's Workers
+    # panel shows the configured slots as "idle" the moment the
+    # dispatch starts, instead of staying blank until the first
+    # item-claim transition (which the 1 Hz throttle can defer for
+    # up to a second after the panel first asks). Bypasses the
+    # throttle because there's nothing to coalesce yet.
+    _emit_worker_snapshot(force=True)
     _poller_thread = threading.Thread(
         target=_poller_loop,
         name=f"multi-server-poller-{label}",
@@ -1171,6 +1225,11 @@ def _dispatch_processable_items(
         _poller_thread.join(timeout=2.0)
     except Exception:
         pass
+    # Force one final emit so the panel sees the terminal all-idle
+    # state. Without it, a last-item-release transition within the
+    # throttle window leaves the panel showing a stale "processing"
+    # row until the next job clears it.
+    _emit_worker_snapshot(force=True)
     logger.info("Multi-server {} complete: {} item(s) processed.", label, completed)
     return counts
 
