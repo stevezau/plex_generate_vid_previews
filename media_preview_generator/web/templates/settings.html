@@ -413,7 +413,9 @@
             <div class="card-body">
                 <div class="row mb-3">
                     <div class="col-md-6 mb-3">
-                        <label for="logLevel" class="form-label">Log Level</label>
+                        <label for="logLevel" class="form-label">Log Level
+                            <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="How chatty the app's logs are. DEBUG = everything (verbose, useful for diagnosing issues). INFO = normal. WARNING/ERROR = only problems. Click 'Apply Log Level Now' to switch without restarting."><i class="bi bi-info-circle"></i></button>
+                        </label>
                         <select class="form-select" id="logLevel">
                             <option value="DEBUG">DEBUG</option>
                             <option value="INFO" selected>INFO</option>
@@ -435,7 +437,9 @@
                 </p>
                 <div class="row mb-3">
                     <div class="col-md-3 mb-3">
-                        <label for="logRotationSize" class="form-label">Rotation Size</label>
+                        <label for="logRotationSize" class="form-label">Rotation Size
+                            <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Maximum size the active log file can reach before it gets compressed and a new one starts. Smaller values mean more frequent rotation."><i class="bi bi-info-circle"></i></button>
+                        </label>
                         <div class="input-group">
                             <input type="number" class="form-control has-stepper" id="logRotationSize" min="1" max="100" value="10">
                             <span class="input-group-text">MB</span>
@@ -443,7 +447,9 @@
                         <div class="form-text">Max size before rotating</div>
                     </div>
                     <div class="col-md-3 mb-3">
-                        <label for="logRetentionCount" class="form-label">Retention</label>
+                        <label for="logRetentionCount" class="form-label">Retention
+                            <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="How many rotated log files to keep on disk. Older ones beyond this count are deleted automatically."><i class="bi bi-info-circle"></i></button>
+                        </label>
                         <div class="input-group">
                             <input type="number" class="form-control has-stepper" id="logRetentionCount" min="1" max="50" value="5">
                             <span class="input-group-text">files</span>
@@ -460,7 +466,9 @@
                 </p>
                 <div class="row mb-3">
                     <div class="col-md-3 mb-3">
-                        <label for="jobHistoryDays" class="form-label">Keep History For</label>
+                        <label for="jobHistoryDays" class="form-label">Keep History For
+                            <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Completed / failed / cancelled jobs older than this are deleted along with their per-job log files. Lower values reclaim disk space sooner; higher values let you scroll further back."><i class="bi bi-info-circle"></i></button>
+                        </label>
                         <div class="input-group">
                             <input type="number" class="form-control has-stepper" id="jobHistoryDays" min="1" max="365" value="30">
                             <span class="input-group-text">days</span>
@@ -551,20 +559,25 @@
                     Job history lives in <code>jobs.db</code> (SQLite) and isn't backed up via this mechanism;
                     rolling that back is a container-revert plus optional volume-snapshot restore.
                 </p>
-                <div class="row g-3 mb-3">
-                    <div class="col-md-6">
-                        <label for="configBackupKeep" class="form-label small mb-1">Keep last N backups per file</label>
-                        <input type="number" class="form-control form-control-sm" id="configBackupKeep"
-                               min="1" max="100" placeholder="10">
-                        <div class="form-text small">1&ndash;100. Default 10. Older snapshots are pruned automatically on every save.</div>
+                <details class="mb-3">
+                    <summary class="small fw-semibold text-muted" style="cursor:pointer;">
+                        <i class="bi bi-sliders me-1"></i>Advanced: pruning rules
+                    </summary>
+                    <div class="row g-3 mt-2">
+                        <div class="col-md-6">
+                            <label for="configBackupKeep" class="form-label small mb-1">Keep last N backups per file</label>
+                            <input type="number" class="form-control form-control-sm has-stepper" id="configBackupKeep"
+                                   min="1" max="100" placeholder="10">
+                            <div class="form-text small">1&ndash;100. Default 10. Older snapshots are pruned automatically on every save.</div>
+                        </div>
+                        <div class="col-md-6">
+                            <label for="configBackupMaxAgeDays" class="form-label small mb-1">Drop backups older than (days)</label>
+                            <input type="number" class="form-control form-control-sm has-stepper" id="configBackupMaxAgeDays"
+                                   min="0" max="365" placeholder="0">
+                            <div class="form-text small">0 disables age-based pruning. Whichever rule (count or age) cuts more wins.</div>
+                        </div>
                     </div>
-                    <div class="col-md-6">
-                        <label for="configBackupMaxAgeDays" class="form-label small mb-1">Drop backups older than (days)</label>
-                        <input type="number" class="form-control form-control-sm" id="configBackupMaxAgeDays"
-                               min="0" max="365" placeholder="0">
-                        <div class="form-text small">0 disables age-based pruning. Whichever rule (count or age) cuts more wins.</div>
-                    </div>
-                </div>
+                </details>
                 <div id="backupRestorePanel" class="mb-2">
                     <div class="text-muted small">
                         <span class="spinner-border spinner-border-sm me-1"></span>Checking for backups&hellip;

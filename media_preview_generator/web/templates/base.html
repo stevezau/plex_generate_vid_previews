@@ -446,8 +446,8 @@
          the dropdown items themselves give no feedback. -->
     <script>
         // Wrapped in DOMContentLoaded so the dropdown lookup survives if
-        // this <script> ever moves into <head>. The script runs after the
-        // navbar in <body> today, but future-proofing is cheap.
+        // this block ever moves into <head>. It runs after the navbar in
+        // <body> today, but future-proofing is cheap.
         document.addEventListener('DOMContentLoaded', function () {
             var dropdown = document.querySelector('ul[aria-labelledby="navAutomationDropdown"]');
             if (!dropdown) return;

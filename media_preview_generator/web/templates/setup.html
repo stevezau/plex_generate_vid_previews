@@ -228,13 +228,18 @@
         </div>
     </div>
 
-    <!-- Step 3: Path Configuration -->
+    <!-- Step 3: Path Configuration. Universal across vendors — the
+         Plex-specific config-folder block (#step3PlexConfigSection) is
+         shown only when the just-added server is Plex; path mappings +
+         exclude paths apply to every vendor. Labels are vendor-neutral
+         and resolved at runtime via .step3-server-name updates from the
+         mediaServerAdded event handler. -->
     <div class="setup-step" data-step="3">
         <div class="card">
             <div class="card-body">
                 <h4 class="card-title mb-4">Path Configuration</h4>
 
-                <div class="mb-3">
+                <div class="mb-3" id="step3PlexConfigSection">
                     {# id is wizardPlexConfigFolder (not plexConfigFolder) to avoid
                        colliding with the same-named input inside the included
                        _server_connection_form partial — that one is hidden in
@@ -264,22 +269,22 @@
                         Already past Setup? Change this any time on
                         <a href="{{ url_for('main.servers_page') }}">Servers</a> &rarr; your Plex card &rarr; <strong>Edit</strong> &rarr; <strong>General</strong>.
                     </div>
+                    <hr class="my-4">
                 </div>
 
-                <hr class="my-4">
                 <h5 class="mb-2">Media path mapping (optional)
                     <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Only needed when your media server and this app see the same files at different paths. If both mount your media at the same place (the most common case), leave this empty."><i class="bi bi-info-circle"></i></button>
                 </h5>
                 <div class="alert alert-info py-2 mb-3 small" role="alert">
-                    Only needed if Plex and this app see the same media at different paths.
-                    <strong>Example:</strong> Plex sees <code>/data</code>, app sees <code>/mnt/data</code> → one row: <code>/data</code> → <code>/mnt/data</code>. The third column is only for the rare case where Sonarr/Radarr/Tdarr post a third different path (e.g. behind a union mount).
+                    Only needed if your media server and this app see the same files at different paths.
+                    <strong>Example:</strong> the server sees <code>/data</code>, this app sees <code>/mnt/data</code> → one row: <code>/data</code> → <code>/mnt/data</code>. The third column is only for the rare case where Sonarr/Radarr/Tdarr post a third different path (e.g. behind a union mount).
                 </div>
 
                 <div id="setupPathMappingsContainer">
                     <div class="d-flex gap-2 mb-1 path-mapping-header">
                         <div class="flex-grow-1 flex-shrink-1" style="flex-basis: 0;">
-                            <span class="form-label small mb-0">Path in Plex
-                                <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="The path Plex shows in its admin UI / database for the file."><i class="bi bi-info-circle"></i></button>
+                            <span class="form-label small mb-0">Path on the server
+                                <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="The path your media server (Plex / Emby / Jellyfin) shows in its admin UI or database for the file."><i class="bi bi-info-circle"></i></button>
                             </span>
                         </div>
                         <div class="flex-grow-1 flex-shrink-1" style="flex-basis: 0;">
@@ -308,19 +313,22 @@
                 </div>
 
                 <hr class="my-4">
-                <h6 class="mb-2">Exclude paths (optional)
-                    <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Folders or patterns to skip when generating previews. Useful for trailer folders, sample videos, etc."><i class="bi bi-info-circle"></i></button>
-                </h6>
-                <p class="text-muted small mb-2">
-                    Folders or patterns to skip — useful for things like <code>/Trailers</code> or sample files.
-                    Pick <strong>Path prefix</strong> (matches anything under that folder) or <strong>Regex</strong> (advanced pattern matching).
-                </p>
-                <div id="setupExcludePathsContainer">
-                    <div class="exclude-path-rows mb-2"></div>
-                    <button type="button" class="btn btn-outline-secondary btn-sm" id="setupAddExcludePathBtn">
-                        <i class="bi bi-plus-lg me-1"></i>Add exclude path
-                    </button>
-                </div>
+                <details>
+                    <summary class="fw-semibold text-muted mb-2" style="cursor:pointer;">
+                        <i class="bi bi-slash-circle me-1"></i>Advanced: Exclude paths (optional)
+                        <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Folders or patterns to skip when generating previews. Useful for trailer folders, sample videos, etc."><i class="bi bi-info-circle"></i></button>
+                    </summary>
+                    <p class="text-muted small mt-2 mb-2">
+                        Folders or patterns to skip — useful for things like <code>/Trailers</code> or sample files.
+                        Pick <strong>Path prefix</strong> (matches anything under that folder) or <strong>Regex</strong> (advanced pattern matching).
+                    </p>
+                    <div id="setupExcludePathsContainer">
+                        <div class="exclude-path-rows mb-2"></div>
+                        <button type="button" class="btn btn-outline-secondary btn-sm" id="setupAddExcludePathBtn">
+                            <i class="bi bi-plus-lg me-1"></i>Add exclude path
+                        </button>
+                    </div>
+                </details>
 
             </div>
         </div>
@@ -502,9 +510,19 @@ document.addEventListener('DOMContentLoaded', function() {
     let selectedLibraries = [];
     // Tracks the vendor the user picked on Step 1 ("plex" | "emby" | "jellyfin").
     // Plex flows visit Steps 2–3 (libraries + Plex paths); Emby/Jellyfin flows
-    // skip straight to Step 4. Used by the Back button on Step 4 so non-Plex
-    // users don't land on the Plex-only paths page they never visited.
+    // skip Step 2 (Plex library multi-select) and visit Step 3 only for
+    // path mappings + exclude paths. Used by the Back button on Step 4 so
+    // non-Plex users don't land on the Plex-only paths page they never visited.
     let chosenVendor = null;
+
+    // Set by the mediaServerAdded handler when an Emby / Jellyfin server is
+    // saved. ``chosenEjServerId`` flags the wizard as "E/J path" so Step 3
+    // PATCHes the server record directly instead of going through the
+    // legacy-Plex shim in /api/settings. Declared up here (not next to the
+    // handler) so the goToStep() helper above can see them — `let` doesn't
+    // hoist like `var` would.
+    let chosenEjServerId = '';
+    let chosenEjServerName = '';
 
     // Elements
     const steps = document.querySelectorAll('.setup-step');
@@ -534,15 +552,24 @@ document.addEventListener('DOMContentLoaded', function() {
             s.classList.toggle('active', parseInt(s.dataset.step) === step);
         });
 
-        // Update progress indicators
-        progressSteps.forEach((p, i) => {
+        // Update progress indicators. For Emby / Jellyfin wizards we
+        // skip Step 2 (Plex library multi-select) entirely, so its
+        // progress dot is hidden — otherwise it'd render as "completed"
+        // even though the user never visited it.
+        const skipStep2 = !!chosenEjServerId;
+        progressSteps.forEach((p) => {
             const stepNum = parseInt(p.dataset.step);
+            p.classList.toggle('d-none', skipStep2 && stepNum === 2);
             p.classList.toggle('active', stepNum === step);
             p.classList.toggle('completed', stepNum < step);
         });
 
-        // Update connectors
+        // Update connectors. When we're hiding Step 2, hide the connector
+        // BEFORE it (index 0 = step 1 ↔ step 2) so the bar closes up to
+        // [1]─[3]─[4]─[5]; leaving the trailing connector (index 1) visible
+        // gives the bridge from step 1 across to step 3.
         connectors.forEach((c, i) => {
+            c.classList.toggle('d-none', skipStep2 && i === 0);
             c.classList.toggle('completed', i < step - 1);
         });
 
@@ -574,13 +601,22 @@ document.addEventListener('DOMContentLoaded', function() {
                 loadServers();
             }
         } else if (step === 3) {
-            settingsManager.get().then(settings => {
-                setupRenderPathMappingRows(settings.path_mappings || setupLegacyToPathMappings(settings));
-                setupRenderExcludePathRows(settings.exclude_paths || []);
-            }).catch(() => {
+            if (chosenEjServerId) {
+                // E/J wizard path — render the per-server rows (which start
+                // empty for a freshly added server). Skip the global Plex
+                // settings lookup; those belong to Plex, not to the server
+                // the user just added.
                 setupRenderPathMappingRows([]);
                 setupRenderExcludePathRows([]);
-            });
+            } else {
+                settingsManager.get().then(settings => {
+                    setupRenderPathMappingRows(settings.path_mappings || setupLegacyToPathMappings(settings));
+                    setupRenderExcludePathRows(settings.exclude_paths || []);
+                }).catch(() => {
+                    setupRenderPathMappingRows([]);
+                    setupRenderExcludePathRows([]);
+                });
+            }
             // Re-run validation against the prefilled Plex config folder so
             // the user sees green/red feedback the moment they land on this
             // step — without having to edit the value to nudge the input
@@ -648,10 +684,18 @@ document.addEventListener('DOMContentLoaded', function() {
     //     primes the form for the chosen vendor.
     function _showVendorPicker() {
         chosenVendor = null;
+        // Clear E/J wizard state too — without this, an "Emby add then
+        // Back then switch to Plex" sequence leaves chosenEjServerId set,
+        // which makes Step 3 hide the Plex config folder and PATCH the
+        // orphan Emby record with the Plex user's path mappings. Same goes
+        // for the Plex config block visibility, which the E/J path hides.
+        chosenEjServerId = '';
+        chosenEjServerName = '';
         document.getElementById('plexSignInPanel').classList.add('d-none');
         document.getElementById('ejConnectPanel').classList.add('d-none');
         document.getElementById('vendorPicker').classList.remove('d-none');
         document.getElementById('step1Next').classList.add('d-none');
+        document.getElementById('step3PlexConfigSection')?.classList.remove('d-none');
         if (window.MPGShared && window.MPGShared.resetServerWizard) {
             window.MPGShared.resetServerWizard();
         }
@@ -685,22 +729,34 @@ document.addEventListener('DOMContentLoaded', function() {
     document.getElementById('step-connect-back')?.addEventListener('click', _showVendorPicker);
 
     // After the Add Server modal saves an Emby / Jellyfin server, jump
-    // the wizard from step 1 directly to step 4 (GPU). Steps 2 and 3 are
-    // Plex-specific (Plex library multi-select + Plex config folder)
-    // and were already handled inside the modal for the non-Plex case.
-    // isAuthenticated is set so that step-internal "needs auth" gates
-    // (used by the Plex flow) don't block the non-Plex finish.
+    // the wizard from step 1 to step 3 (path mappings + exclude paths).
+    // Step 2 (Plex library multi-select) is Plex-specific and the modal
+    // already handled library selection for E/J. Step 3's per-server
+    // path mappings + exclude paths apply to every vendor — pre-fix the
+    // wizard skipped them entirely for non-Plex and users had to revisit
+    // /servers to add a path-mapping row. Capture the just-added server's
+    // id so step3Next can PATCH that server's record instead of saving
+    // legacy global Plex keys.
     document.addEventListener('mediaServerAdded', (event) => {
         const t = (event.detail && event.detail.type) || '';
         if (t === 'plex') {
             // Multi-Plex add fires this too; reload so the Plex flow
             // picks up the freshly added server(s) on its next step.
-            // (We don't need to short-circuit to step 4 here — the
-            // Plex wizard path is the existing happy path.)
+            // (We don't short-circuit here — the Plex wizard path is
+            // the existing happy path.)
             return;
         }
         isAuthenticated = true;
-        goToStep(4);
+        const added = event.detail && event.detail.server;
+        if (added && added.id) {
+            chosenEjServerId = added.id;
+            chosenEjServerName = added.name || (t === 'emby' ? 'Emby' : 'Jellyfin');
+        }
+        // Hide the Plex-specific config folder block on Step 3; the rest
+        // (path mappings + exclude paths) is vendor-neutral.
+        const plexCfgBlock = document.getElementById('step3PlexConfigSection');
+        if (plexCfgBlock) plexCfgBlock.classList.add('d-none');
+        goToStep(3);
     });
 
     // Manual URL + token fallback for environments where plex.tv is
@@ -1091,7 +1147,12 @@ document.addEventListener('DOMContentLoaded', function() {
         return rows;
     }
 
-    document.getElementById('step3Back').addEventListener('click', () => goToStep(2));
+    document.getElementById('step3Back').addEventListener('click', () => {
+        // E/J flows never visited Step 2 (Plex-only library picker), so
+        // jump them back to Step 1 instead of dropping them on an unused
+        // tab. Plex flows go back to Step 2 as before.
+        goToStep(chosenEjServerId ? 1 : 2);
+    });
 
     document.getElementById('setupAddPathMappingBtn').addEventListener('click', function() {
         const container = document.querySelector('#setupPathMappingsContainer .path-mapping-rows');
@@ -1129,11 +1190,40 @@ document.addEventListener('DOMContentLoaded', function() {
     // is satisfied; the same checks fire server-side on save anyway.
 
     document.getElementById('step3Next').addEventListener('click', async () => {
-        await settingsManager.save({
-            plex_config_folder: document.getElementById('wizardPlexConfigFolder').value,
-            path_mappings: setupCollectPathMappingRows(),
-            exclude_paths: setupCollectExcludePathRows()
-        });
+        if (chosenEjServerId) {
+            // Emby / Jellyfin wizard path — PATCH the just-added server's
+            // record directly instead of going through the legacy-Plex
+            // shim in /api/settings (which would silently route values to
+            // the wrong server entry).
+            try {
+                const resp = await fetch(`/api/servers/${encodeURIComponent(chosenEjServerId)}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        path_mappings: setupCollectPathMappingRows(),
+                        exclude_paths: setupCollectExcludePathRows(),
+                    }),
+                });
+                if (!resp.ok) {
+                    const data = await resp.json().catch(() => ({}));
+                    showToast(
+                        `Couldn't save ${chosenEjServerName} path settings`,
+                        (data && data.error) || `HTTP ${resp.status}`,
+                        'warning',
+                    );
+                }
+            } catch (e) {
+                // Surface the error but don't block advancement — the user
+                // can always set paths later from /servers.
+                showToast('Path save failed', e.message || 'Network error', 'warning');
+            }
+        } else {
+            await settingsManager.save({
+                plex_config_folder: document.getElementById('wizardPlexConfigFolder').value,
+                path_mappings: setupCollectPathMappingRows(),
+                exclude_paths: setupCollectExcludePathRows()
+            });
+        }
         goToStep(4);
     });
 
@@ -1204,9 +1294,10 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 
     document.getElementById('step4Back').addEventListener('click', () => {
-        // Plex visited Steps 2–3 on the way here; E/J skipped both.
-        // Send each user back to where they actually came from.
-        goToStep(chosenVendor === 'plex' ? 3 : 1);
+        // Plex visited Steps 2–3 on the way here; E/J visit Step 3 only
+        // (path mappings + exclude paths — vendor parity addition). Send
+        // every user back to the step they last saw.
+        goToStep(3);
     });
 
     document.getElementById('step4Next').addEventListener('click', async function() {
@@ -1399,7 +1490,18 @@ document.addEventListener('DOMContentLoaded', function() {
             }
 
             if (status.current_step && status.current_step > 1) {
-                goToStep(status.current_step);
+                // Emby / Jellyfin resume guard. ``chosenEjServerId`` is a
+                // wizard-session local that isn't persisted in saveState
+                // today, so an E/J user who reloaded mid-flow on Step 3 or
+                // Step 4 would land back there as if they were a Plex user
+                // — Step 3 would show the Plex config folder block and
+                // overwrite the Plex server's path_mappings on Save. Until
+                // saveState captures the E/J server id, clamp resumes to
+                // Step 1 unless we have evidence the user was on the Plex
+                // path (status.plex_authenticated). The user just re-picks
+                // the vendor; their already-saved server stays untouched.
+                const looksPlex = !!status.plex_authenticated;
+                goToStep(looksPlex ? status.current_step : 1);
             }
         } catch (error) {
             console.log('No saved state found');
@@ -1408,6 +1510,10 @@ document.addEventListener('DOMContentLoaded', function() {
 
     async function saveState() {
         try {
+            // chosenEjServerId is intentionally not persisted yet — pairing
+            // that with loadSavedState requires a regression test that
+            // resumes a status with current_step >= 3 after an E/J add and
+            // verifies the right vendor path is taken. Punted to a follow-up.
             await setupManager.saveState(currentStep, {
                 isAuthenticated,
                 selectedServer,
