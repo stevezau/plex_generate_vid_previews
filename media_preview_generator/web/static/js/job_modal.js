@@ -1304,12 +1304,18 @@ function onFilesTabActivated() {
 }
 
 async function refreshFileResults() {
-    // Scope to the selected attempt when the modal target is a chain
-    // row — the per-file results JSONL is written per dispatch Job, so
-    // each retry firing has its own. The dropdown sets
-    // ``_logsModalAttemptId`` which ``_logsTargetId`` returns. For
-    // non-chain jobs this collapses to ``_logsModalJobId`` as before.
-    var targetId = _logsTargetId();
+    // Files panel ALWAYS queries the chain head's JSONL — never an
+    // individual retry attempt's. Post-2026-05-13 retry children write
+    // their per-file outcomes to the PARENT's JSONL (via the
+    // _file_result_cb redirect in job_runner.py), so the chain head
+    // accumulates the full audit trail. An individual retry child's
+    // JSONL is empty.
+    //
+    // Logs ARE still per-attempt (each retry Job has its own log
+    // file); that's why _logsTargetId still uses the selected pill
+    // for the Logs tab. Files diverges because the data model
+    // diverges: logs are per-run, files are per-lifecycle.
+    var targetId = _logsModalJobId;
     if (!targetId) return;
     try {
         var params = 'page=' + _filePage + '&per_page=' + _filePerPage;
