@@ -815,3 +815,69 @@ class TestGpuConfigEdgeCases:
         settings_manager.update(payload)
         assert "gpu_threads" in payload
         assert payload["gpu_threads"] == 3
+
+
+class TestSingletonInitDeadlockRegression:
+    """Lazy-init race guard for the get_settings_manager singleton.
+
+    Pre-fix, ``utils._backup_retention`` called ``get_settings_manager()``
+    while ``atomic_json_save_with_backup`` was being driven by the
+    singleton's own ``__init__`` (via the ``plex_webhook_*`` migration in
+    ``_load``). The outer call held ``_settings_lock`` (non-reentrant); the
+    recursive call tried to acquire it again and deadlocked. Triggered on
+    first boot for every user upgrading from 3.7.5 (which writes the
+    legacy webhook keys), with no error in the logs — the worker just sat
+    there. See ``utils._backup_retention`` /
+    ``settings_manager._migrate_global_plex_webhook_to_per_server``.
+    """
+
+    def test_init_does_not_deadlock_with_legacy_webhook_keys(self, tmp_path):
+        import threading
+
+        from media_preview_generator.web.settings_manager import (
+            get_settings_manager,
+            reset_settings_manager,
+        )
+
+        settings_path = tmp_path / "settings.json"
+        settings_path.write_text(
+            json.dumps(
+                {
+                    "_schema_version": 6,
+                    "plex_url": "http://plex:32400",
+                    "plex_token": "fake-token",
+                    "plex_webhook_enabled": True,
+                    "plex_webhook_public_url": "https://example.com/webhook",
+                }
+            )
+        )
+
+        reset_settings_manager()
+        result: dict = {}
+
+        def init_in_thread() -> None:
+            sm = get_settings_manager(str(tmp_path))
+            result["settings"] = sm.get_all()
+
+        t = threading.Thread(target=init_in_thread, daemon=True)
+        t.start()
+        t.join(timeout=5.0)
+        try:
+            if t.is_alive():
+                pytest.fail(
+                    "SettingsManager init deadlocked: get_settings_manager() did "
+                    "not return within 5s with legacy plex_webhook_* keys in "
+                    "settings.json. The recursive get_settings_manager() call "
+                    "from utils._backup_retention re-entered the non-reentrant "
+                    "_settings_lock. See utils.py:_backup_retention."
+                )
+
+            settings = result["settings"]
+            assert "plex_webhook_enabled" not in settings, (
+                "Legacy plex_webhook_enabled key was not migrated away during _load"
+            )
+            assert "plex_webhook_public_url" not in settings, (
+                "Legacy plex_webhook_public_url key was not migrated away during _load"
+            )
+        finally:
+            reset_settings_manager()

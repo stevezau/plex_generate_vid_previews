@@ -201,11 +201,24 @@ def _backup_retention() -> int:
     Resolution order: settings.json `config_backup_keep` → env
     `CONFIG_BACKUP_KEEP` → default 10. Imported lazily to avoid an
     import cycle (utils → settings_manager → utils via atomic save).
-    """
-    try:
-        from .web.settings_manager import get_settings_manager
 
-        raw = get_settings_manager().get("config_backup_keep")
+    Uses :func:`peek_settings_manager` (a lock-free accessor) rather than
+    :func:`get_settings_manager`. The standard accessor acquires
+    ``_settings_lock``, which is already held by the caller during
+    first-boot ``SettingsManager.__init__`` → ``_load`` →
+    ``_migrate_global_plex_webhook_to_per_server`` → ``_save``. A
+    re-entry deadlocks the worker for any user whose settings.json
+    carries the legacy ``plex_webhook_*`` keys (i.e., every 3.7.5
+    upgrader). When the singleton isn't built yet, fall through to env /
+    default — same value a brand-new install gets.
+    """
+    raw = None
+    try:
+        from .web.settings_manager import peek_settings_manager
+
+        sm = peek_settings_manager()
+        if sm is not None:
+            raw = sm.get("config_backup_keep")
     except Exception:
         raw = None
     if raw in (None, ""):
@@ -222,11 +235,17 @@ def _backup_max_age_days() -> int:
 
     Resolution order: settings.json `config_backup_max_age_days` → env
     `CONFIG_BACKUP_MAX_AGE_DAYS` → default 0 (disabled).
-    """
-    try:
-        from .web.settings_manager import get_settings_manager
 
-        raw = get_settings_manager().get("config_backup_max_age_days")
+    Uses :func:`peek_settings_manager` for the same reason as
+    :func:`_backup_retention` — avoids the first-boot deadlock.
+    """
+    raw = None
+    try:
+        from .web.settings_manager import peek_settings_manager
+
+        sm = peek_settings_manager()
+        if sm is not None:
+            raw = sm.get("config_backup_max_age_days")
     except Exception:
         raw = None
     if raw in (None, ""):

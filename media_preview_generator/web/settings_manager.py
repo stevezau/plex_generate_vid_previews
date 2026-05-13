@@ -724,3 +724,22 @@ def reset_settings_manager() -> None:
     global _settings_manager
     with _settings_lock:
         _settings_manager = None
+
+
+def peek_settings_manager() -> "SettingsManager | None":
+    """Return the singleton without touching ``_settings_lock``.
+
+    Returns ``None`` if the singleton hasn't been constructed yet. Callers
+    invoked from inside ``SettingsManager.__init__`` (most importantly
+    :func:`media_preview_generator.utils._backup_retention`, reached via
+    ``_load`` → migrate → ``_save`` → ``atomic_json_save_with_backup``)
+    cannot use :func:`get_settings_manager`: the outer caller holds the
+    non-reentrant ``_settings_lock`` and re-acquiring would deadlock the
+    worker on first boot for every 3.7.5 upgrader.
+
+    Lock-free by design. CPython's GIL makes the pointer load atomic, so
+    the caller observes either ``None`` or a fully-constructed instance —
+    never a half-built one. Don't change this without re-reading the
+    construction path in :func:`get_settings_manager`.
+    """
+    return _settings_manager
