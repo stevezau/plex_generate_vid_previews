@@ -434,6 +434,21 @@ jobs:
             echo "name=${{ env.DOCKER_IMAGE_DEPRECATED }}" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Generate bundled release notes
+        # Fetches GitHub Releases into media_preview_generator/release_notes.json
+        # so the docker COPY picks it up. Powers the "What's new" popup
+        # without a live api.github.com call on user dashboards.
+        # Uses ${{ secrets.GITHUB_TOKEN }} for the 5000/hr rate limit
+        # (vs 60/hr anon — runners share an IP across the org).
+        # Best-effort: a fetch failure does NOT fail the build; the
+        # runtime falls back to a live GitHub fetch when the bundle is
+        # missing, so the worst case is the pre-bundle UX, never a
+        # broken image.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 scripts/refresh_release_notes.py || echo "::warning::Release-notes refresh failed; image will fall back to live GitHub fetch at runtime."
+
       - name: Build and push by digest
         id: build
         uses: docker/build-push-action@v6

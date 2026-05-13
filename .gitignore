@@ -57,6 +57,12 @@ CLAUDE.local.md
 
 # setuptools-scm auto-generated version file
 plex_generate_previews/_version.py
+
+# CI-generated release-notes bundle. Source of truth is GitHub Releases;
+# CI fetches and bakes into the docker image at build time. Local
+# checkouts can run `python3 scripts/refresh_release_notes.py` to
+# populate it for offline dev, but the file is never committed.
+media_preview_generator/release_notes.json
 servers-add-emby.png
 setup-step1-fixed.png
 setup-step1-full.png
