@@ -408,7 +408,21 @@ class TestStartJobAsyncRetryBranch:
                         "path_hints": [],
                     },
                 }
-            # Retry path: success.
+            # Retry path: write a fresh "resolved" row on the parent's
+            # JSONL so the retry-decision scan in job_runner doesn't see
+            # the stale skipped_file_not_found row and re-spawn forever.
+            # Real workers write a fresh row on each dispatch; this fake
+            # has to do the same. Retry children write to the parent's
+            # JSONL via the _file_result_cb redirect.
+            jm = get_job_manager()
+            parent_id = (jm.get_job(kwargs.get("job_id")).config or {}).get("parent_job_id") or kwargs.get("job_id")
+            jm.record_file_result(
+                parent_id,
+                "/data/tv/Show/S01E01.mkv",
+                "generated",
+                "",
+                "[GPU 0]",
+            )
             return {
                 "outcome": {"generated": 1},
                 "webhook_resolution": {
@@ -583,7 +597,33 @@ class TestStartJobAsyncRetryBranchPublisherStatuses:
                         "path_hints": [],
                     },
                 }
-            # Retry run: everything ok this time.
+            # Retry run: simulate the registration succeeding this time.
+            # A real worker writes a fresh per-file row on each dispatch
+            # — the retry-decision scan in job_runner reads the PARENT's
+            # JSONL with dedup_by_path, so the latest row per file is what
+            # decides whether to spawn another retry. If the fake doesn't
+            # write a fresh "now resolved" row, the dedup keeps the old
+            # pending row and the retry spawns again indefinitely.
+            jm = get_job_manager()
+            # Retry children write to the parent's JSONL via the
+            # _file_result_cb redirect, so target the parent here.
+            parent_id = (jm.get_job(kwargs.get("job_id")).config or {}).get("parent_job_id") or kwargs.get("job_id")
+            jm.record_file_result(
+                parent_id,
+                "/data/tv/Show/S01E01.mkv",
+                "generated",
+                "",
+                "[GPU 0]",
+                servers=[
+                    {
+                        "id": "jelly-1",
+                        "name": "Jellyfin",
+                        "type": "jellyfin",
+                        "status": "published",  # now resolved
+                        "message": "registered after retry",
+                    }
+                ],
+            )
             return {
                 "outcome": {"generated": 1},
                 "webhook_resolution": {

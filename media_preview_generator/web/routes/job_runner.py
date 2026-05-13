@@ -862,7 +862,17 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                         "skipped_not_indexed",
                         "skipped_not_in_library",
                     }
-                    for fr in job_manager.get_file_results(job_id, dedup_by_path=True):
+                    # Retry children write their per-file outcomes to the
+                    # PARENT's JSONL (see _file_result_cb redirect above).
+                    # When THIS run is a retry, the retry-decision scan must
+                    # read the parent's JSONL too — otherwise we'd see an
+                    # empty list and incorrectly mark the chain "completed"
+                    # even when files are still pending. Verified live:
+                    # chain ae4bb6aa marked COMPLETED while JellyTest still
+                    # reported published_pending_registration × 4.
+                    _retry_scan_target = job_config.get("parent_job_id") if job_config.get("is_retry") else None
+                    _retry_scan_target = _retry_scan_target or job_id
+                    for fr in job_manager.get_file_results(_retry_scan_target, dedup_by_path=True):
                         file_path = fr.get("file")
                         if not file_path:
                             continue
