@@ -1119,6 +1119,55 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                                 else:
                                     _chain_outcome = "completed"
                                     _chain_reason = None
+
+                                # Refresh the chain head's publishers snapshot
+                                # from the parent's JSONL — retry children's
+                                # per-publisher outcomes were appended there
+                                # by _file_result_cb, so the deduped (latest)
+                                # rows reflect post-retry truth. Without this
+                                # refresh, the Servers strip in the modal
+                                # would keep showing the INITIAL dispatch's
+                                # publisher counts (e.g. "12 pending
+                                # registration" even after the retry
+                                # registered them all).
+                                # ``record_file_result`` writes a SLIM shape
+                                # to the JSONL — ``{id, name, type, status}``
+                                # — whereas ``fold_publisher_rows_into_aggregate``
+                                # expects the FULL shape with ``server_id`` /
+                                # ``server_name`` / ``server_type`` keys.
+                                # Remap on the way in so the helper sees the
+                                # right keys; without this the aggregate is
+                                # always empty (every row's ``server_id`` is
+                                # missing) and the Servers strip stays stale.
+                                _chain_publishers = None
+                                try:
+                                    from ...jobs.orchestrator import fold_publisher_rows_into_aggregate
+
+                                    _aggregate: dict[str, dict] = {}
+                                    for _fr in job_manager.get_file_results(_chain_parent_id, dedup_by_path=True):
+                                        _slim_rows = _fr.get("servers") or []
+                                        if not _slim_rows:
+                                            continue
+                                        _full_rows = [
+                                            {
+                                                "server_id": s.get("id") or "",
+                                                "server_name": s.get("name") or "",
+                                                "server_type": (s.get("type") or "").lower(),
+                                                "status": s.get("status") or "",
+                                            }
+                                            for s in _slim_rows
+                                            if isinstance(s, dict)
+                                        ]
+                                        fold_publisher_rows_into_aggregate(_aggregate, _full_rows)
+                                    _chain_publishers = list(_aggregate.values()) or None
+                                except Exception as exc:
+                                    logger.debug(
+                                        "Could not aggregate publishers for chain {}: {}: {}",
+                                        _chain_parent_id,
+                                        type(exc).__name__,
+                                        exc,
+                                    )
+
                                 try:
                                     job_manager.upsert_retry_chain_job(
                                         canonical_path="",
@@ -1131,6 +1180,7 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                                         originating_job_id=_chain_parent_id,
                                         reason=_chain_reason,
                                         source=(_chain_parent.config or {}).get("source"),
+                                        publishers=_chain_publishers,
                                     )
                                 except Exception as exc:
                                     # WARNING (not DEBUG): a terminal-state
