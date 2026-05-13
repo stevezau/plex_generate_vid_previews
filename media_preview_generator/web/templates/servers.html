@@ -23,13 +23,6 @@
         </div>
     </div>
 
-    <div class="alert alert-light border mt-4 mb-0 small">
-        <i class="bi bi-info-circle me-2"></i>
-        <strong>Need a webhook URL?</strong> Each server card above exposes its own
-        <code>?server_id=…</code> URL inside the Edit modal &rarr; Webhook tab.
-        For ARR-app and custom webhooks (Sonarr / Radarr / Sportarr / Tdarr) see
-        <a href="{{ url_for('main.automation_page') }}#section-webhooks-overview">Automation &rarr; Triggers</a>.
-    </div>
 </div>
 
 <!-- Add Server Modal — shared partial, also included from /setup so the
@@ -611,12 +604,13 @@
                             </div>
                         </div>
 
-                        <!-- Recently Added Scanner — universal across vendors.
-                             Polls the server's "recently added" API on a schedule
-                             so files this app's webhook missed (server down,
-                             plugin not configured, etc.) still get picked up.
-                             Pre-fix this card was Plex-only and Emby/Jellyfin
-                             users had no equivalent safety net surfaced. -->
+                        <!-- Recently Added Scanner — universal across vendors,
+                             but the full config (intervals, lookback windows,
+                             per-server libraries) lives on the dedicated
+                             Schedules page. This card surfaces the status +
+                             a deep-link so users land in the right place
+                             instead of seeing two competing forms (modal vs.
+                             Schedules page) for the same setting. -->
                         <div class="card mb-3" id="editRecentlyAddedCard">
                             <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
                                 <div>
@@ -626,32 +620,20 @@
                                 <span class="badge badge-status bg-secondary" id="recentlyAddedStatusBadge">Loading…</span>
                             </div>
                             <div class="card-body">
-                                <p class="mb-3" id="editRecentlyAddedBlurb">
-                                    Polls this server's recently-added list on a schedule. Use it on its own (no webhook required) or alongside the live webhook as a safety net for events the app missed. Customise intervals, lookback windows, and libraries on the <a href="/schedules">Schedules</a> page.
+                                <p class="mb-2" id="editRecentlyAddedBlurb">
+                                    Polls this server's recently-added list on a schedule so files the live webhook missed (server down, plugin not configured) still get picked up.
                                 </p>
-
-                                <div id="recentlyAddedNoScanners" class="alert alert-secondary small d-none">
-                                    <i class="bi bi-info-circle me-1"></i>
-                                    No Recently Added scanners configured yet. Click <strong>Create default scanner</strong> below
-                                    to create one with sensible defaults (every 15 minutes, 1 hour lookback, all libraries).
+                                <div id="recentlyAddedScannerSummary" class="small text-muted mb-3">
+                                    <span class="spinner-border spinner-border-sm me-1"></span>Loading scanners…
                                 </div>
-
-                                <div id="recentlyAddedScannerList" class="mb-3">
-                                    <div class="text-muted small">
-                                        <span class="spinner-border spinner-border-sm me-1"></span>Loading scanners…
-                                    </div>
-                                </div>
-
-                                <div class="d-flex gap-2 flex-wrap">
-                                    <button class="btn btn-sm btn-primary" type="button" id="recentlyAddedCreateDefaultBtn">
-                                        <i class="bi bi-plus-circle me-1"></i>Create default scanner
-                                    </button>
+                                <div class="d-flex gap-2 flex-wrap align-items-center">
+                                    <a href="{{ url_for('main.automation_page') }}#section-schedules-list"
+                                       class="btn btn-sm btn-primary" id="recentlyAddedManageLink">
+                                        <i class="bi bi-sliders me-1"></i>Configure on Schedules page
+                                    </a>
                                     <button class="btn btn-sm btn-outline-primary d-none" type="button" id="recentlyAddedScanNowBtn">
                                         <i class="bi bi-play-circle me-1"></i>Scan all now
                                     </button>
-                                    <a href="/automation#schedules" class="btn btn-sm btn-outline-secondary">
-                                        <i class="bi bi-sliders me-1"></i>Manage on Schedules page
-                                    </a>
                                 </div>
                                 <div id="recentlyAddedScanResult" class="small mt-2"></div>
                             </div>

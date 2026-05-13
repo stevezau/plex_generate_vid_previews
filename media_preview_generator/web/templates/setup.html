@@ -281,32 +281,35 @@
                 </div>
 
                 <div id="setupPathMappingsContainer">
-                    <div class="d-flex gap-2 mb-1 path-mapping-header">
-                        <div class="flex-grow-1 flex-shrink-1" style="flex-basis: 0;">
-                            <span class="form-label small mb-0">Path on the server
-                                <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="The path your media server (Plex / Emby / Jellyfin) shows in its admin UI or database for the file."><i class="bi bi-info-circle"></i></button>
-                            </span>
-                        </div>
-                        <div class="flex-grow-1 flex-shrink-1" style="flex-basis: 0;">
-                            <span class="form-label small mb-0">Path in this app
-                                <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="The path the same file appears at INSIDE this app's container — the volume mount target."><i class="bi bi-info-circle"></i></button>
-                            </span>
-                        </div>
-                        <div class="flex-grow-1 flex-shrink-1" style="flex-basis: 0;">
-                            <span class="form-label small mb-0 text-muted">Path in webhooks (rare)
-                                <button type="button" class="info-icon info-icon-more ms-1" tabindex="0"
-                                        data-bs-toggle="tooltip" data-bs-placement="top"
-                                        title="For union mounts / multi-source webhooks — click for details"
-                                        data-explain-title="Webhook path mapping"
-                                        data-explain-template="infoWebhookPathTpl"
-                                        aria-label="Explain webhook path mapping">
-                                    <i class="bi bi-info-circle"></i>
-                                </button>
-                            </span>
-                        </div>
-                        <div class="flex-shrink-0" style="width: 38px;"></div>
-                    </div>
-                    <div class="path-mapping-rows mb-2"></div>
+                    {# Table layout matches the Server-edit Path-mappings tab so
+                       both UIs render the same component. The flex-row layout
+                       was duplicated and the headers + spacing drifted; using
+                       a table here closes that gap. JS appends into the
+                       .path-mapping-rows <tbody>. #}
+                    <table class="table table-sm align-middle mb-2" id="setupPathMappingsTable">
+                        <thead>
+                            <tr>
+                                <th class="small fw-normal">Path on the server
+                                    <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="The path your media server (Plex / Emby / Jellyfin) shows in its admin UI or database for the file."><i class="bi bi-info-circle"></i></button>
+                                </th>
+                                <th class="small fw-normal">Path in this app
+                                    <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="The path the same file appears at INSIDE this app's container — the volume mount target."><i class="bi bi-info-circle"></i></button>
+                                </th>
+                                <th class="small fw-normal text-muted">Path in webhooks (rare)
+                                    <button type="button" class="info-icon info-icon-more ms-1" tabindex="0"
+                                            data-bs-toggle="tooltip" data-bs-placement="top"
+                                            title="For union mounts / multi-source webhooks — click for details"
+                                            data-explain-title="Webhook path mapping"
+                                            data-explain-template="infoWebhookPathTpl"
+                                            aria-label="Explain webhook path mapping">
+                                        <i class="bi bi-info-circle"></i>
+                                    </button>
+                                </th>
+                                <th style="width: 38px;"></th>
+                            </tr>
+                        </thead>
+                        <tbody class="path-mapping-rows"></tbody>
+                    </table>
                     <button type="button" class="btn btn-outline-secondary btn-sm" id="setupAddPathMappingBtn">
                         <i class="bi bi-plus-lg me-1"></i>Add another mapping
                     </button>
@@ -323,7 +326,18 @@
                         Pick <strong>Path prefix</strong> (matches anything under that folder) or <strong>Regex</strong> (advanced pattern matching).
                     </p>
                     <div id="setupExcludePathsContainer">
-                        <div class="exclude-path-rows mb-2"></div>
+                        <table class="table table-sm align-middle mb-2" id="setupExcludePathsTable">
+                            <thead>
+                                <tr>
+                                    <th class="small fw-normal">Path or pattern</th>
+                                    <th class="small fw-normal" style="width: 160px;">Match type
+                                        <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Path prefix: skips anything under that folder (e.g. '/Trailers' skips every file under any folder called Trailers). Regex: matches the full file path against a regular expression — for advanced patterns."><i class="bi bi-info-circle"></i></button>
+                                    </th>
+                                    <th style="width: 38px;"></th>
+                                </tr>
+                            </thead>
+                            <tbody class="exclude-path-rows"></tbody>
+                        </table>
                         <button type="button" class="btn btn-outline-secondary btn-sm" id="setupAddExcludePathBtn">
                             <i class="bi bi-plus-lg me-1"></i>Add exclude path
                         </button>
@@ -1045,14 +1059,20 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     function setupCreatePathMappingRow(row) {
-        const div = document.createElement('div');
-        div.className = 'path-mapping-row d-flex align-items-start gap-2 mb-2';
+        // Emits a <tr> (not the old flex <div>) so the wizard renders
+        // path-mapping rows through the same DOM shape as the Server-edit
+        // modal — see servers.html #editPathMappingsTable. The existing
+        // .path-mapping-{plex,local,webhook,browse,remove} class names are
+        // preserved so setupCollectPathMappingRows + the shared validator
+        // hooks keep working unchanged.
+        const tr = document.createElement('tr');
+        tr.className = 'path-mapping-row';
         const webhookVal = Array.isArray(row.webhook_prefixes) ? row.webhook_prefixes.join('; ') : (row.webhook_prefixes || '');
-        div.innerHTML = `
-            <div class="flex-grow-1 flex-shrink-1" style="flex-basis: 0;">
+        tr.innerHTML = `
+            <td>
                 <input type="text" class="form-control form-control-sm path-mapping-plex" placeholder="e.g. /data" value="${_esc(row.plex_prefix)}">
-            </div>
-            <div class="flex-grow-1 flex-shrink-1" style="flex-basis: 0;">
+            </td>
+            <td>
                 <div class="input-group input-group-sm">
                     <input type="text" class="form-control form-control-sm path-mapping-local" placeholder="e.g. /mnt/data" value="${_esc(row.local_prefix)}">
                     <button type="button" class="btn btn-outline-secondary path-mapping-browse" title="Browse folders">
@@ -1061,30 +1081,32 @@ document.addEventListener('DOMContentLoaded', function() {
                     <div class="invalid-feedback small"></div>
                     <div class="valid-feedback small">Path exists</div>
                 </div>
-            </div>
-            <div class="flex-grow-1 flex-shrink-1" style="flex-basis: 0;">
-                <input type="text" class="form-control form-control-sm path-mapping-webhook" placeholder="Leave blank if same as Plex" value="${_esc(webhookVal)}">
-            </div>
-            <button type="button" class="btn btn-outline-danger btn-sm path-mapping-remove flex-shrink-0" title="Remove this row"><i class="bi bi-dash-lg"></i></button>
+            </td>
+            <td>
+                <input type="text" class="form-control form-control-sm path-mapping-webhook" placeholder="Leave blank if same as server" value="${_esc(webhookVal)}">
+            </td>
+            <td class="text-end">
+                <button type="button" class="btn btn-outline-danger btn-sm path-mapping-remove" title="Remove this row"><i class="bi bi-dash-lg"></i></button>
+            </td>
         `;
-        div.querySelector('.path-mapping-remove').addEventListener('click', function() {
-            const parent = div.closest('.path-mapping-rows');
+        tr.querySelector('.path-mapping-remove').addEventListener('click', function() {
+            const parent = tr.closest('.path-mapping-rows');
             const rows = parent ? parent.querySelectorAll('.path-mapping-row') : [];
-            if (rows.length > 1) div.remove();
+            if (rows.length > 1) tr.remove();
         });
-        const localInput = div.querySelector('.path-mapping-local');
+        const localInput = tr.querySelector('.path-mapping-local');
         const validate = window.MPGShared && window.MPGShared.validateLocalPathInput;
         const debounced = window.MPGShared && window.MPGShared.debouncedValidatePath;
         if (debounced) localInput.addEventListener('input', debounced(localInput));
         if (validate && row.local_prefix) validate(localInput);
-        div.querySelector('.path-mapping-browse').addEventListener('click', () => {
+        tr.querySelector('.path-mapping-browse').addEventListener('click', () => {
             const start = (localInput.value || '').trim() || '/';
             window.openFolderPicker(start, (picked) => {
                 localInput.value = picked;
                 if (validate) validate(localInput);
             });
         });
-        return div;
+        return tr;
     }
 
     function setupRenderPathMappingRows(rows) {
@@ -1110,28 +1132,31 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     function setupCreateExcludePathRow(row) {
-        const div = document.createElement('div');
-        div.className = 'exclude-path-row d-flex align-items-end gap-2 mb-2';
+        // Emits a <tr> so the wizard matches the table layout used in
+        // the Server-edit modal (#editExcludePathsTable). The old inline
+        // labels are gone — header cells cover that.
+        const tr = document.createElement('tr');
+        tr.className = 'exclude-path-row';
         const typeVal = (row.type || 'path') === 'regex' ? 'regex' : 'path';
         const valEsc = (row.value || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
-        div.innerHTML = `
-            <div class="flex-grow-1" style="flex-basis: 0;">
-                <label class="form-label small mb-0">Path or pattern</label>
+        tr.innerHTML = `
+            <td>
                 <input type="text" class="form-control form-control-sm exclude-path-value" placeholder="e.g. /mnt/media/foo or .*\\.iso$" value="${valEsc}">
-            </div>
-            <div style="width: 140px;">
-                <label class="form-label small mb-0">Match type</label>
+            </td>
+            <td>
                 <select class="form-select form-select-sm exclude-path-type">
                     <option value="path" ${typeVal === 'path' ? 'selected' : ''}>Path prefix</option>
                     <option value="regex" ${typeVal === 'regex' ? 'selected' : ''}>Regex</option>
                 </select>
-            </div>
-            <button type="button" class="btn btn-outline-danger btn-sm exclude-path-remove flex-shrink-0" title="Remove"><i class="bi bi-dash-lg"></i></button>
+            </td>
+            <td class="text-end">
+                <button type="button" class="btn btn-outline-danger btn-sm exclude-path-remove" title="Remove"><i class="bi bi-dash-lg"></i></button>
+            </td>
         `;
-        div.querySelector('.exclude-path-remove').addEventListener('click', function() {
-            div.remove();
+        tr.querySelector('.exclude-path-remove').addEventListener('click', function() {
+            tr.remove();
         });
-        return div;
+        return tr;
     }
 
     function setupCollectExcludePathRows() {

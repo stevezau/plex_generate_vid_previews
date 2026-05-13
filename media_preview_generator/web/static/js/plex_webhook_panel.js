@@ -204,21 +204,17 @@ async function testPlexWebhookReachability() {
 }
 
 async function loadRecentlyAddedScanners() {
-    const list = document.getElementById('recentlyAddedScannerList');
-    const empty = document.getElementById('recentlyAddedNoScanners');
-    const createBtn = document.getElementById('recentlyAddedCreateDefaultBtn');
+    // The server-edit modal now surfaces a summary line + a deep-link
+    // to the Schedules page; the full per-scanner list/edit UI lives
+    // on /automation. We render a one-line summary into
+    // #recentlyAddedScannerSummary and keep the status badge accurate.
+    const summary = document.getElementById('recentlyAddedScannerSummary');
     const scanBtn = document.getElementById('recentlyAddedScanNowBtn');
     const badge = document.getElementById('recentlyAddedStatusBadge');
-    if (!list || !badge) return;
+    if (!summary || !badge) return;
     try {
         const data = await apiGet('/api/schedules');
         const all = (data && data.schedules) || [];
-        // Filter to recently_added scanners that target the server
-        // currently being edited (or have no server pin → "all servers"
-        // legacy schedules; included so users see the global one if it
-        // exists). Without this filter, opening Edit-Server-A would
-        // show scanners that belong to Server B, which is misleading
-        // when each server's modal has its own Create-default button.
         recentlyAddedScanners = all.filter(function(s) {
             if (!s.config || s.config.job_type !== 'recently_added') return false;
             if (!_pwpServerId) return true;
@@ -227,99 +223,46 @@ async function loadRecentlyAddedScanners() {
         });
 
         if (recentlyAddedScanners.length === 0) {
-            list.innerHTML = '';
-            if (empty) empty.classList.remove('d-none');
-            if (createBtn) createBtn.classList.remove('d-none');
             if (scanBtn) scanBtn.classList.add('d-none');
             badge.className = 'badge badge-status bg-secondary';
             badge.textContent = 'No scanners';
+            summary.innerHTML =
+                '<i class="bi bi-info-circle me-1"></i>' +
+                'No Recently Added scanner configured for this server yet. ' +
+                'Click <strong>Configure on Schedules page</strong> below to add one.';
         } else {
-            if (empty) empty.classList.add('d-none');
-            if (createBtn) createBtn.classList.add('d-none');
-            if (scanBtn) scanBtn.classList.remove('d-none');
-
             const anyEnabled = recentlyAddedScanners.some(function(s) { return s.enabled !== false; });
             if (anyEnabled) {
                 badge.className = 'badge badge-status bg-success';
                 badge.textContent = recentlyAddedScanners.length === 1
                     ? '1 scanner active'
                     : recentlyAddedScanners.length + ' scanners active';
+                if (scanBtn) scanBtn.classList.remove('d-none');
             } else {
                 badge.className = 'badge badge-status bg-secondary';
                 badge.textContent = 'All disabled';
+                if (scanBtn) scanBtn.classList.add('d-none');
             }
 
-            let html = '<div class="list-group list-group-flush border rounded">';
-            recentlyAddedScanners.forEach(function(s) {
+            const items = recentlyAddedScanners.map(function(s) {
                 const interval = s.trigger_type === 'interval'
                     ? _formatScannerInterval(s.trigger_value)
                     : (s.trigger_value ? 'cron: ' + s.trigger_value : '');
                 const lookback = _formatScannerLookback((s.config || {}).lookback_hours);
                 const library = s.library_name || 'All Libraries';
-                const enabledBadge = s.enabled !== false
-                    ? '<span class="badge bg-success">Enabled</span>'
-                    : '<span class="badge bg-secondary">Disabled</span>';
-                html += '<div class="list-group-item bg-transparent d-flex justify-content-between align-items-center flex-wrap gap-2">' +
-                    '<div>' +
-                    '<div class="fw-semibold">' + escapeHtml(s.name) + ' ' + enabledBadge + '</div>' +
-                    '<div class="small text-muted">' +
-                    escapeHtml(library) + ' · ' + escapeHtml(interval) +
-                    (lookback ? ' · ' + escapeHtml(lookback) : '') +
-                    '</div>' +
-                    '</div>' +
-                    '<a class="btn btn-sm btn-outline-secondary" href="/automation#schedules" ' +
-                    'title="Edit on the Schedules page">' +
-                    '<i class="bi bi-sliders me-1"></i>Edit' +
-                    '</a>' +
-                    '</div>';
-            });
-            html += '</div>';
-            list.innerHTML = html;
+                const tail = (lookback ? ' · ' + lookback : '');
+                return '<li>' + escapeHtml(s.name) +
+                    ' <span class="text-muted">— ' +
+                    escapeHtml(library) + ' · ' + escapeHtml(interval) + escapeHtml(tail) +
+                    '</span></li>';
+            }).join('');
+            summary.innerHTML = '<ul class="list-unstyled mb-0 small">' + items + '</ul>';
         }
     } catch (e) {
         console.error('Failed to load scanner schedules:', e);
-        list.innerHTML = '<div class="text-danger small"><i class="bi bi-exclamation-triangle me-1"></i>Failed to load scanners: ' + escapeHtml(e.message || 'unknown error') + '</div>';
+        summary.innerHTML = '<span class="text-danger"><i class="bi bi-exclamation-triangle me-1"></i>Failed to load scanners: ' + escapeHtml(e.message || 'unknown error') + '</span>';
         badge.className = 'badge badge-status bg-warning text-dark';
         badge.textContent = 'Error';
-    }
-}
-
-async function createDefaultRecentlyAddedScanner() {
-    const btn = document.getElementById('recentlyAddedCreateDefaultBtn');
-    const result = document.getElementById('recentlyAddedScanResult');
-    if (!btn || !result) return;
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Creating…';
-    result.textContent = '';
-    result.className = 'small mt-2';
-    try {
-        // Scope the scanner to the currently-edited server so its
-        // dispatches target that server's recently-added API only.
-        // ``server_id`` is honoured by ``_run_recently_added_multi_server``
-        // — without this, the scanner would fan out to every configured
-        // server which is surprising scope creep when the user clicks
-        // "Create default scanner" inside one specific server's modal.
-        const body = {
-            name: 'Recently Added Scanner',
-            interval_minutes: 15,
-            library_id: null,
-            library_name: 'All Libraries',
-            enabled: true,
-            priority: 2,
-            config: { job_type: 'recently_added', lookback_hours: 1 },
-        };
-        if (_pwpServerId) body.server_id = _pwpServerId;
-        await apiPost('/api/schedules', body);
-        result.className = 'small mt-2 text-success';
-        result.innerHTML = '<i class="bi bi-check-circle me-1"></i>Scanner created — runs every 15 minutes with a 1 hour lookback. Customize it on the Schedules page.';
-        showToast('Scanner created', 'Recently Added scanner is now running every 15 minutes.', 'success');
-        loadRecentlyAddedScanners();
-    } catch (e) {
-        result.className = 'small mt-2 text-danger';
-        result.innerHTML = '<i class="bi bi-exclamation-triangle me-1"></i>' + escapeHtml((e && e.message) || 'Failed to create scanner');
-    } finally {
-        btn.disabled = false;
-        btn.innerHTML = '<i class="bi bi-plus-circle me-1"></i>Create default scanner';
     }
 }
 
@@ -360,7 +303,6 @@ function _wirePlexWebhookPanel() {
     wire('plexWebhookUnregisterBtn', 'click', unregisterPlexWebhook);
     wire('plexWebhookTestBtn', 'click', testPlexWebhookReachability);
     wire('plexWebhookResetUrlBtn', 'click', resetPlexWebhookUrl);
-    wire('recentlyAddedCreateDefaultBtn', 'click', createDefaultRecentlyAddedScanner);
     wire('recentlyAddedScanNowBtn', 'click', scanAllRecentlyAddedNow);
 }
 
