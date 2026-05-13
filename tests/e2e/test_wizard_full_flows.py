@@ -95,7 +95,7 @@ class TestPlexHappyPath:
 
 @pytest.mark.e2e
 class TestEmbyHappyPath:
-    def test_emby_skips_plex_specific_steps(self, wizard_page: Page, app_url_wizard: str) -> None:
+    def test_emby_skips_step2_visits_step3(self, wizard_page: Page, app_url_wizard: str) -> None:
         capture_settings_save(wizard_page)
         mock_setup_status(wizard_page, complete=False)
         mock_settings_get(wizard_page)
@@ -126,7 +126,14 @@ class TestEmbyHappyPath:
         expect(wizard_page.locator("#connectResult")).to_contain_text("Connected")
         wizard_page.locator("#step-result-save").click()
 
-        # Wizard jumps to step 4 (skipping Plex-specific 2+3).
+        # Emby visits step 3 (path mappings + exclude paths — vendor parity);
+        # only Plex-specific Step 2 (library multi-select) is skipped. The
+        # Plex config-folder block on step 3 is hidden via JS for non-Plex.
+        expect(wizard_page.locator('div.setup-step[data-step="3"]')).to_have_class("setup-step active")
+        expect(wizard_page.locator("#step3PlexConfigSection")).to_be_hidden()
+        wizard_page.locator("#step3Next").click()
+
+        # Step 4 — GPU + processing options.
         expect(wizard_page.locator('div.setup-step[data-step="4"]')).to_have_class("setup-step active")
         expect(wizard_page.locator("#gpuDetecting")).to_be_hidden()
         wizard_page.locator("#step4Next").click()

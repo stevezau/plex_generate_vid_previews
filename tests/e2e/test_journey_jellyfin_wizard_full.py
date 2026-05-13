@@ -87,8 +87,14 @@ class TestJellyfinFullWizard:
         expect(wizard_page.locator("#connectResult")).to_contain_text("Connected", timeout=5000)
         wizard_page.locator("#step-result-save").click()
 
-        # Wizard skips Plex-specific steps 2+3 for Jellyfin.
-        # mediaServerAdded event listener jumps directly to step 4.
+        # Jellyfin skips Plex-only Step 2 (library multi-select) and visits
+        # Step 3 (path mappings + exclude paths — vendor parity, 3.8+).
+        # The Plex config-folder block is hidden via #step3PlexConfigSection.
+        expect(wizard_page.locator('div.setup-step[data-step="3"]')).to_have_class("setup-step active", timeout=5000)
+        expect(wizard_page.locator("#step3PlexConfigSection")).to_be_hidden()
+        wizard_page.locator("#step3Next").click()
+
+        # Step 4 — GPU + processing options.
         expect(wizard_page.locator('div.setup-step[data-step="4"]')).to_have_class("setup-step active", timeout=5000)
         expect(wizard_page.locator("#gpuDetecting")).to_be_hidden(timeout=3000)
         wizard_page.locator("#step4Next").click()

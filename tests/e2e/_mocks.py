@@ -103,10 +103,14 @@ def capture_servers_save(
     server_id: str = "srv-test-1",
     extra_response: dict | None = None,
 ) -> list[dict]:
-    """Mock POST /api/servers and return a list capturing the bodies sent.
+    """Mock POST /api/servers (+ PATCH for path-mapping updates) and capture bodies.
 
     Tests assert against captured[0] to verify the wizard/page sent the
-    right payload shape (URL, auth, output, etc.).
+    right payload shape (URL, auth, output, etc.). The PATCH mock keeps
+    the post-3.8 Emby/Jellyfin wizard flow happy — Step 3 of the wizard
+    now PATCHes the just-added server with {path_mappings, exclude_paths}
+    after vendor-parity changes, and without this stub it would hit the
+    real backend and 404 because the server doesn't exist in the test fixture.
     """
     captured: list[dict] = []
     response = {
@@ -129,7 +133,17 @@ def capture_servers_save(
         else:
             route.continue_()
 
+    def patch_handler(route: Route) -> None:
+        # PATCH /api/servers/<id> — used by the E/J wizard Step 3 to attach
+        # path mappings + exclude paths to the just-added server. Returns
+        # the updated record shape the route normally produces.
+        if route.request.method in ("PATCH", "PUT"):
+            _fulfill_json(route, response)
+        else:
+            route.continue_()
+
     page.route("**/api/servers", handler)
+    page.route(f"**/api/servers/{server_id}", patch_handler)
     return captured
 
 

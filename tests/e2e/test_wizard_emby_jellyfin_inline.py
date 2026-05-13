@@ -25,7 +25,7 @@ from ._mocks import (
 
 @pytest.mark.e2e
 class TestEmbyInline:
-    def test_emby_password_save_advances_to_step4(self, wizard_page: Page, app_url_wizard: str) -> None:
+    def test_emby_password_save_advances_to_step3(self, wizard_page: Page, app_url_wizard: str) -> None:
         capture_settings_save(wizard_page)
         mock_setup_status(wizard_page, complete=False)
         mock_settings_get(wizard_page)
@@ -54,9 +54,13 @@ class TestEmbyInline:
         expect(wizard_page.locator("#connectResult")).to_contain_text("Connected")
         wizard_page.locator("#step-result-save").click()
 
-        # Wizard advances to step 4 because the mediaServerAdded event
-        # listener short-circuits past steps 2+3 for non-Plex saves.
-        expect(wizard_page.locator('div.setup-step[data-step="4"]')).to_have_class("setup-step active")
+        # Wizard advances to step 3 (path mappings + exclude paths).
+        # Pre-3.8 the mediaServerAdded handler skipped E/J users to step 4;
+        # vendor-parity work routes them through step 3 so they can set
+        # path mappings on the just-added server's record. The Plex
+        # config-folder block is hidden via #step3PlexConfigSection for E/J.
+        expect(wizard_page.locator('div.setup-step[data-step="3"]')).to_have_class("setup-step active")
+        expect(wizard_page.locator("#step3PlexConfigSection")).to_be_hidden()
         assert captured, "POST /api/servers never fired"
         # Pin the full payload shape, not just the vendor type. A regression
         # that mangled the URL or name fields would otherwise pass call-count
@@ -68,7 +72,7 @@ class TestEmbyInline:
 
 @pytest.mark.e2e
 class TestJellyfinInline:
-    def test_jellyfin_quick_connect_save_advances_to_step4(self, wizard_page: Page, app_url_wizard: str) -> None:
+    def test_jellyfin_quick_connect_save_advances_to_step3(self, wizard_page: Page, app_url_wizard: str) -> None:
         capture_settings_save(wizard_page)
         mock_setup_status(wizard_page, complete=False)
         mock_settings_get(wizard_page)
@@ -96,7 +100,10 @@ class TestJellyfinInline:
         expect(wizard_page.locator("#connectResult")).to_contain_text("Connected")
         wizard_page.locator("#step-result-save").click()
 
-        expect(wizard_page.locator('div.setup-step[data-step="4"]')).to_have_class("setup-step active")
+        # Same rationale as the Emby test above — E/J flows visit step 3
+        # for vendor-neutral path mappings before continuing to step 4.
+        expect(wizard_page.locator('div.setup-step[data-step="3"]')).to_have_class("setup-step active")
+        expect(wizard_page.locator("#step3PlexConfigSection")).to_be_hidden()
         assert captured, "POST /api/servers never fired"
         # Pin the full payload shape (same rationale as the Emby test above).
         assert captured[0]["type"] == "jellyfin"
