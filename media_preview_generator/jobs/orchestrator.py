@@ -174,6 +174,122 @@ def _publisher_rows_from_result(result, canonical_path: str) -> list[dict]:
     return rows
 
 
+# Per-(server, path) precedence for picking the "most informative"
+# publisher status across all attempts in a retry chain. Lower rank wins.
+#
+# Background — the chain head's publishers_json was originally written
+# using the LATEST status per path on the assumption that a retry's
+# outcome always supersedes the head's. That assumption is correct for
+# Jellyfin's ``pending_registration → skipped_output_exists`` upgrade
+# (bridge plugin registered the row — the file is now fully indexed,
+# adapter gate at ``multi_server.py::_publish_all`` line ~1411
+# distinguishes ``needs_registration``-still-true from done), but it
+# silently overwrote Plex/Emby's ``published`` with the retry's no-op
+# ``skipped_output_exists`` for every chain that hit a retry. The
+# user-visible bug: jobs that freshly generated previews showed
+# "already existed" everywhere in the modal's Servers strip.
+#
+# Cases preserved by the table:
+#   * Plex/Emby ``published → skipped_output_exists`` keeps
+#     ``published``. The retry's "BIF exists" observation is a no-op.
+#   * Jellyfin ``published_pending_registration → skipped_output_exists``
+#     keeps ``skipped_output_exists``. The adapter only emits
+#     SKIPPED_OUTPUT_EXISTS for a JF retry once ``item_id`` resolves
+#     (i.e., the row IS registered) — so the upgrade is structurally
+#     guarded at the source, not just at the merge.
+#   * ``failed → published`` (retry recovered) keeps ``published``.
+#
+# One case the table intentionally hides (with rationale):
+#   * ``published → failed`` would keep ``published``, hiding a late
+#     failure. This is structurally impossible in the current retry
+#     pipeline: retries fire ONLY when at least one publisher returned
+#     a PENDING status (see ``retry_queue.PENDING_PUBLISHER_STATUSES``).
+#     A ``published`` server's row is never re-evaluated by the retry
+#     in a way that could downgrade it to FAILED — at worst the retry
+#     re-publishes (status=published again) or sees the BIF on disk
+#     (status=skipped_output_exists). If a future refactor lets a retry
+#     re-emit FAILED for an already-published server, demote ``published``
+#     below ``failed`` in this table. The matching regression test is
+#     ``test_published_then_failed_keeps_published_documents_assumption``.
+_PUBLISHER_STATUS_PRECEDENCE: dict[str, int] = {
+    "published": 0,
+    "skipped_output_exists": 1,
+    "published_pending_registration": 2,
+    "skipped_not_indexed": 3,
+    "skipped_not_in_library": 4,
+    "failed": 5,
+}
+
+
+def _best_publisher_status(statuses: list[str]) -> str:
+    """Return the most informative status from a list of attempts.
+
+    Unknown statuses sort to the end (rank 99) so they only win if no
+    known status was observed. The list is expected to be non-empty;
+    callers should skip empty lists before calling.
+    """
+    return min(statuses, key=lambda s: _PUBLISHER_STATUS_PRECEDENCE.get(s, 99))
+
+
+def merge_chain_publishers_best_per_path(file_results: list[dict]) -> list[dict]:
+    """Aggregate per-(server, path) publisher outcomes across a chain's attempts.
+
+    ``file_results`` is the JSONL of dispatches recorded by ``_file_result_cb``
+    for the chain's head and every retry child — typically obtained from
+    ``JobManager.get_file_results(chain_head_id, dedup_by_path=False)``.
+
+    Returns the publisher rows in the same shape as
+    ``fold_publisher_rows_into_aggregate`` produces (id/name/type/counts),
+    but with one row per (server, path) folded using the
+    ``_PUBLISHER_STATUS_PRECEDENCE`` "best wins" rule rather than the
+    original "latest dedup wins". See the module-level constant docstring
+    for the bug this fixes.
+    """
+    # (server_id, path) → list of statuses, in observation order
+    per_server_path: dict[tuple[str, str], list[str]] = {}
+    # server_id → metadata for the result rows (name / type)
+    server_meta: dict[str, dict] = {}
+
+    for fr in file_results:
+        if not isinstance(fr, dict):
+            continue
+        path = fr.get("file") or fr.get("canonical_path") or fr.get("path") or ""
+        for s in fr.get("servers") or []:
+            if not isinstance(s, dict):
+                continue
+            sid = s.get("id") or s.get("server_id") or ""
+            if not sid:
+                continue
+            status = s.get("status") or ""
+            if not status:
+                continue
+            per_server_path.setdefault((sid, path), []).append(status)
+            # Late-arriving name/type wins over an empty one (matches
+            # fold_publisher_rows_into_aggregate's protection against
+            # the first row carrying only an id).
+            meta = server_meta.setdefault(sid, {"server_name": "", "server_type": ""})
+            if not meta["server_name"]:
+                meta["server_name"] = s.get("name") or s.get("server_name") or ""
+            if not meta["server_type"]:
+                meta["server_type"] = (s.get("type") or s.get("server_type") or "").lower()
+
+    aggregate: dict[str, dict] = {}
+    for (sid, _path), statuses in per_server_path.items():
+        best = _best_publisher_status(statuses)
+        entry = aggregate.setdefault(
+            sid,
+            {
+                "server_id": sid,
+                "server_name": server_meta.get(sid, {}).get("server_name", ""),
+                "server_type": server_meta.get(sid, {}).get("server_type", ""),
+                "counts": {},
+            },
+        )
+        entry["counts"][best] = entry["counts"].get(best, 0) + 1
+
+    return list(aggregate.values())
+
+
 def fold_publisher_rows_into_aggregate(aggregate: dict[str, dict], rows: list[dict]) -> None:
     """Fold per-task publisher rows into a per-server count aggregate.
 

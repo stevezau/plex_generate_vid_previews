@@ -2072,6 +2072,258 @@ class TestFoldPublisherRowsIntoAggregate:
         assert agg["p1"]["counts"] == {"unknown": 1}
 
 
+class TestMergeChainPublishersBestPerPath:
+    """Per-(server, path) "best status wins" aggregation that backs the
+    chain head's publishers_json snapshot.
+
+    Production bug (job ``9fef1fa1`` — a file upgrade): chain head
+    showed ``skipped_output_exists`` for every server in the modal even
+    though the head freshly generated previews. Root cause: the
+    aggregation used ``dedup_by_path=True`` and took the LATEST status,
+    which let the retry's no-op rerun ("BIF already on disk → skipped")
+    overwrite the head's actual ``published``.
+
+    The replacement walks every attempt and picks the most informative
+    status per (server, path) using a precedence table. The two
+    contracts this class pins:
+
+    * Plex/Emby ``published → skipped_output_exists`` keeps
+      ``published``. The retry's "BIF already there" is a no-op
+      observation, not new truth.
+    * Jellyfin ``published_pending_registration → skipped_output_exists``
+      keeps ``skipped_output_exists``. The bridge plugin registering
+      the trickplay row IS an upgrade — same behavior the existing
+      ``test_completed_outcome_refreshes_publishers_from_attempt``
+      defends, just achieved via merge precedence rather than blind
+      overwrite.
+    """
+
+    def test_published_then_skipped_keeps_published_fixes_user_facing_bug(self):
+        """The exact production case: head published Plex+Emby, retry
+        ran a no-op pass because BIFs were already on disk. The chain
+        head's display MUST preserve "published × 1" — pre-fix it was
+        overwriting to ``skipped_output_exists × 1`` and the modal
+        lied about whether the job did any work."""
+        from media_preview_generator.jobs.orchestrator import merge_chain_publishers_best_per_path
+
+        head_attempt = {
+            "file": "/data/x.mkv",
+            "servers": [
+                {"id": "plex", "name": "Plex", "type": "plex", "status": "published"},
+                {"id": "emby", "name": "Emby", "type": "emby", "status": "published"},
+                {"id": "jelly", "name": "Jelly", "type": "jellyfin", "status": "published_pending_registration"},
+            ],
+        }
+        retry_attempt = {
+            "file": "/data/x.mkv",
+            "servers": [
+                {"id": "plex", "name": "Plex", "type": "plex", "status": "skipped_output_exists"},
+                {"id": "emby", "name": "Emby", "type": "emby", "status": "skipped_output_exists"},
+                {"id": "jelly", "name": "Jelly", "type": "jellyfin", "status": "skipped_output_exists"},
+            ],
+        }
+
+        rows = merge_chain_publishers_best_per_path([head_attempt, retry_attempt])
+        by_sid = {r["server_id"]: r for r in rows}
+
+        # CRITICAL: a regression here means the modal goes back to
+        # showing "already existed" for freshly-generated previews.
+        assert by_sid["plex"]["counts"] == {"published": 1}, (
+            f"Plex head=published + retry=skipped should display 'published'; "
+            f"got {by_sid['plex']['counts']!r}. The retry's no-op skipped is "
+            "NOT post-retry truth for Plex/Emby — head already did the work."
+        )
+        assert by_sid["emby"]["counts"] == {"published": 1}, (
+            f"Emby head=published + retry=skipped should display 'published'; got {by_sid['emby']['counts']!r}"
+        )
+        # Jellyfin upgrade path — pending → skipped means the bridge
+        # plugin registered the trickplay row, so the chain's outcome
+        # IS the retry's "skipped". This is the case the original
+        # post-retry-truth refresh was written for.
+        assert by_sid["jelly"]["counts"] == {"skipped_output_exists": 1}, (
+            f"Jellyfin pending → skipped should display 'skipped_output_exists' "
+            f"(registration completed); got {by_sid['jelly']['counts']!r}"
+        )
+
+    def test_jellyfin_exhausted_pending_keeps_pending(self):
+        """Negative-side companion to the registration-upgrade case:
+        when every attempt for Jellyfin stays at pending_registration
+        (chain exhausted retries without the bridge plugin indexing),
+        the display must surface that — the user needs to know the
+        file never registered."""
+        from media_preview_generator.jobs.orchestrator import merge_chain_publishers_best_per_path
+
+        attempts = [
+            {
+                "file": "/data/x.mkv",
+                "servers": [
+                    {"id": "jelly", "name": "Jelly", "type": "jellyfin", "status": "published_pending_registration"},
+                ],
+            }
+            for _ in range(4)  # head + 3 retries
+        ]
+        rows = merge_chain_publishers_best_per_path(attempts)
+        assert rows[0]["counts"] == {"published_pending_registration": 1}
+
+    def test_precedence_published_beats_failed(self):
+        """If a server failed on the first attempt then published on
+        retry, the chain succeeded — show ``published``, not ``failed``.
+        Pre-fix this was already correct (dedup took the latest), but
+        the new merge must preserve it."""
+        from media_preview_generator.jobs.orchestrator import merge_chain_publishers_best_per_path
+
+        rows = merge_chain_publishers_best_per_path(
+            [
+                {
+                    "file": "/data/x.mkv",
+                    "servers": [{"id": "plex", "name": "Plex", "type": "plex", "status": "failed"}],
+                },
+                {
+                    "file": "/data/x.mkv",
+                    "servers": [{"id": "plex", "name": "Plex", "type": "plex", "status": "published"}],
+                },
+            ]
+        )
+        assert rows[0]["counts"] == {"published": 1}
+
+    def test_published_then_failed_keeps_published_documents_assumption(self):
+        """Pins the precedence's intentional asymmetry: ``published → failed``
+        keeps ``published``, hiding the trailing failure.
+
+        This is correct IFF retries can never re-emit ``failed`` for a
+        server that already returned ``published`` — which is the case
+        today because retries fire only for paths whose head had a
+        PENDING publisher status (see
+        ``retry_queue.PENDING_PUBLISHER_STATUSES``). A ``published``
+        publisher doesn't qualify, so its row isn't re-evaluated in a
+        way that could legitimately downgrade.
+
+        If a future refactor lets a retry's pass re-emit ``failed`` for
+        an already-published server (e.g., a periodic re-validation
+        feature), this test should start failing — that's the signal
+        to flip ``published`` and ``failed`` in
+        ``_PUBLISHER_STATUS_PRECEDENCE`` so the late failure surfaces."""
+        from media_preview_generator.jobs.orchestrator import merge_chain_publishers_best_per_path
+
+        rows = merge_chain_publishers_best_per_path(
+            [
+                {
+                    "file": "/data/x.mkv",
+                    "servers": [{"id": "plex", "name": "Plex", "type": "plex", "status": "published"}],
+                },
+                {
+                    "file": "/data/x.mkv",
+                    "servers": [{"id": "plex", "name": "Plex", "type": "plex", "status": "failed"}],
+                },
+            ]
+        )
+        assert rows[0]["counts"] == {"published": 1}, (
+            "If this assertion ever fails, read the docstring on "
+            "_PUBLISHER_STATUS_PRECEDENCE before flipping the precedence — "
+            "the retry pipeline may have grown a new re-evaluation path."
+        )
+
+    def test_unknown_status_only_wins_when_nothing_else_seen(self):
+        """Future publisher statuses not present in the precedence table
+        should sort to rank 99 — i.e., a known status always wins over
+        an unknown one. Guards against silent breakage when somebody
+        adds a new PublisherStatus and forgets to update the precedence."""
+        from media_preview_generator.jobs.orchestrator import merge_chain_publishers_best_per_path
+
+        rows = merge_chain_publishers_best_per_path(
+            [
+                {
+                    "file": "/data/x.mkv",
+                    "servers": [
+                        {"id": "plex", "name": "Plex", "type": "plex", "status": "some_future_status"},
+                        {"id": "plex", "name": "Plex", "type": "plex", "status": "published"},
+                    ],
+                }
+            ]
+        )
+        # 'published' (rank 0) beats 'some_future_status' (rank 99) even
+        # though the future status is structurally a single observation.
+        # Path-key here is the same so both statuses contribute to one
+        # (server, path) bucket.
+        assert rows[0]["counts"] == {"published": 1}
+
+    def test_per_server_per_path_counts(self):
+        """Multi-file chain: each (server, path) collapses to one best
+        status, then counts aggregate per server. Two files both ending
+        at ``published`` produces ``{published: 2}``."""
+        from media_preview_generator.jobs.orchestrator import merge_chain_publishers_best_per_path
+
+        rows = merge_chain_publishers_best_per_path(
+            [
+                {
+                    "file": "/data/a.mkv",
+                    "servers": [{"id": "plex", "name": "Plex", "type": "plex", "status": "published"}],
+                },
+                {
+                    "file": "/data/b.mkv",
+                    "servers": [{"id": "plex", "name": "Plex", "type": "plex", "status": "published"}],
+                },
+                # Retry pass for a.mkv only — should not inflate Plex's count.
+                {
+                    "file": "/data/a.mkv",
+                    "servers": [{"id": "plex", "name": "Plex", "type": "plex", "status": "skipped_output_exists"}],
+                },
+            ]
+        )
+        assert rows[0]["counts"] == {"published": 2}, (
+            f"Two distinct (server, path) keys each best=published should give "
+            f"published × 2; got {rows[0]['counts']!r}. A retry's no-op observation "
+            "must NOT add to the count."
+        )
+
+    def test_row_with_blank_server_id_is_dropped(self):
+        """Same invariant as the sibling fold helper — rows that can't
+        be attributed must not produce an empty-id phantom entry."""
+        from media_preview_generator.jobs.orchestrator import merge_chain_publishers_best_per_path
+
+        rows = merge_chain_publishers_best_per_path(
+            [
+                {
+                    "file": "/data/x.mkv",
+                    "servers": [
+                        {"id": "", "status": "published"},
+                        {"id": None, "status": "published"},
+                    ],
+                }
+            ]
+        )
+        assert rows == []
+
+    def test_empty_file_results_returns_empty_list(self):
+        from media_preview_generator.jobs.orchestrator import merge_chain_publishers_best_per_path
+
+        assert merge_chain_publishers_best_per_path([]) == []
+
+    def test_late_name_and_type_fill_in_an_empty_first_row(self):
+        """If the first attempt only has the server id (e.g., the metadata
+        cache hadn't populated yet), a later attempt with the proper
+        name/type must fill those fields in — same defense as the sibling
+        helper."""
+        from media_preview_generator.jobs.orchestrator import merge_chain_publishers_best_per_path
+
+        rows = merge_chain_publishers_best_per_path(
+            [
+                {
+                    "file": "/data/x.mkv",
+                    "servers": [{"id": "plex", "name": "", "type": "", "status": "published_pending_registration"}],
+                },
+                {
+                    "file": "/data/x.mkv",
+                    "servers": [{"id": "plex", "name": "Plex", "type": "PLEX", "status": "skipped_output_exists"}],
+                },
+            ]
+        )
+        # Jellyfin upgrade case: pending → skipped picks 'skipped'.
+        assert rows[0]["server_name"] == "Plex"
+        assert rows[0]["server_type"] == "plex", "server_type must be lowercased for the badge palette"
+        assert rows[0]["counts"] == {"skipped_output_exists": 1}
+
+
 class TestFullScanUsesSetPublishersNotAppend:
     """Performance regression — the full-scan path must aggregate
     per-server (fixed-size) and ``set_publishers`` it, NEVER call
