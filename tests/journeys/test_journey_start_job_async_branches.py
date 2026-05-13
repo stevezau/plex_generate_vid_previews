@@ -856,6 +856,283 @@ class TestStartJobAsyncRetryBranchPublisherStatuses:
             f"No INFO-level retry log lines should remain from either spawn site; found: {info_retry_lines!r}"
         )
 
+    def test_plex_source_retry_does_not_inherit_publish_pin(self, app, tmp_path):
+        """Plex-source webhooks set the top-level ``server_id`` on the
+        parent Job for display attribution ("which server fired the
+        webhook"), but the parent's CONFIG.server_id stays unset so the
+        worker fans out to all owning servers (Plex+Emby+Jellyfin).
+        When the retry chain spawned a child Job for the publish-
+        pending case, ``_spawn_retry_job`` was inheriting the parent's
+        top-level ``server_id`` straight into ``retry_async_config``,
+        which the worker then read as an explicit publish pin —
+        re-running ONLY against Plex and leaving Jellyfin's pending
+        registration un-retried.
+
+        Live evidence: chain ``2f7132d5`` (Law & Order S04E12, Plex
+        media.added source). Initial dispatch hit all 3 servers;
+        Jellyfin returned ``published_pending_registration``. The
+        retry inherited ``config.server_id=plex-default`` and only
+        re-published to Plex (which was already done). Jellyfin's
+        pending state was never re-attempted.
+
+        Contract: when the parent has no EXPLICIT ``config.server_id``,
+        the retry must also have no ``config.server_id`` regardless
+        of the parent's top-level (source-attribution) server_id.
+        """
+        from media_preview_generator.web.jobs import get_job_manager
+        from media_preview_generator.web.routes.job_runner import _start_job_async
+
+        run_calls: list[dict] = []
+
+        def fake_run_processing(config, selected_gpus, **kwargs):
+            run_calls.append(
+                {
+                    "job_id": kwargs.get("job_id"),
+                    "server_id_filter": getattr(config, "server_id_filter", None),
+                }
+            )
+            jm = get_job_manager()
+            target = (jm.get_job(kwargs.get("job_id")).config or {}).get("parent_job_id") or kwargs.get("job_id")
+            if len(run_calls) == 1:
+                # Initial dispatch — Jellyfin pending; triggers a retry.
+                jm.record_file_result(
+                    target,
+                    "/data/tv/Law & Order S04E12.mkv",
+                    "generated",
+                    "",
+                    "[GPU 0]",
+                    servers=[
+                        {
+                            "server_id": "jelly-1",
+                            "server_name": "JellyTest",
+                            "server_type": "jellyfin",
+                            "status": "published_pending_registration",
+                            "message": "not indexed yet",
+                        }
+                    ],
+                )
+            else:
+                # Retry — succeeds.
+                jm.record_file_result(
+                    target,
+                    "/data/tv/Law & Order S04E12.mkv",
+                    "generated",
+                    "",
+                    "[GPU 0]",
+                    servers=[
+                        {
+                            "server_id": "jelly-1",
+                            "server_name": "JellyTest",
+                            "server_type": "jellyfin",
+                            "status": "published",
+                            "message": "registered",
+                        }
+                    ],
+                )
+            return {
+                "outcome": {"generated": 1},
+                "webhook_resolution": {
+                    "unresolved_paths": [],
+                    "skipped_paths": [],
+                    "resolved_count": 1,
+                    "total_paths": 1,
+                    "path_hints": [],
+                },
+            }
+
+        with (
+            app.app_context(),
+            patch(
+                "media_preview_generator.jobs.orchestrator.run_processing",
+                side_effect=fake_run_processing,
+            ),
+            patch(
+                "media_preview_generator.plex_client.trigger_plex_partial_scan",
+                return_value=[],
+            ),
+            patch(
+                "media_preview_generator.processing.retry_queue.BACKOFF_SCHEDULE",
+                [1, 1, 1, 1, 1],
+            ),
+        ):
+            jm = get_job_manager()
+            # Simulate the shape of a Plex media.added webhook: the
+            # webhook-creation path sets the TOP-LEVEL server_id to
+            # "plex-1" (source attribution for the row in the panel)
+            # but the parent's CONFIG.server_id stays unset so the
+            # initial dispatch fans out to all owning servers.
+            job = jm.create_job(
+                library_name="Law & Order S04E12",
+                config={"source": "plex"},  # no config.server_id — Plex source fans out
+                server_id="plex-1",
+                server_name="Plex",
+                server_type="plex",
+            )
+            _start_job_async(
+                job.id,
+                config_overrides={
+                    "webhook_paths": ["/data/tv/Law & Order S04E12.mkv"],
+                    "webhook_retry_count": 3,
+                    "webhook_retry_delay": 30,
+                },
+            )
+
+        # A retry was spawned.
+        retry_children = [
+            j
+            for j in jm.get_all_jobs()
+            if (j.config or {}).get("is_retry") is True and (j.config or {}).get("parent_job_id") == job.id
+        ]
+        assert len(retry_children) >= 1, (
+            f"Plex-source pending_registration must still trigger a retry; got {len(retry_children)} children"
+        )
+
+        retry_child = retry_children[0]
+        # Top-level server_id is preserved for display — the retry row
+        # still attributes to "Plex" in the Jobs panel.
+        assert retry_child.server_id == "plex-1", (
+            f"Retry must preserve top-level server_id for display attribution; got {retry_child.server_id!r}"
+        )
+        # CRITICAL: retry's CONFIG.server_id must be absent / None.
+        # Setting it pins the worker's publish path to Plex only and
+        # the pending Jellyfin registration would never be retried.
+        retry_config_pin = (retry_child.config or {}).get("server_id")
+        assert not retry_config_pin, (
+            f"Retry must NOT carry config.server_id when parent had no explicit pin; "
+            f"got config.server_id={retry_config_pin!r}. This would restrict the retry to "
+            f"Plex only and leave Jellyfin's pending registration un-retried — the production "
+            f"bug observed on chain 2f7132d5."
+        )
+        # And confirm at the orchestrator boundary: the retry's
+        # run_processing call MUST have config.server_id_filter == None
+        # (the worker fans out). If the pin leaked through the kwargs
+        # plumbing despite config being clean, this catches it.
+        retry_run = run_calls[1] if len(run_calls) > 1 else None
+        if retry_run is not None:
+            assert retry_run["server_id_filter"] is None, (
+                f"Retry's run_processing must receive config with no server_id_filter "
+                f"so it fans out to all owning servers; got "
+                f"server_id_filter={retry_run['server_id_filter']!r}"
+            )
+
+    def test_explicit_config_pin_is_preserved_on_retry(self, app, tmp_path):
+        """The complement to the previous test: when the parent DOES
+        carry an explicit ``config.server_id`` (manual reprocess pinned
+        to one server, or a multi-Plex install where the user wants
+        the retry scoped), that pin MUST flow through to the retry.
+
+        Dropping inheritance unconditionally would break the
+        explicit-pin case — a user who manually pinned a retry to
+        EmbyTest would see the retry fan out and write extra trickplay
+        on the un-targeted servers.
+        """
+        from media_preview_generator.web.jobs import get_job_manager
+        from media_preview_generator.web.routes.job_runner import _start_job_async
+
+        run_calls: list[dict] = []
+
+        def fake_run_processing(config, selected_gpus, **kwargs):
+            run_calls.append(
+                {
+                    "job_id": kwargs.get("job_id"),
+                    "server_id_filter": getattr(config, "server_id_filter", None),
+                }
+            )
+            jm = get_job_manager()
+            target = (jm.get_job(kwargs.get("job_id")).config or {}).get("parent_job_id") or kwargs.get("job_id")
+            if len(run_calls) == 1:
+                jm.record_file_result(
+                    target,
+                    "/data/tv/Show S01E01.mkv",
+                    "generated",
+                    "",
+                    "[GPU 0]",
+                    servers=[
+                        {
+                            "server_id": "emby-1",
+                            "server_name": "EmbyTest",
+                            "server_type": "emby",
+                            "status": "published_pending_registration",
+                            "message": "not indexed",
+                        }
+                    ],
+                )
+            else:
+                jm.record_file_result(
+                    target,
+                    "/data/tv/Show S01E01.mkv",
+                    "generated",
+                    "",
+                    "[GPU 0]",
+                    servers=[
+                        {
+                            "server_id": "emby-1",
+                            "server_name": "EmbyTest",
+                            "server_type": "emby",
+                            "status": "published",
+                            "message": "registered",
+                        }
+                    ],
+                )
+            return {
+                "outcome": {"generated": 1},
+                "webhook_resolution": {
+                    "unresolved_paths": [],
+                    "skipped_paths": [],
+                    "resolved_count": 1,
+                    "total_paths": 1,
+                    "path_hints": [],
+                },
+            }
+
+        with (
+            app.app_context(),
+            patch(
+                "media_preview_generator.jobs.orchestrator.run_processing",
+                side_effect=fake_run_processing,
+            ),
+            patch(
+                "media_preview_generator.plex_client.trigger_plex_partial_scan",
+                return_value=[],
+            ),
+            patch(
+                "media_preview_generator.processing.retry_queue.BACKOFF_SCHEDULE",
+                [1, 1, 1, 1, 1],
+            ),
+        ):
+            jm = get_job_manager()
+            # Parent carries an EXPLICIT config.server_id pin — e.g. a
+            # manual reprocess scoped to EmbyTest. The retry MUST keep
+            # it.
+            job = jm.create_job(
+                library_name="Show S01E01",
+                config={"source": "manual", "server_id": "emby-1"},
+                server_id="emby-1",
+                server_name="EmbyTest",
+                server_type="emby",
+            )
+            _start_job_async(
+                job.id,
+                config_overrides={
+                    "webhook_paths": ["/data/tv/Show S01E01.mkv"],
+                    "server_id": "emby-1",  # the explicit pin from the manual reprocess
+                    "webhook_retry_count": 3,
+                    "webhook_retry_delay": 30,
+                },
+            )
+
+        retry_children = [
+            j
+            for j in jm.get_all_jobs()
+            if (j.config or {}).get("is_retry") is True and (j.config or {}).get("parent_job_id") == job.id
+        ]
+        assert len(retry_children) >= 1, "Expected a retry to spawn"
+        retry_child = retry_children[0]
+        retry_config_pin = (retry_child.config or {}).get("server_id")
+        assert retry_config_pin == "emby-1", (
+            f"Explicit config.server_id pin must be preserved on retry; got {retry_config_pin!r}"
+        )
+
     def test_scheduled_scan_without_webhook_retry_count_still_retries(self, app, tmp_path):
         """Scheduled scans, manual reruns, and recently-added scans
         don't inject ``webhook_retry_count`` into their job config

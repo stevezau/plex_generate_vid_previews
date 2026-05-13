@@ -999,12 +999,33 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                         parent_priority = current_job.priority if current_job else 2
                         # K1: preserve the originating server triple so retry
                         # jobs stay scoped to whichever server fired the
-                        # webhook. Without this, the Jobs UI renders retry as
-                        # `(server=(all))` and re-resolution silently fans out
-                        # to every server even though the original was pinned.
+                        # webhook. The TOP-LEVEL server_id flows through to
+                        # the retry Job's row so the dashboard renders the
+                        # right source pill. CONFIG.server_id is the
+                        # publish-pin (worker reads it as
+                        # ``server_id_filter``) and is handled separately
+                        # below — see the explicit-pin discrimination at
+                        # line ~1038.
                         parent_server_id = current_job.server_id if current_job else None
                         parent_server_name = current_job.server_name if current_job else None
                         parent_server_type = current_job.server_type if current_job else None
+                        # The EXPLICIT publish-pin (vs source attribution).
+                        # Webhooks set the top-level server_id for display
+                        # but leave config.server_id unset when the dispatch
+                        # should fan out to all owning servers (the Plex
+                        # ``media.added`` cross-vendor publish path).
+                        # Manual reprocess and multi-Plex pinned jobs DO
+                        # set config.server_id — those should keep the pin
+                        # on retry so the user-targeted server is the only
+                        # one re-attempted. Live evidence the
+                        # distinction matters: chain ``2f7132d5`` (Plex
+                        # source webhook) had Jellyfin
+                        # ``published_pending_registration`` on the initial
+                        # dispatch; the old code inherited ``parent_server_id``
+                        # straight into the retry's config which pinned the
+                        # worker to Plex (already done) and never re-attempted
+                        # Jellyfin's registration.
+                        parent_explicit_pin = (current_job.config or {}).get("server_id") if current_job else None
                         rj = job_manager.create_job(
                             library_name=retry_library_name,
                             config={
@@ -1035,8 +1056,22 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                         }
                         # K1: thread server_id through so the retry's worker
                         # builds Config from the right per-server view.
-                        if parent_server_id:
-                            retry_async_config["server_id"] = parent_server_id
+                        # CRITICAL: only inherit the publish-pin when the
+                        # parent had an EXPLICIT pin in its config. The
+                        # top-level ``parent_server_id`` reflects WHICH
+                        # SERVER FIRED the webhook (source attribution);
+                        # the parent's ``config.server_id`` reflects
+                        # WHICH SERVER TO PUBLISH TO (explicit operator/
+                        # multi-Plex pin). Plex ``media.added`` webhooks
+                        # set top-level but leave config unpinned so the
+                        # initial dispatch fans out — the retry must
+                        # match that semantics, otherwise pending
+                        # registrations on Jellyfin/Emby get
+                        # un-retried while the retry uselessly re-runs
+                        # against the already-done Plex (chain
+                        # ``2f7132d5``, 2026-05-13).
+                        if parent_explicit_pin:
+                            retry_async_config["server_id"] = parent_explicit_pin
                         # Preserve vendor-webhook hints on the retry so the
                         # retry takes the orchestrator's hint short-circuit
                         # (skipping a slow Plex resolution roundtrip) instead
