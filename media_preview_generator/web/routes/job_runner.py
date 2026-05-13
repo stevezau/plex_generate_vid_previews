@@ -135,6 +135,25 @@ def _build_selected_gpus(settings) -> list:
     return selected
 
 
+def _is_force_fire_now_set(job_manager, job_id: str) -> bool:
+    """Return True iff the Job's config carries ``force_fire_now: True``.
+
+    Extracted from the retry backoff-wait loop so the writer
+    (``api_jobs.retry_now``) and the reader (the wait loop's polling
+    branch) are coupled to a single helper. Otherwise a typo on either
+    side (``force_fire`` vs ``force_fire_now``) would silently disable
+    the "Retry now" button without breaking any single-sided test.
+
+    Returns False when the Job is missing (race with deletion); the
+    caller treats that as "don't force-fire" and waits out the
+    countdown normally.
+    """
+    job = job_manager.get_job(job_id)
+    if job is None:
+        return False
+    return bool((job.config or {}).get("force_fire_now"))
+
+
 def _start_job_async(job_id: str, config_overrides: dict | None = None):
     """Start job execution in a background thread.
 
@@ -485,6 +504,17 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                     if job_manager.is_cancellation_requested(job_id):
                         _retry_cancelled = True
                         break
+                    # "Retry now" signal: the api_jobs.retry_now endpoint
+                    # sets force_fire_now on this Job's config when the
+                    # operator clicks the modal button. Break out of the
+                    # backoff loop immediately so the gate-acquire + run
+                    # happens without waiting out the remaining countdown.
+                    if _is_force_fire_now_set(job_manager, job_id):
+                        job_manager.add_log(
+                            job_id,
+                            "INFO - Retry backoff skipped — operator forced fire-now",
+                        )
+                        break
                     if get_settings_manager().processing_paused:
                         _time.sleep(0.5)
                         continue
@@ -571,6 +601,43 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                     # it becomes a no-op after this first transition
                     # because start_job is idempotent.
                     job_manager.start_job(job_id)
+                    # Retry Jobs: also flip the PARENT into chain RUNNING
+                    # state so the user-visible row reflects "currently
+                    # re-running" instead of "waiting in countdown". The
+                    # retry Job itself is hidden via /api/jobs's is_retry
+                    # filter; the parent is what the user sees.
+                    _retry_parent_id = (
+                        (job_manager.get_job(job_id).config or {}).get("parent_job_id")
+                        if job_manager.get_job(job_id) and job_manager.get_job(job_id).config.get("is_retry")
+                        else None
+                    )
+                    if _retry_parent_id:
+                        try:
+                            _parent_job = job_manager.get_job(_retry_parent_id)
+                            _parent_library = (_parent_job.library_name or "") if _parent_job else ""
+                            _retry_attempt_val = int(job_manager.get_job(job_id).config.get("retry_attempt", 0))
+                            _max_attempts_val = int(job_manager.get_job(job_id).config.get("max_retries", 0))
+                            job_manager.upsert_retry_chain_job(
+                                canonical_path="",
+                                basename=_parent_library,
+                                attempt=_retry_attempt_val,
+                                max_attempts=_max_attempts_val,
+                                next_run_at=None,
+                                wait_seconds=None,
+                                outcome="running",
+                                originating_job_id=_retry_parent_id,
+                                source=(_parent_job.config or {}).get("source") if _parent_job else None,
+                            )
+                        except Exception as exc:
+                            # WARNING (not DEBUG): operator-visible. A
+                            # regression here silently leaves the parent's
+                            # chip stuck on the previous attempt's state.
+                            logger.warning(
+                                "upsert_retry_chain_job(running) failed for parent {}: {}: {}",
+                                _retry_parent_id,
+                                type(exc).__name__,
+                                exc,
+                            )
                     job_manager.add_log(job_id, "INFO - Job started")
                     # Clear the "Queued —" message the moment we enter
                     # so the UI shows the regular startup progress as
@@ -584,9 +651,23 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                     )
                     clear_failures()
 
+                    # Retry Jobs (is_retry=True) write their per-file
+                    # outcomes to the PARENT'S JSONL — the parent is the
+                    # user-visible row, and the Files panel reads from the
+                    # parent's job_id. Without this redirect a retry that
+                    # successfully registers a previously-pending file would
+                    # leave the parent's Files panel showing the stale
+                    # ``pending_registration`` row forever.
+                    _current_job_for_cfg = job_manager.get_job(job_id)
+                    _file_results_target = (
+                        (_current_job_for_cfg.config or {}).get("parent_job_id")
+                        if _current_job_for_cfg and (_current_job_for_cfg.config or {}).get("is_retry")
+                        else None
+                    ) or job_id
+
                     def _file_result_cb(file_path, outcome_str, reason, worker, servers=None):
                         job_manager.record_file_result(
-                            job_id,
+                            _file_results_target,
                             file_path,
                             outcome_str,
                             reason,
@@ -718,6 +799,12 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                     legacy_single_hint = path_hints[0] if path_hints and not path_hint_map else None
                     unresolved_outcome = "unresolved_vendor"
                     unresolved_label = "Not found on any configured media server"
+                    # Retry Jobs append to the PARENT's JSONL (see
+                    # _file_result_cb redirect above) so the user-visible
+                    # Files panel reflects the latest outcome per path.
+                    _unresolved_target = (
+                        job_config.get("parent_job_id") if job_config.get("is_retry") else None
+                    ) or job_id
                     for upath in unresolved_paths:
                         # Audit P4: pick THIS path's hint, not slot 0
                         # of the flat list. Multi-path webhooks with
@@ -726,7 +813,7 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                         # hint for everything.
                         per_path_detail = path_hint_map.get(upath) or legacy_single_hint or generic_detail
                         job_manager.record_file_result(
-                            job_id,
+                            _unresolved_target,
                             upath,
                             unresolved_outcome,
                             f"{unresolved_label} \u2014 {per_path_detail}",
@@ -738,14 +825,53 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                     retry_delay_sec = max(10, min(300, int(job_config.get("webhook_retry_delay", 30))))
                     effective_max = max_retries or retry_count
 
-                    # Plex resolved these items but returned stale file paths
-                    # that don't exist on disk.  Collect them so we can trigger
-                    # a Plex partial scan and schedule a retry.
+                    # Collect every path that needs a retry — across all three
+                    # failure classes:
+                    #   1. ``unresolved_paths`` — Plex didn't know the file
+                    #      (came from the resolution layer).
+                    #   2. ``not_found_on_disk`` — Plex returned a stale path
+                    #      that doesn't exist (came from per-file JSONL).
+                    #   3. ``pending_registration_paths`` — file was published
+                    #      but the destination server (Jellyfin/Emby) hadn't
+                    #      indexed it yet, so per-item registration didn't
+                    #      fire. Source: per-publisher status on JSONL rows.
+                    #
+                    # Pre-2026-05-13 (3) was handled by an entirely separate
+                    # per-file retry chain in processing/retry_queue.py that
+                    # spawned one Timer per pending file — for a 333-path
+                    # Sonarr batch where 61 were pending this produced 191
+                    # per-attempt child Jobs collapsed onto the dispatcher
+                    # row (job 756255aa, 2026-05-12). Routing all three
+                    # failure classes through one job-level retry path
+                    # collapses N timers into one and gives the user a single
+                    # row per dispatch.
                     not_found_on_disk: list[str] = []
-                    if outcome and outcome.get("skipped_file_not_found", 0) > 0:
-                        for fr in job_manager.get_file_results(job_id):
-                            if fr.get("outcome") == "skipped_file_not_found":
-                                not_found_on_disk.append(fr["file"])
+                    pending_registration_paths: list[str] = []
+
+                    # Per-publisher statuses that mean "this file needs
+                    # another attempt because the destination server
+                    # isn't ready yet." The values are PublisherStatus
+                    # enum values serialised as their .value strings via
+                    # Worker._capture_publishers (see jobs/worker.py).
+                    # We always scan the JSONL — PENDING_REGISTRATION
+                    # lives on per-publisher status, not the aggregate
+                    # outcome counter, so the only way to detect it is
+                    # to inspect each row's ``servers`` field.
+                    RETRY_PUBLISHER_STATUSES = {
+                        "published_pending_registration",
+                        "skipped_not_indexed",
+                        "skipped_not_in_library",
+                    }
+                    for fr in job_manager.get_file_results(job_id, dedup_by_path=True):
+                        file_path = fr.get("file")
+                        if not file_path:
+                            continue
+                        if fr.get("outcome") == "skipped_file_not_found":
+                            not_found_on_disk.append(file_path)
+                        else:
+                            servers = fr.get("servers") or []
+                            if any(s.get("status") in RETRY_PUBLISHER_STATUSES for s in servers):
+                                pending_registration_paths.append(file_path)
 
                     # Combine paths that need a Plex rescan: unresolved
                     # (Plex doesn't know the file) + not-found-on-disk (Plex
@@ -756,7 +882,10 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                     # original webhook paths when files were not found on disk
                     # (we can't reverse-map stale Plex paths back to webhook
                     # paths, so resubmit the originals — already-processed
-                    # items will be skipped as bif_exists).
+                    # items will be skipped as bif_exists). Pending-registration
+                    # paths are appended directly (already the canonical path
+                    # on disk; the fast path in process_canonical_path skips
+                    # files whose outputs+sidecars are fresh).
                     #
                     # webhook_paths lives on the JOB's config dict, not on
                     # global settings — older code read settings.get(...)
@@ -767,6 +896,9 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                         for wp in job_config.get("webhook_paths") or []:
                             if wp not in retry_paths:
                                 retry_paths.append(wp)
+                    for pp in pending_registration_paths:
+                        if pp not in retry_paths:
+                            retry_paths.append(pp)
 
                     def _spawn_retry_job(paths, attempt):
                         """Create and start a retry job for unresolved webhook paths."""
@@ -865,6 +997,56 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                             retained = {p: parent_hints_raw[p] for p in paths if p in parent_hints_raw}
                             if retained:
                                 retry_async_config["webhook_item_id_hints"] = retained
+                        # Mutate the PARENT Job into chain mode so the user-
+                        # visible row shows the "Retry N/M" chip + countdown.
+                        # The retry Job itself (rj) is hidden via the /api/jobs
+                        # is_retry filter — the parent is the single lifecycle
+                        # row the user sees. The chain state machine:
+                        #   scheduled → parent.status PENDING + retry_eta
+                        #   running   → parent.status RUNNING (set when rj
+                        #               acquires the gate, below)
+                        #   completed → parent.status COMPLETED (set at end
+                        #               of rj when no more pending)
+                        #   exhausted → parent.status FAILED (set at end of
+                        #               rj when max attempts hit)
+                        #
+                        # ``source`` comes from the chain head (``parent_id``)
+                        # not from ``current_job`` — when this spawner runs
+                        # inside an already-active retry continuation,
+                        # current_job is the retry child and its config
+                        # doesn't carry the trigger label.
+                        _chain_head_for_source = job_manager.get_job(parent_id) if parent_id != job_id else current_job
+                        _chain_head_source = (
+                            (_chain_head_for_source.config or {}).get("source") if _chain_head_for_source else None
+                        )
+                        try:
+                            job_manager.upsert_retry_chain_job(
+                                canonical_path="",
+                                basename=parent_library,
+                                attempt=attempt,
+                                max_attempts=effective_max,
+                                next_run_at=scheduled_at,
+                                wait_seconds=backoff_delay,
+                                outcome="scheduled",
+                                originating_job_id=parent_id,
+                                server_id=parent_server_id,
+                                server_name=parent_server_name,
+                                server_type=parent_server_type,
+                                source=_chain_head_source,
+                            )
+                        except Exception as exc:
+                            # Best-effort: chain-state mutation failures must
+                            # not block the retry from being scheduled. The
+                            # retry Job still runs; the parent's chip just
+                            # won't tick down. Log at WARNING so operators
+                            # see a chain-state regression in normal logs —
+                            # DEBUG would hide a silently-broken chip.
+                            logger.warning(
+                                "upsert_retry_chain_job(scheduled) failed for parent {}: {}: {}",
+                                parent_id,
+                                type(exc).__name__,
+                                exc,
+                            )
                         _start_job_async(rj.id, retry_async_config)
                         return rj.id
 
@@ -910,6 +1092,58 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                                 job_id,
                                 f"INFO - {reason}, retry scheduled in {retry_delay_sec}s",
                             )
+
+                    # Terminal chain transition: this is a retry Job, it
+                    # didn't spawn another retry, and the parent Job is
+                    # the user-visible chain row. Mark the parent terminal:
+                    #   - retry_paths empty → chain succeeded → parent COMPLETED
+                    #   - retry_paths non-empty but max attempts hit →
+                    #     chain exhausted → parent FAILED
+                    # Cancellation is handled in the next block.
+                    if (
+                        is_retry
+                        and not spawned_retry_id
+                        and not (result.get("cancelled") or status_value == "cancelled")
+                    ):
+                        _chain_parent_id = job_config.get("parent_job_id")
+                        if _chain_parent_id:
+                            _chain_parent = job_manager.get_job(_chain_parent_id)
+                            if _chain_parent is not None:
+                                if retry_paths:
+                                    _chain_outcome = "exhausted"
+                                    _chain_reason = (
+                                        f"Source server did not register {len(retry_paths)} "
+                                        f"file(s) after {effective_max} retry attempts. "
+                                        f"Check the Files panel for the affected paths."
+                                    )
+                                else:
+                                    _chain_outcome = "completed"
+                                    _chain_reason = None
+                                try:
+                                    job_manager.upsert_retry_chain_job(
+                                        canonical_path="",
+                                        basename=(_chain_parent.library_name or ""),
+                                        attempt=retry_attempt,
+                                        max_attempts=effective_max,
+                                        next_run_at=None,
+                                        wait_seconds=None,
+                                        outcome=_chain_outcome,
+                                        originating_job_id=_chain_parent_id,
+                                        reason=_chain_reason,
+                                        source=(_chain_parent.config or {}).get("source"),
+                                    )
+                                except Exception as exc:
+                                    # WARNING (not DEBUG): a terminal-state
+                                    # upsert failure leaves the chain head
+                                    # stuck PENDING/RUNNING forever even
+                                    # though no further retries will fire.
+                                    logger.warning(
+                                        "upsert_retry_chain_job({}) failed for parent {}: {}: {}",
+                                        _chain_outcome,
+                                        _chain_parent_id,
+                                        type(exc).__name__,
+                                        exc,
+                                    )
 
                     if result.get("cancelled") or status_value == "cancelled":
                         job_manager.add_log(job_id, "WARNING - Job cancelled by user")

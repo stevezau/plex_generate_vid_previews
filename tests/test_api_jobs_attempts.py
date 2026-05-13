@@ -1,16 +1,20 @@
-"""Tests for the retry-chain Attempts API surface:
+"""Tests for the retry-chain Attempts API surface (post-2026-05-13 refactor).
 
-* ``GET /api/jobs`` default-hides ``is_retry_attempt`` rows so the
-  dashboard shows ONE row per file (the chain row) regardless of how
-  many retry firings are in flight. Pre-PLAN-collapse attempt rows
-  appeared in the main list, producing ~600/day during JellyTest
-  backfill.
+* ``GET /api/jobs`` default-hides retry-child rows (``is_retry: True``
+  with no ``is_retry_chain`` flag) so the dashboard shows ONE row per
+  dispatch — the chain head — regardless of how many retry attempts
+  are in flight.
 
 * ``GET /api/jobs?include_retry_attempts=1`` opts in (debug, scripting).
 
-* ``GET /api/jobs/<chain_id>/attempts`` returns per-attempt child
-  metadata sorted by ``retry_attempt`` ascending — powers the Job
-  Details modal's Attempts dropdown.
+* ``GET /api/jobs/<chain_id>/attempts`` walks children by
+  ``parent_job_id == chain_id`` and returns metadata sorted by
+  ``retry_attempt`` ascending — powers the Job Details modal's
+  Attempts dropdown.
+
+The legacy ``is_retry_attempt`` flag (set by the deleted per-file retry
+queue) is still honoured by the filter for back-compat with any
+persisted rows from older versions.
 """
 
 from __future__ import annotations
@@ -96,14 +100,17 @@ def _seed_chain_with_attempts(
         chain_id = chain.id
     attempt_ids = []
     for i in range(1, num_attempts + 1):
+        # Post-2026-05-13 retry children carry is_retry=True with
+        # parent_job_id pointing at the chain head's UUID. The legacy
+        # is_retry_attempt + parent_chain_id pair (set by the deleted
+        # per-file retry queue) is gone.
         attempt = jm.create_job(
             library_name=basename,
             config={
-                "is_retry_attempt": True,
-                "parent_chain_id": chain_id,
+                "is_retry": True,
+                "parent_job_id": chain_id,
                 "retry_attempt": i,
                 "retry_max_attempts": 5,
-                "is_retry": True,
                 "max_retries": 5,
             },
         )
@@ -281,24 +288,33 @@ class TestRetryNowEndpoint:
     """
 
     def test_fires_pending_retry_for_chain_head(self, client):
-        from media_preview_generator.web.jobs import get_job_manager
+        """Post-2026-05-13: retry-now finds the chain's pending retry
+        child Job (is_retry=True, parent_job_id=chain, status=PENDING)
+        and sets ``force_fire_now`` on its config. The child's backoff-
+        wait loop polls this flag each tick and breaks out early.
+        """
+        from media_preview_generator.web.jobs import JobStatus, get_job_manager
 
         jm = get_job_manager()
-        chain_id, _ = _seed_chain_with_attempts(
+        # Seed with 1 attempt — the helper marks it COMPLETED by
+        # default. We need a PENDING one for retry-now to find, so
+        # override the status manually after seeding.
+        chain_id, attempt_ids = _seed_chain_with_attempts(
             jm,
             canonical_path="/data/Beast (2026)/Beast.mkv",
             basename="Beast (2026)",
             num_attempts=1,
         )
+        # Flip the seeded child back to PENDING so retry-now has a
+        # target. The seed helper marks them COMPLETED to mirror the
+        # general "history" pattern; here we need a live pending child.
+        child = jm.get_job(attempt_ids[0])
+        child.status = JobStatus.PENDING
+        child.completed_at = None
+        with jm._lock:  # noqa: SLF001
+            jm._persist_job(child)  # noqa: SLF001
 
-        # The seed helper doesn't actually schedule a Timer; mock
-        # fire_now so the endpoint thinks one was pending. This is the
-        # right boundary to mock — the endpoint forwards to
-        # RetryScheduler and reports the result; the scheduler's own
-        # behaviour is exercised in TestRetrySchedulerFireNow.
-        with patch("media_preview_generator.processing.retry_queue.get_retry_scheduler") as gs:
-            gs.return_value.fire_now.return_value = True
-            resp = client.post(f"/api/jobs/{chain_id}/retry-now", headers=_headers())
+        resp = client.post(f"/api/jobs/{chain_id}/retry-now", headers=_headers())
 
         assert resp.status_code == 200, (
             f"Successful retry-now must return 200; got {resp.status_code} {resp.get_data(as_text=True)!r}"
@@ -306,19 +322,16 @@ class TestRetryNowEndpoint:
         body = resp.get_json()
         assert body["fired"] is True
         assert body["job_id"] == chain_id
-        # canonical_path round-trips so the operator's UI can confirm
-        # the right file was kicked.
-        assert body["canonical_path"] == "/data/Beast (2026)/Beast.mkv"
-        # Verify the SUT called fire_now with BOTH the chain's
-        # canonical_path AND its chain_id (job_id) — the scheduler keys
-        # by ``(path, chain_id)`` so two concurrent chains for the same
-        # path don't collide. Pre-fix this was path-only; the job-i0sses
-        # incident (2026-05-12) showed that path-only keying orphaned
-        # sibling chains. The endpoint must forward both coordinates so
-        # the "Retry now" button operates on the chain the operator
-        # actually clicked, not a sibling chain that happens to share
-        # the path.
-        gs.return_value.fire_now.assert_called_once_with("/data/Beast (2026)/Beast.mkv", chain_id)
+        # The endpoint surfaces the retry Job's ID so the UI can drill
+        # into the firing's logs immediately.
+        assert body["retry_job_id"] == attempt_ids[0]
+        # Verify force_fire_now was set on the pending child's config —
+        # this is the signal the backoff-wait loop polls to skip the
+        # remaining countdown.
+        refreshed = jm.get_job(attempt_ids[0])
+        assert (refreshed.config or {}).get("force_fire_now") is True, (
+            f"force_fire_now must be set so the backoff loop bails; got config={refreshed.config!r}"
+        )
 
     def test_returns_400_for_non_chain_job(self, client):
         from media_preview_generator.web.jobs import get_job_manager
@@ -339,15 +352,47 @@ class TestRetryNowEndpoint:
         )
         assert resp.status_code == 404
 
+    def test_force_fire_now_reader_helper(self, app):
+        """The polling-loop reader of ``force_fire_now`` lives in
+        ``job_runner._is_force_fire_now_set`` and the writer lives in
+        ``api_jobs.retry_now``. They must agree on the exact config
+        key. This test pins the reader's behavior so a typo on either
+        side (e.g. writing ``force_fire`` instead of ``force_fire_now``)
+        fails loudly instead of silently disabling the "Retry now"
+        button.
+        """
+        from media_preview_generator.web.jobs import get_job_manager
+        from media_preview_generator.web.routes.job_runner import _is_force_fire_now_set
+
+        with app.app_context():
+            jm = get_job_manager()
+            # Job without the flag → reader returns False.
+            job = jm.create_job(library_name="Foo", config={})
+            assert _is_force_fire_now_set(jm, job.id) is False, "Reader must return False when force_fire_now is absent"
+            # Set the flag via the same path the writer uses (the
+            # update_job_config call api_jobs.retry_now makes).
+            new_cfg = dict(job.config or {})
+            new_cfg["force_fire_now"] = True
+            jm.update_job_config(job.id, new_cfg)
+            assert _is_force_fire_now_set(jm, job.id) is True, (
+                "Reader must return True once force_fire_now is set in config"
+            )
+            # Missing-Job race: reader must return False, not raise.
+            assert _is_force_fire_now_set(jm, "nonexistent-uuid") is False, (
+                "Reader must return False (not raise) when the Job has been deleted"
+            )
+
     def test_returns_409_when_no_pending_retry(self, client):
-        """A chain head whose timer has already fired (or was cancelled)
-        has nothing for ``fire_now`` to invoke. The endpoint surfaces
-        this as 409 so the UI can show "Already running" / "Chain
-        terminal" instead of silently no-op'ing.
+        """A chain head whose retry children are all terminal (COMPLETED/
+        FAILED/CANCELLED) has no pending child to fire. The endpoint
+        surfaces this as 409 so the UI can show "Already running" /
+        "Chain terminal" instead of silently no-op'ing.
         """
         from media_preview_generator.web.jobs import get_job_manager
 
         jm = get_job_manager()
+        # The seed helper marks all children COMPLETED — no pending
+        # child to fire, so retry-now should 409.
         chain_id, _ = _seed_chain_with_attempts(
             jm,
             canonical_path="/data/done.mkv",
@@ -355,9 +400,7 @@ class TestRetryNowEndpoint:
             num_attempts=1,
         )
 
-        with patch("media_preview_generator.processing.retry_queue.get_retry_scheduler") as gs:
-            gs.return_value.fire_now.return_value = False
-            resp = client.post(f"/api/jobs/{chain_id}/retry-now", headers=_headers())
+        resp = client.post(f"/api/jobs/{chain_id}/retry-now", headers=_headers())
 
         assert resp.status_code == 409
         body = resp.get_json()
@@ -417,7 +460,7 @@ class TestOriginatingDispatchFilter:
         resp = client.get("/api/jobs?page=0", headers=_headers())
         ids_default = {j["id"] for j in resp.get_json()["jobs"]}
         assert ids_default.isdisjoint(set(attempt_ids)), (
-            f"is_retry_attempt rows must be hidden from default list; found {ids_default & set(attempt_ids)}"
+            f"is_retry retry-child rows must be hidden from default list; found {ids_default & set(attempt_ids)}"
         )
 
         # Opt-in: attempts visible

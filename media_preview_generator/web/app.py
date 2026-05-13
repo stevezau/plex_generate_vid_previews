@@ -280,82 +280,45 @@ _MAX_CHAIN_AGE_FOR_RESUME = timedelta(hours=24)
 
 
 def _resume_interrupted_retry_chains_on_startup(config_dir: str) -> None:
-    """Re-arm Timers for retry-chain Jobs that were mid-backoff at restart.
+    """Reconcile retry-chain Jobs at boot.
 
-    The in-process ``threading.Timer`` driving each chain doesn't
-    survive a container restart, but the chain context is fully
-    persisted on the Job's config (canonical_path, attempt, server
-    pin, source, originating_job_id) and on its ``progress.retry_eta``.
-    ``JobManager._load_jobs`` collects affected chains into
-    ``interrupted_retry_chains()`` rather than failing them; this
-    function consumes that list and calls
-    ``schedule_retry_for_unindexed`` for each one so the dashboard's
-    countdown picks up where it left off.
+    The 2026-05-13 refactor moved chain timing from in-process
+    ``threading.Timer`` to real child Jobs (``is_retry=true``,
+    ``parent_job_id=<chain>``). Those retry child Jobs are persisted to
+    ``jobs.db`` and revived by the generic
+    :func:`_requeue_interrupted_on_startup` path — their backoff wait
+    re-runs from the top, then they acquire the gate and dispatch
+    normally.
 
-    Behaviour per chain:
-      * ``retry_eta`` in the future → schedule with the original
-        ``_BACKOFF`` delay (the function ignores absolute timestamps,
-        but the user's perception of "I waited 30s" → "30s left after
-        restart" is close enough; a future enhancement could pass a
-        ``delay_override``).
-      * ``retry_eta`` in the past (we were down past the firing) →
-        schedule immediately with the same backoff.
-      * Chain age > 24h → treat as orphaned, mark FAILED with a clear
-        reason. (Stale chains from days ago shouldn't suddenly fire.)
-      * Missing canonical_path / originating_job_id → mark FAILED.
+    This function handles the residual case: a chain head that was
+    PENDING/RUNNING at restart but has NO living retry child (e.g.
+    a window between ``_spawn_retry_job`` creating the chain mutation
+    and ``_start_job_async`` actually persisting the child). Without
+    a child to drive the chain forward, the head would sit PENDING
+    forever. Mark such chains FAILED with a clear restart message;
+    the user can re-trigger via the source webhook or the manual
+    ``/reprocess`` endpoint.
+
+    Age cap: chains older than 24h aren't auto-recovered. Re-firing
+    days-old webhook context risks publishing against media that has
+    been moved or deleted upstream.
     """
     try:
-        from ..config import load_config
-        from ..servers import ServerRegistry
-
         job_manager = get_job_manager()
         chains = job_manager.consume_interrupted_retry_chains()
         if not chains:
             return
 
-        try:
-            cfg = load_config(log_validation_errors=False)
-            registry = ServerRegistry.from_settings(_get_media_servers_from_settings(config_dir))
-        except Exception as e:
-            logger.warning(
-                "Could not load registry/config for chain resume — leaving {} chain(s) "
-                "PENDING (they'll fail on the next graceful exit unless re-triggered). "
-                "Reason: {}: {}",
-                len(chains),
-                type(e).__name__,
-                e,
-            )
-            return
-
-        from ..processing.retry_queue import schedule_retry_for_unindexed
-
         now = datetime.now(timezone.utc)
-        # Chains older than this aren't auto-resumed — re-firing days-old
-        # webhook context risks publishing against media that's been
-        # moved or deleted upstream. Users can re-trigger the webhook
-        # manually if they want the chain back. Exposed as a module
-        # constant rather than a config knob: the only legitimate reason
-        # to change it is a debugging session or test, and a magic
-        # constant is easier to grep for than yet another settings.json
-        # key with three callers' worth of defaulting logic.
         max_chain_age = _MAX_CHAIN_AGE_FOR_RESUME
-        resumed = 0
+        all_jobs = job_manager.get_all_jobs()
+        revived = 0
         orphaned = 0
         for chain in chains:
-            canonical_path = chain.config.get("retry_chain_for")
-            attempt = int(chain.config.get("retry_attempt") or 1)
-            if not canonical_path:
-                chain.status = JobStatus.FAILED
-                chain.error = "Chain resume: missing canonical_path on persisted config — orphaned at restart."
-                chain.completed_at = now.isoformat()
-                job_manager._persist_job(chain)  # noqa: SLF001
-                orphaned += 1
-                continue
-
-            # Age check — chains older than 24h shouldn't suddenly
-            # spring back to life. The original webhook context is
-            # likely stale; better to surface the failure than re-fire
-            # against potentially-deleted media.
+            # Age check — chains older than 24h shouldn't suddenly spring
+            # back to life. The original webhook context is likely stale;
+            # better to surface the failure than re-fire against
+            # potentially-deleted media.
             try:
                 started_str = chain.config.get("retry_started_at") or chain.created_at
                 started = datetime.fromisoformat(started_str.replace("Z", "+00:00")) if started_str else now
@@ -367,47 +330,53 @@ def _resume_interrupted_retry_chains_on_startup(config_dir: str) -> None:
                 chain.status = JobStatus.FAILED
                 chain.error = (
                     "Chain resume: skipped — chain has been pending for >24h. "
-                    "Re-trigger the source webhook if you still want this file processed."
+                    "Re-trigger the source webhook if you still want these files processed."
                 )
                 chain.completed_at = now.isoformat()
                 job_manager._persist_job(chain)  # noqa: SLF001
                 orphaned += 1
                 continue
 
-            try:
-                schedule_retry_for_unindexed(
-                    canonical_path,
-                    registry=registry,
-                    config=cfg,
-                    attempt=attempt,
-                    server_id_filter=chain.server_id,
-                    display_name=chain.library_name,
-                    source=chain.config.get("source"),
-                    originating_job_id=chain.id,
-                )
-                resumed += 1
-            except Exception as exc:
-                logger.warning(
-                    "Could not resume chain {} ({!r}): {}: {}",
-                    chain.id[:8],
-                    canonical_path,
-                    type(exc).__name__,
-                    exc,
-                )
-                chain.status = JobStatus.FAILED
-                chain.error = f"Chain resume failed at boot: {type(exc).__name__}: {exc}"
-                chain.completed_at = now.isoformat()
-                job_manager._persist_job(chain)  # noqa: SLF001
-                orphaned += 1
+            # Look for a living retry child. PENDING children will be
+            # revived by the generic requeue; RUNNING children… well,
+            # the generic load path marks RUNNING jobs FAILED, so by
+            # the time we get here a "running at restart" retry child
+            # has already been demoted to FAILED — its status here
+            # would be FAILED, not RUNNING.
+            has_living_child = any(
+                (j.config.get("is_retry"))
+                and (j.config.get("parent_job_id") == chain.id)
+                and (j.status in (JobStatus.PENDING, JobStatus.RUNNING))
+                for j in all_jobs
+            )
+            if has_living_child:
+                revived += 1
+                continue
 
-        if resumed:
-            logger.info("Resumed {} interrupted retry chain(s) — Timers re-armed", resumed)
+            chain.status = JobStatus.FAILED
+            chain.error = (
+                "Retry chain interrupted by restart — no pending child Job survived. "
+                "Re-trigger the source webhook (or use the Reprocess action) to "
+                "resume processing of the remaining files."
+            )
+            chain.completed_at = now.isoformat()
+            job_manager._persist_job(chain)  # noqa: SLF001
+            orphaned += 1
+
+        if revived:
+            logger.info(
+                "Found {} interrupted retry chain(s) with living children — generic requeue will resume them",
+                revived,
+            )
         if orphaned:
-            logger.info("Marked {} retry chain(s) FAILED at restart (orphaned/stale)", orphaned)
+            logger.info(
+                "Marked {} retry chain(s) FAILED at restart (stale or no living child)",
+                orphaned,
+            )
     except Exception as e:
         logger.warning(
-            "Retry chain resume hit an unexpected error ({}: {}) — chains may remain PENDING "
-            "without an armed Timer. Re-trigger the source webhook to resume them.",
+            "Retry chain reconciliation hit an unexpected error ({}: {}) — "
+            "chains may remain PENDING. Re-trigger the source webhook to resume them.",
             type(e).__name__,
             e,
         )

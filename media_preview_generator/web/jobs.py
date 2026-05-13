@@ -553,12 +553,12 @@ class JobManager:
         # Background retention timer
         self._retention_timer: threading.Timer | None = None
         self._interrupted_jobs: list[Job] = []
-        # Chain Jobs that were in PENDING/RUNNING at load time. Their
-        # in-process ``threading.Timer`` is gone after restart but the
-        # chain context (canonical_path, attempt, server pin, source)
-        # survives on the Job's config — the app's boot phase can re-arm
-        # the Timer via ``schedule_retry_for_unindexed`` once registry +
-        # config are loaded. Surface via ``interrupted_retry_chains()``.
+        # Chain Jobs that were in PENDING/RUNNING at load time. The
+        # retry children that drive the chain are real Jobs and are
+        # revived by the generic ``_requeue_interrupted_on_startup``
+        # path; this list lets the app's boot phase reconcile the
+        # remaining "chain head with no living child" cases. Surfaced
+        # via ``interrupted_retry_chains()``.
         self._interrupted_retry_chains: list[Job] = []
 
         # Load existing jobs from disk
@@ -638,24 +638,26 @@ class JobManager:
 
             # Chain Jobs (originating dispatch with is_retry_chain=True)
             # in PENDING/RUNNING get RECOVERED for resume rather than
-            # failed. The threading.Timer is gone after restart, but
-            # the chain context (canonical_path, attempt, server pin,
-            # source) is intact on config — the app boot phase can
-            # re-arm via ``schedule_retry_for_unindexed`` once registry
-            # + config are loaded. Pre-fix this branch marked them all
-            # FAILED with a "re-trigger the source webhook to resume"
-            # error; that was hostile UX (DEV_RELOAD reload nuked
-            # in-flight chains for no controllable reason).
+            # failed. The retry children that drive the chain are real
+            # Jobs revived by the generic requeue path; this list lets
+            # the app's boot-phase reconciler check whether each chain
+            # has a living child or needs to be marked FAILED. Pre-fix
+            # this branch marked chains FAILED with a "re-trigger the
+            # source webhook to resume" error; that was hostile UX
+            # (DEV_RELOAD reload nuked in-flight chains for no
+            # controllable reason).
             if job.config.get("is_retry_chain") and job.status in (JobStatus.PENDING, JobStatus.RUNNING):
                 if job.status == JobStatus.RUNNING:
-                    # RUNNING means a Timer fire was mid-flight when the
-                    # process died. Recover as PENDING so the resume
-                    # path treats it as "fire this attempt immediately"
-                    # rather than racing the worker bookkeeping.
+                    # RUNNING means a retry child was mid-dispatch when
+                    # the process died. Recover the chain as PENDING so
+                    # the boot reconciler treats the absent dispatch as
+                    # "needs the next retry child to resume" rather than
+                    # leaving the row stuck claiming work is in flight.
                     job.status = JobStatus.PENDING
-                    # Ensure retry_eta exists so the resume path has
-                    # something to schedule against — default to "now"
-                    # if it was cleared by the running transition.
+                    # Ensure retry_eta exists so the chip has a
+                    # countdown to show until the next retry child
+                    # comes back online — default to "now" if it was
+                    # cleared by the running transition.
                     if not job.progress.retry_eta:
                         job.progress.retry_eta = datetime.now(timezone.utc).isoformat()
                     job.progress.current_item = ""
@@ -707,7 +709,7 @@ class JobManager:
         if self._interrupted_retry_chains:
             logger.info(
                 "Found {} retry-chain Job(s) interrupted by restart — keeping PENDING; "
-                "the resume path will re-arm Timers once registry + config load.",
+                "the boot reconciler will check each for a living retry child.",
                 len(self._interrupted_retry_chains),
             )
 
@@ -1101,11 +1103,13 @@ class JobManager:
     def interrupted_retry_chains(self) -> list[Job]:
         """Return chain Jobs that were in PENDING/RUNNING at load time.
 
-        The boot-phase resume callback walks this list once registry +
-        config are loaded and re-arms each chain's Timer via
-        ``schedule_retry_for_unindexed``. The accessor itself is
-        read-only — the caller is responsible for clearing the list
-        after consuming via :meth:`consume_interrupted_retry_chains`.
+        The boot-phase reconciler walks this list and, for each chain,
+        checks whether a living retry child Job exists (the generic
+        requeue path revives the child if so). Chains without a living
+        child are marked FAILED so the user knows to re-trigger. The
+        accessor itself is read-only — the caller is responsible for
+        clearing the list after consuming via
+        :meth:`consume_interrupted_retry_chains`.
         """
         return list(self._interrupted_retry_chains)
 
@@ -1175,11 +1179,13 @@ class JobManager:
     ) -> Job | None:
         """Mutate the originating dispatch Job to ADD or UPDATE retry-chain state.
 
-        **There is NO separate retry-chain row.** The originating
-        dispatch's Job — the one whose worker actually ran FFmpeg and
-        published to Plex/Emby/etc. — IS the chain. Its UUID is the
-        chain identity. The user sees ONE row per file across the
-        entire lifecycle (initial dispatch + every retry firing), with
+        **The chain head IS the originating dispatch Job.** Its UUID is
+        the chain identity. Retry firings are real child Jobs
+        (``is_retry=True``, ``parent_job_id=<chain.id>``) spawned by
+        ``job_runner._spawn_retry_job``; they're hidden from the Jobs
+        panel via the ``/api/jobs`` filter and surface in the parent's
+        modal Attempts dropdown. The user sees ONE row per dispatch
+        across the entire lifecycle (initial run + every retry), with
         the retry chip + countdown + status reflecting the whole
         journey.
 
@@ -1240,9 +1246,8 @@ class JobManager:
             if job is None:
                 # No originating Job to mutate — happens in CLI smoke
                 # tests, or if the dispatch's Job was deleted between
-                # the publisher returning pending_registration and the
-                # Timer firing. Silently no-op so the retry queue
-                # doesn't crash.
+                # the retry child spawning and the chain-state hook
+                # firing. Silently no-op so the spawner doesn't crash.
                 logger.debug(
                     "upsert_retry_chain_job: no Job {} to mutate (CLI / deleted)",
                     originating_job_id,
@@ -1250,12 +1255,12 @@ class JobManager:
                 return None
 
             # CANCELLED is the user's explicit terminal state — never
-            # let a late callback or in-flight Timer flip it back to
+            # let a late retry-child upsert flip it back to
             # RUNNING/COMPLETED/PENDING. Without this guard a TOCTOU
-            # race between ``cancel_job`` and a Timer's ``_fire``
-            # produces a "ghost resurrection": the cascade marks the
-            # Job CANCELLED, then the mid-flight callback's
-            # post-process upsert silently overwrites it.
+            # race between ``cancel_job`` and a retry child's terminal
+            # state hook produces a "ghost resurrection": the cascade
+            # marks the Job CANCELLED, then the mid-flight retry
+            # child's post-process upsert silently overwrites it.
             if job.status == JobStatus.CANCELLED:
                 self._persist_job(job)
                 return job
@@ -1277,8 +1282,14 @@ class JobManager:
             # a raw ``os.path.basename`` like ``Foo.mkv``. Rule: titles
             # ending in a media extension lose to non-extension titles,
             # regardless of length. Same as pre-rewrite.
+            #
+            # Guard: the per-job retry caller passes ``canonical_path=""``
+            # since the chain represents the whole batch, not one file.
+            # Skip the heuristic in that case — there's no per-file
+            # basename to compare against, and the parent's title (e.g.
+            # "333 files") is already what we want.
             _MEDIA_EXTS = (".mkv", ".mp4", ".m4v", ".avi", ".mov", ".wmv", ".ts")
-            if basename and basename != job.library_name:
+            if canonical_path and basename and basename != job.library_name:
                 cur = job.library_name or ""
                 new_dirty = basename.lower().endswith(_MEDIA_EXTS)
                 cur_dirty = cur.lower().endswith(_MEDIA_EXTS)
@@ -1297,9 +1308,18 @@ class JobManager:
             # config so it's recognised as a chain everywhere downstream
             # (status badge, retry chip, modal dropdown). Subsequent
             # upserts skip this block.
+            #
+            # ``retry_chain_for`` is only set when the caller supplies a
+            # non-empty canonical_path. The job-level caller passes
+            # ``canonical_path=""`` (the chain represents the whole
+            # batch, not one file), and writing the empty string would
+            # mislead any downstream reader. Legacy callers that pass a
+            # real path keep the field. Subsequent upserts never
+            # overwrite — the field is initialised at most once.
             if not job.config.get("is_retry_chain"):
                 job.config["is_retry_chain"] = True
-                job.config["retry_chain_for"] = canonical_path
+                if canonical_path:
+                    job.config["retry_chain_for"] = canonical_path
                 job.config["retry_started_at"] = now_iso
                 if not job.config.get("retry_basename"):
                     job.config["retry_basename"] = job.library_name or basename
@@ -1696,8 +1716,6 @@ class JobManager:
         so nothing else will ever poll it.
         """
         cancelled = False
-        cancel_chain_path: str | None = None
-        cancel_chain_id: str | None = None
         cancel_children_of_chain: str | None = None
         with self._lock:
             job = self._jobs.get(job_id)
@@ -1711,49 +1729,35 @@ class JobManager:
                 self._persist_job(job)
                 self._emit_event("job_cancelled", job.to_dict())
                 cancelled = True
-                # Cascade for retry-chain rows: cancel the in-process
-                # ``threading.Timer`` that drives the chain AND mark
-                # any still-in-flight per-attempt child Jobs as
-                # CANCELLED. Pre-fix the chain row turned red but the
-                # Timer kept counting down — the next firing executed
-                # ``process_canonical_path`` regardless. Captured here
-                # for use outside the lock (the scheduler has its own
-                # lock; nesting them is asking for a deadlock).
+                # Cascade for retry-chain rows: mark any pending retry
+                # child Jobs (is_retry=true, parent_job_id=chain.id) as
+                # CANCELLED so the chain doesn't continue spawning new
+                # attempts. The retry Job's thread polls
+                # ``is_cancellation_requested`` inside the backoff loop
+                # and bails before acquiring the gate. Captured here for
+                # use outside the lock — request_cancellation flips a
+                # flag the in-flight thread polls.
                 if job.config.get("is_retry_chain"):
-                    cancel_chain_path = job.config.get("retry_chain_for")
-                    cancel_chain_id = job.id
                     cancel_children_of_chain = job.id
-        # Outside the JobManager lock: tear down the retry queue + child
-        # attempt rows. Both touch other locks (RetryScheduler._lock,
-        # the JobManager lock re-entered via cancel_job) so they MUST
-        # run after we've released self._lock.
-        if cancel_chain_path:
-            try:
-                from ..processing.retry_queue import get_retry_scheduler
-
-                # Cancel this chain's specific Timer — keyed by
-                # ``(path, chain_id)``. A different chain for the same
-                # path (e.g. a sibling Sonarr/Plex-echo pair) must NOT
-                # be torn down by this cancellation.
-                get_retry_scheduler().cancel(cancel_chain_path, cancel_chain_id)
-            except Exception as exc:
-                logger.debug("Could not cancel retry Timer for {}: {}", cancel_chain_path, exc)
+        # Outside the JobManager lock: cancel retry children. They live
+        # on their own threads; setting the cancellation flag is enough
+        # to make the backoff loop bail.
         if cancel_children_of_chain:
             child_jobs: list[Job] = []
             with self._lock:
                 for j in self._jobs.values():
                     if (
-                        j.config.get("is_retry_attempt")
-                        and j.config.get("parent_chain_id") == cancel_children_of_chain
+                        j.config.get("is_retry")
+                        and j.config.get("parent_job_id") == cancel_children_of_chain
                         and j.status in (JobStatus.PENDING, JobStatus.RUNNING)
                     ):
                         child_jobs.append(j)
             for child in child_jobs:
+                # Signal cancellation first so the in-flight thread's
+                # backoff-wait poller picks it up, then flip the row to
+                # CANCELLED for any thread that's already past the wait.
+                self.request_cancellation(child.id)
                 with self._lock:
-                    # Re-check inside the lock — a concurrent worker
-                    # might have completed the child between snapshot
-                    # and cancel, in which case respect the terminal
-                    # state instead of overwriting it.
                     if child.status not in (JobStatus.PENDING, JobStatus.RUNNING):
                         continue
                     child.status = JobStatus.CANCELLED
@@ -2100,6 +2104,7 @@ class JobManager:
         job_id: str,
         outcome_filter: str = "",
         search: str = "",
+        dedup_by_path: bool = True,
     ) -> list[dict]:
         """Read per-file results for a job from its JSONL file.
 
@@ -2107,6 +2112,13 @@ class JobManager:
             job_id: Job identifier.
             outcome_filter: If set, only return records matching this outcome.
             search: If set, only return records whose file path contains this substring (case-insensitive).
+            dedup_by_path: When True (default), the JSONL is collapsed to one
+                record per file path — the LAST row written wins. Retry
+                attempts append a new row per re-attempted path, so without
+                dedup the Files panel would show duplicate entries for the
+                same file. Existing callers that need the raw append-only
+                stream (e.g. audit-log style consumers) can opt out with
+                ``dedup_by_path=False``.
 
         Returns:
             List of result dicts, each with keys: file, outcome, reason, worker, ts.
@@ -2133,7 +2145,27 @@ class JobManager:
                     results.append(record)
         except OSError as e:
             logger.debug("Could not read file results from {}: {}", path, e)
-        return results
+
+        if not dedup_by_path:
+            return results
+
+        # Collapse to last-write-wins per file path so retry-attempt rows
+        # (appended on top of the initial dispatch's rows) supersede the
+        # earlier state in the Files panel. Truncation markers (empty
+        # ``file``) are preserved as-is.
+        seen_by_path: dict[str, int] = {}
+        for idx, record in enumerate(results):
+            file_path = record.get("file") or ""
+            if not file_path:
+                continue
+            seen_by_path[file_path] = idx
+        keep_indices = set(seen_by_path.values())
+        deduped: list[dict] = []
+        for idx, record in enumerate(results):
+            file_path = record.get("file") or ""
+            if not file_path or idx in keep_indices:
+                deduped.append(record)
+        return deduped
 
     def _delete_file_results(self, job_id: str) -> None:
         """Remove the per-file results JSONL file for a job. Caller must hold _lock."""

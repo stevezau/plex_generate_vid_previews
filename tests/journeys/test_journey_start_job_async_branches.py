@@ -502,6 +502,225 @@ class TestStartJobAsyncRetryBranch:
         )
 
 
+class TestStartJobAsyncRetryBranchPublisherStatuses:
+    """Pin the 2026-05-13 refactor's per-publisher status branching.
+
+    The job-level retry collection at job_runner.py:838-852 reads the
+    JSONL and checks each row's ``servers[*].status`` for one of three
+    "needs another attempt" publisher statuses. If ANY publisher on a
+    file reports one of these, the path lands in retry_paths and the
+    job-level retry kicks in.
+
+    Matrix cells covered (one row per status, plus a negative case):
+      - published_pending_registration (Jellyfin/Emby tile-on-disk but
+        not registered yet — the original 756255aa bug)
+      - skipped_not_indexed (Plex hasn't analysed the file)
+      - skipped_not_in_library (server doesn't see the file at all)
+      - generated (success — must NOT trigger retry)
+
+    Without per-cell coverage, a refactor that drops one of the three
+    statuses from the trigger set (or adds a 4th that should also
+    trigger) goes unnoticed until the 191-pill bug returns in
+    production. Mirrors the lesson from the D34 dispatcher matrix:
+    'cover the matrix, not one cell'.
+    """
+
+    @pytest.mark.parametrize(
+        "publisher_status",
+        [
+            "published_pending_registration",
+            "skipped_not_indexed",
+            "skipped_not_in_library",
+        ],
+    )
+    def test_publisher_status_triggers_job_level_retry(self, app, tmp_path, publisher_status):
+        """Each of the three retry-eligible per-publisher statuses must
+        cause a job-level retry to spawn against the same path.
+        """
+        from media_preview_generator.web.jobs import get_job_manager
+        from media_preview_generator.web.routes.job_runner import _start_job_async
+
+        run_calls: list[dict] = []
+
+        def fake_run_processing(config, selected_gpus, **kwargs):
+            run_calls.append(
+                {
+                    "webhook_paths": list(getattr(config, "webhook_paths", []) or []),
+                    "job_id": kwargs.get("job_id"),
+                }
+            )
+            if len(run_calls) == 1:
+                # Parent run: file's publisher returned the retry-eligible
+                # status. Seed the JSONL so the orchestrator's post-run
+                # scan picks it up via the per-publisher status field.
+                jm = get_job_manager()
+                jm.record_file_result(
+                    kwargs.get("job_id"),
+                    "/data/tv/Show/S01E01.mkv",
+                    # Aggregate outcome is something benign — the trigger
+                    # lives on the per-server pill, not the top-level
+                    # outcome string.
+                    "generated",
+                    "",
+                    "[GPU 0]",
+                    servers=[
+                        {
+                            "id": "jelly-1",
+                            "name": "Jellyfin",
+                            "type": "jellyfin",
+                            "status": publisher_status,
+                            "message": f"server returned {publisher_status}",
+                        }
+                    ],
+                )
+                return {
+                    "outcome": {"generated": 1},
+                    "webhook_resolution": {
+                        "unresolved_paths": [],
+                        "skipped_paths": [],
+                        "resolved_count": 1,
+                        "total_paths": 1,
+                        "path_hints": [],
+                    },
+                }
+            # Retry run: everything ok this time.
+            return {
+                "outcome": {"generated": 1},
+                "webhook_resolution": {
+                    "unresolved_paths": [],
+                    "skipped_paths": [],
+                    "resolved_count": 1,
+                    "total_paths": 1,
+                    "path_hints": [],
+                },
+            }
+
+        with (
+            app.app_context(),
+            patch(
+                "media_preview_generator.jobs.orchestrator.run_processing",
+                side_effect=fake_run_processing,
+            ),
+            patch(
+                "media_preview_generator.plex_client.trigger_plex_partial_scan",
+                return_value=[],
+            ),
+            patch(
+                "media_preview_generator.processing.retry_queue.BACKOFF_SCHEDULE",
+                [1, 1, 1, 1, 1],
+            ),
+        ):
+            job = get_job_manager().create_job(
+                library_name="The Show",
+                config={"source": "sonarr"},
+            )
+            _start_job_async(
+                job.id,
+                config_overrides={
+                    "webhook_paths": ["/data/tv/Show/S01E01.mkv"],
+                    "webhook_retry_count": 3,
+                    "webhook_retry_delay": 30,
+                },
+            )
+
+        assert len(run_calls) == 2, (
+            f"{publisher_status} must trigger one retry run; got {len(run_calls)} runs: {run_calls!r}"
+        )
+
+        all_jobs = get_job_manager().get_all_jobs()
+        retry_jobs = [
+            j
+            for j in all_jobs
+            if (j.config or {}).get("is_retry") is True and (j.config or {}).get("parent_job_id") == job.id
+        ]
+        assert len(retry_jobs) == 1, (
+            f"{publisher_status} must spawn exactly 1 retry job; got {len(retry_jobs)}: "
+            f"{[(j.id, j.library_name) for j in retry_jobs]}"
+        )
+        # The retry must carry the affected path — the publisher-status
+        # filter at job_runner.py:838-852 is the only thing that
+        # determined this. If it broke, the retry would run against an
+        # empty webhook_paths list.
+        retry_run = run_calls[1]
+        assert retry_run["webhook_paths"] == ["/data/tv/Show/S01E01.mkv"], (
+            f"{publisher_status} retry must include the affected path; got {retry_run['webhook_paths']!r}"
+        )
+
+    def test_only_success_status_does_not_trigger_retry(self, app, tmp_path):
+        """Negative case: a row whose publishers all reported
+        ``published`` must NOT trigger a retry. Without this assertion,
+        a regression that added ``published`` to the trigger set would
+        silently retry every successful job.
+        """
+        from media_preview_generator.web.jobs import get_job_manager
+        from media_preview_generator.web.routes.job_runner import _start_job_async
+
+        run_calls: list[dict] = []
+
+        def fake_run_processing(config, selected_gpus, **kwargs):
+            run_calls.append({"job_id": kwargs.get("job_id")})
+            jm = get_job_manager()
+            jm.record_file_result(
+                kwargs.get("job_id"),
+                "/data/tv/Show/S01E01.mkv",
+                "generated",
+                "",
+                "[GPU 0]",
+                servers=[
+                    {
+                        "id": "plex-1",
+                        "name": "Plex",
+                        "type": "plex",
+                        "status": "published",
+                        "message": "tiles uploaded",
+                    }
+                ],
+            )
+            return {
+                "outcome": {"generated": 1},
+                "webhook_resolution": {
+                    "unresolved_paths": [],
+                    "skipped_paths": [],
+                    "resolved_count": 1,
+                    "total_paths": 1,
+                    "path_hints": [],
+                },
+            }
+
+        with (
+            app.app_context(),
+            patch(
+                "media_preview_generator.jobs.orchestrator.run_processing",
+                side_effect=fake_run_processing,
+            ),
+            patch(
+                "media_preview_generator.plex_client.trigger_plex_partial_scan",
+                return_value=[],
+            ),
+        ):
+            job = get_job_manager().create_job(
+                library_name="The Show",
+                config={"source": "sonarr"},
+            )
+            _start_job_async(
+                job.id,
+                config_overrides={
+                    "webhook_paths": ["/data/tv/Show/S01E01.mkv"],
+                    "webhook_retry_count": 3,
+                    "webhook_retry_delay": 30,
+                },
+            )
+
+        # No retry should fire — only 1 run total.
+        assert len(run_calls) == 1, f"Success status must NOT spawn a retry; got {len(run_calls)} runs"
+        retry_jobs = [
+            j
+            for j in get_job_manager().get_all_jobs()
+            if (j.config or {}).get("is_retry") is True and (j.config or {}).get("parent_job_id") == job.id
+        ]
+        assert retry_jobs == [], f"Success must spawn 0 retries; got {len(retry_jobs)}"
+
+
 # ---------------------------------------------------------------------------
 # Branch 3: regenerate=True propagates to Config.regenerate_thumbnails
 # ---------------------------------------------------------------------------

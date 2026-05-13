@@ -466,8 +466,9 @@ class TestStateMachine:
 
     def test_running_outcome_does_not_clobber_publishers(self, jm):
         """Sibling of the scheduled-preserve test — closes the matrix
-        on the ``outcome`` variable. running is fired when a Timer
-        callback transitions the chain to "attempt N executing now";
+        on the ``outcome`` variable. running is fired when a retry
+        child's gate-acquire hook transitions the chain to "attempt N
+        executing now";
         publishers belongs to the FINAL outcome (completed/exhausted),
         not the in-flight transition. Without this row a future
         consolidation that accidentally applied publishers on running
@@ -637,18 +638,17 @@ class TestPersistenceAndRestart:
         can show history.
 
         Pre-fix: non-terminal chains were marked FAILED on load with
-        'Retry interrupted by container restart' because the in-memory
-        ``threading.Timer`` driving the chain didn't survive the
-        restart. The user then had to manually re-trigger the source
-        webhook to resume. That was hostile UX — a chain mid-backoff
-        when DEV_RELOAD reloaded the container died for no reason
-        the user could control.
+        'Retry interrupted by container restart'. The user then had
+        to manually re-trigger the source webhook to resume. That
+        was hostile UX — a chain mid-backoff when DEV_RELOAD reloaded
+        the container died for no reason the user could control.
 
         Post-fix: chains in PENDING (waiting on backoff) keep their
         PENDING state + retry_eta, and the JobManager collects them
-        into ``interrupted_retry_chains()`` so the app boot phase can
-        re-arm the Timer via ``schedule_retry_for_unindexed`` once
-        the registry + config are loaded.
+        into ``interrupted_retry_chains()`` so the boot reconciler
+        can check whether a living retry child Job survived. Retry
+        children are revived by the generic requeue path; chains
+        without a living child are marked FAILED with attribution.
         """
         import media_preview_generator.web.jobs as jobs_mod
 
@@ -679,9 +679,10 @@ class TestPersistenceAndRestart:
         recovered = jm2.get_job(original.id)
         assert recovered is not None
         assert recovered.status == JobStatus.PENDING, (
-            f"Chain Job must remain PENDING on restart so the resume path can re-arm "
-            f"the Timer; got {recovered.status}. If this asserts FAILED, the regression "
-            f"would make every container reload nuke in-flight retry chains."
+            f"Chain Job must remain PENDING on restart so the boot reconciler can "
+            f"check it against living retry children; got {recovered.status}. If "
+            f"this asserts FAILED, the regression would make every container reload "
+            f"nuke in-flight retry chains."
         )
         assert recovered.config["is_retry_chain"] is True
         assert recovered.progress.retry_eta == eta, (
@@ -867,9 +868,9 @@ class TestCompleteJobChainActiveGuard:
 
 class TestCancelledIsSticky:
     def test_cancelled_chain_not_resurrected_by_late_upsert(self, jm):
-        """TOCTOU race guard: if a Timer's _callback is mid-firing
-        when the user clicks Cancel, the cascade marks the chain
-        CANCELLED. The callback's post-process upsert must NOT
+        """TOCTOU race guard: if a retry child's terminal-state hook
+        is mid-firing when the user clicks Cancel, the cascade marks
+        the chain CANCELLED. The child's post-process upsert must NOT
         overwrite that terminal state."""
         original = _seed_originating_job(jm)
         jm.upsert_retry_chain_job(
@@ -988,3 +989,237 @@ class TestSource:
             originating_job_id=original.id,
         )
         assert job.config["source"] == "radarr"
+
+
+class TestJobLevelRetryContract:
+    """Contract tests pinning the 2026-05-13 refactor's invariants.
+
+    These would have FAILED against the pre-refactor per-file retry
+    model (which produced N child Jobs per chain for N pending files)
+    and now PASS because retries are job-level.
+
+    The contract:
+      1. A chain head with multiple pending paths produces ONE chain
+         row, not N (the per-file model's collapse onto the dispatcher
+         created 191 attempt-children for job 756255aa from 61 distinct
+         paths).
+      2. The chain head supports being called with ``canonical_path=""``
+         (the job-level caller passes no per-file scope) without
+         clobbering the title or breaking state machine transitions.
+      3. The job-level title is preserved across upserts when
+         canonical_path is empty — the heuristic that would otherwise
+         swap to a single-file basename short-circuits.
+    """
+
+    def test_chain_head_supports_empty_canonical_path(self, jm):
+        """The job-level caller (job_runner._spawn_retry_job) passes
+        ``canonical_path=""`` because the chain represents a multi-file
+        dispatch, not a single file. upsert_retry_chain_job must
+        accept this without crashing and without setting
+        retry_chain_for to a meaningless empty string on the chain row.
+        """
+        original = _seed_originating_job(jm, library_name="333 files")
+        job = jm.upsert_retry_chain_job(
+            canonical_path="",
+            basename="333 files",
+            attempt=1,
+            max_attempts=5,
+            next_run_at=None,
+            wait_seconds=60,
+            outcome="scheduled",
+            originating_job_id=original.id,
+        )
+        assert job is not None, "Job-level chain mutation must succeed with empty canonical_path"
+        assert job.config["is_retry_chain"] is True
+        assert job.config["retry_attempt"] == 1
+        assert job.status == JobStatus.PENDING
+        # The empty string must NOT be persisted to retry_chain_for —
+        # a downstream reader (legacy cancel-cascade, debug dump,
+        # support log line) seeing an empty path could misinterpret
+        # "chain is for this one file" as "no path scope."
+        assert job.config.get("retry_chain_for", None) in (
+            None,
+            False,
+        ), f"retry_chain_for must be absent/None for job-level chains; got {job.config.get('retry_chain_for')!r}"
+
+    def test_empty_canonical_path_preserves_batch_title(self, jm):
+        """When the caller is the job-level retry path (empty
+        canonical_path), the title heuristic at jobs.py:1273-1300 MUST
+        short-circuit. Without the guard, basename="333 files" would
+        get compared against an extension-bearing existing title and
+        could be incorrectly swapped.
+
+        Pin the contract so a regression that drops the
+        ``if canonical_path`` guard breaks this test loudly. The bug
+        shape: someone refactors the heuristic to "always run if
+        basename != current" and the job-level chain head's title
+        starts mutating per attempt.
+        """
+        original = jm.create_job(library_name="333 files", config={})
+        jm.complete_job(original.id)
+        # First mutation
+        jm.upsert_retry_chain_job(
+            canonical_path="",
+            basename="333 files",
+            attempt=1,
+            max_attempts=5,
+            next_run_at=None,
+            wait_seconds=60,
+            outcome="scheduled",
+            originating_job_id=original.id,
+        )
+        # Subsequent mutation with a different basename — should NOT swap
+        jm.upsert_retry_chain_job(
+            canonical_path="",
+            basename="Some Other Title",
+            attempt=2,
+            max_attempts=5,
+            next_run_at=None,
+            wait_seconds=120,
+            outcome="scheduled",
+            originating_job_id=original.id,
+        )
+        refreshed = jm.get_job(original.id)
+        assert refreshed.library_name == "333 files", (
+            f"Job-level chain title must not change when canonical_path is empty; got {refreshed.library_name!r}"
+        )
+
+
+class TestCancelJobCascadesToRetryChildren:
+    """Pin the cancel-cascade contract: cancelling a chain head must
+    propagate to its retry children so the chain doesn't keep spawning
+    new attempts in the background.
+
+    The cascade branches on three independent properties on each child:
+        - ``is_retry == True``
+        - ``parent_job_id == <chain_id>``
+        - ``status in (PENDING, RUNNING)``
+
+    A regression that swaps ``parent_job_id`` for the deleted
+    ``parent_chain_id`` would silently leave every child untouched and
+    the chain would keep running. The deleted ``test_retry_cancel_wiring.py``
+    used to cover this; these tests replace that coverage.
+    """
+
+    def test_cancel_chain_cascades_to_pending_retry_child(self, jm):
+        """A pending retry child of a cancelled chain must transition
+        to CANCELLED and have ``request_cancellation`` called so its
+        in-flight backoff-wait loop bails out.
+        """
+        original = _seed_originating_job(jm, library_name="Foo")
+        jm.upsert_retry_chain_job(
+            canonical_path="",
+            basename="Foo",
+            attempt=1,
+            max_attempts=5,
+            next_run_at=None,
+            wait_seconds=60,
+            outcome="scheduled",
+            originating_job_id=original.id,
+        )
+        child = jm.create_job(
+            library_name="Retry: Foo",
+            config={
+                "is_retry": True,
+                "parent_job_id": original.id,
+                "retry_attempt": 1,
+                "max_retries": 5,
+            },
+        )
+        assert jm.get_job(child.id).status == JobStatus.PENDING
+
+        jm.cancel_job(original.id)
+
+        assert jm.get_job(original.id).status == JobStatus.CANCELLED, (
+            "Chain head must transition to CANCELLED on cancel"
+        )
+        refreshed_child = jm.get_job(child.id)
+        assert refreshed_child.status == JobStatus.CANCELLED, (
+            f"Retry child must cascade to CANCELLED; got {refreshed_child.status}"
+        )
+        assert refreshed_child.error and "Parent retry chain" in refreshed_child.error, (
+            f"Cancelled child must carry attribution to its parent; got error={refreshed_child.error!r}"
+        )
+        # Cancellation-requested flag is what the child's backoff-wait
+        # polls. Without it, a child that's mid-sleep would not break
+        # out of the wait and would proceed to gate-acquire + dispatch.
+        assert jm.is_cancellation_requested(child.id), (
+            "request_cancellation must be set on the child so its polling loop bails"
+        )
+
+    def test_cancel_chain_does_not_touch_completed_children(self, jm):
+        """Already-terminal retry children (COMPLETED/FAILED/CANCELLED)
+        must NOT be re-cancelled — that would overwrite their original
+        terminal state with a fake 'parent cancelled' attribution.
+        """
+        original = _seed_originating_job(jm, library_name="Foo")
+        jm.upsert_retry_chain_job(
+            canonical_path="",
+            basename="Foo",
+            attempt=2,
+            max_attempts=5,
+            next_run_at=None,
+            wait_seconds=60,
+            outcome="scheduled",
+            originating_job_id=original.id,
+        )
+        done_child = jm.create_job(
+            library_name="Retry: Foo",
+            config={
+                "is_retry": True,
+                "parent_job_id": original.id,
+                "retry_attempt": 1,
+                "max_retries": 5,
+            },
+        )
+        jm.complete_job(done_child.id)
+        pre_completed_at = jm.get_job(done_child.id).completed_at
+
+        jm.cancel_job(original.id)
+
+        refreshed = jm.get_job(done_child.id)
+        assert refreshed.status == JobStatus.COMPLETED, (
+            f"COMPLETED child must not be re-cancelled; got {refreshed.status}"
+        )
+        assert refreshed.completed_at == pre_completed_at, (
+            "Completed-at timestamp must not be overwritten by the cancel cascade"
+        )
+
+    def test_cancel_chain_does_not_touch_unrelated_jobs(self, jm):
+        """A cancel cascade must only affect children whose
+        ``parent_job_id`` actually matches the chain. A retry child
+        pointing at a DIFFERENT chain must be untouched — the cascade
+        used to walk by the (now-deleted) ``parent_chain_id`` field;
+        a regression that swapped the selector key would silently
+        cancel sibling chains.
+        """
+        chain_a = _seed_originating_job(jm, library_name="A")
+        chain_b = _seed_originating_job(jm, library_name="B")
+        for chain in (chain_a, chain_b):
+            jm.upsert_retry_chain_job(
+                canonical_path="",
+                basename=chain.library_name,
+                attempt=1,
+                max_attempts=5,
+                next_run_at=None,
+                wait_seconds=60,
+                outcome="scheduled",
+                originating_job_id=chain.id,
+            )
+        b_child = jm.create_job(
+            library_name="Retry: B",
+            config={
+                "is_retry": True,
+                "parent_job_id": chain_b.id,
+                "retry_attempt": 1,
+                "max_retries": 5,
+            },
+        )
+
+        jm.cancel_job(chain_a.id)
+
+        refreshed_b_child = jm.get_job(b_child.id)
+        assert refreshed_b_child.status == JobStatus.PENDING, (
+            f"Unrelated chain's child must be untouched by sibling cancel; got {refreshed_b_child.status}"
+        )
+        assert jm.get_job(chain_b.id).status != JobStatus.CANCELLED, "Unrelated chain head must not be cancelled"

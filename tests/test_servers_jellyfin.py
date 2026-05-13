@@ -414,12 +414,12 @@ class TestResolveOnePathCacheSemantics:
     2026-05-11 22:30 → 22:38): a ``PUBLISHED_PENDING_REGISTRATION``
     chain was armed because Jellyfin hadn't finished scanning the
     new MKV by the time the originating dispatch resolved its
-    item id. The retry queue
-    (``processing/retry_queue.py:schedule_retry_for_unindexed``)
-    captures the live ``ServerRegistry`` — and therefore the same
-    :class:`JellyfinServer` instance — in a closure, so every
-    retry attempt shares the originating dispatch's
-    ``_reverse_lookup_cache``. With negative caching at 300 s TTL,
+    item id. The job-level retry path
+    (``web/routes/job_runner.py:_spawn_retry_job``) re-runs the
+    dispatch against the still-pending paths, sharing the parent's
+    :class:`JellyfinServer` instance via the live ``ServerRegistry``
+    — and therefore the same ``_reverse_lookup_cache``. With
+    negative caching at 300 s TTL,
     retries #1 (T+60 s) and #2 (T+180 s) both hit the cached
     ``None`` and returned in 0.0 s without re-querying — even
     though Jellyfin had completed its scan within the first

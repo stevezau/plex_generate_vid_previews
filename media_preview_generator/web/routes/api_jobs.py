@@ -267,14 +267,32 @@ def get_jobs():
 
         include_attempts = request.args.get("include_retry_attempts") == "1"
         if not include_attempts:
-            # Hide per-attempt retry firings — they're visible only via
-            # the chain Job's modal Attempts dropdown. The chain row
-            # itself IS the originating dispatch Job (same UUID after
-            # the rewrite); no separate retry-<hash> row exists, so
-            # there's nothing else to filter here. User sees ONE row
-            # per file lifecycle (initial dispatch + every retry
-            # firing) as a single entry.
-            all_jobs = [j for j in all_jobs if not j.config.get("is_retry_attempt")]
+            # Hide retry firings — they're visible only via the chain
+            # Job's modal Attempts dropdown. Retry Jobs (is_retry=true,
+            # is_retry_chain=false) are spawned by
+            # job_runner._spawn_retry_job and linked back via
+            # parent_job_id. The chain row itself (the originating
+            # dispatch) is mutated to carry is_retry=true AS WELL AS
+            # is_retry_chain=true by upsert_retry_chain_job — that flag
+            # is a legacy alias used by older app.js code paths; the
+            # is_retry_chain flag is what distinguishes the chain head
+            # from a retry child. So we must NOT hide rows where both
+            # are true, only rows that carry is_retry without
+            # is_retry_chain (the retry children).
+            #
+            # is_retry_attempt is a legacy flag from the per-file retry
+            # chain (deleted 2026-05-13 in the per-job retry refactor);
+            # kept in the filter for back-compat with any persisted
+            # rows from older versions.
+            def _is_user_visible(j):
+                cfg = j.config or {}
+                if cfg.get("is_retry_attempt"):
+                    return False
+                if cfg.get("is_retry") and not cfg.get("is_retry_chain"):
+                    return False
+                return True
+
+            all_jobs = [j for j in all_jobs if _is_user_visible(j)]
 
         running = [j for j in all_jobs if j.status == JobStatus.RUNNING]
         pending = sorted(
@@ -345,17 +363,16 @@ def get_job(job_id):
 def get_chain_attempts(chain_id):
     """Return the full lifecycle of a retry chain for the modal Attempts dropdown.
 
-    After the chain rewrite the chain Job IS the originating dispatch
-    (same UUID — no separate ``retry-<hash>`` row). So the dropdown's
-    first entry ("Original dispatch") points back at the chain itself,
-    and the subsequent entries are the per-firing child Jobs
-    (``is_retry_attempt: true`` with ``parent_chain_id == chain.id``).
+    The chain row IS the originating dispatch Job (same UUID). Each
+    retry attempt is a separate Job with ``is_retry=True`` and
+    ``parent_job_id == chain_id``; those Jobs are hidden from /api/jobs
+    but surfaced here as the chain's lineage.
 
     Returns:
         ``{"chain_id": str, "attempts": [{...metadata}], "max_attempts": int}``
         with the originating dispatch as the first entry
         (``retry_attempt: 0``, ``is_originating: true``) followed by
-        each retry firing sorted by ``retry_attempt`` ascending.
+        each retry Job sorted by ``retry_attempt`` ascending.
         404 if ``chain_id`` is not a retry-chain Job.
     """
     job_manager = get_job_manager()
@@ -364,9 +381,7 @@ def get_chain_attempts(chain_id):
         return jsonify({"error": "Not a retry-chain job"}), 404
 
     children = [
-        j
-        for j in job_manager.get_all_jobs()
-        if j.config.get("is_retry_attempt") and j.config.get("parent_chain_id") == chain_id
+        j for j in job_manager.get_all_jobs() if j.config.get("is_retry") and j.config.get("parent_job_id") == chain_id
     ]
     children.sort(key=lambda j: (j.config.get("retry_attempt", 0), j.created_at or ""))
 
@@ -602,11 +617,16 @@ def retry_now(job_id):
     """Fire the next pending retry attempt immediately.
 
     Operator action surfaced in the modal footer for chain heads whose
-    back-off countdown is currently inflight. Pre-fix the operator had
-    to wait out the back-off (which deep in a chain is 15 min / 1 h)
+    back-off countdown is currently inflight. Without this the operator
+    had to wait out the back-off (which deep in a chain is 15 min / 1 h)
     even when they knew the upstream server had caught up — typical
     case: Jellyfin's library scan completed but the chain is still
     waiting through the next scheduled retry.
+
+    Mechanism: find the chain's pending retry child Job (is_retry=true,
+    parent_job_id=chain, status=PENDING) and set ``force_fire_now`` on
+    its config. The child's backoff-wait loop (job_runner.py:464-509)
+    polls this flag each tick and breaks out early when set.
 
     Only valid on chain heads (``is_retry_chain``). Returns:
         200 + updated Job dict on successful fire
@@ -621,24 +641,18 @@ def retry_now(job_id):
         return jsonify({"error": "Job not found"}), 404
     if not job.config.get("is_retry_chain"):
         return jsonify({"error": "Not a retry-chain job"}), 400
-    canonical_path = job.config.get("retry_chain_for")
-    if not canonical_path:
-        return jsonify({"error": "Chain has no canonical_path"}), 400
 
-    # Lazy import — the retry queue pulls in the multi-server pipeline
-    # via its own internal imports; loading it at module-init would
-    # bloat the route module's startup cost. Same pattern used by
-    # cancel_job in jobs.py. Absolute import because ``routes`` is
-    # ``media_preview_generator.web.routes``; two dots would resolve
-    # to ``media_preview_generator.web.processing`` which doesn't exist.
-    from media_preview_generator.processing.retry_queue import get_retry_scheduler
+    # Find the pending retry child for this chain. There should only
+    # be ONE pending child at any time (the next scheduled attempt) —
+    # the retry chain is serial.
+    pending_child = None
+    for j in job_manager.get_all_jobs():
+        cfg = j.config or {}
+        if cfg.get("is_retry") and cfg.get("parent_job_id") == job_id and j.status == JobStatus.PENDING:
+            pending_child = j
+            break
 
-    # Fire this chain's specific Timer — keyed by ``(path, chain_id)``.
-    # A different chain for the same path (sibling Sonarr/Plex-echo
-    # pair) keeps its own pending Timer; only the chain the operator
-    # actually clicked is forced.
-    fired = get_retry_scheduler().fire_now(canonical_path, job_id)
-    if not fired:
+    if pending_child is None:
         return (
             jsonify(
                 {
@@ -652,8 +666,15 @@ def retry_now(job_id):
             409,
         )
 
+    # Signal the pending child's backoff-wait loop to skip the rest of
+    # its countdown. Merged into existing config so other fields are
+    # preserved.
+    new_cfg = dict(pending_child.config or {})
+    new_cfg["force_fire_now"] = True
+    job_manager.update_job_config(pending_child.id, new_cfg)
+
     job_manager.add_log(job_id, "INFO - Retry forced by operator (Retry now)")
-    return jsonify({"fired": True, "job_id": job_id, "canonical_path": canonical_path})
+    return jsonify({"fired": True, "job_id": job_id, "retry_job_id": pending_child.id})
 
 
 @api.route("/jobs/<job_id>/pause", methods=["POST"])

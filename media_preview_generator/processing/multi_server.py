@@ -1476,35 +1476,10 @@ def process_canonical_path(
                 if any_pending
                 else "All outputs fresh; FFmpeg skipped"
             )
-            # Re-arm retry queue when any publisher is still PENDING.
-            # Mirrors the slow-path retry-scheduling block at line ~1700;
-            # without this, the fast path on attempt #1 of a PENDING
-            # retry would mark the chain "complete" while the
-            # registration step never ran. Reproduced live 2026-05-09
-            # against Bering Sea Gold S17E10 (Sonarr) — every PENDING
-            # retry's attempt #1 fast-pathed and stopped silently.
-            if schedule_retry_on_not_indexed and any(
-                r.status
-                in (
-                    PublisherStatus.SKIPPED_NOT_INDEXED,
-                    PublisherStatus.SKIPPED_NOT_IN_LIBRARY,
-                    PublisherStatus.PUBLISHED_PENDING_REGISTRATION,
-                )
-                for r in results
-            ):
-                from .retry_queue import schedule_retry_for_unindexed
-
-                schedule_retry_for_unindexed(
-                    canonical_path,
-                    registry=registry,
-                    config=config,
-                    item_id_by_server=item_id_by_server,
-                    attempt=retry_attempt + 1,
-                    server_id_filter=server_id_filter,
-                    display_name=display_name,
-                    source=source,
-                    originating_job_id=originating_job_id,
-                )
+            # Retry scheduling moved to the job orchestrator
+            # (web/routes/job_runner.py) — pending outcomes here are surfaced
+            # via the per-file JSONL and the orchestrator spawns ONE retry
+            # Job for the whole batch instead of N per-file Timers.
             return MultiServerResult(
                 canonical_path=canonical_path,
                 status=fast_status,
@@ -1851,49 +1826,10 @@ def process_canonical_path(
                 frame_count,
             )
 
-        # Schedule a retry when at least one publisher is waiting for
-        # the source server to finish indexing. Skipped via
-        # ``schedule_retry_on_not_indexed=False`` from the retry
-        # callback itself (it manages its own scheduling) and from
-        # tests that want to assert the immediate result without
-        # background timers spinning up.
-        if (
-            schedule_retry_on_not_indexed
-            and status is not MultiServerStatus.FAILED
-            and any(
-                r.status
-                in (
-                    PublisherStatus.SKIPPED_NOT_INDEXED,
-                    PublisherStatus.SKIPPED_NOT_IN_LIBRARY,
-                    # PENDING_REGISTRATION means the tiles are on disk but
-                    # the server (Jellyfin/Emby) hadn't indexed the new
-                    # file at publish time, so the plugin-bridge /
-                    # /Items/{id}/Refresh registration calls were
-                    # skipped. Retry until the server resolves an item id
-                    # so the registration finally fires.
-                    PublisherStatus.PUBLISHED_PENDING_REGISTRATION,
-                )
-                for r in results
-            )
-        ):
-            from .retry_queue import schedule_retry_for_unindexed
-
-            schedule_retry_for_unindexed(
-                canonical_path,
-                registry=registry,
-                config=config,
-                item_id_by_server=item_id_by_server,
-                attempt=retry_attempt + 1,
-                # Forward the same pin this dispatch ran with — covers
-                # the worker's originator-derived case (item.server_id)
-                # which doesn't live on ``config.server_id_filter``.
-                # Without this the retry fans out to non-originator
-                # servers (final-audit MED).
-                server_id_filter=server_id_filter,
-                display_name=display_name,
-                source=source,
-                originating_job_id=originating_job_id,
-            )
+        # Retry scheduling moved to the job orchestrator
+        # (web/routes/job_runner.py) — pending outcomes here are surfaced
+        # via the per-file JSONL and the orchestrator spawns ONE retry
+        # Job for the whole batch instead of N per-file Timers.
 
         # Orphan cleanup runs once at the end of the dispatch so it sees
         # the final on-disk state (any sidecars we just wrote count as
