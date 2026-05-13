@@ -122,12 +122,21 @@ def servers_page():
 
 @main.route("/setup")
 def setup_wizard():
-    """Setup wizard page."""
+    """Setup wizard page.
+
+    First-run users (setup not complete) always see the wizard. Authenticated
+    users post-setup can re-enter explicitly via the navbar's Tools → Run setup
+    again link (carries ``?rerun=1``) — without that flag we redirect to the
+    dashboard so accidentally typing ``/setup`` while logged in doesn't dump
+    the user back into a wizard that's already done.
+    """
+    from flask import request
+
     from ..settings_manager import get_settings_manager
 
     settings = get_settings_manager()
 
-    if settings.is_setup_complete() and is_authenticated():
+    if settings.is_setup_complete() and is_authenticated() and not request.args.get("rerun"):
         return redirect(url_for("main.index"))
 
     return render_template("setup.html")

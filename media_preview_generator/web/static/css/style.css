@@ -116,6 +116,14 @@ html[data-bs-theme="light"] {
     --surface-1: rgba(15, 23, 42, 0.03);
     --surface-2: rgba(15, 23, 42, 0.05);
     --surface-border: #e2e8f0;
+
+    /* Light-mode shadow tokens. Dark mode declares --shadow-1/-2 on :root
+       with rgba(0,0,0,0.22) — appropriate for a near-black canvas but too
+       heavy on a slate-200 page bg. Re-tune for the lighter canvas so
+       modals/toasts/cards lift cleanly without the "drop-shadow on white
+       paper" look. */
+    --shadow-1: 0 1px 2px rgba(15, 23, 42, 0.06), 0 1px 1px rgba(15, 23, 42, 0.04);
+    --shadow-2: 0 8px 24px rgba(15, 23, 42, 0.08), 0 2px 6px rgba(15, 23, 42, 0.05);
 }
 
 /* ──────────────────────────────────────────────────────────────────────
@@ -1918,4 +1926,146 @@ html[data-bs-theme="light"] .system-version-row { border-color: rgba(0, 0, 0, 0.
     line-height: 1;
     margin-left: 0.25rem;
     vertical-align: middle;
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Light-mode polish pass — 14 targeted overrides identified by the
+ * 2026-05-14 visual audit. Goal: close the perceptual gap between the
+ * polished dark theme and the light theme without rewriting the
+ * palette. Each rule is scoped to ``html[data-bs-theme="light"]`` so
+ * dark mode is untouched.
+ *
+ * Issues addressed (audit numbering preserved for cross-reference):
+ *   #2  .kpi-tile near-invisible on light cards
+ *   #3  .btn-ghost low-contrast surfaces
+ *   #4  Modal Cancel button white-on-white hover
+ *   #5  Top-right utility-icon hovers invisible
+ *   #6  status-dot pulse keeps neon-blue halo
+ *   #7  .attempts-pill hover shadow too heavy
+ *   #8  .attempts-pill active ring is a faint grey halo
+ *   #9  .attempts-bar inconsistent against cards vs modals
+ *   #10 .gpu-card Bootstrap-blue accent clashes with palette
+ *   #11 Legacy .badge-* family hardcoded saturated colors
+ *   #12 .priority-dot-* over-saturated
+ *   #13 .log-highlight too candy-bright
+ *   #14 .info-icon focus ring wrong blue, not brand orange
+ *   #15 .attempts-pill[data-is-originating] divider invisible
+ * Plus tightened .form-control / .form-select borders for stronger
+ * field edges on light cards.
+ * ────────────────────────────────────────────────────────────────────── */
+
+html[data-bs-theme="light"] .kpi-tile {
+    background: #f1f5f9;
+    border-color: #e2e8f0;
+}
+
+html[data-bs-theme="light"] .btn-ghost {
+    background: #f1f5f9;
+}
+html[data-bs-theme="light"] .btn-ghost:hover,
+html[data-bs-theme="light"] .btn-ghost:focus {
+    background: #e2e8f0;
+}
+
+html[data-bs-theme="light"] .modal-footer .btn-secondary[data-bs-dismiss="modal"]:hover {
+    background-color: #e2e8f0;
+}
+
+html[data-bs-theme="light"] .nav-item .btn-link:hover,
+html[data-bs-theme="light"] .nav-item .btn-link:focus,
+html[data-bs-theme="light"] .nav-item .nav-link:hover {
+    background-color: rgba(15, 23, 42, 0.06);
+    border-radius: 6px;
+}
+
+html[data-bs-theme="light"] .status-dot.status-running::before {
+    /* The dark-mode neon-blue pulse halo (rgba(74,158,255,…) in the
+     * status-dot-pulse keyframe) sits awkwardly on the slate-grey
+     * light-mode dot. Drop the animation in light — the dot's filled
+     * state is enough state indication on a light canvas. */
+    animation: none;
+}
+
+html[data-bs-theme="light"] .attempts-pill:hover {
+    box-shadow: 0 2px 6px rgba(15, 23, 42, 0.06);
+}
+
+html[data-bs-theme="light"] .attempts-pill.active {
+    /* Brand-orange focus ring matches every other "active selection"
+     * affordance in light mode (nav-active, dropdown-active). */
+    box-shadow: 0 0 0 2px rgba(229, 160, 13, 0.35);
+}
+
+html[data-bs-theme="light"] .attempts-bar {
+    background: #f1f5f9;
+    border-color: #cbd5e1;
+}
+
+html[data-bs-theme="light"] .attempts-pills > .attempts-pill[data-is-originating="1"]::after {
+    /* Originator/retry divider — needs slightly darker than the bar's
+     * border to be visible. */
+    border-left-color: #cbd5e1;
+}
+
+html[data-bs-theme="light"] .gpu-card {
+    /* The default .gpu-card light variant used Bootstrap-blue rgba()s
+     * that don't exist anywhere else in the palette. Re-skin to slate
+     * so the card reads as part of the system, not a third-party widget. */
+    background: linear-gradient(135deg, #f1f5f9, #fbfcfd);
+    border-color: #cbd5e1;
+}
+
+/* Legacy `.badge-*` family — predates the `.bg-*` Bootstrap overhaul
+ * and hardcoded saturated colors that bypass the tinted-bg pattern.
+ * Mirror the tinted treatment so light-mode badges are calm DATA, not
+ * "alert!" stripes. */
+html[data-bs-theme="light"] .badge-pending {
+    background-color: var(--bs-secondary-bg-subtle);
+    color: var(--bs-secondary-text-emphasis);
+}
+html[data-bs-theme="light"] .badge-running {
+    background-color: var(--bs-primary-bg-subtle);
+    color: var(--bs-primary-text-emphasis);
+}
+html[data-bs-theme="light"] .badge-completed {
+    background-color: var(--bs-success-bg-subtle);
+    color: var(--bs-success-text-emphasis);
+}
+html[data-bs-theme="light"] .badge-failed {
+    background-color: var(--bs-danger-bg-subtle);
+    color: var(--bs-danger-text-emphasis);
+}
+html[data-bs-theme="light"] .badge-cancelled {
+    background-color: var(--bs-warning-bg-subtle);
+    color: var(--bs-warning-text-emphasis);
+}
+
+/* Priority dots — drop saturation so they read as labels, not alarms. */
+html[data-bs-theme="light"] .priority-dot-high { background: #b91c1c; }
+html[data-bs-theme="light"] .priority-dot-normal { background: #475569; }
+html[data-bs-theme="light"] .priority-dot-low { background: #94a3b8; }
+
+/* Log search-result highlight. The 30%-opacity orange reads as candy
+ * over near-white logs; amber-100 matches the rest of the
+ * warning-subtle pattern. */
+html[data-bs-theme="light"] .log-highlight {
+    background: #fef3c7;
+    color: #92400e;
+}
+
+/* Info-icon focus ring must use the brand orange like every other
+ * focusable in the app, not Bootstrap-blue. */
+html[data-bs-theme="light"] .info-icon:focus-visible {
+    box-shadow: var(--focus-ring);
+}
+
+/* Form-control / form-select border tightening. Bootstrap's default
+ * light border (#dee2e6) is slightly too soft on slate-200 cards. */
+html[data-bs-theme="light"] .form-control,
+html[data-bs-theme="light"] .form-select {
+    border-color: #cbd5e1;
+}
+html[data-bs-theme="light"] .form-control:focus,
+html[data-bs-theme="light"] .form-select:focus {
+    border-color: #94a3b8;
 }

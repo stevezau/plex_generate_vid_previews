@@ -151,7 +151,11 @@
                             </li>
                             <li><hr class="dropdown-divider"></li>
                             <li>
-                                <a class="dropdown-item" href="{{ url_for('main.setup_wizard') }}">
+                                {# ?rerun=1 — the setup_wizard route normally
+                                   redirects authenticated post-setup users
+                                   to the dashboard. The flag opts the user
+                                   into re-entering the wizard explicitly. #}
+                                <a class="dropdown-item" href="{{ url_for('main.setup_wizard', rerun=1) }}">
                                     <i class="bi bi-magic me-2"></i>Run setup again
                                 </a>
                             </li>
