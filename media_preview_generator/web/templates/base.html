@@ -85,32 +85,30 @@
                         <a class="nav-link dropdown-toggle {% if request.endpoint == 'main.automation_page' %}active{% endif %}" href="{{ url_for('main.automation_page') }}" id="navAutomationDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
                             <i class="bi bi-magic me-1"></i>Automation
                         </a>
+                        <!-- Curated jump-points only — Automation itself is a single page with
+                             tabs; this dropdown lets users land on a specific tab without an
+                             extra click. Previously listed "All automation" (same as clicking
+                             the parent link) and "Activity Log" (an in-page section, not a
+                             destination); both removed for clarity. The ``data-anchor`` attrs
+                             power the hash-aware ``active`` highlighter at the bottom of this
+                             file. -->
                         <ul class="dropdown-menu" aria-labelledby="navAutomationDropdown">
                             <li>
-                                <a class="dropdown-item" href="{{ url_for('main.automation_page') }}#section-schedules-list">
+                                <a class="dropdown-item" data-anchor="section-webhooks-overview"
+                                   href="{{ url_for('main.automation_page') }}#section-webhooks-overview">
+                                    <i class="bi bi-lightning-charge me-2"></i>Triggers
+                                </a>
+                            </li>
+                            <li>
+                                <a class="dropdown-item" data-anchor="section-schedules-list"
+                                   href="{{ url_for('main.automation_page') }}#section-schedules-list">
                                     <i class="bi bi-calendar-event me-2"></i>Schedules
                                 </a>
                             </li>
                             <li>
-                                <a class="dropdown-item" href="{{ url_for('main.automation_page') }}#section-schedules-quiet-hours">
+                                <a class="dropdown-item" data-anchor="section-schedules-quiet-hours"
+                                   href="{{ url_for('main.automation_page') }}#section-schedules-quiet-hours">
                                     <i class="bi bi-moon-stars me-2"></i>Quiet Hours
-                                </a>
-                            </li>
-                            <li><hr class="dropdown-divider"></li>
-                            <li>
-                                <a class="dropdown-item" href="{{ url_for('main.automation_page') }}#section-webhooks-overview">
-                                    <i class="bi bi-lightning-charge me-2"></i>Triggers / Webhooks
-                                </a>
-                            </li>
-                            <li>
-                                <a class="dropdown-item" href="{{ url_for('main.automation_page') }}#section-webhooks-activity">
-                                    <i class="bi bi-clock-history me-2"></i>Activity Log
-                                </a>
-                            </li>
-                            <li><hr class="dropdown-divider"></li>
-                            <li>
-                                <a class="dropdown-item" href="{{ url_for('main.automation_page') }}">
-                                    <i class="bi bi-grid me-2"></i>All automation
                                 </a>
                             </li>
                         </ul>
@@ -120,15 +118,37 @@
                             <i class="bi bi-gear me-1"></i>Settings
                         </a>
                     </li>
-                    <li class="nav-item">
-                        <a class="nav-link {% if request.endpoint == 'main.logs_page' %}active{% endif %}" href="{{ url_for('main.logs_page') }}">
-                            <i class="bi bi-terminal me-1"></i>Logs
+                    <!-- Tools dropdown — diagnostic surfaces grouped together so the primary
+                         nav stays focused on configuration. Previously Logs and Preview
+                         Inspector were each a top-level nav entry; users navigating to "where
+                         do I configure X" had to mentally skip over them. The "Run setup again"
+                         entry exposes /setup so users can re-onboard after swapping servers
+                         (the route always worked; nothing in the UI previously linked to it
+                         after first-run). -->
+                    <li class="nav-item dropdown">
+                        <a class="nav-link dropdown-toggle {% if request.endpoint in ('main.logs_page','main.bif_viewer') %}active{% endif %}"
+                           href="#" id="navToolsDropdown" role="button"
+                           data-bs-toggle="dropdown" aria-expanded="false">
+                            <i class="bi bi-wrench-adjustable me-1"></i>Tools
                         </a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link {% if request.endpoint == 'main.bif_viewer' %}active{% endif %}" href="{{ url_for('main.bif_viewer') }}">
-                            <i class="bi bi-film me-1"></i>Preview Inspector
-                        </a>
+                        <ul class="dropdown-menu" aria-labelledby="navToolsDropdown">
+                            <li>
+                                <a class="dropdown-item {% if request.endpoint == 'main.logs_page' %}active{% endif %}" href="{{ url_for('main.logs_page') }}">
+                                    <i class="bi bi-terminal me-2"></i>Logs
+                                </a>
+                            </li>
+                            <li>
+                                <a class="dropdown-item {% if request.endpoint == 'main.bif_viewer' %}active{% endif %}" href="{{ url_for('main.bif_viewer') }}">
+                                    <i class="bi bi-film me-2"></i>Preview Inspector
+                                </a>
+                            </li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li>
+                                <a class="dropdown-item" href="{{ url_for('main.setup_wizard') }}">
+                                    <i class="bi bi-magic me-2"></i>Run setup again
+                                </a>
+                            </li>
+                        </ul>
                     </li>
                 </ul>
                 <ul class="navbar-nav navbar-nav-utility">
@@ -217,6 +237,14 @@
                                    href="https://github.com/stevezau/media_preview_generator#readme"
                                    target="_blank" rel="noopener noreferrer">
                                     <i class="bi bi-book me-2"></i>Documentation
+                                    <i class="bi bi-box-arrow-up-right ms-auto small text-muted" aria-label="Opens in a new tab"></i>
+                                </a>
+                            </li>
+                            <li>
+                                <a class="dropdown-item d-flex align-items-center"
+                                   href="https://github.com/stevezau/media_preview_generator/blob/main/docs/multi-server.md"
+                                   target="_blank" rel="noopener noreferrer">
+                                    <i class="bi bi-hdd-stack me-2"></i>Multi-server guide
                                     <i class="bi bi-box-arrow-up-right ms-auto small text-muted" aria-label="Opens in a new tab"></i>
                                 </a>
                             </li>
@@ -400,6 +428,27 @@
                     || new window.bootstrap.Offcanvas(offcanvasEl);
                 instance.hide();
             });
+        })();
+    </script>
+
+    <!-- Hash-aware Automation sub-section highlighter. When the URL is
+         /automation#section-schedules-list (or similar), light up the
+         matching dropdown item so the user can see which sub-section is
+         current. Matches via the ``data-anchor`` attributes set on each
+         dropdown <a>. Without this the Automation parent lights up but
+         the dropdown items themselves give no feedback. -->
+    <script>
+        (function () {
+            var dropdown = document.querySelector('ul[aria-labelledby="navAutomationDropdown"]');
+            if (!dropdown) return;
+            function syncActiveAnchor() {
+                var hash = (window.location.hash || '').replace(/^#/, '');
+                dropdown.querySelectorAll('a.dropdown-item[data-anchor]').forEach(function (a) {
+                    a.classList.toggle('active', !!hash && a.getAttribute('data-anchor') === hash);
+                });
+            }
+            syncActiveAnchor();
+            window.addEventListener('hashchange', syncActiveAnchor);
         })();
     </script>
 

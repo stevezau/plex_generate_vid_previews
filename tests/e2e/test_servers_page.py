@@ -55,19 +55,19 @@ class TestServersPageLoads:
 
 
 @pytest.mark.e2e
-class TestServersPageWebhookBlock:
-    def test_webhook_url_input_present(self, servers_page: Page):
-        expect(servers_page.locator("#webhookUrl")).to_be_visible()
-
-    def test_webhook_url_populated_with_incoming_path(self, servers_page: Page):
-        # The webhook URL is populated by JS after page load. Pin the
-        # contract: the input must be non-empty AND contain the
-        # incoming-webhook path. A regression returning an empty
-        # string would now fail loudly (previously the `if value:`
-        # guard let that case silently pass).
-        expect(servers_page.locator("#webhookUrl")).not_to_have_value("", timeout=3000)
-        value = servers_page.locator("#webhookUrl").input_value()
-        assert "/api/webhooks/incoming" in value, f"Expected /api/webhooks/incoming in URL; got {value!r}"
+class TestServersPageWebhookGuidance:
+    def test_servers_page_points_at_per_server_webhook_section(self, servers_page: Page):
+        # The duplicate global Webhook URL card was removed during the
+        # IA cleanup (per-server modals expose vendor-specific URLs with
+        # the right ?server_id token). The page should now point users
+        # at either the per-server modal (Edit → Webhook tab) or
+        # Automation → Triggers — and the latter must use the deep-link
+        # hash so the user lands on the right tab.
+        guidance = servers_page.locator("p:has-text('Need a webhook URL')")
+        expect(guidance).to_be_visible()
+        expect(guidance).to_contain_text("Edit modal")
+        expect(guidance).to_contain_text("Webhook tab")
+        expect(guidance.locator("a[href*='/automation#section-webhooks-overview']")).to_be_visible()
 
 
 def _force_open_wizard(page: Page) -> None:

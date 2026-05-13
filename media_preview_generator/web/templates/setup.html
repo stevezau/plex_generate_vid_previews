@@ -202,8 +202,11 @@
 
         <div class="card" id="librariesCard" style="display: none;">
             <div class="card-body">
-                <h4 class="card-title mb-3">Libraries to Process</h4>
-                <p class="text-muted mb-3">Tick the libraries you want previews for. Tick none to include all.</p>
+                <h4 class="card-title mb-3">Libraries to monitor
+                    <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top"
+                            title="Server-level scope — which libraries this app is allowed to touch on this server. Filters apply to every job type (webhook, scheduled, manual). For a one-off run against a different subset, use the New Job button on the Dashboard."><i class="bi bi-info-circle"></i></button>
+                </h4>
+                <p class="text-muted mb-3">Tick the libraries this app should monitor on this server. Tick none to monitor all.</p>
 
                 <div id="libraryLoading" class="text-center py-3 d-none">
                     <div class="spinner-border text-primary" role="status">
@@ -256,6 +259,11 @@
                         <div class="valid-feedback small">Looks like a valid Plex config folder</div>
                     </div>
                     <div class="form-text">Enter the path <strong>inside this container</strong>. On your server Plex might use <code>/config/plex/Library/Application Support/Plex Media Server</code>—but if you mounted that folder as <code>/plex</code> in this container, then enter <code>/plex</code> here.</div>
+                    <div class="form-text mt-1">
+                        <i class="bi bi-info-circle text-muted me-1"></i>
+                        Already past Setup? Change this any time on
+                        <a href="/servers">Servers</a> &rarr; your Plex card &rarr; <strong>Edit</strong> &rarr; <strong>General</strong>.
+                    </div>
                 </div>
 
                 <hr class="my-4">

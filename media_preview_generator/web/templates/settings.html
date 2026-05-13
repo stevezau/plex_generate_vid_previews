@@ -57,6 +57,124 @@
             </div>
             <div class="card-body">
 
+                <!-- Job Execution — global controls that apply to every job
+                     this app runs (webhook-triggered, scheduled, manual,
+                     recently-added). These three blocks used to live inside
+                     Automation → Triggers → Settings, but they were never
+                     webhook-specific; the labels just inherited the old
+                     "webhook_*" config key names. Keys are unchanged in
+                     settings.json so existing values carry over silently. -->
+                <h6 class="mb-3"><i class="bi bi-layers me-2"></i>Job Execution</h6>
+
+                <div class="mb-3">
+                    <label for="maxConcurrentJobs" class="form-label">
+                        Max concurrent jobs: <strong><span id="maxConcurrentJobsValue">3</span></strong>
+                        <button type="button" class="info-icon info-icon-more ms-1" tabindex="0"
+                                data-bs-toggle="tooltip" data-bs-placement="top"
+                                title="What counts + tuning guidance — click for details"
+                                data-explain-title="Max concurrent jobs"
+                                data-explain-template="infoMaxConcurrentJobsTpl"
+                                aria-label="Explain max concurrent jobs">
+                            <i class="bi bi-info-circle"></i>
+                        </button>
+                    </label>
+                    <input type="range" class="form-range" id="maxConcurrentJobs" min="1" max="10" step="1" value="3">
+                    <div class="form-text">
+                        Keep this at 3 for most setups. Lower values (1–2) reduce API pressure on media servers when
+                        many webhook jobs arrive at once. Higher values (5–10) let more scans run in parallel — useful
+                        only if your servers + disks can handle it.
+                    </div>
+                </div>
+
+                <!-- Rich explanation for the concurrency ⓘ modal. -->
+                <template id="infoMaxConcurrentJobsTpl">
+                    <p><strong>What counts as a "job":</strong> any top-level work
+                    unit this app runs — a webhook-triggered processing run, a
+                    scheduled scan, a manual "Process selection" click, a catchup
+                    enumeration. Each one goes through the same pipeline: config
+                    load → library enumeration → per-file dispatch.</p>
+
+                    <p><strong>What the cap controls:</strong> how many jobs can be
+                    in the <em>active</em> phase at the same time. Jobs beyond the
+                    cap go into the Pending queue and promote to Active one-by-one
+                    as slots free up. The cap is priority-aware: High-priority jobs
+                    jump to the front of the Pending queue (but don't interrupt an
+                    already-running job).</p>
+
+                    <p><strong>What the cap does NOT control:</strong></p>
+                    <ul>
+                        <li><strong>FFmpeg workers within a job</strong> — per-GPU
+                            worker counts configured separately below. A single
+                            job can still use all your GPU workers; the cap limits
+                            concurrent <em>jobs</em>, not concurrent FFmpegs.</li>
+                        <li><strong>Webhook reception</strong> — incoming webhooks
+                            are debounced and batched regardless of this setting.
+                            Even at cap=1 webhooks still arrive; they just wait
+                            longer to become Active.</li>
+                    </ul>
+                </template>
+
+                <h6 class="mb-2 mt-4">Retry policy
+                    <button type="button" class="info-icon ms-1" tabindex="0"
+                            data-bs-toggle="tooltip" data-bs-placement="top"
+                            title="Global retry defaults for every job — webhook, scheduled, manual, recently-added. A file that can't be found on the media server (still indexing, transient API error) is retried this many times with this delay before being marked failed."><i class="bi bi-info-circle"></i></button>
+                </h6>
+                <p class="form-text mt-0 mb-3">
+                    Applies to all job types — webhook, scheduled, manual reprocess, and recently-added scans.
+                </p>
+
+                <div class="row">
+                    <div class="col-md-6 mb-3">
+                        <label for="webhookRetryCount" class="form-label">Retry count
+                            <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="How many times to retry if the media server hasn't indexed the file yet, or if a per-file failure is recoverable. 0 = no retries."><i class="bi bi-info-circle"></i></button>
+                        </label>
+                        <input type="number" class="form-control has-stepper" id="webhookRetryCount" min="0" max="10" value="3" style="max-width: 8rem;">
+                        <div class="form-text">
+                            Maximum retry attempts per job. 0 disables retries.
+                        </div>
+                    </div>
+
+                    <div class="col-md-6 mb-3">
+                        <label for="webhookRetryDelay" class="form-label">
+                            Initial retry delay: <strong><span id="retryDelayValue">30</span>s</strong>
+                            <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Wait before the first retry. Each later retry waits twice as long as the one before it, capped at the slider maximum."><i class="bi bi-info-circle"></i></button>
+                        </label>
+                        <input type="range" class="form-range" id="webhookRetryDelay" min="10" max="300" step="5" value="30">
+                        <div class="form-text">
+                            Subsequent retries double the wait each time (capped at the maximum).
+                        </div>
+                    </div>
+                </div>
+
+                <h6 class="mb-2 mt-3">Restart recovery
+                    <button type="button" class="info-icon ms-1" tabindex="0"
+                            data-bs-toggle="tooltip" data-bs-placement="top"
+                            title="What happens to in-flight jobs when the container restarts. Affects every job type, not just webhooks."><i class="bi bi-info-circle"></i></button>
+                </h6>
+
+                <div class="mb-3">
+                    <div class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" id="autoRequeueOnRestart" checked>
+                        <label class="form-check-label" for="autoRequeueOnRestart">Auto-requeue interrupted jobs on restart</label>
+                    </div>
+                    <div class="form-text">
+                        When the server restarts, automatically re-queue any jobs that were running or waiting.
+                        Only jobs created within the configured time window are requeued; older jobs are left as-is.
+                    </div>
+                </div>
+
+                <div class="mb-4" id="requeueMaxAgeGroup">
+                    <label for="requeueMaxAge" class="form-label">
+                        Max requeue age: <strong><span id="requeueMaxAgeValue">12h</span></strong>
+                    </label>
+                    <input type="range" class="form-range" id="requeueMaxAge" min="5" max="1440" step="5" value="720">
+                    <div class="form-text">
+                        How old a job can be to qualify for automatic requeue after restart (5 minutes – 24 hours).
+                    </div>
+                </div>
+
+                <hr>
+
                 <!-- GPU Configuration -->
                 <h6 class="mb-3" id="gpu-configuration"><i class="bi bi-gpu-card me-2"></i>GPU Configuration</h6>
                 <div id="gpuConfigContainer">
@@ -553,7 +671,39 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // Tonemap algorithm description
     document.getElementById('tonemapAlgorithm').addEventListener('change', updateTonemapDescription);
+
+    // Job Execution live-value bindings (moved from Automation → Triggers).
+    document.getElementById('maxConcurrentJobs').addEventListener('input', function() {
+        document.getElementById('maxConcurrentJobsValue').textContent = this.value;
+    });
+    document.getElementById('webhookRetryDelay').addEventListener('input', function() {
+        document.getElementById('retryDelayValue').textContent = this.value;
+    });
+    document.getElementById('requeueMaxAge').addEventListener('input', function() {
+        document.getElementById('requeueMaxAgeValue').textContent = _formatMinutesShort(this.value);
+    });
+    document.getElementById('autoRequeueOnRestart').addEventListener('change', function() {
+        document.getElementById('requeueMaxAgeGroup').style.opacity = this.checked ? '1' : '0.5';
+        document.getElementById('requeueMaxAge').disabled = !this.checked;
+    });
 });
+
+// Format a minute count as a short human-readable string (45 → "45m",
+// 720 → "12h"). Used by the Max requeue age slider so the live value reads
+// in user-friendly units instead of raw minutes.
+function _formatMinutesShort(mins) {
+    var n = Math.max(0, Math.round(Number(mins) || 0));
+    if (n < 60) return n + 'm';
+    if (n < 1440) {
+        var hours = Math.floor(n / 60);
+        var rem = n % 60;
+        return rem === 0 ? hours + 'h' : hours + 'h ' + rem + 'm';
+    }
+    var days = Math.floor(n / 1440);
+    var hoursPart = Math.round((n % 1440) / 60);
+    if (hoursPart === 24) { days += 1; hoursPart = 0; }
+    return hoursPart === 0 ? days + 'd' : days + 'd ' + hoursPart + 'h';
+}
 
 const tonemapDescriptions = {
     hable: 'Preserves dark and bright details with a filmic look. Good all-round choice.',
@@ -602,6 +752,26 @@ async function loadSettings() {
         document.getElementById('frameReuseEnabled').checked = fr.enabled !== false;
         document.getElementById('frameReuseTtlMinutes').value = fr.ttl_minutes ?? 60;
         document.getElementById('frameReuseMaxDiskMb').value = fr.max_cache_disk_mb ?? 2048;
+
+        // Job Execution — global retry / concurrency / restart-recovery
+        // controls. Keys retain the original `webhook_*` names from when
+        // these lived in the webhook settings panel; the semantics are now
+        // global (all job types fall back to these defaults).
+        const maxConcurrent = Math.min(10, Math.max(1, parseInt(settings.max_concurrent_jobs, 10) || 3));
+        document.getElementById('maxConcurrentJobs').value = maxConcurrent;
+        document.getElementById('maxConcurrentJobsValue').textContent = String(maxConcurrent);
+
+        document.getElementById('webhookRetryCount').value = Math.min(10, Math.max(0, parseInt(settings.webhook_retry_count, 10) || 3));
+        document.getElementById('webhookRetryDelay').value = settings.webhook_retry_delay || 30;
+        document.getElementById('retryDelayValue').textContent = settings.webhook_retry_delay || 30;
+
+        const autoRequeue = settings.auto_requeue_on_restart !== false;
+        document.getElementById('autoRequeueOnRestart').checked = autoRequeue;
+        const maxAge = Math.min(1440, Math.max(5, parseInt(settings.requeue_max_age_minutes, 10) || 720));
+        document.getElementById('requeueMaxAge').value = maxAge;
+        document.getElementById('requeueMaxAgeValue').textContent = _formatMinutesShort(maxAge);
+        document.getElementById('requeueMaxAgeGroup').style.opacity = autoRequeue ? '1' : '0.5';
+        document.getElementById('requeueMaxAge').disabled = !autoRequeue;
 
         // Show the multi-server hint when ≥2 enabled servers exist so users see
         // the most-relevant context for this setting.
@@ -737,6 +907,17 @@ async function saveAllSettings() {
             ttl_minutes: parseInt(document.getElementById('frameReuseTtlMinutes').value, 10) || 60,
             max_cache_disk_mb: parseInt(document.getElementById('frameReuseMaxDiskMb').value, 10) || 2048,
         },
+        max_concurrent_jobs: Math.min(
+            10,
+            Math.max(1, parseInt(document.getElementById('maxConcurrentJobs').value, 10) || 3),
+        ),
+        webhook_retry_count: Math.min(
+            10,
+            Math.max(0, parseInt(document.getElementById('webhookRetryCount').value, 10) || 0),
+        ),
+        webhook_retry_delay: parseInt(document.getElementById('webhookRetryDelay').value, 10) || 30,
+        auto_requeue_on_restart: document.getElementById('autoRequeueOnRestart').checked,
+        requeue_max_age_minutes: parseInt(document.getElementById('requeueMaxAge').value, 10) || 720,
     };
 
     const result = await new SettingsManager().save(settings);

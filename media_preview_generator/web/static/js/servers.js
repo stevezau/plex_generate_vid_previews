@@ -467,16 +467,6 @@
 
         if (isServersPage) {
             loadServers();
-
-            // Webhook URL display.
-            const u = new URL('/api/webhooks/incoming', window.location.origin);
-            $('#webhookUrl').value = u.toString();
-            $('#copyWebhookUrl').addEventListener('click', () => {
-                navigator.clipboard.writeText(u.toString());
-                const orig = $('#copyWebhookUrl').innerHTML;
-                $('#copyWebhookUrl').innerHTML = '<i class="bi bi-check2"></i> Copied';
-                setTimeout(() => { $('#copyWebhookUrl').innerHTML = orig; }, 1500);
-            });
         }
 
         // Modal-only wiring. /setup inlines the connection form (no modal),
