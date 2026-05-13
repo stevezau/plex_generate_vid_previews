@@ -2475,3 +2475,126 @@ class TestFullScanUsesSetPublishersNotAppend:
             f"observed lengths {observed_payload_lengths!r} (max {max(observed_payload_lengths)}) "
             f"on a {N}-item dispatch with 1 server"
         )
+
+
+class TestProgressEmissionInCompletionOrder:
+    """Job 9eb79d9c regression — progress numerator stuck at low values
+    while items completed in the background, then jumped to the final
+    count the moment the user stopped the job.
+
+    Root cause: ``_dispatch_processable_items`` consumed worker results
+    via ``ThreadPoolExecutor.map``, which yields results in **submission
+    order**. A slow item near the front of the queue blocked the
+    progress increment for every faster item behind it — workers were
+    completing in parallel but the for-loop sat on the head of the
+    iterator, so the ``progress_callback`` (and its SocketIO emit) never
+    fired until the slow item completed.
+
+    Fix: switch to ``submit`` + ``as_completed`` so progress reflects
+    actual completion order, with the same single-thread consumption
+    semantics the existing publisher fold relies on.
+    """
+
+    def test_fast_items_report_progress_before_slow_head_item_completes(self, tmp_path):
+        import threading
+        import time as _time
+
+        from media_preview_generator.jobs.orchestrator import _dispatch_processable_items
+        from media_preview_generator.processing.multi_server import MultiServerStatus
+
+        cfg = _server_config("srv-a", ServerType.JELLYFIN)
+        # 5 items; item 0 will block, items 1-4 return instantly. With
+        # 5 CPU worker slots all five run in parallel so the head item
+        # cannot starve out the rest.
+        items = [
+            (cfg, ProcessableItem(canonical_path=f"/data/m{i}.mkv", server_id="srv-a", title=f"M{i}")) for i in range(5)
+        ]
+
+        release_head = threading.Event()
+        progress_lock = threading.Lock()
+        progress_calls: list[tuple[int, int, str]] = []
+        four_fast_done = threading.Event()
+
+        def _record_progress(processed: int, total: int, msg: str) -> None:
+            with progress_lock:
+                progress_calls.append((processed, total, msg))
+                # Banner is (0, 5); fast items push processed up to 4.
+                if processed >= 4:
+                    four_fast_done.set()
+
+        def _fake_pcp(*, canonical_path, **kwargs):
+            if canonical_path == "/data/m0.mkv":
+                # Block until the test confirms the four fast items
+                # have already reported progress. If the dispatcher
+                # serialises on submission order, this wait times out
+                # and the test fails before the event is released.
+                if not release_head.wait(timeout=5.0):
+                    # Test will fail below; let the dispatcher return.
+                    pass
+            return SimpleNamespace(
+                publishers=[],
+                canonical_path=canonical_path,
+                status=MultiServerStatus.PUBLISHED,
+                message="",
+            )
+
+        dispatch_done = threading.Event()
+        dispatch_result: dict = {}
+
+        def _run_dispatch():
+            try:
+                with patch(
+                    "media_preview_generator.processing.multi_server.process_canonical_path",
+                    side_effect=_fake_pcp,
+                ):
+                    dispatch_result["counts"] = _dispatch_processable_items(
+                        items=items,
+                        config=_config(cpu_threads=5),
+                        registry=MagicMock(),
+                        selected_gpus=[],
+                        progress_callback=_record_progress,
+                        label="full scan",
+                    )
+            finally:
+                dispatch_done.set()
+
+        runner = threading.Thread(target=_run_dispatch, name="dispatch-under-test", daemon=True)
+        runner.start()
+        try:
+            # Give the four fast items up to 2.5 s to report progress
+            # while item 0 is still parked on the event. With pool.map
+            # this never happens — the for-loop is stuck at submission
+            # index 0 waiting on the slow item. With as_completed,
+            # fast items reach the consumer immediately and the
+            # callback fires for each one in well under a second.
+            assert four_fast_done.wait(timeout=2.5), (
+                f"Expected progress_callback to fire for the four fast items while item 0 was "
+                f"still blocked. Observed progress events so far: {progress_calls!r}. "
+                f"Submission-order consumption (pool.map) starves the progress counter when an "
+                f"early item is slow — the symptom job 9eb79d9c reported."
+            )
+
+            # Sanity: confirm there is at least one fast-item progress
+            # entry with processed in (1..4) — i.e. the assert above
+            # didn't get satisfied by some other emit path.
+            with progress_lock:
+                fast_progress = [p for p, _t, _m in progress_calls if 1 <= p <= 4]
+            assert fast_progress, (
+                f"No 'processed in 1..4' events observed before item 0 unblocked. Calls so far: {progress_calls!r}"
+            )
+        finally:
+            release_head.set()
+            runner.join(timeout=5.0)
+            assert dispatch_done.is_set(), "dispatch thread did not finish within timeout"
+
+        # Final progress should reflect every item.
+        with progress_lock:
+            final_processed = max((p for p, _t, _m in progress_calls), default=0)
+        assert final_processed == 5, (
+            f"Final progress count must equal total items (5); got {final_processed}. All calls: {progress_calls!r}"
+        )
+
+        # And the dispatcher returned a successful counts dict — no
+        # exception swallowed by the background thread.
+        assert dispatch_result.get("counts") is not None
+        _time.sleep(0)  # let any daemon poller threads finish their tick

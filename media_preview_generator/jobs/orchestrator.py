@@ -490,7 +490,7 @@ def _dispatch_processable_items(
         existing caller already depends on.
     """
     import threading
-    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
     from ..processing.generator import _notify_file_result, failure_scope
     from ..processing.multi_server import MultiServerStatus, process_canonical_path
@@ -1009,10 +1009,11 @@ def _dispatch_processable_items(
     # Per-server publisher tally for this dispatch. Folded after every
     # completed item and mirrored onto the Job via the fixed-size
     # ``set_publishers`` call (one entry per server). Safe to mutate
-    # without a lock because ``pool.map`` results are consumed on a
-    # single thread in the ``for`` loop below — if this ever changes
-    # to ``as_completed`` + ``submit`` from multiple threads, wrap the
-    # fold + set_publishers call in a ``threading.Lock``.
+    # without a lock because ``as_completed`` yields finished futures
+    # back to **a single consumer thread** (the for-loop below) — the
+    # workers themselves never touch this dict. If this loop ever
+    # multiplexes consumption across threads, wrap the fold +
+    # set_publishers call in a ``threading.Lock``.
     # Replaces the original
     # per-item ``append_publishers`` (one row per file × server) which
     # made publishers_json grow O(items × servers) — a 117k-item full
@@ -1039,9 +1040,41 @@ def _dispatch_processable_items(
     except Exception:
         _poller_stop.set()
         raise
+    # Why submit() + as_completed() instead of ``pool.map``:
+    # ``ThreadPoolExecutor.map`` returns results in **submission order**,
+    # so a slow item near the front of the queue stalls progress for
+    # every faster item behind it — workers are completing in parallel
+    # but the consumer is blocked at the head, so the
+    # ``progress_callback`` (and its SocketIO emit) never fires until
+    # the slow item completes. Job 9eb79d9c surfaced this on a Jellyfin
+    # full-library scan: numerator stuck at ~5/5000 for minutes, then
+    # jumped to ~700/5000 the instant the user cancelled. The
+    # ``as_completed`` iterator yields each future the moment its
+    # worker is done, so progress reflects real completion order.
     with pool_ctx as pool:
-        for index_and_pair in zip(indexed_items, pool.map(_process_one, indexed_items), strict=True):
-            (idx, (_server_cfg, item)), (worker_label, result) = index_and_pair
+        future_to_input: dict = {
+            pool.submit(_process_one, indexed_item): indexed_item for indexed_item in indexed_items
+        }
+        for future in as_completed(future_to_input):
+            idx, (_server_cfg, item) = future_to_input[future]
+            try:
+                worker_label, result = future.result()
+            except Exception as exc:
+                # ``_process_one`` already wraps its own work in try/except
+                # and returns ``(worker_label, None)`` on failure, so
+                # this branch is only reached if _process_one itself
+                # raised before its try-block (or the pool surfaced an
+                # InterruptedError). Treat it the same as the
+                # exception-swallowed path: log, count as failure, no
+                # per-file row (canonical_path is still known).
+                logger.warning(
+                    "Multi-server {}: future.result() raised for {!r} ({}: {}). Treating as a failed item.",
+                    label,
+                    item.canonical_path,
+                    type(exc).__name__,
+                    exc,
+                )
+                worker_label, result = "Worker", None
             completed += 1
             if progress_callback:
                 try:

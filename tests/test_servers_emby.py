@@ -395,6 +395,40 @@ class TestListItems:
 
         assert [i.title for i in items] == ["Good"]
 
+    def test_pages_through_items_when_first_page_is_full(self, emby):
+        """Same pagination contract as Jellyfin — same shared base class."""
+        from media_preview_generator.servers._embyish import _LIST_ITEMS_PAGE_SIZE
+
+        page1 = [
+            {"Id": str(i), "Type": "Movie", "Name": f"Movie {i}", "Path": f"/m/{i}.mkv"}
+            for i in range(_LIST_ITEMS_PAGE_SIZE)
+        ]
+        page2 = [
+            {"Id": f"p2-{i}", "Type": "Movie", "Name": f"Movie p2-{i}", "Path": f"/m/p2-{i}.mkv"} for i in range(7)
+        ]
+        with patch.object(EmbyServer, "_request") as req:
+            resp1 = MagicMock()
+            resp1.json.return_value = {"Items": page1, "TotalRecordCount": _LIST_ITEMS_PAGE_SIZE + 7}
+            resp1.raise_for_status.return_value = None
+            resp2 = MagicMock()
+            resp2.json.return_value = {"Items": page2, "TotalRecordCount": _LIST_ITEMS_PAGE_SIZE + 7}
+            resp2.raise_for_status.return_value = None
+            req.side_effect = [resp1, resp2]
+
+            items = list(emby.list_items("lib-1"))
+
+        assert req.call_count == 2
+        first_params = req.call_args_list[0].kwargs.get("params", {})
+        second_params = req.call_args_list[1].kwargs.get("params", {})
+        assert first_params.get("StartIndex", 0) == 0
+        assert second_params.get("StartIndex") == _LIST_ITEMS_PAGE_SIZE
+        # Asserting Limit too — if a future refactor only updates one
+        # vendor's code path, the asymmetric coverage between
+        # Jellyfin/Emby tests would let a regression slip through.
+        assert first_params.get("Limit") == _LIST_ITEMS_PAGE_SIZE
+        assert second_params.get("Limit") == _LIST_ITEMS_PAGE_SIZE
+        assert len(items) == _LIST_ITEMS_PAGE_SIZE + 7
+
 
 class TestResolveItemToRemotePath:
     """The default fixture uses api_key auth (no user_id) → the

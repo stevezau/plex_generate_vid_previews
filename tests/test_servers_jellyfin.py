@@ -229,6 +229,109 @@ class TestListItems:
         assert all(isinstance(i, MediaItem) for i in items)
         assert any("S01E01" in i.title for i in items)
 
+    def test_pages_through_items_when_first_page_is_full(self, jelly):
+        """A library larger than one page must be fetched in chunks.
+
+        Regression: pre-fix, ``list_items`` made a single un-paginated
+        ``GET /Items`` request capped at ``Limit=5000`` and silently
+        truncated anything past that — job 9eb79d9c reported ``0/5000``
+        on a >5000-item Jellyfin library. Fix: ``StartIndex`` pagination
+        loop, terminate on short page.
+        """
+        from media_preview_generator.servers._embyish import _LIST_ITEMS_PAGE_SIZE
+
+        page1 = [
+            {"Id": str(i), "Type": "Movie", "Name": f"Movie {i}", "Path": f"/m/{i}.mkv"}
+            for i in range(_LIST_ITEMS_PAGE_SIZE)
+        ]
+        page2 = [
+            {"Id": f"p2-{i}", "Type": "Movie", "Name": f"Movie p2-{i}", "Path": f"/m/p2-{i}.mkv"} for i in range(3)
+        ]
+        with patch.object(JellyfinServer, "_request") as req:
+            resp1 = MagicMock()
+            resp1.json.return_value = {"Items": page1, "TotalRecordCount": _LIST_ITEMS_PAGE_SIZE + 3}
+            resp1.raise_for_status.return_value = None
+            resp2 = MagicMock()
+            resp2.json.return_value = {"Items": page2, "TotalRecordCount": _LIST_ITEMS_PAGE_SIZE + 3}
+            resp2.raise_for_status.return_value = None
+            req.side_effect = [resp1, resp2]
+
+            items = list(jelly.list_items("lib-1"))
+
+        assert req.call_count == 2, (
+            f"Expected two paginated /Items calls, got {req.call_count}. "
+            "If still 1, list_items is sending a single un-paginated request and silently capping."
+        )
+        first_params = req.call_args_list[0].kwargs.get("params", {})
+        second_params = req.call_args_list[1].kwargs.get("params", {})
+        assert first_params.get("StartIndex", 0) == 0
+        assert second_params.get("StartIndex") == _LIST_ITEMS_PAGE_SIZE
+        assert first_params.get("Limit") == _LIST_ITEMS_PAGE_SIZE
+        assert second_params.get("Limit") == _LIST_ITEMS_PAGE_SIZE
+        assert len(items) == _LIST_ITEMS_PAGE_SIZE + 3
+
+    def test_stops_paginating_on_short_first_page(self, jelly):
+        """Smaller-than-PAGE_SIZE library: one request, no second call."""
+        from media_preview_generator.servers._embyish import _LIST_ITEMS_PAGE_SIZE
+
+        items_payload = [{"Id": str(i), "Type": "Movie", "Name": f"Movie {i}", "Path": f"/m/{i}.mkv"} for i in range(5)]
+        with patch.object(JellyfinServer, "_request") as req:
+            resp = MagicMock()
+            resp.json.return_value = {"Items": items_payload, "TotalRecordCount": 5}
+            resp.raise_for_status.return_value = None
+            req.return_value = resp
+
+            items = list(jelly.list_items("lib-1"))
+
+        assert req.call_count == 1
+        assert len(items) == 5
+        params = req.call_args.kwargs.get("params", {})
+        assert params.get("Limit") == _LIST_ITEMS_PAGE_SIZE
+
+    def test_first_page_failure_swallowed_and_library_skipped(self, jelly):
+        """An exception on the FIRST request is a whole-library outage:
+        log a warning, yield nothing, return cleanly. Matches the
+        pre-pagination behaviour ``_shared.py:list_canonical_paths``
+        already handles by ``continue``-ing to the next library."""
+        with patch.object(JellyfinServer, "_request", side_effect=RuntimeError("server down")):
+            items = list(jelly.list_items("lib-1"))
+        assert items == []
+
+    def test_mid_pagination_failure_raises_to_avoid_silent_truncation(self, jelly):
+        """Transient failure on page N>0 must NOT silently report a
+        partial library as complete. Pre-MED-fix, a successful page 1
+        followed by a failed page 2 yielded only page 1's items and
+        returned cleanly — the caller treated 1000 items of a >1000-item
+        library as a complete enumeration. With the fix, ``list_items``
+        re-raises so the caller's existing server-level ``try/except``
+        in ``_enumerate_items_for_servers`` turns the partial scan into
+        a visible WARNING instead of a silent truncation. Items already
+        yielded stay yielded — they're still valid work; the
+        re-raise's job is to make the partial-completion **visible**."""
+        from media_preview_generator.servers._embyish import _LIST_ITEMS_PAGE_SIZE
+
+        page1 = [
+            {"Id": str(i), "Type": "Movie", "Name": f"Movie {i}", "Path": f"/m/{i}.mkv"}
+            for i in range(_LIST_ITEMS_PAGE_SIZE)
+        ]
+        with patch.object(JellyfinServer, "_request") as req:
+            resp1 = MagicMock()
+            resp1.json.return_value = {"Items": page1, "TotalRecordCount": _LIST_ITEMS_PAGE_SIZE + 50}
+            resp1.raise_for_status.return_value = None
+            req.side_effect = [resp1, RuntimeError("transient 502 on page 2")]
+
+            yielded: list = []
+            with pytest.raises(RuntimeError, match="transient 502"):
+                for item in jelly.list_items("lib-1"):
+                    yielded.append(item)
+
+        assert len(yielded) == _LIST_ITEMS_PAGE_SIZE, (
+            "Items from successfully-fetched pages must reach the caller "
+            "before the re-raise — they're real items that should still be "
+            "processed; the re-raise only signals 'this library is incomplete'."
+        )
+        assert req.call_count == 2
+
 
 class TestResolveItemToRemotePath:
     def test_prefers_media_sources_path(self, jelly):

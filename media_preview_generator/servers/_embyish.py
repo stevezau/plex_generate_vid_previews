@@ -46,6 +46,17 @@ from .base import (
 # repeat calls collapse to ~0ms).
 _REVERSE_LOOKUP_TTL_S = 300.0
 
+# Page size for full-library item enumeration. Jellyfin/Emby honour the
+# ``Limit`` query param on ``/Items`` and silently truncate above it —
+# pre-fix we sent ``Limit=5000`` once with no ``StartIndex`` follow-up
+# and capped every >5000-item library to 5000 (job 9eb79d9c reported
+# ``0/5000`` on a multi-thousand-item movies library). 1000 matches
+# the reverse-lookup Pass-2 enumerate cap below and keeps single-page
+# round-trips small enough that a transient HTTP failure is cheap to
+# retry. Loop terminates on a short page (or ``TotalRecordCount``
+# exhausted) so libraries of any size enumerate fully.
+_LIST_ITEMS_PAGE_SIZE = 1000
+
 
 class EmbyApiClient(MediaServer):
     """Base class for Emby and Jellyfin clients.
@@ -420,42 +431,97 @@ class EmbyApiClient(MediaServer):
         return libraries
 
     def list_items(self, library_id: str) -> Iterator[MediaItem]:
-        """Yield every video :class:`MediaItem` inside the given library."""
-        params = {
-            "ParentId": library_id,
-            "IncludeItemTypes": "Movie,Episode",
-            "Recursive": "true",
-            "Fields": "Path",
-            "Limit": 5000,
-        }
-        try:
-            response = self._request("GET", "/Items", params=params)
-            response.raise_for_status()
-            payload = response.json()
-        except Exception as exc:
-            logger.warning(
-                "Could not list items in {} library {} ({}: {}). "
-                "This library will be skipped for this run — verify the server is reachable, the API key / token "
-                "is still valid, and that the library hasn't been deleted on the server side.",
-                self.vendor_name,
-                library_id,
-                type(exc).__name__,
-                exc,
-            )
-            return
+        """Yield every video :class:`MediaItem` inside the given library.
 
-        for raw in payload.get("Items", []) or []:
-            if not isinstance(raw, dict):
-                continue
-            path = str(raw.get("Path") or "")
-            if not path:
-                continue
-            yield MediaItem(
-                id=str(raw.get("Id") or ""),
-                library_id=library_id,
-                title=_format_emby_title(raw),
-                remote_path=path,
-            )
+        Pages through ``/Items`` via ``StartIndex`` until exhausted —
+        Jellyfin/Emby silently truncate at ``Limit``, so a single
+        un-paginated request capped multi-thousand-item libraries
+        (job 9eb79d9c hit this on a >5000-item Jellyfin movies library).
+        Terminates when a page returns fewer than ``_LIST_ITEMS_PAGE_SIZE``
+        items, or when ``StartIndex`` reaches the server-reported
+        ``TotalRecordCount`` (when present) — whichever is sooner.
+
+        First-page failure: log a warning and return cleanly. The caller
+        in ``_shared.py:list_canonical_paths`` already treats this as a
+        whole-library outage (skip this library, continue scan).
+
+        Mid-pagination failure (``start_index > 0``): re-raise. If we
+        swallowed it, the caller would treat a partial enumeration
+        (pages 1..N-1) as a complete library — silently dropping every
+        item past the failed page. That's the same shape of bug the
+        ``Limit=5000`` cap caused before this fix. ``_enumerate_items_for_servers``
+        already wraps the iteration in ``try/except`` and logs a
+        server-level WARNING, so re-raising produces a visible
+        "this server's enumeration partially failed" signal without
+        crashing the whole job. Items already yielded keep flowing —
+        they're real and need processing; the re-raise only flags that
+        the **library is incomplete**.
+        """
+        start_index = 0
+        while True:
+            params = {
+                "ParentId": library_id,
+                "IncludeItemTypes": "Movie,Episode",
+                "Recursive": "true",
+                "Fields": "Path",
+                "Limit": _LIST_ITEMS_PAGE_SIZE,
+                "StartIndex": start_index,
+            }
+            try:
+                response = self._request("GET", "/Items", params=params)
+                response.raise_for_status()
+                payload = response.json()
+            except Exception as exc:
+                if start_index == 0:
+                    logger.warning(
+                        "Could not list items in {} library {} (first page, {}: {}). "
+                        "This library will be skipped for this run — verify the server is reachable, "
+                        "the API key / token is still valid, and that the library hasn't been deleted "
+                        "on the server side.",
+                        self.vendor_name,
+                        library_id,
+                        type(exc).__name__,
+                        exc,
+                    )
+                    return
+                logger.error(
+                    "Partial enumeration of {} library {}: page starting at StartIndex={} failed "
+                    "({}: {}). {} item(s) already yielded; re-raising so the caller treats this "
+                    "library as INCOMPLETE rather than silently dropping every item past the "
+                    "failed page. Re-run the scan once the server is healthy to pick up the rest.",
+                    self.vendor_name,
+                    library_id,
+                    start_index,
+                    type(exc).__name__,
+                    exc,
+                    start_index,
+                )
+                raise
+
+            raw_items = payload.get("Items", []) or []
+            for raw in raw_items:
+                if not isinstance(raw, dict):
+                    continue
+                path = str(raw.get("Path") or "")
+                if not path:
+                    continue
+                yield MediaItem(
+                    id=str(raw.get("Id") or ""),
+                    library_id=library_id,
+                    title=_format_emby_title(raw),
+                    remote_path=path,
+                )
+
+            if len(raw_items) < _LIST_ITEMS_PAGE_SIZE:
+                return
+            # Defence-in-depth: stop if the server told us the total and
+            # we've already requested everything. Without this, a server
+            # that returns a full page on the boundary would cost one
+            # extra round-trip that confirms emptiness — cheap but noisy.
+            total = payload.get("TotalRecordCount")
+            if isinstance(total, int) and start_index + len(raw_items) >= total:
+                return
+            start_index += len(raw_items)
 
     def search_items(self, query: str, limit: int = 50) -> list[MediaItem]:
         """Two-pass search via the shared :class:`SearchQuery` abstraction.
