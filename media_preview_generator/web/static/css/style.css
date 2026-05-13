@@ -2201,3 +2201,90 @@ html[data-bs-theme="light"] .kpi-tile {
     background-color: var(--bs-tertiary-bg);
     color: var(--bs-body-color);
 }
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Job queue table — bg-color inheritance fix. Bootstrap's .table sets
+ * --bs-table-bg: var(--bs-body-bg), and every cell paints that body bg.
+ * Inside the JOB QUEUE card (which is white-ish via --bs-secondary-bg),
+ * cells render slate-200 (body bg) instead of the card surface — every
+ * row reads as if it's sitting on a different background than the card
+ * it's inside. Force the table-bg variable to transparent so cells let
+ * the card bg show through. Affects desktop table view + the mobile
+ * card-stack derived from the same table. The user flagged this as
+ * banded title-row-vs-body-row appearance.
+ *
+ * Also: tighten the mobile card-stack row so the title-row /
+ * status-row / progress-row group reads as ONE card instead of three
+ * loose bands. Add slight vertical separator between consecutive job
+ * cards (previously a 1px border on the tr which painted under the
+ * inherited cell bg and disappeared).
+ * ────────────────────────────────────────────────────────────────────── */
+
+.jobs-table {
+    --bs-table-bg: transparent;
+    --bs-table-bg-type: transparent;
+}
+.jobs-table > tbody > tr,
+.jobs-table > tbody > tr > td {
+    background-color: transparent;
+}
+
+@media (max-width: 575.98px) {
+    /* Stronger card separation between consecutive job rows; the
+     * 1px hairline got lost over the inherited body-bg. */
+    .jobs-table tbody tr {
+        border-bottom: 1px solid var(--bs-border-color);
+        padding: 0.9rem 0.5rem;
+    }
+    /* Action-button group on the status row — give it a slight surface
+     * so the 2-3 small buttons read as a contained cluster, not as three
+     * floating chips sitting next to the status text. */
+    .jobs-table tbody tr > td:nth-child(7) .btn-group {
+        background-color: var(--bs-tertiary-bg);
+        border-radius: 0.375rem;
+        padding: 2px;
+    }
+    .jobs-table tbody tr > td:nth-child(7) .btn-group .btn {
+        border-color: transparent;
+        background-color: transparent;
+    }
+    .jobs-table tbody tr > td:nth-child(7) .btn-group .btn:hover {
+        background-color: var(--bs-secondary-bg);
+    }
+    /* Faint "Pending" status text — bump from text-muted to body-color
+     * so the operator can scan job state without leaning in. */
+    .jobs-table tbody tr .status-dot.status-pending {
+        color: var(--bs-body-color);
+    }
+}
+
+/* Path-mapping + exclude-path tables on mobile. At < 576px the three
+ * narrow input fields (Path on Server / Local path / Path in webhook)
+ * + remove button squeeze to ~70px each, making the input visibly
+ * truncated and the +/- buttons feel cramped. Force a minimum table
+ * width and let the parent scroll horizontally so the user can swipe
+ * to reveal each column at a comfortable width.
+ * Affects both Setup wizard Step 3 (#setupPathMappingsTable +
+ * #setupExcludePathsTable) and Server-edit modal Path-mappings +
+ * Exclude-paths tabs (#editPathMappingsTable + #editExcludePathsTable). */
+@media (max-width: 575.98px) {
+    #editPathMappingsTable,
+    #editExcludePathsTable,
+    #setupPathMappingsTable,
+    #setupExcludePathsTable {
+        min-width: 480px;
+    }
+    /* The Setup wizard's path-mapping container has no .table-responsive
+     * wrapper — fall back to overflow-x on the section card so the table
+     * can scroll independently of the page. */
+    #setupPathMappingsContainer,
+    #setupExcludePathsContainer {
+        overflow-x: auto;
+    }
+    /* Server-edit modal — the tab-pane already has padding; let the
+     * table scroll within it. */
+    #edit-tab-paths,
+    #edit-tab-excludes {
+        overflow-x: auto;
+    }
+}
