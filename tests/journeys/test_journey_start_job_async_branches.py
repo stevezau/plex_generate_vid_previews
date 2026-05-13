@@ -686,6 +686,114 @@ class TestStartJobAsyncRetryBranchPublisherStatuses:
             f"{publisher_status} retry must include the affected path; got {retry_run['webhook_paths']!r}"
         )
 
+    def test_scheduled_scan_without_webhook_retry_count_still_retries(self, app, tmp_path):
+        """Scheduled scans, manual reruns, and recently-added scans
+        don't inject ``webhook_retry_count`` into their job config
+        (only webhook handlers do). Pre-2026-05-13 the per-file retry
+        queue handled PENDING_REGISTRATION for ALL job types
+        regardless. Post-refactor the per-job retry path must also
+        apply to those job types — by falling back to the global
+        ``webhook_retry_count`` setting when the job config doesn't
+        carry one. Otherwise a scheduled scan that hits PENDING
+        registrations would never retry and the chain stays in the
+        pending state forever (until Jellyfin's own background scan
+        catches up).
+
+        Pin the fallback behaviour so a regression that drops the
+        setting fallback would silently break retries for all
+        non-webhook job types.
+        """
+        from media_preview_generator.web.jobs import get_job_manager
+        from media_preview_generator.web.routes.job_runner import _start_job_async
+
+        run_calls: list[dict] = []
+
+        def fake_run_processing(config, selected_gpus, **kwargs):
+            run_calls.append({"job_id": kwargs.get("job_id")})
+            jm = get_job_manager()
+            target = (jm.get_job(kwargs.get("job_id")).config or {}).get("parent_job_id") or kwargs.get("job_id")
+            if len(run_calls) == 1:
+                jm.record_file_result(
+                    target,
+                    "/data/Movies/Foo (2024)/Foo.mkv",
+                    "generated",
+                    "",
+                    "[GPU 0]",
+                    servers=[
+                        {
+                            "id": "jelly-1",
+                            "name": "Jellyfin",
+                            "type": "jellyfin",
+                            "status": "published_pending_registration",
+                            "message": "not indexed yet",
+                        }
+                    ],
+                )
+            else:
+                jm.record_file_result(
+                    target,
+                    "/data/Movies/Foo (2024)/Foo.mkv",
+                    "generated",
+                    "",
+                    "[GPU 0]",
+                    servers=[
+                        {
+                            "id": "jelly-1",
+                            "name": "Jellyfin",
+                            "type": "jellyfin",
+                            "status": "published",
+                            "message": "registered after retry",
+                        }
+                    ],
+                )
+            return {
+                "outcome": {"generated": 1},
+                "webhook_resolution": {
+                    "unresolved_paths": [],
+                    "skipped_paths": [],
+                    "resolved_count": 1,
+                    "total_paths": 1,
+                    "path_hints": [],
+                },
+            }
+
+        with (
+            app.app_context(),
+            patch(
+                "media_preview_generator.jobs.orchestrator.run_processing",
+                side_effect=fake_run_processing,
+            ),
+            patch(
+                "media_preview_generator.plex_client.trigger_plex_partial_scan",
+                return_value=[],
+            ),
+            patch(
+                "media_preview_generator.processing.retry_queue.BACKOFF_SCHEDULE",
+                [1, 1, 1, 1, 1],
+            ),
+        ):
+            # Mimic a scheduled-scan-style job: webhook_paths but NO
+            # webhook_retry_count / webhook_retry_delay in config or
+            # overrides. The global setting default (3) must drive
+            # the retry budget.
+            job = get_job_manager().create_job(library_name="Movies", config={})
+            _start_job_async(
+                job.id,
+                config_overrides={"webhook_paths": ["/data/Movies/Foo (2024)/Foo.mkv"]},
+            )
+
+        assert len(run_calls) == 2, (
+            f"Scheduled-scan-style job must retry via the global default; got {len(run_calls)} runs"
+        )
+        retry_jobs = [
+            j
+            for j in get_job_manager().get_all_jobs()
+            if (j.config or {}).get("is_retry") is True and (j.config or {}).get("parent_job_id") == job.id
+        ]
+        assert len(retry_jobs) == 1, (
+            f"Exactly 1 retry must spawn for a job without webhook_retry_count in config; got {len(retry_jobs)}"
+        )
+
     def test_only_success_status_does_not_trigger_retry(self, app, tmp_path):
         """Negative case: a row whose publishers all reported
         ``published`` must NOT trigger a retry. Without this assertion,

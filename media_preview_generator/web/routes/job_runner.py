@@ -821,8 +821,35 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                     is_retry = job_config.get("is_retry", False)
                     retry_attempt = int(job_config.get("retry_attempt", 0))
                     max_retries = int(job_config.get("max_retries", 0))
-                    retry_count = max(0, int(job_config.get("webhook_retry_count", 0)))
-                    retry_delay_sec = max(10, min(300, int(job_config.get("webhook_retry_delay", 30))))
+                    # Webhook jobs inject ``webhook_retry_count`` into their
+                    # config at creation time; scheduled scans, manual
+                    # reruns, and recently-added scans don't. Pre-2026-05-13
+                    # the per-file retry queue handled PENDING_REGISTRATION
+                    # for ALL job types regardless of config — it was a
+                    # separate mechanism. Post-refactor everything routes
+                    # through the per-job retry path, so we must apply the
+                    # same "implicit" retry budget here: fall back to the
+                    # global setting when the job config doesn't carry one.
+                    # A user who has explicitly set webhook_retry_count=0
+                    # in settings still gets 0 retries everywhere.
+                    _cfg_retry_count = job_config.get("webhook_retry_count")
+                    if _cfg_retry_count is None:
+                        try:
+                            from ..settings_manager import get_settings_manager as _gsm
+
+                            _cfg_retry_count = _gsm().get("webhook_retry_count", 3)
+                        except Exception:
+                            _cfg_retry_count = 3
+                    retry_count = max(0, int(_cfg_retry_count))
+                    _cfg_retry_delay = job_config.get("webhook_retry_delay")
+                    if _cfg_retry_delay is None:
+                        try:
+                            from ..settings_manager import get_settings_manager as _gsm2
+
+                            _cfg_retry_delay = _gsm2().get("webhook_retry_delay", 30)
+                        except Exception:
+                            _cfg_retry_delay = 30
+                    retry_delay_sec = max(10, min(300, int(_cfg_retry_delay)))
                     effective_max = max_retries or retry_count
 
                     # Collect every path that needs a retry — across all three
