@@ -883,12 +883,14 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                     # We always scan the JSONL — PENDING_REGISTRATION
                     # lives on per-publisher status, not the aggregate
                     # outcome counter, so the only way to detect it is
-                    # to inspect each row's ``servers`` field.
-                    RETRY_PUBLISHER_STATUSES = {
-                        "published_pending_registration",
-                        "skipped_not_indexed",
-                        "skipped_not_in_library",
-                    }
+                    # to inspect each row's ``servers`` field. The set
+                    # is defined once in ``retry_queue`` so this scan
+                    # and the ``/attempts`` endpoint's ``pending_servers``
+                    # helper can't drift.
+                    from media_preview_generator.processing.retry_queue import (
+                        PENDING_PUBLISHER_STATUSES as RETRY_PUBLISHER_STATUSES,
+                    )
+
                     # Retry children write their per-file outcomes to the
                     # PARENT's JSONL (see _file_result_cb redirect above).
                     # When THIS run is a retry, the retry-decision scan must
@@ -899,6 +901,14 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                     # reported published_pending_registration × 4.
                     _retry_scan_target = job_config.get("parent_job_id") if job_config.get("is_retry") else None
                     _retry_scan_target = _retry_scan_target or job_id
+                    # While scanning for retry-eligible paths, also tally a
+                    # per-server pending count. The reason-building blocks
+                    # below use it to produce log lines like
+                    # "Retry 1/3: JellyTest pending × 4, next retry in 120s"
+                    # so the operator sees the actual blocker — and the
+                    # frontend can derive the chain-summary subtitle from
+                    # the /attempts response that mirrors this data.
+                    pending_by_server: dict[str, int] = {}
                     for fr in job_manager.get_file_results(_retry_scan_target, dedup_by_path=True):
                         file_path = fr.get("file")
                         if not file_path:
@@ -907,8 +917,13 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                             not_found_on_disk.append(file_path)
                         else:
                             servers = fr.get("servers") or []
-                            if any(s.get("status") in RETRY_PUBLISHER_STATUSES for s in servers):
+                            pending_server_names = [
+                                s.get("name") or "?" for s in servers if s.get("status") in RETRY_PUBLISHER_STATUSES
+                            ]
+                            if pending_server_names:
                                 pending_registration_paths.append(file_path)
+                                for _name in pending_server_names:
+                                    pending_by_server[_name] = pending_by_server.get(_name, 0) + 1
 
                     # Combine paths that need a Plex rescan: unresolved
                     # (Plex doesn't know the file) + not-found-on-disk (Plex
@@ -1112,10 +1127,20 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                                 reason_parts.append(f"{len(unresolved_paths)} unresolved")
                             if not_found_on_disk:
                                 reason_parts.append(f"{len(not_found_on_disk)} stale path(s)")
+                            if pending_by_server:
+                                _by_server_sorted = sorted(pending_by_server.items(), key=lambda kv: -kv[1])
+                                reason_parts.append(", ".join(f"{name} pending × {n}" for name, n in _by_server_sorted))
                             reason = " + ".join(reason_parts) or "issues"
+                            # WARNING (not INFO): a retry being scheduled
+                            # means something on this run didn't resolve.
+                            # Bumped from INFO so the Job log viewer
+                            # surfaces it in warn color — chains that need
+                            # 3 retries on Jellyfin indexing are now
+                            # visually distinct from routine dispatch
+                            # progress lines.
                             job_manager.add_log(
                                 job_id,
-                                f"INFO - Retry {retry_attempt}/{effective_max}: {reason}, next retry in {next_delay}s",
+                                f"WARNING - Retry {retry_attempt}/{effective_max}: {reason}, next retry in {next_delay}s",
                             )
                         elif not is_retry and effective_max > 0:
                             spawned_retry_id = _spawn_retry_job(retry_paths, 1)
@@ -1124,10 +1149,17 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                                 reason_parts.append(f"{len(unresolved_paths)} not found in Plex")
                             if not_found_on_disk:
                                 reason_parts.append(f"{len(not_found_on_disk)} stale path(s)")
+                            if pending_by_server:
+                                _by_server_sorted = sorted(pending_by_server.items(), key=lambda kv: -kv[1])
+                                reason_parts.append(", ".join(f"{name} pending × {n}" for name, n in _by_server_sorted))
                             reason = ", ".join(reason_parts) or "issues"
+                            # WARNING (not INFO): same rationale as the
+                            # is_retry branch above — the original dispatch
+                            # didn't fully resolve and a retry is now
+                            # scheduled. Operator-visible signal.
                             job_manager.add_log(
                                 job_id,
-                                f"INFO - {reason}, retry scheduled in {retry_delay_sec}s",
+                                f"WARNING - {reason}, retry scheduled in {retry_delay_sec}s",
                             )
 
                     # Terminal chain transition: this is a retry Job, it

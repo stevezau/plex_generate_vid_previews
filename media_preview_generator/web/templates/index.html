@@ -489,6 +489,16 @@
                         <span class="ms-auto"></span>
                         <span id="attemptsHint" class="badge attempts-state-chip d-none"></span>
                     </div>
+                    <!-- Chain-summary subtitle — populated by
+                         _renderRetryReasonSubtitle when there's a consistent
+                         blocker across the chain's retry attempts (e.g.
+                         "Retried 3× because JellyTest was still indexing").
+                         Hidden by default and re-shown only when at least
+                         one retry has fired AND the per-attempt
+                         pending_servers data points to a dominant server. -->
+                    <div id="retryReasonSubtitle"
+                         class="d-none small text-muted mt-2"
+                         role="status" aria-live="polite"></div>
                 </div>
                 <!-- Tabs — Logs is the default landing. The simplification
                      pass dropped a separate "Overview" tab whose four

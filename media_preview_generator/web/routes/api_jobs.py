@@ -415,6 +415,47 @@ def get_chain_attempts(chain_id):
         except (TypeError, ValueError):
             return None
 
+    # Single source of truth for "this server is still pending" status
+    # values. Shared with the retry-decision scan in
+    # ``web/routes/job_runner.py`` so the modal's per-pill chips and
+    # the retry-spawn decision can't drift.
+    from media_preview_generator.processing.retry_queue import PENDING_PUBLISHER_STATUSES as _PENDING_PUBLISHER_STATUSES
+
+    def _pending_servers(job_obj) -> list[dict]:
+        """Derive the list of per-server "still pending" counts from
+        the job's ``publishers`` snapshot.
+
+        Returns an empty list when nothing is pending. Each entry:
+        ``{"server_id", "server_name", "server_type", "count"}``.
+        The frontend renders one badge per entry on the matching
+        attempt pill so the user sees "Jellyfin was the holdout"
+        without opening per-attempt logs.
+
+        Defensive against malformed ``publishers`` entries — the field
+        is typed ``list[dict]`` but persisted to disk, so a partial
+        write or hand-edited row could surface non-dict elements that
+        would raise ``AttributeError`` on ``.get()`` and 500 the whole
+        ``/attempts`` response. Skip those entries quietly.
+        """
+        rows: list[dict] = []
+        for pub in (job_obj.publishers or []) if job_obj else []:
+            if not isinstance(pub, dict):
+                continue
+            counts = pub.get("counts") or {}
+            if not isinstance(counts, dict):
+                continue
+            n = sum(counts.get(s, 0) for s in _PENDING_PUBLISHER_STATUSES)
+            if n > 0:
+                rows.append(
+                    {
+                        "server_id": pub.get("server_id"),
+                        "server_name": pub.get("server_name"),
+                        "server_type": (pub.get("server_type") or "").lower(),
+                        "count": int(n),
+                    }
+                )
+        return rows
+
     attempts: list[dict] = []
 
     # First entry: the originating dispatch == the chain Job itself.
@@ -425,6 +466,14 @@ def get_chain_attempts(chain_id):
     # the WHOLE lifecycle (PENDING while between firings, RUNNING
     # during a firing, COMPLETED when chain succeeds, FAILED on
     # exhaustion), so the dropdown label shows the right glyph.
+    #
+    # ``pending_servers`` is unconditionally empty on the originating
+    # entry: the chain head's ``publishers`` snapshot is refreshed at
+    # terminal (Hook 3 in job_runner.py), so by the time the user
+    # looks it reflects post-retry truth, not what was pending after
+    # the initial dispatch. The "why" lives on the retry pills and
+    # the chain-summary subtitle; reconstructing the initial pending
+    # state isn't worth the complexity.
     attempts.append(
         {
             "id": chain.id,
@@ -436,6 +485,7 @@ def get_chain_attempts(chain_id):
             "error": chain.error,
             "duration_sec": _duration_sec(chain),
             "is_originating": True,
+            "pending_servers": [],
         }
     )
 
@@ -451,6 +501,7 @@ def get_chain_attempts(chain_id):
                 "error": j.error,
                 "duration_sec": _duration_sec(j),
                 "is_originating": False,
+                "pending_servers": _pending_servers(j),
             }
         )
 

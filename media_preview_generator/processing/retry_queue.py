@@ -22,6 +22,11 @@ What remains:
 * :data:`BACKOFF_SCHEDULE` — the (60s, 2m, 5m, 15m, 1h) cadence consumed
   by ``_spawn_retry_job``. Public so any caller that wants to display the
   "next retry in Xs" countdown shares the canonical timing.
+* :data:`PENDING_PUBLISHER_STATUSES` — the per-publisher status values
+  that flag a file for retry. Shared between the retry-decision scan in
+  ``web/routes/job_runner.py`` and the ``/api/jobs/<chain_id>/attempts``
+  response helper in ``web/routes/api_jobs.py`` so the two code paths
+  can't drift.
 """
 
 from __future__ import annotations
@@ -38,3 +43,27 @@ from __future__ import annotations
 #: Subsequent gaps (2m / 5m / 15m / 1h) cover Plex's typical scan latency
 #: window without turning into a runaway loop.
 BACKOFF_SCHEDULE: tuple[int, ...] = (60, 120, 300, 900, 3600)
+
+#: Per-publisher status values (as ``.value`` strings of
+#: :class:`PublisherStatus`) that flag a file as "still needs another
+#: attempt because the destination server isn't ready yet."
+#:
+#: Two consumers must agree on this set:
+#:
+#: * ``web/routes/job_runner.py`` — the retry-decision scan that walks
+#:   the per-file JSONL after each dispatch to decide whether to spawn
+#:   another retry Job.
+#: * ``web/routes/api_jobs.py`` — the ``_pending_servers`` helper that
+#:   computes the ``pending_servers`` field on each ``/attempts`` entry
+#:   so the modal can render per-pill vendor chips.
+#:
+#: Adding a fourth status (e.g. ``"skipped_metadata_unavailable"``) only
+#: at one call site would silently desync the retry decision from the
+#: UI rendering — both must reference this single source of truth.
+PENDING_PUBLISHER_STATUSES: frozenset[str] = frozenset(
+    {
+        "published_pending_registration",
+        "skipped_not_indexed",
+        "skipped_not_in_library",
+    }
+)

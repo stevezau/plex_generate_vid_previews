@@ -273,6 +273,154 @@ class TestAttemptsEndpoint:
             f"Endpoint must require auth; unauthenticated request got {resp.status_code}"
         )
 
+    def test_attempts_endpoint_includes_pending_servers(self, client):
+        """Each retry entry's ``pending_servers`` lists the servers
+        that still had files in ``published_pending_registration`` /
+        ``skipped_not_indexed`` / ``skipped_not_in_library`` state at
+        the moment that retry completed. The frontend renders one
+        vendor icon per pending server on the matching pill — without
+        this data the modal can't tell the operator WHY a chain ran 4
+        runs (e.g. "Jellyfin was still indexing for 16 minutes").
+
+        Contract:
+          * Originating-dispatch entry (chain head) ALWAYS has
+            ``pending_servers: []`` regardless of state. The chain
+            head's ``publishers`` snapshot is refreshed at terminal
+            so reconstructing the initial pending state isn't worth
+            the complexity.
+          * Each retry-child entry has its own ``pending_servers``
+            derived from THAT child's ``publishers`` field (which is
+            the per-run snapshot, not the chain aggregate).
+        """
+        from media_preview_generator.web.jobs import get_job_manager
+
+        jm = get_job_manager()
+        # Seed: chain head + 3 retry children covering the three cells
+        # that matter:
+        #   1. one server pending (single chip)
+        #   2. two servers pending (multi chip — verifies the helper
+        #      emits one entry per pending publisher, not just the
+        #      first one)
+        #   3. zero servers pending (clean attempt; helper returns [])
+        chain_id, attempt_ids = _seed_chain_with_attempts(
+            jm,
+            canonical_path="/data/Foo.mkv",
+            basename="Foo",
+            num_attempts=3,
+        )
+        # Patch each retry child's publishers field to simulate the
+        # per-run snapshot the orchestrator writes via set_publishers.
+        first_child = jm.get_job(attempt_ids[0])
+        first_child.publishers = [
+            {
+                "server_id": "jelly-1",
+                "server_name": "JellyTest",
+                "server_type": "jellyfin",
+                "counts": {"published_pending_registration": 4},
+            },
+            {
+                "server_id": "plex-1",
+                "server_name": "Plex",
+                "server_type": "plex",
+                "counts": {"published": 4},
+            },
+        ]
+        # Retry child 2: TWO servers pending — Jellyfin (4 files) AND
+        # Emby (1 file). Exercises the multi-publisher path so a
+        # regression that emits only the first pending server (e.g. a
+        # stray ``break`` in the helper) fails this row.
+        second_child = jm.get_job(attempt_ids[1])
+        second_child.publishers = [
+            {
+                "server_id": "jelly-1",
+                "server_name": "JellyTest",
+                "server_type": "jellyfin",
+                "counts": {"published_pending_registration": 4},
+            },
+            {
+                "server_id": "emby-1",
+                "server_name": "EmbyTest",
+                "server_type": "emby",
+                "counts": {"skipped_not_indexed": 1, "published": 3},
+            },
+            {
+                "server_id": "plex-1",
+                "server_name": "Plex",
+                "server_type": "plex",
+                "counts": {"published": 4},
+            },
+        ]
+        # Retry child 3: nothing pending — chain succeeded on attempt 3.
+        third_child = jm.get_job(attempt_ids[2])
+        third_child.publishers = [
+            {
+                "server_id": "jelly-1",
+                "server_name": "JellyTest",
+                "server_type": "jellyfin",
+                "counts": {"skipped_output_exists": 4},
+            },
+            {
+                "server_id": "plex-1",
+                "server_name": "Plex",
+                "server_type": "plex",
+                "counts": {"skipped_output_exists": 4},
+            },
+        ]
+        with jm._lock:  # noqa: SLF001
+            jm._persist_job(first_child)  # noqa: SLF001
+            jm._persist_job(second_child)  # noqa: SLF001
+            jm._persist_job(third_child)  # noqa: SLF001
+
+        resp = client.get(f"/api/jobs/{chain_id}/attempts", headers=_headers())
+        assert resp.status_code == 200
+        attempts = resp.get_json()["attempts"]
+
+        # Originating-dispatch entry: pending_servers ALWAYS empty.
+        # Contract: chain head's publishers is post-retry truth, not
+        # initial state.
+        originating = next(a for a in attempts if a["is_originating"])
+        assert originating["pending_servers"] == [], (
+            f"Originating entry must have empty pending_servers regardless of "
+            f"chain state; got {originating['pending_servers']!r}"
+        )
+
+        # Retry child 1: Jellyfin still pending → exactly 1 row,
+        # carrying the correct server attribution + count.
+        child1 = next(a for a in attempts if a["id"] == attempt_ids[0])
+        assert len(child1["pending_servers"]) == 1, (
+            f"Retry 1 must show Jellyfin as the lone blocker; got {child1['pending_servers']!r}"
+        )
+        assert child1["pending_servers"][0] == {
+            "server_id": "jelly-1",
+            "server_name": "JellyTest",
+            "server_type": "jellyfin",
+            "count": 4,
+        }
+
+        # Retry child 2: TWO servers pending → exactly 2 rows with
+        # the correct per-server counts. The order isn't contractually
+        # specified (the helper preserves Job.publishers iteration
+        # order), so assert on the set/contents, not position.
+        child2 = next(a for a in attempts if a["id"] == attempt_ids[1])
+        child2_by_id = {p["server_id"]: p for p in child2["pending_servers"]}
+        assert set(child2_by_id.keys()) == {"jelly-1", "emby-1"}, (
+            f"Retry 2 must surface BOTH Jellyfin and Emby as pending; got {child2['pending_servers']!r}"
+        )
+        assert child2_by_id["jelly-1"]["count"] == 4, (
+            f"Jellyfin pending count must reflect the per-server total (4 files in "
+            f"published_pending_registration); got {child2_by_id['jelly-1']!r}"
+        )
+        assert child2_by_id["emby-1"]["count"] == 1, (
+            f"Emby pending count must reflect only the pending statuses (1 skipped_not_indexed; "
+            f"the 3 published files are not pending); got {child2_by_id['emby-1']!r}"
+        )
+
+        # Retry child 3: no pending state → empty list.
+        child3 = next(a for a in attempts if a["id"] == attempt_ids[2])
+        assert child3["pending_servers"] == [], (
+            f"Retry 3 cleared everything; must have empty pending_servers; got {child3['pending_servers']!r}"
+        )
+
 
 class TestRetryNowEndpoint:
     """``POST /api/jobs/<id>/retry-now`` — operator action that fires the

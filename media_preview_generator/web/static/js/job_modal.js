@@ -886,6 +886,62 @@ const _ATTEMPT_STATUS_CLASS = {
 // the user sees green/red/amber at a glance and can spot the failure point
 // without opening every attempt. Tooltip provides the full label
 // (run ordinal + status + duration) on hover.
+// Bootstrap icon for a server type — mirrors the ``_MEDIA_SERVER_TYPE_ICONS``
+// map in app.js but is duplicated here to avoid load-order coupling
+// between the two files. Unknown types render with a generic database
+// icon so the pill still gets *some* per-server visual cue.
+//
+// Security note: values in this map are class-name literals
+// concatenated directly into the pill HTML (see
+// ``_renderPendingServerChips`` below). Do NOT extend this map by
+// reading user-controlled strings — keep it a hard-coded whitelist
+// and only the dict-lookup result reaches the DOM. Other interpolations
+// in the chip (title, aria-label) already pass through ``escapeHtml``,
+// so they're safe.
+const _PENDING_SERVER_ICON = {
+    plex:     'bi-play-btn',
+    emby:     'bi-emoji-laughing',
+    jellyfin: 'bi-cup-hot',
+};
+function _pendingServerIcon(type) {
+    return _PENDING_SERVER_ICON[(type || '').toLowerCase()] || 'bi-hdd-network';
+}
+
+// Build the per-pill chip suffix surfacing which servers were still
+// pending on a given attempt. Renders one tiny vendor icon per pending
+// server, inline after the run ordinal:
+//
+//   ↻ 2 [J]      ← Jellyfin was the holdout
+//   ↻ 3 [J] [E]  ← Jellyfin AND Emby were still pending
+//
+// Returns an empty string when ``pending_servers`` is empty or missing
+// (the originating-dispatch pill always gets an empty list from the
+// /attempts endpoint, so this collapses to nothing for run 1).
+function _renderPendingServerChips(pendingServers) {
+    if (!Array.isArray(pendingServers) || pendingServers.length === 0) return '';
+    const chips = pendingServers.map(s => {
+        const icon = _pendingServerIcon(s.server_type);
+        const name = s.server_name || s.server_type || '?';
+        const count = s.count || 0;
+        const title = escapeHtml(name + ' pending × ' + count);
+        return '<span class="ms-1 attempts-pending-chip" title="' + title + '" aria-label="' + title + '">'
+            + '<i class="bi ' + icon + '"></i></span>';
+    });
+    return chips.join('');
+}
+
+// Build the tooltip's pending-server suffix, e.g.:
+//   "· pending: JellyTest × 4"
+//   "· pending: JellyTest × 4, EmbyTest × 1"
+function _pendingServerTooltipSuffix(pendingServers) {
+    if (!Array.isArray(pendingServers) || pendingServers.length === 0) return '';
+    const parts = pendingServers.map(s => {
+        const name = s.server_name || s.server_type || '?';
+        return name + ' × ' + (s.count || 0);
+    });
+    return ' · pending: ' + parts.join(', ');
+}
+
 function _renderAttemptOption(a, max) {
     const clsBase = _ATTEMPT_STATUS_CLASS[a.status] || 'btn-outline-secondary';
     const dur = _formatAttemptDuration(a.duration_sec);
@@ -901,11 +957,13 @@ function _renderAttemptOption(a, max) {
             + ' title="Run 1 (original dispatch) is no longer available — likely cleaned by retention policy">'
             + '<i class="bi bi-slash-circle me-1"></i>Run 1 (deleted)</button>';
     }
+    const pendingChips = _renderPendingServerChips(a.pending_servers);
+    const pendingTip = _pendingServerTooltipSuffix(a.pending_servers);
     let label;
     let tooltip;
     if (a.is_originating) {
         label = '<i class="bi bi-play-fill me-1"></i>1';
-        tooltip = 'Run 1 (original dispatch) · ' + a.status + durSuffix;
+        tooltip = 'Run 1 (original dispatch) · ' + a.status + durSuffix + pendingTip;
     } else {
         // ``bi-arrow-clockwise`` glyph tells the operator this is a retry
         // firing, not the original. The ordinal is the run number
@@ -913,14 +971,14 @@ function _renderAttemptOption(a, max) {
         // ``↻ 2`` reads as "run 2, which is retry #1".
         label = '<i class="bi bi-arrow-clockwise me-1"></i>' + runOrdinal;
         tooltip = 'Run ' + runOrdinal + ' of ' + maxRuns
-            + ' (retry #' + a.retry_attempt + ') · ' + a.status + durSuffix;
+            + ' (retry #' + a.retry_attempt + ') · ' + a.status + durSuffix + pendingTip;
     }
     return '<button type="button" class="btn btn-sm ' + clsBase + ' attempts-pill"'
         + ' data-attempt-id="' + escapeHtml(a.id) + '"'
         + ' data-is-originating="' + (a.is_originating ? '1' : '0') + '"'
         + ' onclick="onAttemptSelected(this)"'
         + ' title="' + escapeHtml(tooltip) + '"'
-        + ' aria-label="' + escapeHtml(tooltip) + '">' + label + '</button>';
+        + ' aria-label="' + escapeHtml(tooltip) + '">' + label + pendingChips + '</button>';
 }
 
 // Apply the "selected" visual treatment to one pill button — fill the
@@ -1084,6 +1142,7 @@ async function _loadAttemptsDropdown(chainId) {
         }
         _renderChainStateChip(chainId);
         _renderLogsSubtitle();
+        _renderRetryReasonSubtitle(attempts);
         refreshLogs();
     } catch (error) {
         console.error('Failed to load attempts:', error);
@@ -1092,6 +1151,72 @@ async function _loadAttemptsDropdown(chainId) {
         if (chip) { chip.className = 'badge attempts-state-chip d-none'; chip.textContent = ''; }
         _logsModalAttemptId = null;
     }
+}
+
+// Build the chain-summary subtitle from the per-attempt pending_servers
+// data. Aggregates each server's appearances across attempts and picks
+// the most-frequent blocker as the "why" — that's almost always the
+// holdout (e.g. Jellyfin lagging on indexing). Hidden when:
+//   * The chain has no retries (only the originating dispatch),
+//   * No attempts carry pending_servers (chain succeeded immediately
+//     on each run, but a non-publisher condition triggered the retry —
+//     e.g. unresolved Plex paths),
+//   * The data hasn't loaded yet (defensive).
+//
+// Visual: a small italic line beneath the Attempts pill row, e.g.
+//   "Retried 3× because JellyTest was still indexing"
+//   "Retried 2× because Plex + JellyTest were still indexing"
+function _renderRetryReasonSubtitle(attempts) {
+    const el = document.getElementById('retryReasonSubtitle');
+    if (!el) return;
+    if (!Array.isArray(attempts) || attempts.length === 0) {
+        el.className = 'd-none small text-muted mt-2';
+        el.textContent = '';
+        return;
+    }
+    // Count how often each server appeared as a blocker across the
+    // retry pills only — the originating pill always has empty
+    // pending_servers, but skip it explicitly to be defensive.
+    const counts = new Map();  // server_name -> attempts-blocked count
+    let retryCount = 0;
+    for (let i = 0; i < attempts.length; i++) {
+        const a = attempts[i];
+        if (a.is_originating) continue;
+        retryCount += 1;
+        const pending = Array.isArray(a.pending_servers) ? a.pending_servers : [];
+        // Use a Set to avoid double-counting the same server within
+        // one attempt (a server with 4 pending files on attempt 2
+        // counts as 1 "blocked on attempt 2", not 4).
+        const seen = new Set();
+        for (const s of pending) {
+            const name = s.server_name || s.server_type || '';
+            if (!name || seen.has(name)) continue;
+            seen.add(name);
+            counts.set(name, (counts.get(name) || 0) + 1);
+        }
+    }
+    if (retryCount === 0 || counts.size === 0) {
+        el.className = 'd-none small text-muted mt-2';
+        el.textContent = '';
+        return;
+    }
+    // Pick the server(s) tied for most appearances. If one clearly
+    // dominates we say "because <name>"; if multiple tie we list them
+    // with " + ". Real-world chains almost always have one dominant
+    // blocker (Jellyfin's indexing latency), so the single-blocker
+    // branch is the common case.
+    const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+    const topCount = ranked[0][1];
+    const blockers = ranked.filter(([, n]) => n === topCount).map(([name]) => name);
+    const namesText = blockers.length === 1
+        ? blockers[0]
+        : blockers.slice(0, -1).join(', ') + ' + ' + blockers[blockers.length - 1];
+    const verb = blockers.length === 1 ? 'was' : 'were';
+    el.className = 'small text-muted mt-2';
+    // Plain text — no HTML — so escapeHtml isn't required. Bootstrap
+    // .small + .text-muted matches the existing modal copy tone.
+    el.textContent = 'Retried ' + retryCount + '× because '
+        + namesText + ' ' + verb + ' still indexing';
 }
 
 async function _refreshAttemptsDropdown(chainId) {
@@ -1133,6 +1258,10 @@ async function _refreshAttemptsDropdown(chainId) {
         // retry_eta might have changed since modal-open (new firing,
         // completion, exhaustion) and the poll caught it.
         _renderChainStateChip(chainId);
+        // Same poll tick: refresh the chain-summary subtitle so a new
+        // attempt that just landed updates "Retried N×…" without
+        // forcing the user to close+reopen the modal.
+        _renderRetryReasonSubtitle(attempts);
     } catch (error) {
         // Silent — user has last-good UI; next tick will retry.
         console.debug('Attempts poll-refresh failed:', error);

@@ -686,6 +686,176 @@ class TestStartJobAsyncRetryBranchPublisherStatuses:
             f"{publisher_status} retry must include the affected path; got {retry_run['webhook_paths']!r}"
         )
 
+    def test_retry_spawn_log_is_warning_with_server_attribution(self, app, tmp_path):
+        """Retry-spawn log lines must:
+          1. Carry the ``WARNING - `` level prefix (not ``INFO - ``).
+          2. Name the actual blocker server in the reason text, e.g.
+             ``WARNING - JellyTest pending × 1, retry scheduled in 30s``.
+
+        Pre-2026-05-13 this line was INFO and named only generic counts
+        — operators couldn't grep their Job log for "what's slow" and
+        the warn-color treatment was reserved for actual failures.
+        With the per-publisher pending data now flowing through the
+        retry-decision scan, the log line carries both the level
+        bump AND the server-name attribution.
+        """
+        from media_preview_generator.web.jobs import get_job_manager
+        from media_preview_generator.web.routes.job_runner import _start_job_async
+
+        run_calls: list[dict] = []
+
+        def fake_run_processing(config, selected_gpus, **kwargs):
+            run_calls.append({"job_id": kwargs.get("job_id")})
+            jm = get_job_manager()
+            target = (jm.get_job(kwargs.get("job_id")).config or {}).get("parent_job_id") or kwargs.get("job_id")
+            # Real workers feed ``record_file_result`` the FULL publisher
+            # shape (``server_id`` / ``server_name`` / ``server_type``);
+            # ``record_file_result`` then re-maps that to the SLIM
+            # ``{id, name, type, status}`` shape it persists in the JSONL.
+            # Using FULL keys here is the contract the retry-decision
+            # scan and the reason-text aggregation rely on.
+            #
+            # First TWO calls write Jellyfin-pending so the chain runs
+            # across BOTH retry-spawn branches:
+            #   - Run 1 (initial)   → first-retry-spawn branch fires
+            #     (job_runner.py: "WARNING - …, retry scheduled in Xs")
+            #   - Run 2 (retry 1)   → is_retry continuation branch fires
+            #     (job_runner.py: "WARNING - Retry N/M: …, next retry in Xs")
+            #   - Run 3 (retry 2)   → publisher resolved, chain succeeds
+            if len(run_calls) <= 2:
+                jm.record_file_result(
+                    target,
+                    "/data/tv/Show/S01E01.mkv",
+                    "generated",
+                    "",
+                    "[GPU 0]",
+                    servers=[
+                        {
+                            "server_id": "jelly-1",
+                            "server_name": "JellyTest",
+                            "server_type": "jellyfin",
+                            "status": "published_pending_registration",
+                            "message": "not indexed yet",
+                        }
+                    ],
+                )
+            else:
+                jm.record_file_result(
+                    target,
+                    "/data/tv/Show/S01E01.mkv",
+                    "generated",
+                    "",
+                    "[GPU 0]",
+                    servers=[
+                        {
+                            "server_id": "jelly-1",
+                            "server_name": "JellyTest",
+                            "server_type": "jellyfin",
+                            "status": "published",
+                            "message": "registered after 2 retries",
+                        }
+                    ],
+                )
+            return {
+                "outcome": {"generated": 1},
+                "webhook_resolution": {
+                    "unresolved_paths": [],
+                    "skipped_paths": [],
+                    "resolved_count": 1,
+                    "total_paths": 1,
+                    "path_hints": [],
+                },
+            }
+
+        with (
+            app.app_context(),
+            patch(
+                "media_preview_generator.jobs.orchestrator.run_processing",
+                side_effect=fake_run_processing,
+            ),
+            patch(
+                "media_preview_generator.plex_client.trigger_plex_partial_scan",
+                return_value=[],
+            ),
+            patch(
+                "media_preview_generator.processing.retry_queue.BACKOFF_SCHEDULE",
+                [1, 1, 1, 1, 1],
+            ),
+        ):
+            jm = get_job_manager()
+            job = jm.create_job(library_name="The Show", config={"source": "sonarr"})
+            _start_job_async(
+                job.id,
+                config_overrides={
+                    "webhook_paths": ["/data/tv/Show/S01E01.mkv"],
+                    "webhook_retry_count": 3,
+                    "webhook_retry_delay": 30,
+                },
+            )
+
+            parent_logs = jm.get_logs(job.id) or []
+            # The is_retry continuation log line lives on the RETRY
+            # CHILD's log file — each retry Job has its own log, and
+            # ``add_log(job_id, ...)`` is keyed on the LOCAL job_id
+            # (the child's UUID when running inside a retry child's
+            # run_job thread). Aggregate logs across all retry
+            # children of this chain so the assertion can target the
+            # continuation branch.
+            retry_children = [
+                j
+                for j in jm.get_all_jobs()
+                if (j.config or {}).get("is_retry") is True and (j.config or {}).get("parent_job_id") == job.id
+            ]
+            child_logs: list[str] = []
+            for child in retry_children:
+                child_logs.extend(jm.get_logs(child.id) or [])
+
+        # Three run_processing calls expected: initial + 2 retries.
+        # Drives both the ``not is_retry`` and the
+        # ``is_retry and retry_attempt < effective_max`` log-emission
+        # branches.
+        assert len(run_calls) == 3, f"Expected 3 runs (initial + 2 retries); got {len(run_calls)}: {run_calls!r}"
+
+        # First-retry-spawn branch (``not is_retry`` block in
+        # job_runner.py). Lands on the PARENT's log because the parent
+        # is the job whose initial dispatch fired the first retry.
+        # Format: "WARNING - {reason}, retry scheduled in Xs".
+        first_spawn = [line for line in parent_logs if "WARNING - " in line and "retry scheduled" in line]
+        assert first_spawn, (
+            f"Expected at least one 'WARNING - … retry scheduled' line on the PARENT job's log "
+            f"from the FIRST retry spawn; got parent_logs={parent_logs!r}"
+        )
+        assert any("JellyTest pending" in line for line in first_spawn), (
+            f"First-retry-spawn log must name the blocker server; matching warn lines: {first_spawn!r}"
+        )
+
+        # is_retry continuation branch (in-chain spawn). Lands on the
+        # RETRY CHILD's log because the spawning thread is the child's
+        # run_job. Format: "WARNING - Retry N/M: {reason}, next retry
+        # in Xs". A regression that bumps only the FIRST spawn site and
+        # leaves the continuation site at INFO passes the assertions
+        # above but fails here.
+        continuation = [line for line in child_logs if "WARNING - Retry " in line and "next retry in" in line]
+        assert continuation, (
+            f"Expected at least one 'WARNING - Retry N/M: …, next retry in …' line on a retry-child "
+            f"log from the continuation branch; got child_logs={child_logs!r}"
+        )
+        assert any("JellyTest pending" in line for line in continuation), (
+            f"Continuation-retry log must name the blocker server; matching warn lines: {continuation!r}"
+        )
+
+        # Defensive: no surviving INFO-level retry log lines from
+        # either spawn site (parent OR child logs). Catches partial
+        # regressions where only one of the two literal
+        # "INFO - " → "WARNING - " bumps gets reverted.
+        all_logs = parent_logs + child_logs
+        info_retry_lines = [
+            line for line in all_logs if "INFO - " in line and ("retry scheduled" in line or "next retry in" in line)
+        ]
+        assert not info_retry_lines, (
+            f"No INFO-level retry log lines should remain from either spawn site; found: {info_retry_lines!r}"
+        )
+
     def test_scheduled_scan_without_webhook_retry_count_still_retries(self, app, tmp_path):
         """Scheduled scans, manual reruns, and recently-added scans
         don't inject ``webhook_retry_count`` into their job config

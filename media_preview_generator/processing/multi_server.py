@@ -576,7 +576,19 @@ def _resolve_item_id_for(server: MediaServer, canonical_path: str, hint: str | N
     if result:
         logger.info("Resolved '{}' on {} → item {} ({:.1f}s)", basename, server.name, result, elapsed)
     else:
-        logger.info("'{}' not found on {} ({:.1f}s)", basename, server.name, elapsed)
+        # WARNING (not INFO): the server didn't find the file in its
+        # library yet. Operator-visible because the typical cause is a
+        # slow library scan on the destination server — the per-job
+        # retry chain catches this and re-attempts, but surfacing the
+        # condition at WARNING in both the Job log viewer and
+        # container logs makes it grep-able for "what's blocking this
+        # webhook batch."
+        logger.warning(
+            "'{}' not found on {} ({:.1f}s) — indexing may be delayed",
+            basename,
+            server.name,
+            elapsed,
+        )
     return result
 
 
