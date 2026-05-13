@@ -126,11 +126,18 @@
                          (the route always worked; nothing in the UI previously linked to it
                          after first-run). -->
                     <li class="nav-item dropdown">
-                        <a class="nav-link dropdown-toggle {% if request.endpoint in ('main.logs_page','main.bif_viewer') %}active{% endif %}"
-                           href="#" id="navToolsDropdown" role="button"
-                           data-bs-toggle="dropdown" aria-expanded="false">
+                        {# <button> not <a href="#"> — the latter races with
+                           iOS-Safari's synthesized click and momentarily
+                           sets location.hash = "" on tap, which fires the
+                           hashchange listener below and clears any deep-link
+                           highlight on the Automation dropdown. Same pattern
+                           as the Help and Notification toggles further down. #}
+                        <button type="button"
+                                class="nav-link btn btn-link dropdown-toggle d-flex align-items-center {% if request.endpoint in ('main.logs_page','main.bif_viewer') %}active{% endif %}"
+                                id="navToolsDropdown"
+                                data-bs-toggle="dropdown" aria-expanded="false">
                             <i class="bi bi-wrench-adjustable me-1"></i>Tools
-                        </a>
+                        </button>
                         <ul class="dropdown-menu" aria-labelledby="navToolsDropdown">
                             <li>
                                 <a class="dropdown-item {% if request.endpoint == 'main.logs_page' %}active{% endif %}" href="{{ url_for('main.logs_page') }}">
@@ -438,7 +445,10 @@
          dropdown <a>. Without this the Automation parent lights up but
          the dropdown items themselves give no feedback. -->
     <script>
-        (function () {
+        // Wrapped in DOMContentLoaded so the dropdown lookup survives if
+        // this <script> ever moves into <head>. The script runs after the
+        // navbar in <body> today, but future-proofing is cheap.
+        document.addEventListener('DOMContentLoaded', function () {
             var dropdown = document.querySelector('ul[aria-labelledby="navAutomationDropdown"]');
             if (!dropdown) return;
             function syncActiveAnchor() {
@@ -449,7 +459,7 @@
             }
             syncActiveAnchor();
             window.addEventListener('hashchange', syncActiveAnchor);
-        })();
+        });
     </script>
 
     <!-- Theme toggle — flips data-bs-theme on <html> and persists to

@@ -23,12 +23,13 @@
         </div>
     </div>
 
-    <p class="small text-muted mt-3 mb-0">
-        Need a webhook URL? Each server card above exposes its own
+    <div class="alert alert-light border mt-4 mb-0 small">
+        <i class="bi bi-info-circle me-2"></i>
+        <strong>Need a webhook URL?</strong> Each server card above exposes its own
         <code>?server_id=…</code> URL inside the Edit modal &rarr; Webhook tab.
         For ARR-app and custom webhooks (Sonarr / Radarr / Sportarr / Tdarr) see
-        <a href="/automation#section-webhooks-overview">Automation &rarr; Triggers</a>.
-    </p>
+        <a href="{{ url_for('main.automation_page') }}#section-webhooks-overview">Automation &rarr; Triggers</a>.
+    </div>
 </div>
 
 <!-- Add Server Modal — shared partial, also included from /setup so the
@@ -161,7 +162,7 @@
                                 <div class="invalid-feedback small"></div>
                                 <div class="valid-feedback small">Path exists</div>
                             </div>
-                            <div class="form-text">Where this Plex server's preview bundles will be written. Mirrors the <a href="/setup">Setup wizard</a> &rarr; Step 3 field.</div>
+                            <div class="form-text">Where this Plex server's preview bundles will be written. Mirrors the <a href="{{ url_for('main.setup_wizard') }}">Setup wizard</a> &rarr; Step 3 field.</div>
                         </div>
 
                         <details class="mb-3">
