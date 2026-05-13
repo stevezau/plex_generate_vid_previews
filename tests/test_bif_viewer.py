@@ -823,6 +823,224 @@ class TestMultiServerBifSearch:
         assert results[0]["preview_exists"] is False
         assert "note" in results[0] and "analyzed" in results[0]["note"].lower()
 
+    def test_plex_multi_version_yields_one_row_per_mediapart(self, client, app, tmp_path):
+        """Issue #231 (RedRubble, 2026-05-11): items with multiple versions
+        (4K + 1080p of the same movie) collapsed to a single Preview Inspector
+        row because ``_resolve_bif_for_item`` ``break``ed after the first
+        MediaPart. Now each MediaPart becomes its own row with its own
+        ``preview_path`` and ``media_file``.
+
+        Boundary-call assertion (.claude/rules/testing.md): we verify
+        per-row contracts (distinct preview_path, distinct media_file)
+        rather than just ``len(results) == 2`` — the count alone wouldn't
+        catch a regression that returned 2 rows with the same path.
+        """
+        from media_preview_generator.servers.base import MediaItem
+        from media_preview_generator.servers.plex import PlexServer
+
+        hash_4k = "aaaaaaaaa1234567"
+        hash_1080 = "bbbbbbbbb1234567"
+        bif_4k_dir = tmp_path / "plex" / "Media" / "localhost" / "a" / "aaaaaaaa1234567.bundle" / "Contents" / "Indexes"
+        bif_1080_dir = (
+            tmp_path / "plex" / "Media" / "localhost" / "b" / "bbbbbbbb1234567.bundle" / "Contents" / "Indexes"
+        )
+        bif_4k_dir.mkdir(parents=True)
+        bif_1080_dir.mkdir(parents=True)
+        bif_4k = _write_test_bif(str(bif_4k_dir / "index-sd.bif"))
+        bif_1080 = _write_test_bif(str(bif_1080_dir / "index-sd.bif"))
+
+        self._configure_plex_server(app, str(tmp_path / "plex"))
+
+        item = MediaItem(
+            id="42",
+            library_id="1",
+            title="Avengers Infinity War",
+            remote_path="/data/movies4k/Avengers (2018)/Avengers.2160p.mkv",
+        )
+
+        tree_xml = (
+            f'<?xml version="1.0"?><MediaContainer>'
+            f'<MediaPart hash="{hash_4k}" file="/data/movies4k/Avengers (2018)/Avengers.2160p.mkv"/>'
+            f'<MediaPart hash="{hash_1080}" file="/data/movies1080p/Avengers (2018)/Avengers.1080p.mkv"/>'
+            f"</MediaContainer>"
+        ).encode()
+
+        def fake_get(url, **_kwargs):
+            assert "/library/metadata/42/tree" in url
+            resp = MagicMock(content=tree_xml)
+            resp.raise_for_status = MagicMock()
+            return resp
+
+        with (
+            patch.object(PlexServer, "search_items", return_value=[item]),
+            patch("requests.get", side_effect=fake_get),
+        ):
+            resp = client.get("/api/bif/servers/plex-1/search?q=Avengers", headers=_api_headers())
+
+        assert resp.status_code == 200, resp.get_data(as_text=True)
+        results = resp.get_json()["results"]
+        assert len(results) == 2, f"Expected one row per MediaPart, got: {results}"
+
+        # Both rows share the same title and item_id — they're versions of
+        # the same Plex item.
+        assert {r["title"] for r in results} == {"Avengers Infinity War"}
+        assert {r["item_id"] for r in results} == {"42"}
+
+        # But preview_path and media_file are per-part.
+        previews = {r["preview_path"] for r in results}
+        media_files = {r["media_file"] for r in results}
+        assert previews == {bif_4k, bif_1080}, f"Each version must have its own BIF path. Got: {previews}"
+        assert media_files == {
+            "/data/movies4k/Avengers (2018)/Avengers.2160p.mkv",
+            "/data/movies1080p/Avengers (2018)/Avengers.1080p.mkv",
+        }, f"Each version's media_file must reflect its own MediaPart.file. Got: {media_files}"
+        for row in results:
+            assert row["preview_kind"] == "bif"
+            assert row["preview_exists"] is True
+
+    def test_plex_multi_version_applies_per_part_path_mapping(self, client, app, tmp_path):
+        """Per-part path mapping: a 4K mount and a 1080p mount typically
+        live under different ``remote_prefix`` → ``local_prefix`` pairs.
+        The Preview Inspector row's ``media_file`` must reflect the
+        mapping for THAT part, not for the item-level remote_path.
+
+        Without this, multi-mount setups would show the correct BIF but
+        the wrong file path on one of the rows — confusing for users
+        comparing version sizes / encodes.
+        """
+        from media_preview_generator.servers.base import MediaItem
+        from media_preview_generator.servers.plex import PlexServer
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        hash_a = "aaaaaaaaa1234567"
+        hash_b = "bbbbbbbbb1234567"
+        bif_a_dir = tmp_path / "plex" / "Media" / "localhost" / "a" / "aaaaaaaa1234567.bundle" / "Contents" / "Indexes"
+        bif_b_dir = tmp_path / "plex" / "Media" / "localhost" / "b" / "bbbbbbbb1234567.bundle" / "Contents" / "Indexes"
+        bif_a_dir.mkdir(parents=True)
+        bif_b_dir.mkdir(parents=True)
+        _write_test_bif(str(bif_a_dir / "index-sd.bif"))
+        _write_test_bif(str(bif_b_dir / "index-sd.bif"))
+
+        with app.app_context():
+            sm = get_settings_manager()
+            sm.set("plex_config_folder", str(tmp_path / "plex"))
+            sm.set(
+                "media_servers",
+                [
+                    {
+                        "id": "plex-1",
+                        "type": "plex",
+                        "name": "PlexLocal",
+                        "enabled": True,
+                        "url": "http://plex.test:32400",
+                        "auth": {"token": "tok"},
+                        "verify_ssl": False,
+                        "libraries": [],
+                        "path_mappings": [
+                            {"remote_prefix": "/remote/4k", "local_prefix": "/local/4k"},
+                            {"remote_prefix": "/remote/1080p", "local_prefix": "/local/1080p"},
+                        ],
+                    }
+                ],
+            )
+
+        item = MediaItem(
+            id="42",
+            library_id="1",
+            title="Dune",
+            remote_path="/remote/4k/Dune/Dune.2160p.mkv",
+        )
+
+        tree_xml = (
+            f'<?xml version="1.0"?><MediaContainer>'
+            f'<MediaPart hash="{hash_a}" file="/remote/4k/Dune/Dune.2160p.mkv"/>'
+            f'<MediaPart hash="{hash_b}" file="/remote/1080p/Dune/Dune.1080p.mkv"/>'
+            f"</MediaContainer>"
+        ).encode()
+
+        def fake_get(url, **_kwargs):
+            resp = MagicMock(content=tree_xml)
+            resp.raise_for_status = MagicMock()
+            return resp
+
+        with (
+            patch.object(PlexServer, "search_items", return_value=[item]),
+            patch("requests.get", side_effect=fake_get),
+        ):
+            resp = client.get("/api/bif/servers/plex-1/search?q=Dune", headers=_api_headers())
+
+        assert resp.status_code == 200, resp.get_data(as_text=True)
+        results = resp.get_json()["results"]
+        assert len(results) == 2
+
+        media_files = {r["media_file"] for r in results}
+        assert media_files == {
+            "/local/4k/Dune/Dune.2160p.mkv",
+            "/local/1080p/Dune/Dune.1080p.mkv",
+        }, f"Per-part mapping not applied. Got: {media_files}"
+
+    def test_plex_multi_version_part_without_file_attr_yields_empty_media_file(self, client, app, tmp_path):
+        """A MediaPart with a valid ``hash`` but no ``file=`` attribute
+        must yield an empty ``media_file`` for THAT row, not the
+        item-level path. Pre-fix the no-file row would borrow another
+        part's ``canonical_local`` — on a 2-part response this means two
+        rows with the same ``media_file`` pointing at different BIFs,
+        which is the inverse of the bug #231 fix and would silently
+        mislead any user comparing versions.
+        """
+        from media_preview_generator.servers.base import MediaItem
+        from media_preview_generator.servers.plex import PlexServer
+
+        hash_a = "aaaaaaaaa1234567"
+        hash_b = "bbbbbbbbb1234567"
+        bif_a_dir = tmp_path / "plex" / "Media" / "localhost" / "a" / "aaaaaaaa1234567.bundle" / "Contents" / "Indexes"
+        bif_b_dir = tmp_path / "plex" / "Media" / "localhost" / "b" / "bbbbbbbb1234567.bundle" / "Contents" / "Indexes"
+        bif_a_dir.mkdir(parents=True)
+        bif_b_dir.mkdir(parents=True)
+        bif_a = _write_test_bif(str(bif_a_dir / "index-sd.bif"))
+        bif_b = _write_test_bif(str(bif_b_dir / "index-sd.bif"))
+
+        self._configure_plex_server(app, str(tmp_path / "plex"))
+
+        item = MediaItem(
+            id="42",
+            library_id="1",
+            title="Mixed",
+            remote_path="/data/movies/Mixed.mkv",
+        )
+
+        # Second MediaPart has hash but no file= attribute.
+        tree_xml = (
+            f'<?xml version="1.0"?><MediaContainer>'
+            f'<MediaPart hash="{hash_a}" file="/data/movies/Mixed.2160p.mkv"/>'
+            f'<MediaPart hash="{hash_b}"/>'
+            f"</MediaContainer>"
+        ).encode()
+
+        def fake_get(url, **_kwargs):
+            resp = MagicMock(content=tree_xml)
+            resp.raise_for_status = MagicMock()
+            return resp
+
+        with (
+            patch.object(PlexServer, "search_items", return_value=[item]),
+            patch("requests.get", side_effect=fake_get),
+        ):
+            resp = client.get("/api/bif/servers/plex-1/search?q=Mixed", headers=_api_headers())
+
+        assert resp.status_code == 200, resp.get_data(as_text=True)
+        results = resp.get_json()["results"]
+        assert len(results) == 2
+
+        # Pair rows by their preview_path so we can assert per-part contracts.
+        by_bif = {r["preview_path"]: r for r in results}
+        assert set(by_bif) == {bif_a, bif_b}
+        assert by_bif[bif_a]["media_file"] == "/data/movies/Mixed.2160p.mkv"
+        assert by_bif[bif_b]["media_file"] == "", (
+            "MediaPart without file= must yield empty media_file, "
+            f"not the item-level path. Got: {by_bif[bif_b]['media_file']!r}"
+        )
+
 
 class TestBifSearchShowHubUsesRatingKey:
     """Hindsight for commit ``0a74c5b`` (use ``ratingKey`` not ``key`` for

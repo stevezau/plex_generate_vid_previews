@@ -202,7 +202,7 @@ def _resolve_bif_for_item(
         they're visible when troubleshooting.
 
         Critical for the per-search-result loop in
-        ``_resolve_preview_for_item``: a single malformed ``/tree``
+        ``_resolve_previews_for_item``: a single malformed ``/tree``
         response must not poison the whole search (~15 invocations per
         search). Pre-fix only ``RequestException`` was caught, so a
         single ``ET.ParseError`` or ``OSError`` would propagate out
@@ -249,7 +249,7 @@ def _resolve_bif_for_item(
     except ET.ParseError as e:
         # Malformed XML from Plex — observed in the wild as truncated /tree
         # bodies under heavy library-scan load. Without this catch the
-        # per-item loop in _resolve_preview_for_item would 500 the whole
+        # per-item loop in _resolve_previews_for_item would 500 the whole
         # search instead of degrading just the one offending row.
         logger.debug("BIF viewer: Plex /tree returned malformed XML for {}: {}", item_key, e)
     except OSError as e:
@@ -259,6 +259,76 @@ def _resolve_bif_for_item(
         logger.debug("BIF viewer: filesystem error resolving BIF for {}: {}", item_key, e)
 
     return bif_path, bif_exists, bif_info
+
+
+def _resolve_bif_for_item_all_parts(
+    item_key: str,
+    plex_url: str,
+    plex_token: str,
+    plex_config: str,
+    verify_ssl: bool,
+    http_mod,
+) -> list[dict]:
+    """Resolve every MediaPart's BIF for a Plex item (multi-version aware).
+
+    Same fetch-and-parse contract as ``_resolve_bif_for_item`` but emits
+    one entry per ``MediaPart`` instead of breaking after the first.
+    Each entry is a dict with ``part_file`` (the file path Plex reports
+    for that part, used to drive per-version path mapping in the caller),
+    ``bif_path``, ``bif_exists`` and optional ``file_size`` / ``created_at``.
+
+    Returns ``[]`` on any caught failure (network, ParseError, OSError),
+    same swallow-and-degrade behaviour as the single-part helper — see
+    its docstring for why. The multi-version reporter on issue #231 hit
+    the "only one row" symptom because the original helper used ``break``;
+    this function does not, and Preview Inspector fans the results into
+    one search row per part.
+    """
+    parts: list[dict] = []
+
+    try:
+        tree_resp = http_mod.get(
+            f"{plex_url.rstrip('/')}{item_key}/tree",
+            headers={"X-Plex-Token": plex_token, "Accept": "application/xml"},
+            timeout=10,
+            verify=verify_ssl,
+        )
+        tree_resp.raise_for_status()
+        # XML content comes from the user's own Plex server authenticated with
+        # their own token — trusted origin, not untrusted upload.
+        tree_data = ET.fromstring(tree_resp.content)  # nosec B314
+
+        for media_part in tree_data.findall(".//MediaPart"):
+            bundle_hash = media_part.attrib.get("hash", "")
+            if not bundle_hash or len(bundle_hash) < 2:
+                continue
+            part_file = media_part.attrib.get("file", "")
+            bif_path = _bif_path_for_hash(bundle_hash, plex_config)
+            try:
+                bif_exists = os.path.isfile(bif_path)
+            except OSError:
+                bif_exists = False
+            entry: dict = {
+                "part_file": part_file,
+                "bif_path": bif_path,
+                "bif_exists": bif_exists,
+            }
+            if bif_exists:
+                try:
+                    stat = os.stat(bif_path)
+                    entry["file_size"] = stat.st_size
+                    entry["created_at"] = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()
+                except OSError:
+                    pass
+            parts.append(entry)
+    except http_mod.RequestException as e:
+        logger.debug("BIF viewer: Failed to get tree for {}: {}", item_key, e)
+    except ET.ParseError as e:
+        logger.debug("BIF viewer: Plex /tree returned malformed XML for {}: {}", item_key, e)
+    except OSError as e:
+        logger.debug("BIF viewer: filesystem error resolving BIF for {}: {}", item_key, e)
+
+    return parts
 
 
 def _build_display_title(item: dict) -> str:
@@ -724,7 +794,10 @@ def bif_servers_search(server_id: str):
                 break
             if _is_under_disabled_library(item):
                 continue
-            results.append(_resolve_preview_for_item(item, server_cfg))
+            for row in _resolve_previews_for_item(item, server_cfg):
+                if len(results) >= _MAX_SEARCH_RESULTS:
+                    break
+                results.append(row)
     except Exception as exc:
         logger.warning(
             "BIF Viewer: search on media server {!r} failed ({}: {}). "
@@ -746,8 +819,17 @@ def bif_servers_search(server_id: str):
     )
 
 
-def _resolve_preview_for_item(item, server_cfg) -> dict:
-    """Compute the on-disk preview path + existence flag for a media item."""
+def _resolve_previews_for_item(item, server_cfg) -> list[dict]:
+    """Compute the on-disk preview rows for a media item.
+
+    Returns a list because a single Plex item can have multiple MediaParts
+    (e.g. a 4K + 1080p version of the same movie), each with its own
+    bundle hash, BIF path and file. Emby / Jellyfin / unknown branches
+    return a one-element list so the caller can iterate uniformly. See
+    issue #231: pre-fix Preview Inspector collapsed all versions into the
+    single "first MediaPart" row, which made multi-version libraries
+    appear broken even when both BIFs existed on disk.
+    """
     from ...output.emby_sidecar import EmbyBifAdapter
     from ...output.jellyfin_trickplay import JellyfinTrickplayAdapter
     from ...servers.base import ServerType
@@ -780,22 +862,17 @@ def _resolve_preview_for_item(item, server_cfg) -> dict:
 
     if server_cfg.type is ServerType.PLEX:
         # Plex's bundle-hash → BIF path lookup needs a per-item /tree call.
-        # Pre-fix this returned preview_path="" with a "click to load" note
-        # and the frontend tried to send the .mkv media path to /bif/info,
-        # which only validates .bif paths — every Plex click ended in
-        # "Invalid or missing BIF file path". Now we resolve eagerly so the
-        # viewer's contract (preview_path is the BIF, not the media) holds
-        # for Plex too. Cost: one /tree call per result (~15/search).
+        # Each MediaPart in the response is a distinct version (4K, 1080p,
+        # etc.) with its own hash and file. Fanning out into one row per
+        # part is what fixes the "only shows one version" half of #231.
         import requests as _req
 
         plex_url = server_cfg.url or ""
         plex_token = str((server_cfg.auth or {}).get("token") or "")
         plex_config = _get_plex_config_folder()
-        bif_path = ""
-        bif_exists = False
-        bif_info: dict = {}
+        parts: list[dict] = []
         try:
-            bif_path, bif_exists, bif_info = _resolve_bif_for_item(
+            parts = _resolve_bif_for_item_all_parts(
                 f"/library/metadata/{item.id}",
                 plex_url,
                 plex_token,
@@ -804,24 +881,53 @@ def _resolve_preview_for_item(item, server_cfg) -> dict:
                 _req,
             )
         except Exception as exc:
-            # _resolve_bif_for_item already swallows the documented failure
-            # modes (RequestException, ParseError, OSError); this catch is
-            # the last-resort guard that prevents one row's unknown-unknown
-            # from breaking the other 14 search results. Pre-fix the loop
-            # had no defence and a single bad row poisoned the whole search.
+            # The helper swallows the documented failure modes; this is
+            # the last-resort guard so one row's unknown-unknown can't
+            # poison the other ~14 search results.
             logger.debug(
                 "BIF viewer: unexpected error resolving Plex BIF for item {}: {}",
                 item.id,
                 exc,
             )
-        base.update(
-            preview_kind="bif",
-            preview_path=bif_path,
-            preview_exists=bif_exists,
-            **bif_info,
-        )
-        if not bif_path:
-            base["note"] = "Plex hasn't analyzed this item yet — no bundle hash returned."
+
+        if not parts:
+            row = dict(base)
+            row.update(
+                preview_kind="bif",
+                preview_path="",
+                preview_exists=False,
+                note="Plex hasn't analyzed this item yet — no bundle hash returned.",
+            )
+            return [row]
+
+        rows: list[dict] = []
+        mappings = list(server_cfg.path_mappings or [])
+        for part in parts:
+            part_file = part.get("part_file") or ""
+            # Per-part path mapping: each MediaPart has its own remote
+            # path (different mount point for 4K vs 1080p, typically),
+            # so the mapping must apply per-part. When a part has no
+            # file= attribute we emit an empty media_file rather than
+            # falling back to the item-level path — otherwise on a
+            # multi-part response, the no-file part's row would display
+            # a different part's media path while pointing at its own
+            # BIF, which is the inverse of the bug this fix targets.
+            if part_file:
+                local = apply_path_mappings(part_file, mappings)
+                row_media = local[0] if local else part_file
+            else:
+                row_media = ""
+            row = dict(base)
+            row["media_file"] = row_media
+            row["preview_kind"] = "bif"
+            row["preview_path"] = part.get("bif_path") or ""
+            row["preview_exists"] = bool(part.get("bif_exists"))
+            if "file_size" in part:
+                row["file_size"] = part["file_size"]
+            if "created_at" in part:
+                row["created_at"] = part["created_at"]
+            rows.append(row)
+        return rows
     elif server_cfg.type is ServerType.EMBY:
         bif = EmbyBifAdapter.sidecar_path(canonical_local, width=width, frame_interval=interval)
         base.update(
@@ -829,6 +935,7 @@ def _resolve_preview_for_item(item, server_cfg) -> dict:
             preview_path=str(bif),
             preview_exists=bif.exists(),
         )
+        return [base]
     elif server_cfg.type is ServerType.JELLYFIN:
         # Sheet directory is the on-disk root for Jellyfin's saved-with-media
         # layout (D38). The viewer sends this path back to /trickplay/info,
@@ -840,10 +947,10 @@ def _resolve_preview_for_item(item, server_cfg) -> dict:
             preview_path=str(sheet_dir),
             preview_exists=sheet_dir.is_dir() and any(sheet_dir.glob("*.jpg")),
         )
+        return [base]
     else:
         base.update(preview_kind="unknown", preview_path="", preview_exists=False)
-
-    return base
+        return [base]
 
 
 @api.route("/bif/trickplay/info")
