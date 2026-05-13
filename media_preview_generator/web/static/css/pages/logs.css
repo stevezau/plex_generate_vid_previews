@@ -81,3 +81,52 @@ html[data-bs-theme="light"] #followPill { box-shadow: 0 2px 8px rgba(0, 0, 0, 0.
     flex-direction: column;
     gap: 4px;
 }
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Light-mode log viewer — force a dark terminal surface regardless of
+ * theme. The log colors (debug grey, info teal, warning amber, error
+ * red) were tuned for a dark canvas and fail WCAG AA against the
+ * light bg-body-tertiary. Conventional editor pattern: terminal panels
+ * stay dark in light themes too (VS Code, JetBrains, GitHub).
+ *
+ * The .log-toolbar above the container gets a matching dark surface so
+ * the filter pills + search + status badges sit on the same panel as
+ * the log lines below — looks like one component instead of two.
+ * ────────────────────────────────────────────────────────────────────── */
+
+html[data-bs-theme="light"] #logContainer {
+    background-color: #0f172a !important;  /* slate-900 — terminal panel */
+    color: #e2e8f0;                         /* slate-200 — readable on slate-900 */
+}
+html[data-bs-theme="light"] #logContainer .log-line:hover {
+    background-color: rgba(255, 255, 255, 0.05);
+}
+html[data-bs-theme="light"] .log-line .log-ts,
+html[data-bs-theme="light"] .log-line .log-mod {
+    color: #94a3b8;  /* slate-400 — secondary metadata */
+}
+
+html[data-bs-theme="light"] .log-toolbar {
+    background-color: #1e293b !important;  /* slate-800 — slightly lifted from container */
+    border-bottom-color: rgba(148, 163, 184, 0.2);
+}
+html[data-bs-theme="light"] .log-toolbar .form-control,
+html[data-bs-theme="light"] .log-toolbar .input-group-text {
+    background-color: #0f172a;
+    border-color: rgba(148, 163, 184, 0.3);
+    color: #e2e8f0;
+}
+html[data-bs-theme="light"] .log-toolbar .form-control::placeholder {
+    color: #64748b;
+}
+html[data-bs-theme="light"] .log-toolbar .btn-outline-secondary {
+    color: #cbd5e1;
+    border-color: rgba(148, 163, 184, 0.3);
+}
+html[data-bs-theme="light"] .log-toolbar .btn-outline-secondary:hover {
+    background-color: rgba(148, 163, 184, 0.15);
+    color: #fff;
+}
+html[data-bs-theme="light"] .log-toolbar .text-muted {
+    color: #94a3b8 !important;
+}

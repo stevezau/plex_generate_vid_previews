@@ -38,3 +38,15 @@ html[data-bs-theme="light"] .result-item:hover { background-color: rgba(0, 0, 0,
 .grid-thumb.active { border-color: #0d6efd; }
 #gridContainer { max-height: 400px; overflow-y: auto; }
 .ts-label { font-variant-numeric: tabular-nums; }
+
+/* Preview Inspector header — overrides the default .page-header
+ * (flex + space-between, controls flush-left) so the title + subtitle
+ * + search card all sit centered on this diagnostic page. Setup
+ * wizard uses the same focused-centered treatment. */
+.preview-inspector-header {
+    justify-content: center;
+}
+.preview-inspector-header .page-title {
+    /* Inline icon + text — keep the gap but center the whole heading. */
+    justify-content: center;
+}

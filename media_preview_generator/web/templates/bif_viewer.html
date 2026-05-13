@@ -7,19 +7,23 @@
 {% endblock %}
 
 {% block content %}
-<header class="page-header">
-    <div>
+<!-- Page header + search bar both centered. Preview Inspector is a
+     diagnostic search tool — unlike Settings / Servers / Automation
+     which are configuration surfaces that lay out controls flush-left,
+     this page presents a single focused search affordance with the
+     results gallery below. Centering everything (header + search card +
+     results) gives the focused "tool" feel matching the Setup wizard's
+     centered layout rather than the configuration pages. The .page-header
+     base style uses flex+space-between; we override on this page so the
+     centered text-block is the sole flex child. -->
+<header class="page-header preview-inspector-header">
+    <div class="w-100 text-center">
         <h1 class="page-title"><i class="bi bi-film me-2"></i>Preview Inspector</h1>
         <p class="page-subtitle mb-0">Search a media server by title, or paste a preview file path directly.</p>
     </div>
 </header>
 
-<!-- Search bar — left-aligned to match the page-header above and every
-     other configuration surface in the app (Settings / Servers / Automation
-     all use the same .page-header + full-width content layout). Previously
-     this row used justify-content-center, which left the title visually
-     stranded against centered content below it. -->
-<div class="row mb-4">
+<div class="row justify-content-center mb-4">
     <div class="col-lg-8">
         <div class="card">
             <div class="card-body py-3">
