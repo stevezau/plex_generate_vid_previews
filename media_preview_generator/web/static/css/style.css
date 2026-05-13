@@ -2069,3 +2069,44 @@ html[data-bs-theme="light"] .form-control:focus,
 html[data-bs-theme="light"] .form-select:focus {
     border-color: #94a3b8;
 }
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Senior-design polish pass round 2 — items found in the 2026-05-14
+ * full walk-through across all 8 pages × dark/light × desktop/mobile.
+ *
+ * Targets two cross-cutting palette inconsistencies that survived the
+ * round-1 polish because they ship from Bootstrap defaults:
+ *
+ *   * .form-switch checked-state defaults to a hardcoded blue SVG in
+ *     Bootstrap and ignored our --bs-primary slate override — the
+ *     "Enabled" toggles on /servers + /settings rendered a clashing
+ *     blue against the slate-on-orange light palette.
+ *   * .form-range thumb + track use --bs-primary (slate-600 in light),
+ *     leaving sliders looking grey rather than picking up the brand
+ *     accent the rest of the active treatment uses.
+ *
+ * Both retuned to brand orange in light mode. Dark mode untouched —
+ * the existing dark-mode treatment of these controls is fine against
+ * the navy canvas.
+ * ────────────────────────────────────────────────────────────────────── */
+
+html[data-bs-theme="light"] .form-check-input:checked {
+    background-color: var(--plex-orange);
+    border-color: var(--plex-orange);
+}
+html[data-bs-theme="light"] .form-check-input:checked:focus {
+    box-shadow: 0 0 0 0.25rem rgba(229, 160, 13, 0.25);
+}
+
+html[data-bs-theme="light"] .form-range::-webkit-slider-thumb {
+    background-color: var(--plex-orange);
+}
+html[data-bs-theme="light"] .form-range::-moz-range-thumb {
+    background-color: var(--plex-orange);
+}
+html[data-bs-theme="light"] .form-range::-webkit-slider-thumb:active {
+    background-color: #c98a0b;
+}
+html[data-bs-theme="light"] .form-range::-moz-range-thumb:active {
+    background-color: #c98a0b;
+}
