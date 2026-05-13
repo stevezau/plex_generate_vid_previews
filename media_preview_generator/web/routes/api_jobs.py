@@ -380,9 +380,26 @@ def get_chain_attempts(chain_id):
     if chain is None or not chain.config.get("is_retry_chain"):
         return jsonify({"error": "Not a retry-chain job"}), 404
 
-    children = [
-        j for j in job_manager.get_all_jobs() if j.config.get("is_retry") and j.config.get("parent_job_id") == chain_id
-    ]
+    # Post-2026-05-13 retry children: ``is_retry=True`` + ``parent_job_id``.
+    # Legacy children (created by the deleted per-file retry queue):
+    # ``is_retry_attempt=True`` + ``parent_chain_id``. Walk both so the
+    # Attempts modal still works for chains created before the refactor.
+    # Dedup by Job ID guards against a row that happens to carry both
+    # flag pairs (migration path overlap).
+    def _is_child(j):
+        cfg = j.config or {}
+        if cfg.get("is_retry") and cfg.get("parent_job_id") == chain_id:
+            return True
+        if cfg.get("is_retry_attempt") and cfg.get("parent_chain_id") == chain_id:
+            return True
+        return False
+
+    seen_child_ids: set[str] = set()
+    children = []
+    for j in job_manager.get_all_jobs():
+        if _is_child(j) and j.id not in seen_child_ids:
+            seen_child_ids.add(j.id)
+            children.append(j)
     children.sort(key=lambda j: (j.config.get("retry_attempt", 0), j.created_at or ""))
 
     def _duration_sec(j) -> float | None:

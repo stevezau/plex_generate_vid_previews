@@ -382,6 +382,62 @@ class TestRetryNowEndpoint:
                 "Reader must return False (not raise) when the Job has been deleted"
             )
 
+    def test_attempts_endpoint_surfaces_legacy_children(self, client):
+        """Pre-2026-05-13 retry children carry ``is_retry_attempt=True``
+        and ``parent_chain_id=<chain>`` (not the new ``is_retry`` +
+        ``parent_job_id`` pair). The /attempts endpoint MUST walk both
+        flag pairs so legacy chains in jobs.db continue to surface
+        their attempts after the refactor.
+
+        Without this back-compat, the user's modal Attempts dropdown
+        would be empty for every chain created before the refactor.
+        Verified live against production data — 66 legacy chains have
+        children using the old flags.
+        """
+        from media_preview_generator.web.jobs import get_job_manager
+
+        jm = get_job_manager()
+        # Create a chain head + legacy-style children manually so we can
+        # pin the back-compat selector independently of the new flag pair.
+        original = jm.create_job(library_name="Legacy Foo", config={})
+        jm.complete_job(original.id)
+        jm.upsert_retry_chain_job(
+            canonical_path="/legacy/foo.mkv",
+            basename="Legacy Foo",
+            attempt=2,
+            max_attempts=5,
+            next_run_at=None,
+            wait_seconds=30,
+            outcome="scheduled",
+            originating_job_id=original.id,
+        )
+        # Two legacy children — the old flags.
+        legacy_child_ids = []
+        for i in (1, 2):
+            child = jm.create_job(
+                library_name="Legacy Foo",
+                config={
+                    "is_retry_attempt": True,
+                    "parent_chain_id": original.id,
+                    "retry_attempt": i,
+                    "retry_max_attempts": 5,
+                },
+            )
+            jm.complete_job(child.id)
+            legacy_child_ids.append(child.id)
+
+        resp = client.get(f"/api/jobs/{original.id}/attempts", headers=_headers())
+        assert resp.status_code == 200, resp.get_data(as_text=True)
+        data = resp.get_json()
+        # Originating dispatch is prepended as retry_attempt=0; legacy
+        # children come after.
+        returned_ids = [a["id"] for a in data["attempts"]]
+        for cid in legacy_child_ids:
+            assert cid in returned_ids, (
+                f"Legacy child {cid} (is_retry_attempt + parent_chain_id) must surface in /attempts; "
+                f"got ids={returned_ids}"
+            )
+
     def test_returns_409_when_no_pending_retry(self, client):
         """A chain head whose retry children are all terminal (COMPLETED/
         FAILED/CANCELLED) has no pending child to fire. The endpoint
