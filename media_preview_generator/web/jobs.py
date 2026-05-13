@@ -1162,7 +1162,7 @@ class JobManager:
         max_attempts: int,
         next_run_at: str | None,
         wait_seconds: int | None,
-        outcome: str,  # "scheduled" | "running" | "completed" | "exhausted"
+        outcome: str,  # "scheduled" | "queued_for_slot" | "running" | "completed" | "exhausted"
         server_id: str | None = None,
         server_name: str | None = None,
         server_type: str | None = None,
@@ -1170,6 +1170,8 @@ class JobManager:
         source: str | None = None,
         originating_job_id: str,
         publishers: list[dict] | None = None,
+        wait_active: int | None = None,
+        wait_cap: int | None = None,
     ) -> Job | None:
         """Mutate the originating dispatch Job to ADD or UPDATE retry-chain state.
 
@@ -1190,11 +1192,16 @@ class JobManager:
         a publisher needs a retry chain.
 
         State machine driven by ``outcome``:
-          * ``"scheduled"``  → status=PENDING, retry_eta + retry_wait_total set,
-                               completed_at cleared, error cleared
-          * ``"running"``    → status=RUNNING, retry_eta cleared (countdown stops)
-          * ``"completed"``  → status=COMPLETED, completed_at set, error cleared
-          * ``"exhausted"``  → status=FAILED with ``reason`` written to ``error``
+          * ``"scheduled"``       → status=PENDING, retry_eta + retry_wait_total set,
+                                    completed_at cleared, error cleared
+          * ``"queued_for_slot"`` → status=PENDING, current_item shows
+                                    "Queued — waiting for active slot (X of Y busy)";
+                                    fired by JobGate's on_wait callback while a retry
+                                    callback is blocked waiting for max_concurrent_jobs.
+                                    Requires ``wait_active`` + ``wait_cap`` kwargs.
+          * ``"running"``         → status=RUNNING, retry_eta cleared (countdown stops)
+          * ``"completed"``       → status=COMPLETED, completed_at set, error cleared
+          * ``"exhausted"``       → status=FAILED with ``reason`` written to ``error``
 
         Args:
             canonical_path: Source media path (stored on the Job's
@@ -1315,13 +1322,25 @@ class JobManager:
                 job.progress.retry_wait_total = wait_seconds
                 job.completed_at = None
                 job.error = None
-                # Clear the worker's last-firing status text. The
-                # dashboard's Active panel treats PENDING + non-empty
-                # ``current_item`` as "Active" (pre-dispatch work in
-                # flight), so a chain waiting on backoff would otherwise
-                # appear in Active. The Queue/countdown surface owns
-                # PENDING chain rows.
+                # Clear the worker's last-firing status text so a stale
+                # "Queued — waiting for active slot" or per-file progress
+                # line from a prior firing doesn't linger on the row
+                # while it's actually counting down to the next retry.
+                # The Queue/countdown surface (retry_eta + retry_wait_total
+                # above) owns the visual state for PENDING chain rows.
                 job.progress.current_item = ""
+            elif outcome == "queued_for_slot":
+                # Retry callback fired (backoff is over) but waiting for
+                # a JobGate slot. Same status text format dispatches use
+                # at job_runner.py:533-544 so the dashboard's existing
+                # "Queued — waiting" regex matches.
+                job.status = JobStatus.PENDING
+                job.progress.retry_eta = None
+                job.progress.retry_wait_total = None
+                active = wait_active if wait_active is not None else 0
+                cap = wait_cap if wait_cap is not None else 0
+                job.progress.current_item = f"Queued — waiting for active slot ({active} of {cap} busy)"
+                job.error = None
             elif outcome == "running":
                 job.status = JobStatus.RUNNING
                 job.started_at = job.started_at or now_iso
@@ -1379,7 +1398,16 @@ class JobManager:
             # newest-first Jobs list on each chain state change.
             # Preserves the original dispatch start in
             # ``config["retry_started_at"]`` for chain-age display.
-            job.created_at = now_iso
+            #
+            # Exception: ``queued_for_slot`` fires from the JobGate's
+            # on_wait callback every poll tick (~1s) while a retry
+            # waits for a slot. Bumping created_at every second would
+            # thrash the sort-by-recency order and starve older chains
+            # of their top-of-list position. Hold the existing
+            # created_at instead — the chain's identity hasn't changed,
+            # only its wait counter has.
+            if outcome != "queued_for_slot":
+                job.created_at = now_iso
 
             self._persist_job(job)
             self._emit_event("job_updated", job.to_dict())

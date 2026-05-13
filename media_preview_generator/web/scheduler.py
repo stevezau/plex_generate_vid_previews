@@ -388,19 +388,24 @@ def execute_scheduled_job(
             # AND Jellyfin — every vendor's processor implements
             # scan_recently_added against its native API. No fall-back to
             # the old Plex-only scanner.
-            from ..config import load_config
-            from ..jobs.orchestrator import _run_recently_added_multi_server
-            from .routes.job_runner import _build_selected_gpus
-            from .settings_manager import get_settings_manager
+            #
+            # Spawn a gated Job rather than running inline on the
+            # APScheduler worker thread. Pre-fix, this code called
+            # _run_recently_added_multi_server directly here — that did
+            # real publish work without acquiring the JobGate, so it
+            # could push concurrent activity above max_concurrent_jobs,
+            # and it never appeared as a Job in the UI. The new helper
+            # creates a Job row, waits for a gate slot, then runs the
+            # same scan.
+            from .routes.job_runner import _start_recently_added_job_async
 
-            run_config = load_config()
-            selected_gpus = _build_selected_gpus(get_settings_manager())
-            _run_recently_added_multi_server(
-                run_config,
-                selected_gpus=selected_gpus,
-                server_id_filter=server_id,
+            display_label = library_name or "all libraries"
+            _start_recently_added_job_async(
+                schedule_id=schedule_id,
+                server_id=server_id,
                 library_ids=library_ids or None,
                 lookback_hours=lookback,
+                library_name=f"Recently added: {display_label}",
             )
             manager._update_last_run(schedule_id)
         except Exception:

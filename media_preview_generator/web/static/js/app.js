@@ -697,21 +697,13 @@ async function loadJobs() {
             _autoOpenModalFromUrl();
         }
 
-        // Update active jobs section. Include PENDING jobs that have
-        // a current_item message — those are in pre-dispatch work
-        // (querying Plex library, enumerating items, resolving
-        // webhook paths). Without them the Active Jobs panel would
-        // go empty for 30-120s while a large library enumerates,
-        // making the user think the job died. The "Queued — waiting
-        // for active slot" message from the concurrency gate also
-        // qualifies, so queued jobs show here too with their wait
-        // status visible — better than hiding them in the queue row.
-        const activeJobs = jobs.filter(j => {
-            if (j.status === 'running') return true;
-            if (j.status !== 'pending') return false;
-            const msg = (j.progress && j.progress.current_item) || '';
-            return msg.trim().length > 0;
-        });
+        // Active Jobs shows only jobs holding a JobGate slot
+        // (status='running'). Pre-dispatch states (retry-backoff wait,
+        // queued-at-gate) keep status='pending' and stay in the lower
+        // Job Queue table — surfacing them here lets the panel count
+        // exceed ``max_concurrent_jobs``, which contradicts the cap
+        // the user just configured.
+        const activeJobs = jobs.filter(j => j.status === 'running');
         updateActiveJobs(activeJobs);
 
         // Replay any progress events that arrived before the DOM was ready.
@@ -1436,6 +1428,7 @@ function _serverBadge(item) {
         custom:      { cls: 'bg-secondary',         label: 'Custom Webhook' },
         scheduled:   { cls: 'bg-secondary',         label: 'Scheduled' },
         recently_added: { cls: 'bg-secondary',      label: 'Recently Added' },
+        scheduled_recently_added: { cls: 'bg-secondary', label: 'Scheduled scan' },
     };
     if (src && triggerPalette[src]) {
         const t = triggerPalette[src];
@@ -1951,20 +1944,7 @@ function updateActiveJobs(runningJobs) {
         return;
     }
 
-    // Count running vs pending separately — with pending-with-progress
-    // jobs now included in this list (library enumeration / queued-at-
-    // gate), "N running" alone would lie. Show "N active" when mixed,
-    // "N running" when all actually-running, "N preparing" when all
-    // pending.
-    const runCount = runningJobs.filter(j => j.status === 'running').length;
-    const pendCount = runningJobs.length - runCount;
-    if (pendCount === 0) {
-        countBadge.textContent = `${runCount} running`;
-    } else if (runCount === 0) {
-        countBadge.textContent = `${pendCount} preparing`;
-    } else {
-        countBadge.textContent = `${runCount} running, ${pendCount} preparing`;
-    }
+    countBadge.textContent = `${runningJobs.length} running`;
     countBadge.className = 'badge bg-primary pulse';
 
     let html = '';

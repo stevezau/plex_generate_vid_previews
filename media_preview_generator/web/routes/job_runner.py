@@ -1120,3 +1120,233 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
 
     thread = threading.Thread(target=run_job, daemon=True)
     thread.start()
+
+
+def _start_recently_added_job_async(
+    *,
+    schedule_id: str,
+    server_id: str | None,
+    library_ids: list[str] | None,
+    lookback_hours: float,
+    library_name: str,
+) -> str:
+    """Spawn a gated daemon thread for a scheduled "Recently Added" scan.
+
+    Mirrors :func:`_start_job_async`'s gate-aware lifecycle but calls
+    :func:`_run_recently_added_multi_server` instead of ``run_processing``.
+    The scan becomes a first-class Job: visible in the Jobs UI,
+    cancellable, and counted against ``max_concurrent_jobs``.
+
+    Before this helper existed, scheduled recently-added scans ran INLINE
+    on the APScheduler worker thread (see ``web/scheduler.py:398`` pre-fix)
+    — they did real publish work without acquiring the JobGate, so they
+    could push concurrent activity above the user's cap, and they didn't
+    appear as Job rows in the UI (only ``schedules.json``'s ``last_run``
+    recorded them). This helper closes both gaps: the scan goes through
+    the same gate every other dispatch obeys, AND it surfaces as a Job
+    row the operator can monitor / pause / cancel.
+
+    Returns the new Job's UUID.
+    """
+    from ...config import load_config
+    from ...jobs.orchestrator import _run_recently_added_multi_server
+    from ..settings_manager import get_settings_manager
+
+    job_manager = get_job_manager()
+    job = job_manager.create_job(
+        library_name=library_name,
+        config={
+            "source": "scheduled_recently_added",
+            "parent_schedule_id": schedule_id,
+            "server_id": server_id,
+            "library_ids": library_ids,
+            "lookback_hours": lookback_hours,
+        },
+        server_id=server_id,
+    )
+    job_id = job.id
+
+    with _inflight_lock:
+        if job_id in _inflight_jobs:
+            logger.info(
+                "Skipping duplicate _start_recently_added_job_async for {} — already in flight",
+                job_id,
+            )
+            return job_id
+        _inflight_jobs.add(job_id)
+
+    def run_job():
+        log_handler_id = None
+        _slot_held = False
+        try:
+            from loguru import logger as loguru_logger
+
+            from ...jobs.worker import is_job_thread_for, register_job_thread, unregister_job_thread
+
+            register_job_thread(job_id)
+
+            def log_sink(message):
+                record = message.record
+                log_text = f"{record['level'].name} - {record['message']}"
+                job_manager.add_log(job_id, log_text)
+
+            def job_thread_filter(record: dict) -> bool:
+                return is_job_thread_for(record["thread"].id, job_id)
+
+            log_handler_id = loguru_logger.add(
+                log_sink,
+                level=get_settings_manager().get("log_level", "INFO").upper(),
+                format="{message}",
+                filter=job_thread_filter,
+                enqueue=True,
+            )
+
+            # Same gate pattern as _start_job_async — the recently-added
+            # scan acquires before any enumeration / API calls so a cap
+            # of N really means "at most N concurrent dispatches/scans".
+            from ..job_gate import get_job_gate
+
+            def _on_wait(active: int, cap: int) -> None:
+                job_manager.update_progress(
+                    job_id,
+                    percent=0,
+                    processed_items=0,
+                    total_items=0,
+                    current_item=f"Queued — waiting for active slot ({active} of {cap} busy)",
+                )
+
+            admitted = get_job_gate().acquire(
+                priority=job.priority,
+                cancel_check=lambda: job_manager.is_cancellation_requested(job_id),
+                on_wait=_on_wait,
+            )
+            if not admitted:
+                job_manager.add_log(
+                    job_id,
+                    "WARNING - Job cancelled while waiting for active slot",
+                )
+                job_manager.cancel_job(job_id)
+                return
+            _slot_held = True
+
+            job_manager.start_job(job_id)
+            job_manager.add_log(job_id, "INFO - Scheduled recently-added scan started")
+            job_manager.update_progress(
+                job_id,
+                percent=0,
+                processed_items=0,
+                total_items=0,
+                current_item="Starting — loading configuration...",
+            )
+
+            config = load_config()
+            settings = get_settings_manager()
+            selected_gpus = _build_selected_gpus(settings)
+
+            def progress_callback(current, total, message, percent_override=None):
+                if percent_override is not None:
+                    percent = percent_override
+                else:
+                    percent = (current / total * 100) if total > 0 else 0
+                job_manager.update_progress(
+                    job_id,
+                    percent=percent,
+                    processed_items=current,
+                    total_items=total,
+                    current_item=message,
+                )
+
+            def worker_callback(workers_list):
+                from ...jobs import WorkerStatus
+
+                active_keys = set()
+                for worker_data in workers_list:
+                    key = f"{worker_data['worker_type']}_{worker_data['worker_id']}"
+                    active_keys.add(key)
+                    remaining_time = worker_data.get("remaining_time")
+                    worker_eta = ""
+                    if isinstance(remaining_time, int | float) and remaining_time > 0:
+                        worker_eta = _format_eta(float(remaining_time))
+                    status = WorkerStatus(
+                        worker_id=worker_data["worker_id"],
+                        worker_type=worker_data["worker_type"],
+                        worker_name=worker_data["worker_name"],
+                        status=worker_data["status"],
+                        current_title=worker_data.get("current_title", ""),
+                        library_name=worker_data.get("library_name", ""),
+                        progress_percent=worker_data.get("progress_percent", 0),
+                        speed=worker_data.get("speed", "0.0x"),
+                        eta=worker_eta,
+                        ffmpeg_started=bool(worker_data.get("ffmpeg_started", False)),
+                        current_phase=worker_data.get("current_phase", "") or "",
+                    )
+                    job_manager.update_worker_status(key, status)
+                job_manager.prune_worker_statuses(active_keys)
+                job_manager.emit_worker_statuses()
+
+            # Bind the per-job failure_scope around the scan + completion.
+            # Mirrors _start_job_async's ExitStack pattern at line 516-517 so
+            # ``record_failure`` calls deep in the enumeration / publisher
+            # path attribute to THIS job, not a sibling that happened to be
+            # running on the same thread pool. Without this scope, the
+            # enumeration phase (before the per-item failure_scope inside
+            # _dispatch_processable_items) emits the "Internal bookkeeping
+            # bug: failure ... reported outside an active job" warning on
+            # auth/connectivity errors.
+            from ...processing.generator import failure_scope
+
+            with failure_scope(job_id):
+                counts = _run_recently_added_multi_server(
+                    config,
+                    selected_gpus=selected_gpus,
+                    server_id_filter=server_id,
+                    library_ids=library_ids,
+                    lookback_hours=lookback_hours,
+                    progress_callback=progress_callback,
+                    cancel_check=lambda: job_manager.is_cancellation_requested(job_id),
+                    pause_check=lambda: (
+                        job_manager.is_pause_requested(job_id) or get_settings_manager().processing_paused
+                    ),
+                    job_id=job_id,
+                    worker_callback=worker_callback,
+                )
+
+                if counts:
+                    job_manager.set_job_outcome(job_id, counts)
+                job_manager.complete_job(job_id)
+
+        except Exception as exc:
+            logger.exception("Scheduled recently-added scan {} failed", job_id)
+            try:
+                job_manager.complete_job(job_id, error=f"{type(exc).__name__}: {exc}")
+            except Exception:
+                pass
+        finally:
+            if _slot_held:
+                try:
+                    from ..job_gate import get_job_gate
+
+                    get_job_gate().release()
+                except Exception as gate_err:
+                    logger.debug("Could not release job gate for {}: {}", job_id, gate_err)
+                _slot_held = False
+            try:
+                from ...jobs.worker import unregister_job_thread
+
+                unregister_job_thread()
+            except Exception:
+                pass
+            with _inflight_lock:
+                _inflight_jobs.discard(job_id)
+            if log_handler_id is not None:
+                try:
+                    from loguru import logger as loguru_logger
+
+                    loguru_logger.complete()
+                    loguru_logger.remove(log_handler_id)
+                except (ValueError, TypeError):
+                    logger.debug("Could not remove job log handler", exc_info=True)
+
+    thread = threading.Thread(target=run_job, daemon=True, name=f"run_job_recently_added_{job_id}")
+    thread.start()
+    return job_id

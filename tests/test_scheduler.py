@@ -974,21 +974,22 @@ class TestExecuteScheduledJobDispatch:
         )
 
     def test_dispatches_recently_added_calls_multi_server_scan(self, scheduler_manager, monkeypatch):
-        """A schedule with job_type='recently_added' invokes the multi-server
-        recently-added dispatcher (Phase E — works for any vendor)."""
+        """A schedule with job_type='recently_added' dispatches via the
+        gated ``_start_recently_added_job_async`` helper (Phase E —
+        works for any vendor). Post-fix the scan is no longer inline:
+        the helper creates a Job row, queues at the JobGate, and runs
+        the scan only after admission, so the cap really means "at
+        most N concurrent dispatches/scans"."""
         from media_preview_generator.web import scheduler as sched_mod
 
-        mock_scan = MagicMock(return_value={})
+        # Patch the gated helper directly — the underlying multi-server
+        # scan is still covered by ``test_recently_added_helper_runs_scan_after_gate_admit``
+        # below. Patching here keeps THIS test focused on the
+        # scheduler-to-helper contract (kwargs forwarding).
+        mock_helper = MagicMock(return_value="fake-job-id")
         monkeypatch.setattr(
-            "media_preview_generator.jobs.orchestrator._run_recently_added_multi_server",
-            mock_scan,
-        )
-        # Stub the heavy load_config / build_selected_gpus paths so the test
-        # stays focused on the dispatch contract.
-        monkeypatch.setattr("media_preview_generator.config.load_config", MagicMock(return_value=MagicMock()))
-        monkeypatch.setattr(
-            "media_preview_generator.web.routes.job_runner._build_selected_gpus",
-            MagicMock(return_value=[]),
+            "media_preview_generator.web.routes.job_runner._start_recently_added_job_async",
+            mock_helper,
         )
 
         schedule = scheduler_manager.create_schedule(
@@ -1006,31 +1007,24 @@ class TestExecuteScheduledJobDispatch:
             config={"job_type": "recently_added", "lookback_hours": 2},
         )
 
-        mock_scan.assert_called_once()
-        kwargs = mock_scan.call_args.kwargs
+        mock_helper.assert_called_once()
+        kwargs = mock_helper.call_args.kwargs
         assert kwargs["library_ids"] == ["2"]
         assert kwargs["lookback_hours"] == 2.0
-        # Audit note — recently-added dispatch runs INLINE (not via the
-        # job runner), so D20's ``parent_schedule_id`` cancellation
-        # doesn't apply: there's no Job DB row to cancel by id. The
-        # equivalent stop mechanism for inline runs is the scheduler's
-        # own pause/cancel hook, separately tested. The full-library
-        # branch ABOVE asserts parent_schedule_id propagation because
-        # THAT branch creates a real Job.
+        assert kwargs["schedule_id"] == schedule["id"]
+        # ``library_name`` is the user-facing Job row title — should
+        # carry the schedule's library label so the operator can match
+        # rows to schedules at a glance.
+        assert "TV" in kwargs["library_name"]
 
     def test_dispatches_recently_added_with_no_library_passes_none(self, scheduler_manager, monkeypatch):
-        """No library_id = library_ids=None reaches the multi-server scan."""
+        """No library_id = library_ids=None reaches the gated helper."""
         from media_preview_generator.web import scheduler as sched_mod
 
-        mock_scan = MagicMock(return_value={})
+        mock_helper = MagicMock(return_value="fake-job-id")
         monkeypatch.setattr(
-            "media_preview_generator.jobs.orchestrator._run_recently_added_multi_server",
-            mock_scan,
-        )
-        monkeypatch.setattr("media_preview_generator.config.load_config", MagicMock(return_value=MagicMock()))
-        monkeypatch.setattr(
-            "media_preview_generator.web.routes.job_runner._build_selected_gpus",
-            MagicMock(return_value=[]),
+            "media_preview_generator.web.routes.job_runner._start_recently_added_job_async",
+            mock_helper,
         )
 
         schedule = scheduler_manager.create_schedule(
@@ -1048,23 +1042,18 @@ class TestExecuteScheduledJobDispatch:
             config={"job_type": "recently_added", "lookback_hours": 1},
         )
 
-        mock_scan.assert_called_once()
-        assert mock_scan.call_args.kwargs["library_ids"] is None
-        assert mock_scan.call_args.kwargs["lookback_hours"] == 1.0
+        mock_helper.assert_called_once()
+        assert mock_helper.call_args.kwargs["library_ids"] is None
+        assert mock_helper.call_args.kwargs["lookback_hours"] == 1.0
 
     def test_recently_added_dispatch_clamps_invalid_lookback(self, scheduler_manager, monkeypatch):
         """Garbage lookback_hours values are coerced to a safe default."""
         from media_preview_generator.web import scheduler as sched_mod
 
-        mock_scan = MagicMock(return_value={})
+        mock_helper = MagicMock(return_value="fake-job-id")
         monkeypatch.setattr(
-            "media_preview_generator.jobs.orchestrator._run_recently_added_multi_server",
-            mock_scan,
-        )
-        monkeypatch.setattr("media_preview_generator.config.load_config", MagicMock(return_value=MagicMock()))
-        monkeypatch.setattr(
-            "media_preview_generator.web.routes.job_runner._build_selected_gpus",
-            MagicMock(return_value=[]),
+            "media_preview_generator.web.routes.job_runner._start_recently_added_job_async",
+            mock_helper,
         )
 
         schedule = scheduler_manager.create_schedule(
@@ -1081,21 +1070,16 @@ class TestExecuteScheduledJobDispatch:
         )
 
         # Falls back to 1.0 hour default
-        mock_scan.assert_called_once()
-        assert mock_scan.call_args.kwargs["lookback_hours"] == 1.0
+        mock_helper.assert_called_once()
+        assert mock_helper.call_args.kwargs["lookback_hours"] == 1.0
 
     def test_recently_added_dispatch_updates_last_run(self, scheduler_manager, monkeypatch):
         """After dispatching a recently_added scan the schedule's last_run updates."""
         from media_preview_generator.web import scheduler as sched_mod
 
         monkeypatch.setattr(
-            "media_preview_generator.jobs.orchestrator._run_recently_added_multi_server",
-            MagicMock(return_value={}),
-        )
-        monkeypatch.setattr("media_preview_generator.config.load_config", MagicMock(return_value=MagicMock()))
-        monkeypatch.setattr(
-            "media_preview_generator.web.routes.job_runner._build_selected_gpus",
-            MagicMock(return_value=[]),
+            "media_preview_generator.web.routes.job_runner._start_recently_added_job_async",
+            MagicMock(return_value="fake-job-id"),
         )
 
         schedule = scheduler_manager.create_schedule(

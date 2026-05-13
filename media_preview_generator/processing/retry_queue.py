@@ -361,6 +361,8 @@ def _upsert_retry_chain_job(
     source: str | None = None,
     originating_job_id: str | None = None,
     publishers: list[dict] | None = None,
+    wait_active: int | None = None,
+    wait_cap: int | None = None,
 ) -> None:
     """Best-effort upsert of the user-visible retry-chain Job row.
 
@@ -406,6 +408,8 @@ def _upsert_retry_chain_job(
             source=source,
             originating_job_id=originating_job_id,
             publishers=publishers,
+            wait_active=wait_active,
+            wait_cap=wait_cap,
         )
     except Exception as exc:
         logger.debug("Retry-chain Job upsert failed for {!r}: {}", canonical_path, exc)
@@ -772,213 +776,270 @@ def schedule_retry_for_unindexed(
         _retry_pin_id = server_id_filter or None
         _retry_server_tag = _retry_pin_id or getattr(config, "server_display_name", None)
 
-        # Surface the retry to the user-visible Jobs panel — countdown
-        # ends, status flips to "running" so the row no longer shows
-        # "next in Xs" while the dispatch is actually executing.
-        _upsert_retry_chain_job(
-            canonical_path=path,
-            attempt=fired_attempt,
-            outcome="running",
-            server_id=_retry_pin_id,
-            display_name=display_name,
-            source=source,
-            originating_job_id=originating_job_id,
-        )
+        # JobGate: retries are real work and MUST be counted against
+        # ``max_concurrent_jobs``. Pre-gating, a burst of expiring
+        # Timers (Sonarr import → N files all hitting SKIPPED_NOT_INDEXED
+        # → N retries scheduled → all fire at T+60s) could push the
+        # concurrent dispatch count well above the cap (empirically
+        # observed 11). The same JobGate that bounds ``_start_job_async``
+        # bounds us here. Priority=1 (high) — retries represent work the
+        # user already paid for via a prior dispatch; they preempt fresh
+        # Sonarr-burst dispatches at priority=2. ``Fire-Now`` (operator
+        # click) inherits this gating automatically because it calls
+        # back into this closure via ``_invoke_callback_safely``.
+        from ..web.job_gate import get_job_gate
 
-        # Spawn a per-attempt Job (separate UUID) so the user sees the
-        # firing's INFO/WARNING-coloured logs in the modal Attempts
-        # dropdown. The chain id IS the originating dispatch's UUID
-        # (the same Job whose worker did the FFmpeg + Plex/Emby
-        # publish before the chain spawned). Best-effort: when the
-        # JobManager isn't available (CLI / test contexts) the
-        # firing still proceeds with no per-attempt Job.
-        chain_id = originating_job_id
-        attempt_job_id = _create_retry_attempt_job(
-            canonical_path=path,
-            chain_id=chain_id,
-            attempt=fired_attempt,
-            max_attempts=len(_BACKOFF),
-            server_id=_retry_pin_id,
-            server_name=getattr(config, "server_display_name", None),
-            server_type=None,
-            display_name=display_name,
-            source=source,
-        )
-        _link_attempt_to_chain(chain_id, attempt_job_id)
-
-        # Bind a synthetic failure scope for the retry. The ORIGINATING
-        # job (the dispatch row that first hit SKIPPED_NOT_INDEXED) has
-        # long completed by the time this Timer fires, so its job_id is
-        # gone from the live failure_scope stack. The per-attempt Job
-        # we just spawned IS user-visible, but ``record_failure`` keys
-        # on the active scope rather than the per-attempt Job — without
-        # a synthetic scope it would log the "Internal bookkeeping bug"
-        # warning every time a retry hits an FFmpeg failure (file
-        # deleted between scan and retry, codec gone unsupported after
-        # a driver update). The synthetic ``retry:<path>`` scope makes
-        # those failures attributable to "the retry chain for this
-        # path" without polluting ``record_failure``'s warning channel.
-        retry_scope_id = f"retry:{path}"
-        with _capture_attempt_logs(attempt_job_id), failure_scope(retry_scope_id):
-            # First user-visible line in the per-attempt Job log so the
-            # operator opening it sees what triggered the firing — the
-            # rest comes from process_canonical_path's own INFO calls.
-            if _retry_server_tag:
-                logger.info("Retry #{} firing for {} (server={})", fired_attempt, path, _retry_server_tag)
-            else:
-                logger.info("Retry #{} firing for {}", fired_attempt, path)
-
-            try:
-                result = process_canonical_path(
-                    canonical_path=path,
-                    registry=registry,
-                    config=config,
-                    item_id_by_server=item_id_by_server,
-                    # The retry callback manages its own scheduling — don't
-                    # let process_canonical_path spawn yet another timer
-                    # alongside ours.
-                    schedule_retry_on_not_indexed=False,
-                    retry_attempt=fired_attempt,
-                    # Use the explicit pin captured at schedule time
-                    # — covers BOTH config-pinned (vendor webhook)
-                    # and originator-pinned (worker case 2) dispatches.
-                    server_id_filter=server_id_filter,
-                    display_name=display_name,
-                    source=source,
-                )
-                _record_attempt_file_result(attempt_job_id, path, result)
-            except Exception as exc:
-                logger.exception(
-                    "Retry #{} for {} could not be dispatched ({}: {}). "
-                    "Scheduling another retry — if this keeps happening, the underlying error needs investigation; "
-                    "share the traceback above when reporting.",
-                    fired_attempt,
-                    path,
-                    type(exc).__name__,
-                    exc,
-                )
-                _complete_retry_attempt_job(
-                    attempt_job_id,
-                    error=f"Retry firing crashed: {type(exc).__name__}: {exc}",
-                )
-                schedule_retry_for_unindexed(
-                    path,
-                    registry=registry,
-                    config=config,
-                    item_id_by_server=item_id_by_server,
-                    attempt=fired_attempt + 1,
-                    server_id_filter=server_id_filter,
-                    display_name=display_name,
-                    source=source,
-                    originating_job_id=originating_job_id,
-                )
-                return
-
-            # Did any publisher need another shot? If so, schedule
-            # another retry; otherwise the chain is complete. The three
-            # "needs more time" statuses:
-            #   * SKIPPED_NOT_INDEXED — Plex hasn't analysed the file yet
-            #     (no bundle hash → can't write the BIF)
-            #   * SKIPPED_NOT_IN_LIBRARY — server doesn't know the file
-            #     exists yet (resolve_remote_path_to_item_id returned None)
-            #   * PUBLISHED_PENDING_REGISTRATION — tiles/sidecar are on
-            #     disk but Jellyfin/Emby item_id wasn't resolved at
-            #     publish time, so the per-item registration calls
-            #     (Media Preview Bridge plugin + /Items/{id}/Refresh)
-            #     never fired. The retry re-resolves the item id so the
-            #     registration can complete.
-            #
-            # PUBLISHED, FAILED, and SKIPPED_OUTPUT_EXISTS all terminate
-            # the retry chain.
-            #
-            # Live Homebodies S01E01 (2026-05-09) regression: pre-fix the
-            # check only looked for SKIPPED_NOT_INDEXED, so a JellyTest
-            # PENDING_REGISTRATION result on attempt #1 silently terminated
-            # the chain — the trickplay tiles never got registered.
-            needs_retry = any(
-                p.status
-                in (
-                    PublisherStatus.SKIPPED_NOT_INDEXED,
-                    PublisherStatus.SKIPPED_NOT_IN_LIBRARY,
-                    PublisherStatus.PUBLISHED_PENDING_REGISTRATION,
-                )
-                for p in result.publishers
+        def _on_wait_for_slot(active: int, cap: int) -> None:
+            # Surface gate-wait on the chain row. The CANCELLED guard
+            # in upsert_retry_chain_job (jobs.py:1252) makes this a
+            # no-op if the user has cancelled — desired behaviour: a
+            # cancelled chain shouldn't have its status text overwritten
+            # by a late-firing on_wait tick from a daemon we're about
+            # to dismiss via cancel_check below.
+            _upsert_retry_chain_job(
+                canonical_path=path,
+                attempt=fired_attempt,
+                outcome="queued_for_slot",
+                wait_active=active,
+                wait_cap=cap,
+                server_id=_retry_pin_id,
+                display_name=display_name,
+                source=source,
+                originating_job_id=originating_job_id,
             )
-            # Flatten the firing's MultiServerResult into the per-server
-            # aggregate shape the chain Job stores. Done once here so
-            # both the exhausted and completed branches can hand it
-            # to ``_upsert_retry_chain_job``. The chain's publishers
-            # snapshot needs to reflect THIS firing's outcome so the
-            # modal doesn't show stale pending_registration from the
-            # originating dispatch on a completed/exhausted chain.
-            from ..jobs.orchestrator import _publisher_rows_from_result, fold_publisher_rows_into_aggregate
 
-            firing_rows = _publisher_rows_from_result(result, path)
-            firing_aggregate: dict[str, dict] = {}
-            fold_publisher_rows_into_aggregate(firing_aggregate, firing_rows)
-            firing_publishers = list(firing_aggregate.values()) or None
+        def _cancel_check() -> bool:
+            if not originating_job_id:
+                return False
+            try:
+                from ..web.jobs import get_job_manager
 
-            if needs_retry and result.status is not MultiServerStatus.FAILED:
-                next_attempt = fired_attempt + 1
-                # ``schedule_retry_for_unindexed`` will upsert the row
-                # to "scheduled" if the next attempt is within
-                # BACKOFF_SCHEDULE; otherwise it returns False and we
-                # surface the chain as exhausted below.
-                rescheduled = schedule_retry_for_unindexed(
-                    path,
-                    registry=registry,
-                    config=config,
-                    item_id_by_server=item_id_by_server,
-                    attempt=next_attempt,
-                    server_id_filter=server_id_filter,
-                    display_name=display_name,
-                    source=source,
-                    originating_job_id=originating_job_id,
-                )
-                if not rescheduled:
-                    exhausted_reason = (
-                        f"Server still hasn't indexed this file after "
-                        f"{fired_attempt} retry attempt(s). The publisher's "
-                        f"output is on disk but the server-side trickplay "
-                        f"row never registered — likely the file is outside "
-                        f"every configured library root, or the server's "
-                        f"realtime monitor is disabled."
+                return get_job_manager().is_cancellation_requested(originating_job_id)
+            except Exception:
+                return False
+
+        gate = get_job_gate()
+        admitted = gate.acquire(
+            priority=1,
+            cancel_check=_cancel_check,
+            on_wait=_on_wait_for_slot,
+        )
+        if not admitted:
+            # User cancelled during gate-wait. The chain row's status
+            # is already CANCELLED via cancel_job; nothing to do here.
+            # Don't schedule another retry — cancellation is terminal.
+            return
+
+        try:
+            # Surface the retry to the user-visible Jobs panel — countdown
+            # ends, status flips to "running" so the row no longer shows
+            # "next in Xs" while the dispatch is actually executing.
+            _upsert_retry_chain_job(
+                canonical_path=path,
+                attempt=fired_attempt,
+                outcome="running",
+                server_id=_retry_pin_id,
+                display_name=display_name,
+                source=source,
+                originating_job_id=originating_job_id,
+            )
+
+            # Spawn a per-attempt Job (separate UUID) so the user sees the
+            # firing's INFO/WARNING-coloured logs in the modal Attempts
+            # dropdown. The chain id IS the originating dispatch's UUID
+            # (the same Job whose worker did the FFmpeg + Plex/Emby
+            # publish before the chain spawned). Best-effort: when the
+            # JobManager isn't available (CLI / test contexts) the
+            # firing still proceeds with no per-attempt Job.
+            chain_id = originating_job_id
+            attempt_job_id = _create_retry_attempt_job(
+                canonical_path=path,
+                chain_id=chain_id,
+                attempt=fired_attempt,
+                max_attempts=len(_BACKOFF),
+                server_id=_retry_pin_id,
+                server_name=getattr(config, "server_display_name", None),
+                server_type=None,
+                display_name=display_name,
+                source=source,
+            )
+            _link_attempt_to_chain(chain_id, attempt_job_id)
+
+            # Bind a synthetic failure scope for the retry. The ORIGINATING
+            # job (the dispatch row that first hit SKIPPED_NOT_INDEXED) has
+            # long completed by the time this Timer fires, so its job_id is
+            # gone from the live failure_scope stack. The per-attempt Job
+            # we just spawned IS user-visible, but ``record_failure`` keys
+            # on the active scope rather than the per-attempt Job — without
+            # a synthetic scope it would log the "Internal bookkeeping bug"
+            # warning every time a retry hits an FFmpeg failure (file
+            # deleted between scan and retry, codec gone unsupported after
+            # a driver update). The synthetic ``retry:<path>`` scope makes
+            # those failures attributable to "the retry chain for this
+            # path" without polluting ``record_failure``'s warning channel.
+            retry_scope_id = f"retry:{path}"
+            with _capture_attempt_logs(attempt_job_id), failure_scope(retry_scope_id):
+                # First user-visible line in the per-attempt Job log so the
+                # operator opening it sees what triggered the firing — the
+                # rest comes from process_canonical_path's own INFO calls.
+                if _retry_server_tag:
+                    logger.info("Retry #{} firing for {} (server={})", fired_attempt, path, _retry_server_tag)
+                else:
+                    logger.info("Retry #{} firing for {}", fired_attempt, path)
+
+                try:
+                    result = process_canonical_path(
+                        canonical_path=path,
+                        registry=registry,
+                        config=config,
+                        item_id_by_server=item_id_by_server,
+                        # The retry callback manages its own scheduling — don't
+                        # let process_canonical_path spawn yet another timer
+                        # alongside ours.
+                        schedule_retry_on_not_indexed=False,
+                        retry_attempt=fired_attempt,
+                        # Use the explicit pin captured at schedule time
+                        # — covers BOTH config-pinned (vendor webhook)
+                        # and originator-pinned (worker case 2) dispatches.
+                        server_id_filter=server_id_filter,
+                        display_name=display_name,
+                        source=source,
                     )
-                    logger.warning("Retry chain exhausted for {}: {}", path, exhausted_reason)
+                    _record_attempt_file_result(attempt_job_id, path, result)
+                except Exception as exc:
+                    logger.exception(
+                        "Retry #{} for {} could not be dispatched ({}: {}). "
+                        "Scheduling another retry — if this keeps happening, the underlying error needs investigation; "
+                        "share the traceback above when reporting.",
+                        fired_attempt,
+                        path,
+                        type(exc).__name__,
+                        exc,
+                    )
+                    _complete_retry_attempt_job(
+                        attempt_job_id,
+                        error=f"Retry firing crashed: {type(exc).__name__}: {exc}",
+                    )
+                    schedule_retry_for_unindexed(
+                        path,
+                        registry=registry,
+                        config=config,
+                        item_id_by_server=item_id_by_server,
+                        attempt=fired_attempt + 1,
+                        server_id_filter=server_id_filter,
+                        display_name=display_name,
+                        source=source,
+                        originating_job_id=originating_job_id,
+                    )
+                    return
+
+                # Did any publisher need another shot? If so, schedule
+                # another retry; otherwise the chain is complete. The three
+                # "needs more time" statuses:
+                #   * SKIPPED_NOT_INDEXED — Plex hasn't analysed the file yet
+                #     (no bundle hash → can't write the BIF)
+                #   * SKIPPED_NOT_IN_LIBRARY — server doesn't know the file
+                #     exists yet (resolve_remote_path_to_item_id returned None)
+                #   * PUBLISHED_PENDING_REGISTRATION — tiles/sidecar are on
+                #     disk but Jellyfin/Emby item_id wasn't resolved at
+                #     publish time, so the per-item registration calls
+                #     (Media Preview Bridge plugin + /Items/{id}/Refresh)
+                #     never fired. The retry re-resolves the item id so the
+                #     registration can complete.
+                #
+                # PUBLISHED, FAILED, and SKIPPED_OUTPUT_EXISTS all terminate
+                # the retry chain.
+                #
+                # Live Homebodies S01E01 (2026-05-09) regression: pre-fix the
+                # check only looked for SKIPPED_NOT_INDEXED, so a JellyTest
+                # PENDING_REGISTRATION result on attempt #1 silently terminated
+                # the chain — the trickplay tiles never got registered.
+                needs_retry = any(
+                    p.status
+                    in (
+                        PublisherStatus.SKIPPED_NOT_INDEXED,
+                        PublisherStatus.SKIPPED_NOT_IN_LIBRARY,
+                        PublisherStatus.PUBLISHED_PENDING_REGISTRATION,
+                    )
+                    for p in result.publishers
+                )
+                # Flatten the firing's MultiServerResult into the per-server
+                # aggregate shape the chain Job stores. Done once here so
+                # both the exhausted and completed branches can hand it
+                # to ``_upsert_retry_chain_job``. The chain's publishers
+                # snapshot needs to reflect THIS firing's outcome so the
+                # modal doesn't show stale pending_registration from the
+                # originating dispatch on a completed/exhausted chain.
+                from ..jobs.orchestrator import _publisher_rows_from_result, fold_publisher_rows_into_aggregate
+
+                firing_rows = _publisher_rows_from_result(result, path)
+                firing_aggregate: dict[str, dict] = {}
+                fold_publisher_rows_into_aggregate(firing_aggregate, firing_rows)
+                firing_publishers = list(firing_aggregate.values()) or None
+
+                if needs_retry and result.status is not MultiServerStatus.FAILED:
+                    next_attempt = fired_attempt + 1
+                    # ``schedule_retry_for_unindexed`` will upsert the row
+                    # to "scheduled" if the next attempt is within
+                    # BACKOFF_SCHEDULE; otherwise it returns False and we
+                    # surface the chain as exhausted below.
+                    rescheduled = schedule_retry_for_unindexed(
+                        path,
+                        registry=registry,
+                        config=config,
+                        item_id_by_server=item_id_by_server,
+                        attempt=next_attempt,
+                        server_id_filter=server_id_filter,
+                        display_name=display_name,
+                        source=source,
+                        originating_job_id=originating_job_id,
+                    )
+                    if not rescheduled:
+                        exhausted_reason = (
+                            f"Server still hasn't indexed this file after "
+                            f"{fired_attempt} retry attempt(s). The publisher's "
+                            f"output is on disk but the server-side trickplay "
+                            f"row never registered — likely the file is outside "
+                            f"every configured library root, or the server's "
+                            f"realtime monitor is disabled."
+                        )
+                        logger.warning("Retry chain exhausted for {}: {}", path, exhausted_reason)
+                        _upsert_retry_chain_job(
+                            canonical_path=path,
+                            attempt=fired_attempt,
+                            outcome="exhausted",
+                            server_id=_retry_pin_id,
+                            display_name=display_name,
+                            source=source,
+                            reason=exhausted_reason,
+                            originating_job_id=originating_job_id,
+                            publishers=firing_publishers,
+                        )
+                        _complete_retry_attempt_job(attempt_job_id, error=exhausted_reason)
+                    else:
+                        # Mark the firing job as done-with-warning so the
+                        # row reads "completed (amber)" rather than green —
+                        # this attempt didn't finish the chain, more work
+                        # is queued.
+                        _complete_retry_attempt_job(
+                            attempt_job_id,
+                            warning=f"Attempt {fired_attempt} still pending; next retry queued",
+                        )
+                else:
+                    logger.info("Retry chain for {} complete on attempt #{}", path, fired_attempt)
                     _upsert_retry_chain_job(
                         canonical_path=path,
                         attempt=fired_attempt,
-                        outcome="exhausted",
+                        outcome="completed",
                         server_id=_retry_pin_id,
                         display_name=display_name,
                         source=source,
-                        reason=exhausted_reason,
                         originating_job_id=originating_job_id,
                         publishers=firing_publishers,
                     )
-                    _complete_retry_attempt_job(attempt_job_id, error=exhausted_reason)
-                else:
-                    # Mark the firing job as done-with-warning so the
-                    # row reads "completed (amber)" rather than green —
-                    # this attempt didn't finish the chain, more work
-                    # is queued.
-                    _complete_retry_attempt_job(
-                        attempt_job_id,
-                        warning=f"Attempt {fired_attempt} still pending; next retry queued",
-                    )
-            else:
-                logger.info("Retry chain for {} complete on attempt #{}", path, fired_attempt)
-                _upsert_retry_chain_job(
-                    canonical_path=path,
-                    attempt=fired_attempt,
-                    outcome="completed",
-                    server_id=_retry_pin_id,
-                    display_name=display_name,
-                    source=source,
-                    originating_job_id=originating_job_id,
-                    publishers=firing_publishers,
-                )
-                _complete_retry_attempt_job(attempt_job_id)
+                    _complete_retry_attempt_job(attempt_job_id)
+        finally:
+            gate.release()
 
     # ``chain_id=originating_job_id``: each chain owns its own
     # ``(path, chain_id)`` slot in the scheduler so two concurrent

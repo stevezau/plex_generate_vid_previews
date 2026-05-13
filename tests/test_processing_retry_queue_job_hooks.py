@@ -1135,3 +1135,280 @@ class TestPerAttemptJobSpawn:
         assert recovered is not None
         assert recovered.status == JobStatus.FAILED
         assert recovered.error and "interrupted" in recovered.error.lower()
+
+
+class TestRetryCallbackJobGateIntegration:
+    """Pin the contract that retry callbacks acquire the JobGate before
+    doing any work, and release it on every exit path.
+
+    Pre-fix, retry Timer callbacks called ``process_canonical_path``
+    directly with no gate acquisition — a burst of expiring retry
+    timers could push concurrent dispatch activity well above the
+    user's ``max_concurrent_jobs`` cap (empirically observed 11
+    concurrent retries during a Sonarr import). These tests guard
+    against regression: every retry firing MUST acquire a gate slot
+    at priority=1 (high) before invoking ``process_canonical_path``,
+    and MUST release the slot on every exit path (normal completion,
+    exception, cancel-during-wait).
+    """
+
+    def test_retry_callback_acquires_gate_before_process_canonical_path(self, tmp_path):
+        """The first observable effect of a retry firing must be
+        ``gate.acquire(priority=1, ...)`` — not ``process_canonical_path``.
+        Pin call ordering by recording invocations on both sides."""
+        import media_preview_generator.web.jobs as jobs_mod
+        from media_preview_generator.processing.multi_server import (
+            MultiServerResult,
+            MultiServerStatus,
+            PublisherResult,
+            PublisherStatus,
+        )
+        from media_preview_generator.web.jobs import JobManager
+
+        with jobs_mod._job_lock:
+            jobs_mod._job_manager = JobManager(config_dir=str(tmp_path / "config"))
+        origin_id = _seed_originating(jobs_mod._job_manager)
+
+        call_log: list[str] = []
+        ran = threading.Event()
+
+        gate_mock = MagicMock()
+        captured_kwargs: dict = {}
+
+        def _acquire(**kwargs):
+            captured_kwargs.update(kwargs)
+            call_log.append("acquire")
+            return True
+
+        gate_mock.acquire = _acquire
+        gate_mock.release = lambda: call_log.append("release")
+
+        def fake_process(**kwargs):
+            call_log.append("process_canonical_path")
+            ran.set()
+            return MultiServerResult(
+                canonical_path=kwargs["canonical_path"],
+                status=MultiServerStatus.PUBLISHED,
+                publishers=[
+                    PublisherResult(
+                        server_id="jelly-1",
+                        server_name="jelly-1",
+                        adapter_name="jellyfin_trickplay",
+                        status=PublisherStatus.PUBLISHED,
+                        message="ok",
+                    )
+                ],
+                frame_count=6,
+                message="ok",
+            )
+
+        with (
+            patch(
+                "media_preview_generator.processing.retry_queue._BACKOFF",
+                (0.05,) + tuple([0.05] * (len(_BACKOFF) - 1)),
+            ),
+            patch(
+                "media_preview_generator.processing.multi_server.process_canonical_path",
+                side_effect=fake_process,
+            ),
+            patch(
+                "media_preview_generator.web.job_gate.get_job_gate",
+                return_value=gate_mock,
+            ),
+        ):
+            schedule_retry_for_unindexed(
+                "/data/Foo.mkv",
+                registry=MagicMock(),
+                config=MagicMock(),
+                item_id_by_server=None,
+                attempt=1,
+                originating_job_id=origin_id,
+            )
+            assert ran.wait(timeout=2)
+            time.sleep(0.1)
+
+        assert "acquire" in call_log and "process_canonical_path" in call_log, (
+            f"Gate.acquire and process_canonical_path must both have run; got {call_log!r}"
+        )
+        assert call_log.index("acquire") < call_log.index("process_canonical_path"), (
+            f"gate.acquire MUST happen before process_canonical_path — got {call_log!r}. "
+            f"Pre-fix the retry Timer thread ran process_canonical_path directly with no gate."
+        )
+        assert captured_kwargs.get("priority") == 1, (
+            f"Retries must acquire at priority=1 (high) so they preempt fresh dispatches at priority=2. "
+            f"got priority={captured_kwargs.get('priority')!r}"
+        )
+
+    def test_retry_callback_releases_gate_on_success(self, tmp_path):
+        """The gate slot must always be released after a normal
+        completion — otherwise the cap leaks and every retry firing
+        permanently shrinks the available concurrency budget."""
+        import media_preview_generator.web.jobs as jobs_mod
+        from media_preview_generator.processing.multi_server import (
+            MultiServerResult,
+            MultiServerStatus,
+            PublisherResult,
+            PublisherStatus,
+        )
+        from media_preview_generator.web.jobs import JobManager
+
+        with jobs_mod._job_lock:
+            jobs_mod._job_manager = JobManager(config_dir=str(tmp_path / "config"))
+        origin_id = _seed_originating(jobs_mod._job_manager)
+
+        released = threading.Event()
+        gate_mock = MagicMock()
+        gate_mock.acquire = MagicMock(return_value=True)
+        gate_mock.release = lambda: released.set()
+
+        def fake_process(**kwargs):
+            return MultiServerResult(
+                canonical_path=kwargs["canonical_path"],
+                status=MultiServerStatus.PUBLISHED,
+                publishers=[
+                    PublisherResult(
+                        server_id="jelly-1",
+                        server_name="jelly-1",
+                        adapter_name="jellyfin_trickplay",
+                        status=PublisherStatus.PUBLISHED,
+                        message="ok",
+                    )
+                ],
+                frame_count=6,
+                message="ok",
+            )
+
+        with (
+            patch(
+                "media_preview_generator.processing.retry_queue._BACKOFF",
+                (0.05,) + tuple([0.05] * (len(_BACKOFF) - 1)),
+            ),
+            patch(
+                "media_preview_generator.processing.multi_server.process_canonical_path",
+                side_effect=fake_process,
+            ),
+            patch(
+                "media_preview_generator.web.job_gate.get_job_gate",
+                return_value=gate_mock,
+            ),
+        ):
+            schedule_retry_for_unindexed(
+                "/data/Foo.mkv",
+                registry=MagicMock(),
+                config=MagicMock(),
+                item_id_by_server=None,
+                attempt=1,
+                originating_job_id=origin_id,
+            )
+            assert released.wait(timeout=2), "gate.release() must fire after a normal completion"
+
+    def test_retry_callback_releases_gate_when_process_canonical_path_raises(self, tmp_path):
+        """If ``process_canonical_path`` raises, the gate must still be
+        released — otherwise a single buggy retry permanently leaks a
+        slot from the cap (operator would see the badge stuck at 'X of Y
+        busy' even though nothing is running)."""
+        import media_preview_generator.web.jobs as jobs_mod
+        from media_preview_generator.web.jobs import JobManager
+
+        with jobs_mod._job_lock:
+            jobs_mod._job_manager = JobManager(config_dir=str(tmp_path / "config"))
+        origin_id = _seed_originating(jobs_mod._job_manager)
+
+        released = threading.Event()
+        gate_mock = MagicMock()
+        gate_mock.acquire = MagicMock(return_value=True)
+        gate_mock.release = lambda: released.set()
+
+        def boom(**kwargs):
+            raise RuntimeError("simulated retry crash")
+
+        with (
+            patch(
+                "media_preview_generator.processing.retry_queue._BACKOFF",
+                (0.05,) + tuple([0.05] * (len(_BACKOFF) - 1)),
+            ),
+            patch(
+                "media_preview_generator.processing.multi_server.process_canonical_path",
+                side_effect=boom,
+            ),
+            patch(
+                "media_preview_generator.web.job_gate.get_job_gate",
+                return_value=gate_mock,
+            ),
+        ):
+            schedule_retry_for_unindexed(
+                "/data/Foo.mkv",
+                registry=MagicMock(),
+                config=MagicMock(),
+                item_id_by_server=None,
+                attempt=1,
+                originating_job_id=origin_id,
+            )
+            assert released.wait(timeout=2), (
+                "gate.release() must fire even when process_canonical_path raises — "
+                "the finally clause is the only thing protecting the cap from leaking"
+            )
+
+    def test_retry_callback_skips_work_when_cancelled_during_gate_wait(self, tmp_path):
+        """When the user cancels the chain while a retry is waiting at
+        the gate, ``acquire`` returns False and the callback must exit
+        without running ``process_canonical_path`` or releasing a slot
+        it never held."""
+        import media_preview_generator.web.jobs as jobs_mod
+        from media_preview_generator.web.jobs import JobManager
+
+        with jobs_mod._job_lock:
+            jobs_mod._job_manager = JobManager(config_dir=str(tmp_path / "config"))
+        origin_id = _seed_originating(jobs_mod._job_manager)
+
+        gate_mock = MagicMock()
+        gate_mock.acquire = MagicMock(return_value=False)  # Simulate cancel-during-wait
+        gate_mock.release = MagicMock()
+
+        process_called = threading.Event()
+
+        def fake_process(**kwargs):
+            process_called.set()
+            from media_preview_generator.processing.multi_server import MultiServerResult, MultiServerStatus
+
+            return MultiServerResult(
+                canonical_path=kwargs["canonical_path"],
+                status=MultiServerStatus.PUBLISHED,
+                publishers=[],
+                frame_count=0,
+                message="",
+            )
+
+        with (
+            patch(
+                "media_preview_generator.processing.retry_queue._BACKOFF",
+                (0.05,) + tuple([0.05] * (len(_BACKOFF) - 1)),
+            ),
+            patch(
+                "media_preview_generator.processing.multi_server.process_canonical_path",
+                side_effect=fake_process,
+            ),
+            patch(
+                "media_preview_generator.web.job_gate.get_job_gate",
+                return_value=gate_mock,
+            ),
+        ):
+            schedule_retry_for_unindexed(
+                "/data/Foo.mkv",
+                registry=MagicMock(),
+                config=MagicMock(),
+                item_id_by_server=None,
+                attempt=1,
+                originating_job_id=origin_id,
+            )
+            # Give the timer a chance to fire and the callback a chance
+            # to call acquire() + bail out.
+            time.sleep(0.5)
+
+        assert not process_called.is_set(), (
+            "process_canonical_path must NOT run when gate.acquire returns False "
+            "(cancel-during-wait). Pre-fix the work ran unconditionally."
+        )
+        assert gate_mock.release.call_count == 0, (
+            f"gate.release() must NOT fire when we never acquired a slot — got {gate_mock.release.call_count} calls"
+        )
