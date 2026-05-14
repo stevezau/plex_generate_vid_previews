@@ -1448,6 +1448,19 @@ html[data-bs-theme="dark"] .dropdown-menu .form-check-label {
  * tracking treatment used on the Schedules teaser badge so the page
  * has one consistent micro-typography rhythm.
  * ────────────────────────────────────────────────────────────────────── */
+/* Brief highlight flash applied when the pending-webhooks chip
+ * scrolls the user to the relevant row. Class is added in JS
+ * (loadPendingWebhooks click handler) and removed after 1.5s so the
+ * row settles back to normal — long enough to land the eye, short
+ * enough to not pulse permanently. */
+.queue-row-flash {
+    animation: queueRowFlash 1.4s ease-out;
+}
+@keyframes queueRowFlash {
+    0% { background-color: rgba(255, 193, 7, 0.35); }
+    100% { background-color: transparent; }
+}
+
 .jobs-table thead th {
     border-top: 0;
     letter-spacing: 0.04em;

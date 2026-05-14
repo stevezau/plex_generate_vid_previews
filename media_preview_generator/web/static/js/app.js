@@ -229,7 +229,10 @@ function initDashboard() {
     setInterval(loadJobs, 5000);
     setInterval(loadWorkerStatuses, 1000);
     setInterval(loadPendingWebhooks, 3000);
-    setInterval(tickPendingWebhookCountdowns, 1000);
+    // tickPendingWebhookCountdowns retired with the issue-237 chip:
+    // the chip shows count only, no per-batch live countdown. Per-row
+    // countdowns tick on _updateElapsedTimers (in lockstep with the
+    // retry countdown) so we don't need a parallel 1Hz timer here.
 
     // Flush deferred job-queue updates when a priority dropdown closes
     document.addEventListener('hidden.bs.dropdown', function () {
@@ -824,82 +827,64 @@ async function loadProcessingState() {
     }
 }
 
+// Maintain the "N waiting" chip in the Job Queue card header. Pre-issue-237
+// UX this was a full-width yellow alert at the top of the page with an
+// inline countdown + Fire-now button per batch. The per-row countdown +
+// Fire-now lives in the queue table itself now (see ``renderJobQueue``);
+// this chip is just the at-a-glance "you have stuff waiting" indicator.
+// Click → scroll to the first row carrying ``data-webhook-fire-at``.
 async function loadPendingWebhooks() {
-    const row = document.getElementById('pendingWebhooksRow');
-    const content = document.getElementById('pendingWebhooksContent');
-    if (!row || !content) return;
+    const chip = document.getElementById('pendingWebhooksChip');
+    const chipText = document.getElementById('pendingWebhooksChipText');
+    if (!chip || !chipText) return;
 
     try {
         const data = await apiGet('/api/webhooks/pending');
         const pending = data.pending || [];
         if (pending.length === 0) {
-            row.classList.add('d-none');
+            chip.classList.add('d-none');
+            chip.classList.remove('d-inline-flex');
             return;
         }
-        row.classList.remove('d-none');
-        const now = Date.now();
-        const parts = pending.map(function (p) {
-            const remainingSec = Math.max(0, Number(p.remaining_seconds) || 0);
-            const deadline = now + remainingSec * 1000;
-            const initial = Math.max(0, Math.ceil(remainingSec));
-            const source = escapeHtml(p.source || 'webhook');
-            const label = p.file_count === 1 && p.first_title
-                ? escapeHtml(p.first_title)
-                : `${p.file_count} file(s)`;
-            // "Fire now" button — short-circuits the debounce delay so the
-            // user can dispatch immediately when they don't want to wait.
-            // Encoded key stays attribute-safe (the key includes the source +
-            // path basename which can contain quotes / spaces).
-            const keyAttr = escapeHtmlAttr(p.key || '');
-            const fireBtn = p.key
-                ? ` <button type="button" class="btn btn-sm btn-outline-primary py-0 px-2 ms-2 pending-fire-now"
-                           data-key="${keyAttr}" title="Skip the delay and dispatch this batch now"
-                           style="font-size: 0.72rem; line-height: 1.4;">
-                       <i class="bi bi-lightning-charge-fill me-1"></i>Fire now
-                   </button>`
-                : '';
-            return `<strong>${source}</strong>: ${label} — starting in <strong class="pending-webhook-countdown" data-deadline="${deadline}">${initial}s</strong>${fireBtn}`;
-        });
-        content.innerHTML = parts.join(' &middot; ');
+        // ``d-inline-flex`` (rather than the default block) keeps the
+        // chip aligned with the other right-side header controls (which
+        // sit in a flex row already).
+        chip.classList.remove('d-none');
+        chip.classList.add('d-inline-flex');
+        const n = pending.length;
+        chipText.textContent = `${n} waiting`;
+        chip.title = n === 1
+            ? 'One webhook is debouncing — click to jump to its row in the queue'
+            : `${n} webhooks debouncing — click to jump to the next one in the queue`;
     } catch (error) {
-        row.classList.add('d-none');
+        // Network blip: hide rather than show a stale count.
+        chip.classList.add('d-none');
+        chip.classList.remove('d-inline-flex');
     }
 }
 
-function tickPendingWebhookCountdowns() {
-    const now = Date.now();
-    document.querySelectorAll('.pending-webhook-countdown[data-deadline]').forEach(function (el) {
-        const deadline = Number(el.getAttribute('data-deadline'));
-        if (!Number.isFinite(deadline)) return;
-        const remaining = Math.max(0, Math.ceil((deadline - now) / 1000));
-        const text = remaining + 's';
-        if (el.textContent !== text) el.textContent = text;
-    });
-}
-
-// Click delegation for "Fire now" buttons inside the pending-webhooks
-// banner. POSTs /api/webhooks/pending/<key>/fire-now, then immediately
-// reloads the banner (the row should disappear because the batch was
-// dispatched) and the jobs list (the new job should appear).
-document.addEventListener('click', async function (e) {
-    const btn = e.target.closest && e.target.closest('.pending-fire-now');
-    if (!btn) return;
+// Click handler for the chip — scroll to the first job row carrying a
+// webhook countdown. If the row isn't on the page yet (e.g. the queue
+// hasn't loaded), fall back to scrolling to the queue card itself.
+document.addEventListener('click', function (e) {
+    const chip = e.target.closest && e.target.closest('#pendingWebhooksChip');
+    if (!chip) return;
     e.preventDefault();
-    const key = btn.getAttribute('data-key') || '';
-    if (!key) return;
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status"></span>Firing…';
-    try {
-        await apiPost('/api/webhooks/pending/' + encodeURIComponent(key) + '/fire-now');
-        showToast('Webhook Fired', 'Skipped the delay — dispatching now.', 'success');
-        // Refresh the banner (row should disappear) and the jobs list
-        // (the new job should appear within ~1s).
-        await loadPendingWebhooks();
-        await loadJobs();
-    } catch (error) {
-        btn.disabled = false;
-        btn.innerHTML = '<i class="bi bi-lightning-charge-fill me-1"></i>Fire now';
-        showToast('Error', 'Could not fire webhook: ' + (error && error.message || error), 'danger');
+    const target =
+        document.querySelector('[data-webhook-fire-at]')
+        || document.querySelector('#jobQueue')
+        || document.querySelector('.jobs-table');
+    if (target) {
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        // Briefly highlight the row so the user's eye lands on it after
+        // the scroll. The flash class is removed on transitionend so
+        // re-clicks animate cleanly. CSS lives alongside other
+        // job-row styles.
+        const row = target.closest && target.closest('tr');
+        if (row) {
+            row.classList.add('queue-row-flash');
+            setTimeout(function () { row.classList.remove('queue-row-flash'); }, 1500);
+        }
     }
 });
 

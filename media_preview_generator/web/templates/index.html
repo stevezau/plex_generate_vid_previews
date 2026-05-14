@@ -189,15 +189,10 @@
     </div>
 </div>
 
-<!-- Pending Webhooks Banner (populated by app.js) -->
-<div class="row d-none" id="pendingWebhooksRow">
-    <div class="col-12 mb-3">
-        <div class="alert alert-info mb-0 d-flex align-items-center" id="pendingWebhooksBanner">
-            <i class="bi bi-hourglass-split me-2"></i>
-            <span id="pendingWebhooksContent">Waiting for webhook...</span>
-        </div>
-    </div>
-</div>
+<!-- (Pending-webhooks indicator moved into the Job Queue card header
+     below — see ``pendingWebhooksChip``. Was previously a full-width
+     yellow banner; per-row countdown + Fire-now lives in the queue
+     itself now post-issue-237 UX consolidation.) -->
 
 <!-- Active Jobs -->
 <div class="row">
@@ -227,6 +222,16 @@
             <div class="card-header d-flex justify-content-between align-items-center">
                 <span><i class="bi bi-list-task me-2"></i>Job Queue</span>
                 <div class="d-flex align-items-center gap-2">
+                    <!-- Pending-webhooks chip — at-a-glance "N waiting"
+                         counter, click to scroll to the first row. Per-row
+                         countdown + Fire-now controls live on the row
+                         itself (issue #237 UX consolidation, May 2026). -->
+                    <button type="button" id="pendingWebhooksChip"
+                            class="btn btn-sm btn-warning d-none align-items-center gap-1"
+                            title="Click to jump to the waiting webhook in the queue">
+                        <i class="bi bi-hourglass-split"></i>
+                        <span id="pendingWebhooksChipText">0 waiting</span>
+                    </button>
                     <span id="globalPauseResumeQueue"></span>
                     <div class="dropdown d-inline-block">
                         <button class="btn btn-sm btn-outline-danger dropdown-toggle text-nowrap" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside" title="Clear jobs by status" aria-label="Clear jobs">
