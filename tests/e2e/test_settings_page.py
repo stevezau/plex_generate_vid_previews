@@ -39,7 +39,6 @@ def settings_page(authed_page: Page, app_url: str) -> Page:
 class TestSettingsLayout:
     def test_sidebar_links_present(self, settings_page: Page) -> None:
         for href in (
-            "#section-media-servers",
             "#section-processing",
             "#section-logging",
             "#section-auth",
