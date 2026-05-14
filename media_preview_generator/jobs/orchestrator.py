@@ -500,7 +500,12 @@ def _dispatch_processable_items(
     import threading
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    from ..processing.generator import _notify_file_result, failure_scope
+    from ..processing.generator import (
+        CancellationError,
+        CodecNotSupportedError,
+        _notify_file_result,
+        failure_scope,
+    )
     from ..processing.multi_server import MultiServerStatus, process_canonical_path
     from ..servers.base import ServerType
 
@@ -1076,6 +1081,72 @@ def _dispatch_processable_items(
                     regenerate=bool(getattr(config, "regenerate_thumbnails", False)),
                 )
                 return (worker_label, result)
+            except CodecNotSupportedError as exc:
+                # In-place GPU→CPU fallback. Pre-fix the bare except below
+                # swallowed CodecNotSupportedError, so the user-visible
+                # "retrying on CPU automatically" log line from
+                # generator.py / multi_server.py was a lie on full-scan
+                # jobs — no CPU retry ever ran. Worker-pool path has the
+                # equivalent fallback at jobs/worker.py:557-613; this
+                # mirrors it for the orchestrator's executor path.
+                # Live regression: 4 Re:ZERO episodes in job a90c9b87
+                # (TV Shows full scan, 2026-05-14) hit this and were
+                # marked failed despite the announced fallback.
+                if cancel_check and cancel_check():
+                    logger.info(
+                        "Multi-server {}: cancelled before CPU fallback for {!r}",
+                        label,
+                        item.canonical_path,
+                    )
+                    return (worker_label, None)
+                logger.warning(
+                    "Multi-server {}: GPU couldn't process {!r} ({}); retrying on CPU. "
+                    "If this happens for many files, your GPU may not support the codec.",
+                    label,
+                    item.canonical_path,
+                    exc,
+                )
+                try:
+                    result = process_canonical_path(
+                        canonical_path=item.canonical_path,
+                        registry=registry,
+                        config=config,
+                        item_id_by_server=item.item_id_by_server or None,
+                        bundle_metadata_by_server=item.bundle_metadata_by_server or None,
+                        gpu=None,
+                        gpu_device_path=None,
+                        progress_callback=_slot_progress_callback,
+                        cancel_check=cancel_check,
+                        server_id_filter=per_item_pin,
+                        regenerate=bool(getattr(config, "regenerate_thumbnails", False)),
+                    )
+                    logger.info(
+                        "Multi-server {}: completed CPU fallback for {!r}",
+                        label,
+                        item.canonical_path,
+                    )
+                    return (worker_label, result)
+                except CancellationError:
+                    # Distinct branch (mirrors jobs/worker.py:598-602) so the
+                    # user-visible log shows "cancelled during fallback" rather
+                    # than getting collapsed into the generic "CPU fallback also
+                    # failed (CancellationError: …)" message.
+                    logger.info(
+                        "Multi-server {}: cancelled during CPU fallback for {!r}",
+                        label,
+                        item.canonical_path,
+                    )
+                    return (worker_label, None)
+                except Exception as fallback_exc:
+                    logger.warning(
+                        "Multi-server {}: CPU fallback also failed for {!r} ({}: {}). "
+                        "Marking this file as failed; other items keep processing.",
+                        label,
+                        item.canonical_path,
+                        type(fallback_exc).__name__,
+                        fallback_exc,
+                    )
+                    return (worker_label, None)
             except Exception as exc:
                 logger.warning(
                     "Multi-server {}: per-item processing failed for {!r} ({}: {}). "
