@@ -1120,7 +1120,10 @@ function renderDashboardGpuConfig() {
             html += `<button type="button" class="btn btn-sm btn-outline-success gpu-scale-btn" onclick="scaleGpuWorkers('${safeDevice}', 1)" title="Add one worker"><i class="bi bi-plus-lg"></i></button>`;
             html += `</span>`;
         } else {
-            html += `<button type="button" class="btn btn-sm btn-outline-success" onclick="scaleGpuWorkers('${safeDevice}', 1)" title="Enable with 1 worker"><i class="bi bi-power me-1"></i>Enable</button>`;
+            const enableTitle = (saved.workers || 0) > 0
+                ? `Re-enable GPU (${saved.workers} worker${saved.workers === 1 ? '' : 's'})`
+                : 'Enable with 1 worker';
+            html += `<button type="button" class="btn btn-sm btn-outline-success" onclick="scaleGpuWorkers('${safeDevice}', 1)" title="${enableTitle}"><i class="bi bi-power me-1"></i>Enable</button>`;
         }
         html += `</div>`;
     }
@@ -1154,14 +1157,24 @@ async function scaleGpuWorkers(device, direction) {
 
     const prevWorkers = entry.workers || 0;
     const prevEnabled = entry.enabled !== false;
-    const newWorkers = Math.max(0, prevWorkers + direction);
-    if (newWorkers === prevWorkers) return;
-    entry.workers = newWorkers;
-    if (newWorkers === 0) {
-        entry.enabled = false;
-    } else if (newWorkers > 0) {
-        entry.enabled = true;
+    let newWorkers;
+    let newEnabled;
+    if (!prevEnabled && direction > 0) {
+        // Re-enabling a disabled GPU: restore its previous worker count
+        // rather than bumping it by +1. Disabling via the settings-page
+        // toggle leaves the saved `workers` value untouched (only flips
+        // `enabled` → false), so plain `prevWorkers + 1` turned "had 2
+        // workers, toggled off in settings, hit Enable on dashboard"
+        // into 3 workers.
+        newWorkers = Math.max(1, prevWorkers);
+        newEnabled = true;
+    } else {
+        newWorkers = Math.max(0, prevWorkers + direction);
+        newEnabled = newWorkers > 0;
     }
+    if (newWorkers === prevWorkers && newEnabled === prevEnabled) return;
+    entry.workers = newWorkers;
+    entry.enabled = newEnabled;
 
     try {
         const saveResult = await apiPost('/api/settings', { gpu_config: gpuConfig });
