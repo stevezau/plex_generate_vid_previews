@@ -66,10 +66,6 @@ plex_generate_previews/_version.py
 # checkouts can run `python3 scripts/refresh_release_notes.py` to
 # populate it for offline dev, but the file is never committed.
 media_preview_generator/release_notes.json
-servers-add-emby.png
-setup-step1-fixed.png
-setup-step1-full.png
-setup-step1.png
 # Ad-hoc screenshots from Playwright UI verification — keep local only.
 # Real docs screenshots should live under docs/ and be added explicitly.
 *.png

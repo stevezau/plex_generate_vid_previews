@@ -133,22 +133,6 @@ def test_config_loads_from_env(monkeypatch, mock_config):
     assert config.plex_url == 'http://test:32400'
 ```
 
-### Load Testing
-
-A Locust scenario for stress-testing the web API lives in `tests/load/`:
-
-```bash
-# Interactive mode — open http://localhost:8089 to configure and start
-locust -f tests/load/locustfile.py
-
-# Headless mode
-locust -f tests/load/locustfile.py --headless -u 50 -r 10 -t 60s
-```
-
-Locust is a dev dependency — install with `pip install -e ".[dev]"`.
-
----
-
 ## Project Structure
 
 ```

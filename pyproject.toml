@@ -97,7 +97,6 @@ dev = [
     "media-preview-generator[test]",
     "ruff>=0.6.0",
     "pre-commit>=3.6.0",
-    "locust>=2.20.0",
     "httpie>=3.2.0",
 ]
 
