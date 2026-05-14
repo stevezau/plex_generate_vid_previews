@@ -1150,55 +1150,76 @@ class TestJobsAPI:
             assert entry["ffmpeg_started"] is False, entry
             assert entry["current_phase"] == "", entry
 
-    def test_workers_endpoint_skips_legacy_fallback_when_a_job_is_running(self, client):
-        """Job 8cd02fa6 / f66231a8 regression — the dashboard's Workers
-        panel "jumped around" mid-scan because the API endpoint fell
-        back to the legacy ``Dispatcher`` pool (0-based IDs:
-        ``GPU_0..GPU_3``) any time ``_worker_statuses`` was briefly
-        empty, then returned the multi-server dispatcher's 1-based
-        IDs (``GPU_1..GPU_4``) the next moment. The UI keys cards by
-        ``worker_id``, so the two sets produced different DOM
-        identities and cards appeared/disappeared each poll.
+    def test_workers_endpoint_returns_synth_idle_during_enumeration_phase(self, client):
+        """Job b5651c8a follow-up — the Workers panel went BLANK for
+        30-60+ seconds at the start of a Jellyfin Shows scan (118k
+        items). Workers reappeared the moment the user cancelled.
 
-        Contract: when a job is actively running, the running job's
-        dispatcher is the sole source of truth for the Workers
-        panel. If it hasn't emitted yet (or is between emits), the
-        endpoint must return an empty list — the panel renders
-        "No active workers" briefly until the next emit lands.
-        Falling back to the legacy idle pool would mix two
-        numbering schemes."""
+        Root cause: the multi-server dispatcher only builds slots AND
+        emits the initial worker snapshot AFTER enumeration finishes,
+        and enumeration of a huge library takes tens of seconds. The
+        previous gate (commit 49dcd7b) returned ``[]`` during that
+        window to avoid mixing the legacy 0-based fallback with the
+        multi-server 1-based scheme — but the user's mental model is
+        "workers are always visible; jobs just feed items into them."
+
+        Fix: when a job is running AND ``_worker_statuses`` is empty
+        (enumeration phase), return synthesised idle workers from
+        the saved config using the SAME 1-based ID scheme the
+        dispatcher will use. When the dispatcher's force-emit lands,
+        ``_worker_statuses`` populates with the same keys and the
+        cards transition in place — no DOM swap, no blank panel.
+
+        Contract pinned by this test:
+        * during enumeration, API returns non-empty workers list;
+        * those workers use 1-based IDs (matching the multi-server
+          dispatcher's ``_seq_state["slot"]`` scheme, so the eventual
+          real emit doesn't trigger a card-key change);
+        * shape parity with the legacy synth path (other test pins
+          this separately, but cross-reference here is helpful).
+        """
         from media_preview_generator.web.jobs import Job, JobStatus, get_job_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        # Pin a known worker count so the assertion is deterministic.
+        sm = get_settings_manager()
+        sm.set("cpu_threads", 3)
+        sm.set("gpu_config", [])
 
         jm = get_job_manager()
-        # Sanity: no statuses, no running jobs → fallback fires.
         jm.clear_worker_statuses()
-        resp = client.get("/api/jobs/workers", headers=_api_headers())
-        idle_workers = resp.get_json()["workers"]
 
-        # Now create a running job — same state of _worker_statuses
-        # (empty), but a job is alive. The endpoint MUST NOT fall
-        # back to the legacy pool in this state.
-        job = Job(id="job-pretend-running", status=JobStatus.RUNNING, created_at="2026-05-14T00:00:00Z")
+        job = Job(id="job-enumerating", status=JobStatus.RUNNING, created_at="2026-05-14T00:00:00Z")
         with jm._lock:
             jm._jobs[job.id] = job
             jm._running_job_ids.add(job.id)
         try:
-            resp_during_job = client.get("/api/jobs/workers", headers=_api_headers())
-            workers_during_job = resp_during_job.get_json()["workers"]
+            resp = client.get("/api/jobs/workers", headers=_api_headers())
+            workers = resp.get_json()["workers"]
         finally:
             with jm._lock:
                 jm._jobs.pop(job.id, None)
                 jm._running_job_ids.discard(job.id)
 
-        assert workers_during_job == [], (
-            f"With a job running and no multi-server emits yet, the workers endpoint must "
-            f"return an empty list — the legacy fallback's worker IDs (0..N-1) collide with "
-            f"the multi-server dispatcher's IDs (1..N) and cause the Workers panel to "
-            f"flip cards each poll. Got: {workers_during_job!r}. The pre-job fallback "
-            f"contract (used when no jobs are running) still returns {len(idle_workers)} "
-            f"workers, so the fallback path itself isn't broken — just gated on "
-            f"``not job_manager.get_running_jobs()``."
+        assert workers, (
+            "With a multi-server job in its enumeration phase (RUNNING + empty _worker_statuses), "
+            "the API must return synthesised idle workers so the dashboard panel doesn't go blank "
+            "for the 30-60+ seconds it takes Jellyfin to walk a 118k-item library. "
+            "Got empty list — the user sees 'No active workers' during enumeration, which "
+            "was the b5651c8a-aftermath regression."
         )
+        assert len(workers) == 3, f"Expected 3 idle CPU workers (cpu_threads=3); got {len(workers)}"
+        ids = [w["worker_id"] for w in workers]
+        # 1-based IDs match the multi-server dispatcher's _seq_state
+        # scheme — when the real force-emit lands, same keys are
+        # updated and cards transition in place.
+        assert ids == [1, 2, 3], (
+            f"Synth idle workers during enumeration must use 1-based IDs to match the "
+            f"multi-server dispatcher's slot IDs (so the eventual real emit doesn't "
+            f"trigger a DOM-key swap). Got IDs: {ids!r}"
+        )
+        for w in workers:
+            assert w["status"] == "idle", f"workers during enumeration are idle until dispatch: {w!r}"
 
     def test_synth_idle_workers_match_dispatcher_idle_shape(self, client):
         """Parity guard: ``_build_idle_workers_from_config`` (used before
@@ -4184,20 +4205,22 @@ class TestPlexTestConnection:
 # ---------------------------------------------------------------------------
 
 
-class TestPlexWebhookLoopbackGuard:
-    """Ensure the webhook self-test short-circuits for localhost URLs in Docker.
+class TestPlexWebhookTestEndpointRemoved:
+    """The ``/api/settings/plex_webhook/test`` endpoint was removed.
 
-    Inside a container, `localhost` is the container itself — so a scary
-    ConnectionRefused stack trace is the usual symptom when users leave the
-    auto-filled default URL unchanged. The guard produces actionable text
-    instead of attempting the doomed network call.
+    Same rationale as the Emby/Jellyfin equivalents: a loopback POST
+    only proved auth + route worked locally, not that Plex Media Server
+    could reach this app from its own network. The button shipped a
+    "Reachable" success message in scenarios where webhooks would
+    still fail in production, so it was misleading more than helpful.
+
+    The ``_loopback_in_docker_warning`` helper is still used by the
+    status endpoint to surface a "this is a loopback URL, Plex can't
+    reach it from outside the container" warning at probe time — that
+    coverage moves to ``TestPlexWebhookStatusLoopbackWarning`` below.
     """
 
-    @patch("media_preview_generator.web.routes.api_settings.is_docker_environment")
-    @patch("requests.post")
-    def test_loopback_in_docker_short_circuits_with_guidance(self, mock_post, mock_is_docker, client):
-        mock_is_docker.return_value = True
-
+    def test_test_endpoint_404s(self, client):
         from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
@@ -4207,117 +4230,12 @@ class TestPlexWebhookLoopbackGuard:
         resp = client.post(
             "/api/settings/plex_webhook/test",
             headers=_api_headers(),
-            json={"public_url": "http://localhost:9191/api/webhooks/plex"},
+            json={"public_url": "http://localhost:9191/api/webhooks/server/plex-default"},
         )
-        assert resp.status_code == 200
-        body = resp.get_json()
-        assert body["success"] is False
-        assert "localhost" in body["error"]
-        assert "Docker" in body["error"]
-        assert body["public_url"] == "http://localhost:9191/api/webhooks/plex"
-        # Guard must prevent any actual outbound request.
-        mock_post.assert_not_called()
-
-    @patch("media_preview_generator.web.routes.api_settings.is_docker_environment")
-    @patch("requests.post")
-    def test_loopback_outside_docker_proceeds_with_network_call(self, mock_post, mock_is_docker, client):
-        mock_is_docker.return_value = False
-
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.text = "ok"
-        mock_post.return_value = mock_response
-
-        from media_preview_generator.web.settings_manager import get_settings_manager
-
-        sm = get_settings_manager()
-        sm.set("plex_token", "plex-token")
-        sm.set("webhook_secret", "secret-value")
-
-        resp = client.post(
-            "/api/settings/plex_webhook/test",
-            headers=_api_headers(),
-            json={"public_url": "http://localhost:9191/api/webhooks/plex"},
+        assert resp.status_code == 404, (
+            "Plex Test reachability endpoint was removed because it only proved loopback worked. "
+            "Re-introducing it would re-introduce 'webhook test passes but real events fail' support."
         )
-        assert resp.status_code == 200
-        body = resp.get_json()
-        assert body["success"] is True
-        # Inspect the outbound request — D31 was caused by silently building a
-        # broken URL/body. A bare assert_called_once misses that class of bug.
-        mock_post.assert_called_once()
-        call = mock_post.call_args
-        target_url = call.args[0] if call.args else call.kwargs.get("url")
-        # The endpoint appends ?token=<auth> via _build_authenticated_url, but
-        # the path prefix must match the user-supplied URL exactly — D31 was a
-        # doubled prefix that this assertion catches.
-        assert target_url.startswith("http://localhost:9191/api/webhooks/plex"), (
-            f"webhook test must POST to the user-supplied URL (with token query), got {target_url!r}"
-        )
-        assert "/api/webhooks/plex/api/webhooks/plex" not in target_url, (
-            f"D31 regression: doubled URL prefix in {target_url!r}"
-        )
-        # Plex-style multipart payload, not JSON.
-        assert "files" in call.kwargs, "must use multipart files= to mimic real Plex POSTs"
-
-    @patch("media_preview_generator.web.routes.api_settings.is_docker_environment")
-    @patch("requests.post")
-    def test_non_loopback_in_docker_proceeds(self, mock_post, mock_is_docker, client):
-        mock_is_docker.return_value = True
-
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.text = "ok"
-        mock_post.return_value = mock_response
-
-        from media_preview_generator.web.settings_manager import get_settings_manager
-
-        sm = get_settings_manager()
-        sm.set("plex_token", "plex-token")
-        sm.set("webhook_secret", "secret-value")
-
-        resp = client.post(
-            "/api/settings/plex_webhook/test",
-            headers=_api_headers(),
-            json={"public_url": "http://192.168.1.50:9191/api/webhooks/plex"},
-        )
-        assert resp.status_code == 200
-        assert resp.get_json()["success"] is True
-        mock_post.assert_called_once()
-        # D31 regression guard: assert the URL was passed through with the
-        # user-supplied prefix intact (the auth ?token=… is appended).
-        call = mock_post.call_args
-        target_url = call.args[0] if call.args else call.kwargs.get("url")
-        assert target_url.startswith("http://192.168.1.50:9191/api/webhooks/plex"), (
-            f"webhook test must POST to the user-supplied URL prefix, got {target_url!r}"
-        )
-        assert "/api/webhooks/plex/api/webhooks/plex" not in target_url, (
-            f"D31 regression: doubled URL prefix in {target_url!r}"
-        )
-        assert "files" in call.kwargs, "must use multipart files= to mimic real Plex POSTs"
-
-    @patch("media_preview_generator.web.routes.api_settings.is_docker_environment")
-    def test_loopback_guard_covers_ipv4_and_ipv6(self, mock_is_docker, client):
-        mock_is_docker.return_value = True
-
-        from media_preview_generator.web.settings_manager import get_settings_manager
-
-        sm = get_settings_manager()
-        sm.set("plex_token", "plex-token")
-        sm.set("webhook_secret", "secret-value")
-
-        for url in (
-            "http://127.0.0.1:9191/api/webhooks/plex",
-            "http://[::1]:9191/api/webhooks/plex",
-        ):
-            resp = client.post(
-                "/api/settings/plex_webhook/test",
-                headers=_api_headers(),
-                json={"public_url": url},
-            )
-            assert resp.status_code == 200
-            body = resp.get_json()
-            assert body["success"] is False, f"expected guard to trip for {url}"
-            assert "Docker" in body["error"]
 
 
 # ---------------------------------------------------------------------------
@@ -5500,7 +5418,39 @@ class TestPerServerPlexWebhook:
         assert body["server_name"] == "Living Room"
         assert body["registered_in_plex"] is True
         assert seen["token"] == "TOKEN-A"
-        assert seen["url"] == "https://a.example/api/webhooks/plex"
+        # The status probe runs against the recommended per-server URL
+        # (path rebuilt; host preserved from the stored override). When
+        # this probe succeeds we don't fall back to the legacy URL.
+        assert seen["url"] == "https://a.example/api/webhooks/server/plex-a"
+
+    def test_status_falls_back_to_legacy_url_for_registered_check(self, client, monkeypatch):
+        """Legacy ``/api/webhooks/incoming`` registrations still show as Registered.
+
+        The per-server URL is the *recommended* form going forward, but
+        users who registered before this change have ``/incoming`` on
+        plex.tv. We probe the recommended URL first (cheap) and fall
+        back to the stored URL if the first probe says "no" — that way
+        the badge stays accurate during the migration window.
+        """
+        self._seed_two_plex_servers()
+        probes = []
+
+        def fake_is_registered(token, url):
+            probes.append(url)
+            # First probe (recommended URL) fails; second (stored legacy) succeeds.
+            return url.endswith("/api/webhooks/plex")
+
+        from media_preview_generator.web import plex_webhook_registration as pwh
+
+        monkeypatch.setattr(pwh, "is_registered", fake_is_registered)
+
+        resp = client.get("/api/settings/plex_webhook/status?server_id=plex-a", headers=_api_headers())
+        assert resp.status_code == 200
+        assert resp.get_json()["registered_in_plex"] is True
+        assert probes == [
+            "https://a.example/api/webhooks/server/plex-a",
+            "https://a.example/api/webhooks/plex",
+        ], "must probe recommended URL first, then fall back to stored legacy URL"
 
     def test_register_persists_url_onto_target_server(self, client, monkeypatch):
         self._seed_two_plex_servers()
@@ -5518,6 +5468,9 @@ class TestPerServerPlexWebhook:
 
         monkeypatch.setattr(pwh, "register", fake_register)
 
+        # The caller submits a legacy ``/api/webhooks/plex`` URL — the
+        # path gets rebuilt to the per-server form on the backend while
+        # the host (b.example) is preserved.
         resp = client.post(
             "/api/settings/plex_webhook/register",
             headers=_api_headers(),
@@ -5528,14 +5481,79 @@ class TestPerServerPlexWebhook:
         assert body["success"] is True
         assert body["server_id"] == "plex-b"
         assert seen["token"] == "TOKEN-B"
-        assert seen["url"] == "https://b.example/api/webhooks/plex"
+        # Path rebuilt to /api/webhooks/server/<id>; host preserved.
+        assert seen["url"] == "https://b.example/api/webhooks/server/plex-b"
+        # ``server_id`` kwarg dropped: the path encodes it. Passing it
+        # would put a redundant ``&server_id=`` on the URL plex.tv stores.
+        assert seen["server_id"] is None, (
+            "server_id kwarg must NOT be passed to pwh.register — the per-server URL "
+            "path already encodes it; query-param duplication is dead weight."
+        )
 
-        # Verify the URL got persisted onto plex-b only.
+        # Persisted URL matches what was registered on plex.tv (self-heal
+        # to the per-server form). plex-a's untouched stored URL is the
+        # legacy form because we only registered plex-b.
         servers = get_settings_manager().get("media_servers")
         plex_b = next(s for s in servers if s["id"] == "plex-b")
-        assert plex_b["output"]["webhook_public_url"] == "https://b.example/api/webhooks/plex"
+        assert plex_b["output"]["webhook_public_url"] == "https://b.example/api/webhooks/server/plex-b"
         plex_a = next(s for s in servers if s["id"] == "plex-a")
         assert plex_a["output"]["webhook_public_url"] == "https://a.example/api/webhooks/plex"
+
+    def test_register_rebuilds_path_from_stored_url_when_input_empty(self, client, monkeypatch):
+        """Empty ``public_url`` in the request → rebuild from stored URL's host.
+
+        This is the self-heal path for existing installs: user opens
+        the modal, the input is empty (or auto-filled with the
+        recommended URL), they click Re-register. Backend must
+        construct the per-server URL using the stored host so users
+        with reverse proxies don't lose their custom DNS.
+        """
+        self._seed_two_plex_servers()
+        from media_preview_generator.web import plex_webhook_registration as pwh
+
+        seen = {}
+
+        def fake_register(token, url, auth_token=None, *, server_id=None):
+            seen["url"] = url
+            return [url]
+
+        monkeypatch.setattr(pwh, "register", fake_register)
+
+        # No public_url in the payload — backend must pull host from stored
+        # URL (which is the legacy ``/api/webhooks/plex`` form) and rebuild.
+        resp = client.post(
+            "/api/settings/plex_webhook/register",
+            headers=_api_headers(),
+            json={"server_id": "plex-a"},
+        )
+        assert resp.status_code == 200
+        assert seen["url"] == "https://a.example/api/webhooks/server/plex-a"
+
+    def test_register_falls_back_to_request_host_when_no_stored_url(self, client, monkeypatch):
+        """No stored URL + no input → use the request host as the source.
+
+        Covers freshly-added servers whose ``output.webhook_public_url``
+        hasn't been written yet (plex-b in this fixture).
+        """
+        self._seed_two_plex_servers()
+        from media_preview_generator.web import plex_webhook_registration as pwh
+
+        seen = {}
+
+        def fake_register(token, url, auth_token=None, *, server_id=None):
+            seen["url"] = url
+            return [url]
+
+        monkeypatch.setattr(pwh, "register", fake_register)
+
+        resp = client.post(
+            "/api/settings/plex_webhook/register",
+            headers=_api_headers(),
+            json={"server_id": "plex-b"},
+        )
+        assert resp.status_code == 200
+        # Flask test client request.host_url is "http://localhost/" by default.
+        assert seen["url"].endswith("/api/webhooks/server/plex-b"), f"expected per-server path; got {seen['url']!r}"
 
     def test_register_rejects_unknown_server(self, client):
         resp = client.post(

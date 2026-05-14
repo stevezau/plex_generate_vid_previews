@@ -1111,32 +1111,46 @@ def get_job_file_results(job_id):
 def get_worker_statuses():
     """Get status of all workers.
 
-    Returns callback-driven statuses when a job is actively pushing
-    updates, otherwise falls back to querying the global dispatcher's
-    pool directly so workers are visible even when idle.
+    User's mental model: workers are always-present slots that jobs
+    feed items into — the panel should ALWAYS show the configured
+    workers (idle when no job, transitioning to processing as the
+    dispatcher claims them). So the resolution order is:
 
-    The fallback only fires when **no job is running**. Jobs
-    f66231a8 / 8cd02fa6 hit a UI regression where the dashboard's
-    Workers panel "jumped around" mid-scan because the multi-server
-    dispatcher's slot IDs are 1-based (``GPU_1..GPU_4``) while the
-    legacy fallback returns 0-based IDs (``GPU_0..GPU_3``). The UI
-    keys cards by ``worker_id`` so the two ID schemes produce
-    different DOM identities — any moment ``_worker_statuses`` was
-    transiently empty (e.g. between job start and the dispatcher's
-    first emit) the API flipped to the legacy 0-based set, then back
-    to 1-based on the next poll, and cards swapped places each
-    refresh. The two schemes are an implementation detail that was
-    never supposed to be compared at the UI layer; the contract now
-    is "while a job is running, its dispatcher is the sole source of
-    truth — show whatever it has, even if briefly empty, rather than
-    mixing in an idle-pool snapshot from a different numbering."
+    1. ``_worker_statuses`` has live state (any dispatcher actively
+       emitting) — return that.
+    2. A job IS running but ``_worker_statuses`` is empty
+       (enumeration phase — the multi-server dispatcher builds slots
+       and emits only AFTER enumeration finishes, which can take
+       30-60s on a 118k-item Jellyfin library) — synthesise idle
+       workers from the saved config using the SAME 1-based ID
+       scheme the dispatcher will use. When the real force-emit
+       lands, same keys are updated in place; no DOM swap.
+    3. No job running — fall back to the legacy dispatcher pool
+       (which itself falls through to ``_build_idle_workers_from_config``
+       when no pool exists).
+
+    History:
+    * Commit 49dcd7b added a "return [] during running job" gate
+      to avoid mixing legacy 0-based fallback IDs with multi-server
+      1-based IDs at dispatch start (the "cards jumping" symptom).
+    * Job b5651c8a follow-up: that gate left the panel BLANK for
+      tens of seconds during enumeration of large libraries. The
+      user reported "kick off a jelly full lib scan on shows, the
+      workers disappear, cancel the job and they come back."
+    * This rewrite resolves both: synth idle uses the same 1-based
+      IDs the dispatcher emits, so no flip; the panel is never
+      blank during a running job; legacy fallback still serves the
+      idle-app case identically.
     """
     try:
         job_manager = get_job_manager()
         workers = job_manager.get_worker_statuses()
 
-        if not workers and not job_manager.get_running_jobs():
-            workers = _get_dispatcher_worker_statuses()
+        if not workers:
+            if job_manager.get_running_jobs():
+                workers = _build_idle_workers_from_config()
+            else:
+                workers = _get_dispatcher_worker_statuses()
 
         return jsonify({"workers": [w.to_dict() if hasattr(w, "to_dict") else w for w in workers]})
     except Exception:
