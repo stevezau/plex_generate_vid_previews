@@ -1091,16 +1091,27 @@ function renderDashboardGpuConfig() {
 
         const enabled = saved.enabled !== undefined ? saved.enabled : true;
         const workers = saved.workers !== undefined ? saved.workers : 1;
-        const statusBadge = enabled
-            ? '<span class="badge bg-success">enabled</span>'
-            : '<span class="badge bg-secondary">disabled</span>';
+
+        // Enabled/disabled was shown as a "enabled"/"disabled" badge
+        // next to the GPU name, but on long names (e.g. "NVIDIA GeForce
+        // RTX 4070 Ti SUPER") the surrounding text-truncate clipped the
+        // badge — and the badge duplicated info already carried by the
+        // right-side controls (workers ±  vs. an "Enable" button).
+        // Drop the badge; signal disabled state by greying the whole
+        // row instead. The Enable button on the right still surfaces
+        // the action when the user does want to bring the GPU back.
+        const rowStateCls = enabled ? '' : ' text-muted opacity-75';
 
         const vendorMark = _gpuVendorLogo(gpu.type, 18)
             || `<span class="badge bg-primary me-1" style="font-size: 0.65em;">${escapeHtml(gpu.type).toUpperCase()}</span>`;
-        html += `<div class="d-flex justify-content-between align-items-center mb-2">`;
-        html += `<span class="text-truncate me-2" style="max-width: 55%;" title="${fullNameTitle}">`;
+        html += `<div class="d-flex justify-content-between align-items-center mb-2${rowStateCls}">`;
+        // No status badge any more → give the name slot more room.
+        // 70% leaves a comfortable margin for the right-side controls
+        // even for the widest button (the "Enable" button on the
+        // disabled-row path).
+        html += `<span class="text-truncate me-2" style="max-width: 70%;" title="${fullNameTitle}${enabled ? '' : ' · disabled'}">`;
         html += vendorMark;
-        html += `${escapeHtml(gpu.name)} ${statusBadge}`;
+        html += `${escapeHtml(gpu.name)}`;
         html += `</span>`;
         if (enabled) {
             html += `<span class="d-flex align-items-center gap-1">`;
