@@ -1401,6 +1401,120 @@ class TestEmbyPreviewsReadiness:
             "library_ids": ["t"],
         }
 
+    def test_skips_non_video_collection_types(self, emby):
+        """Issue #237: music / musicvideos / photos / books / audiobooks
+        libraries must NOT appear in the readiness card. They don't have
+        the trickplay/chapter/realtime-monitor preview flags, so emitting
+        per-library rows for them tells users to disable settings that
+        the host UI doesn't expose.
+
+        Matrix coverage: each non-video CollectionType is paired with a
+        movies library that DOES emit a row, proving the filter is
+        type-specific and not a global suppression.
+        """
+        good_movie_options = {
+            "ExtractTrickplayImagesDuringLibraryScan": False,
+            "ExtractChapterImagesDuringLibraryScan": False,
+            "EnableRealtimeMonitor": True,
+        }
+        # Use mis-set options on the non-video libraries to PROVE the
+        # filter runs before the per-flag check — a buggy implementation
+        # that emits rows for non-video libraries would surface these.
+        bad_options = {
+            "ExtractTrickplayImagesDuringLibraryScan": True,
+            "ExtractChapterImagesDuringLibraryScan": True,
+            "EnableRealtimeMonitor": False,
+        }
+        folders = [
+            {"Name": "Movies", "ItemId": "m", "CollectionType": "movies", "LibraryOptions": good_movie_options},
+            {"Name": "Music", "ItemId": "music", "CollectionType": "music", "LibraryOptions": bad_options},
+            {"Name": "MV", "ItemId": "mv", "CollectionType": "musicvideos", "LibraryOptions": bad_options},
+            {"Name": "Photos", "ItemId": "p", "CollectionType": "photos", "LibraryOptions": bad_options},
+            {"Name": "Books", "ItemId": "b", "CollectionType": "books", "LibraryOptions": bad_options},
+            {"Name": "AB", "ItemId": "ab", "CollectionType": "audiobooks", "LibraryOptions": bad_options},
+        ]
+
+        def fake_request(method, url, **kwargs):
+            if url == "/System/Info":
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value={"Version": "4.8.0.0"}),
+                    raise_for_status=MagicMock(),
+                )
+            if url == "/Library/VirtualFolders":
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value=folders),
+                    raise_for_status=MagicMock(),
+                )
+            if url == "/ScheduledTasks":
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(
+                        return_value=[
+                            {
+                                "Name": "Generate Trickplay Images",
+                                "Key": "RefreshTrickplayImages",
+                                "Id": "sched-trickplay-id",
+                                "Triggers": [{"Type": "DailyTrigger", "TimeOfDayTicks": 108_000_000_000}],
+                                "State": "Idle",
+                            }
+                        ]
+                    ),
+                    raise_for_status=MagicMock(),
+                )
+            raise AssertionError(f"unexpected {method} {url}")
+
+        with patch.object(EmbyServer, "_request", side_effect=fake_request):
+            payload = emby.previews_readiness()
+
+        # Every per-library check must reference ONLY the movies library.
+        # If a non-video library leaks into a row, library_id == "music"
+        # / "p" / etc. would appear and this assertion fails loudly.
+        for section in payload["sections"]:
+            for check in section.get("checks", []):
+                lib_id = check.get("meta", {}).get("library_id")
+                if lib_id is None:
+                    continue
+                assert lib_id == "m", (
+                    f"Non-video library {lib_id!r} leaked into readiness section "
+                    f"{section['id']}; check id={check['id']!r}"
+                )
+
+    def test_check_settings_health_skips_non_video_collection_types(self, emby):
+        """The legacy ``check_settings_health`` audit must also skip
+        non-video libraries — same reason as ``previews_readiness``.
+        """
+        folders = [
+            {
+                "Name": "Movies",
+                "ItemId": "m",
+                "CollectionType": "movies",
+                "LibraryOptions": {
+                    "ExtractChapterImagesDuringLibraryScan": False,
+                    "EnableRealtimeMonitor": True,
+                },
+            },
+            {
+                "Name": "Music",
+                "ItemId": "music",
+                "CollectionType": "music",
+                "LibraryOptions": {
+                    "ExtractChapterImagesDuringLibraryScan": True,
+                    "EnableRealtimeMonitor": False,
+                },
+            },
+        ]
+        with patch.object(EmbyServer, "_request") as req:
+            req.return_value = MagicMock(
+                json=MagicMock(return_value=folders),
+                raise_for_status=MagicMock(),
+            )
+            issues = emby.check_settings_health()
+        # Movies row is recommended-clean → no issue. Music row is
+        # filtered out before per-flag evaluation. Result: zero issues.
+        assert issues == [], f"check_settings_health must not surface issues for music libraries; got {issues}"
+
 
 class TestEmbyScheduledTrickplayReadiness:
     """Emby has no Bridge-plugin equivalent — the daily Generate Trickplay

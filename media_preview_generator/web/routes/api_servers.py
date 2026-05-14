@@ -939,7 +939,96 @@ def previews_readiness(server_id: str):
         logger.warning("Readiness probe on {!r} raised: {}", cfg.name or cfg.id, exc)
         return jsonify({"ok": False, "error": str(exc)}), 200
 
+    # Issue #237: tag dismissed checks so the frontend can move them
+    # into an "All good → Dismissed" subsection. Raw audit state (ok,
+    # severity) is preserved — the partition logic on the JS side is
+    # what hides the row from the Recommended bucket. Critical checks
+    # are NEVER hidden by a dismissal (the frontend's _partitionChecks
+    # forces them back into mustFix), so a dismiss on a critical id is
+    # a harmless no-op rather than a safety hole.
+    dismissals = set(target.get("health_dismissals") or [])
+    if dismissals:
+        for section in payload.get("sections") or []:
+            for check in section.get("checks") or []:
+                if check.get("id") in dismissals:
+                    check["dismissed"] = True
+
     return jsonify(payload)
+
+
+def _toggle_health_dismissal(server_id: str, check_id: str, *, dismiss: bool) -> tuple[Any, int]:
+    """Add or remove a check from the per-server health_dismissals list.
+
+    Returns a (response_body, status_code) tuple. Read-modify-write the
+    matching media_servers entry under the settings_manager lock via
+    ``_save_media_servers`` — same pattern as the libraries-refresh
+    route. Idempotent: re-dismissing an already-dismissed check or
+    un-dismissing an un-dismissed one is a 200 no-op.
+    """
+    raw_servers = _get_media_servers()
+    target_index = next(
+        (i for i, s in enumerate(raw_servers) if isinstance(s, dict) and s.get("id") == server_id),
+        None,
+    )
+    if target_index is None:
+        return {"ok": False, "error": f"server {server_id!r} not found"}, 404
+
+    updated_entry = dict(raw_servers[target_index])
+    current = list(updated_entry.get("health_dismissals") or [])
+    if dismiss:
+        if check_id not in current:
+            current.append(check_id)
+    else:
+        current = [c for c in current if c != check_id]
+    updated_entry["health_dismissals"] = current
+
+    updated_servers = list(raw_servers)
+    updated_servers[target_index] = updated_entry
+    _save_media_servers(updated_servers)
+    return {"ok": True, "health_dismissals": current}, 200
+
+
+@api.route("/servers/<server_id>/previews-readiness/dismiss", methods=["POST"])
+@setup_or_auth_required
+def dismiss_previews_readiness_check(server_id: str):
+    """Hide a recommended-severity Setup Health check from the
+    Recommended bucket, surfacing it under "All good → Dismissed".
+
+    Body: ``{"check_id": "<id>"}``. The id matches what the GET
+    handler returns as ``check["id"]`` (e.g.
+    ``library_settings:FSEventLibraryUpdatesEnabled`` or
+    ``vendor_extraction:5``).
+
+    No server-side severity validation: critical checks always force
+    back into the mustFix bucket on the frontend, so dismissing one is
+    a harmless no-op rather than a safety hole. Issue #237.
+    """
+    from flask import request
+
+    body = request.get_json(silent=True) or {}
+    check_id = str(body.get("check_id") or "").strip()
+    if not check_id:
+        return jsonify({"ok": False, "error": "check_id is required"}), 400
+    payload, status = _toggle_health_dismissal(server_id, check_id, dismiss=True)
+    return jsonify(payload), status
+
+
+@api.route("/servers/<server_id>/previews-readiness/undismiss", methods=["POST"])
+@setup_or_auth_required
+def undismiss_previews_readiness_check(server_id: str):
+    """Inverse of :func:`dismiss_previews_readiness_check` — remove a
+    check from the per-server ``health_dismissals`` list.
+
+    Body: ``{"check_id": "<id>"}``. Idempotent.
+    """
+    from flask import request
+
+    body = request.get_json(silent=True) or {}
+    check_id = str(body.get("check_id") or "").strip()
+    if not check_id:
+        return jsonify({"ok": False, "error": "check_id is required"}), 400
+    payload, status = _toggle_health_dismissal(server_id, check_id, dismiss=False)
+    return jsonify(payload), status
 
 
 @api.route("/servers/<server_id>/trickplay-readiness", methods=["GET"])

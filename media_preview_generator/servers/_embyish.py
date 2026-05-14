@@ -80,6 +80,33 @@ _LIST_ITEMS_RETRY_BASE_WAIT_S = 2.0
 # + 4s`` ≈ ~186s before ``list_items`` gives up on a page.
 _LIST_ITEMS_TIMEOUT_S = 60
 
+# Issue #237: ``/Library/VirtualFolders`` includes music, photo, books
+# and audiobook libraries alongside the video ones. None of those have
+# a preview-thumbnail toggle (Emby/Jellyfin don't generate previews for
+# non-video media), so the readiness card must skip them entirely —
+# otherwise users see a "Music — Skip Emby's own trickplay generation"
+# row that points at a setting the host UI doesn't expose.
+#
+# Conservative blacklist: known non-video CollectionType values only.
+# Anything else (including missing/None, or unknown values like a new
+# Emby release inventing a video collection type) keeps generating
+# rows so we don't silently hide legitimate video libraries.
+_NON_VIDEO_COLLECTION_TYPES: frozenset[str] = frozenset({"music", "musicvideos", "photos", "books", "audiobooks"})
+
+
+def is_video_library_folder(raw: dict) -> bool:
+    """Return True when an Emby/Jellyfin VirtualFolder dict should be
+    treated as a video library for readiness / preview purposes.
+
+    See :data:`_NON_VIDEO_COLLECTION_TYPES` for the blacklist; anything
+    not in that set (including missing/None) is considered video and
+    keeps generating readiness rows.
+    """
+    if not isinstance(raw, dict):
+        return False
+    collection_type = str(raw.get("CollectionType") or "").lower()
+    return collection_type not in _NON_VIDEO_COLLECTION_TYPES
+
 
 class EmbyApiClient(MediaServer):
     """Base class for Emby and Jellyfin clients.

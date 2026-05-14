@@ -2048,8 +2048,22 @@
                     sectionAnchor: section.docs_anchor || '',
                     sectionId: section.id || '',
                 };
+                // Issue #237: critical checks ALWAYS go to mustFix
+                // even if dismissed — the user can't silence a true
+                // blocker by POSTing its id to the dismiss endpoint.
+                // The backend doesn't validate the dismissed id
+                // against current severity; this partition step is
+                // the safety enforcement instead.
                 if (check.ok === false && check.severity === 'critical') {
                     mustFix.push(item);
+                } else if (check.dismissed === true) {
+                    // Dismissed non-critical row → tucked under
+                    // "All good → Dismissed" so the user can see what
+                    // they've silenced and undismiss if they change
+                    // their mind. Raw audit state (ok / severity) is
+                    // preserved on the check; only the placement
+                    // changes.
+                    allGood.push(item);
                 } else if (check.ok === false && check.severity === 'recommended') {
                     recommended.push(item);
                 } else {
@@ -2064,6 +2078,11 @@
     // their source section — the section title appears as a small
     // grey subheading so users can still tell whether a row is about
     // the library scan settings or the plugin or path mappings.
+    //
+    // Issue #237: the "All good" bucket has a second sub-group for
+    // dismissed checks — rendered AFTER the passing rows, under a
+    // "Dismissed" subhead, so users can see what they've silenced
+    // without confusing them with passing-row checkmarks.
     function _renderBucket({ serverId, serverType, tier, title, items, expanded, badgeCls, iconHtml }) {
         const det = document.createElement('details');
         det.className = 'readiness-bucket mb-2';
@@ -2080,16 +2099,37 @@
         const inner = document.createElement('div');
         inner.className = 'readiness-bucket-body ps-2 pt-2';
 
-        // Group items by section so a "Library settings" header appears
-        // once, followed by all its rows. Stable order — preserves the
-        // section ordering the backend chose.
-        let lastSectionId = null;
+        // Split dismissed items out so they render under a separate
+        // "Dismissed" subhead at the bottom of the bucket. Done only
+        // for the allGood tier (where dismissed items live); other
+        // tiers carry no dismissed items by partition.
+        const passing = [];
+        const dismissed = [];
         for (const item of items) {
+            if (tier === 'allGood' && item.check && item.check.dismissed === true) {
+                dismissed.push(item);
+            } else {
+                passing.push(item);
+            }
+        }
+
+        // Group passing items by section — same stable order as before.
+        let lastSectionId = null;
+        for (const item of passing) {
             if (item.sectionId !== lastSectionId) {
                 lastSectionId = item.sectionId;
                 inner.appendChild(_renderSectionSubhead(item.sectionTitle));
             }
             inner.appendChild(_renderCheckRow(serverId, serverType, item.check));
+        }
+
+        if (dismissed.length > 0) {
+            // Use a distinct subhead so the dismissed rows don't read
+            // as "passing under the same section as everything above".
+            inner.appendChild(_renderSectionSubhead(`Dismissed (${dismissed.length})`));
+            for (const item of dismissed) {
+                inner.appendChild(_renderCheckRow(serverId, serverType, item.check));
+            }
         }
 
         det.appendChild(inner);
@@ -2282,7 +2322,65 @@
         if (btnWrap.children.length > 0) {
             row.querySelector('.flex-grow-1').appendChild(btnWrap);
         }
+
+        // Issue #237: per-check dismiss control. Only on recommended-
+        // severity rows — critical rows always belong in mustFix,
+        // forced by _partitionChecks regardless of dismissed state.
+        // Dismissed rows render under "All good → Dismissed" and get
+        // an Undismiss link instead.
+        if (sev === 'recommended') {
+            if (check.dismissed === true) {
+                const undismissBtn = document.createElement('button');
+                undismissBtn.type = 'button';
+                undismissBtn.className = 'btn btn-sm btn-link p-0 text-decoration-none ms-1';
+                undismissBtn.style.fontSize = '0.85em';
+                undismissBtn.innerHTML = '<i class="bi bi-arrow-counterclockwise me-1"></i>Undismiss';
+                undismissBtn.title = `Restore this check to the Recommended bucket — ${check.label || check.id || 'this row'}.`;
+                undismissBtn.addEventListener('click', () => _toggleCheckDismissal(serverId, serverType, check, false, undismissBtn));
+                row.querySelector('.flex-grow-1').appendChild(undismissBtn);
+            } else {
+                const dismissBtn = document.createElement('button');
+                dismissBtn.type = 'button';
+                dismissBtn.className = 'btn btn-sm btn-link p-0 text-decoration-none ms-2 text-muted';
+                dismissBtn.style.fontSize = '0.85em';
+                dismissBtn.innerHTML = '<i class="bi bi-x-circle me-1"></i>Dismiss';
+                dismissBtn.title = `Hide this recommendation — ${check.label || check.id || 'this row'} — from the Recommended bucket. Reversible from the All good section.`;
+                dismissBtn.addEventListener('click', () => _toggleCheckDismissal(serverId, serverType, check, true, dismissBtn));
+                row.querySelector('.flex-grow-1').appendChild(dismissBtn);
+            }
+        }
+
         return row;
+    }
+
+    // Issue #237: POST to /previews-readiness/(dis|un)dismiss and
+    // re-probe to redraw the card. The dismiss endpoint stores the
+    // check_id on the per-server health_dismissals list; the GET
+    // handler tags the check with ``dismissed: true`` on the next
+    // probe, which _partitionChecks moves to the "Dismissed"
+    // subsection.
+    async function _toggleCheckDismissal(serverId, serverType, check, dismiss, btn) {
+        const checkId = check && check.id;
+        if (!checkId) return;
+        const original = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Working…';
+        try {
+            const encoded = encodeURIComponent(serverId);
+            const suffix = dismiss ? 'dismiss' : 'undismiss';
+            const r = await api('POST', `/api/servers/${encoded}/previews-readiness/${suffix}`, { check_id: checkId });
+            if (!r.ok) {
+                showToast('Dismiss failed', (r.data && r.data.error) || `HTTP ${r.status}`, 'danger');
+                btn.disabled = false;
+                btn.innerHTML = original;
+                return;
+            }
+            await runReadinessProbe(serverId, serverType);
+        } catch (e) {
+            showToast('Dismiss error', String(e), 'danger');
+            btn.disabled = false;
+            btn.innerHTML = original;
+        }
     }
 
     function _makeActionButton(colorCls, iconCls, text, check, direction) {

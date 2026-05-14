@@ -911,7 +911,7 @@ class TestPlexSettingsHealth:
     def test_reports_each_misset_pref_as_server_wide(self, plex_wrapper):
         with patch("media_preview_generator.servers.plex.requests.get") as get:
             get.return_value = self._prefs_response(
-                FSEventLibraryUpdatesEnabled=False,  # critical
+                FSEventLibraryUpdatesEnabled=False,  # recommended (was critical pre-#237)
                 FSEventLibraryPartialScanEnabled=False,  # recommended
                 ScheduledLibraryUpdatesEnabled=False,  # recommended
             )
@@ -919,10 +919,16 @@ class TestPlexSettingsHealth:
         assert len(issues) == 3
         # Server-wide prefs use library_id=None so the UI groups them apart.
         assert all(i.library_id is None and i.library_name == "" for i in issues)
-        # Critical severity bubbles through unmodified.
-        critical = [i for i in issues if i.severity == "critical"]
-        assert len(critical) == 1
-        assert critical[0].flag == "FSEventLibraryUpdatesEnabled"
+        # Issue #237: all three FSEvent prefs are now "recommended". The
+        # auto-scan toggle (FSEventLibraryUpdatesEnabled) used to be
+        # "critical" but legitimate workflows (autopulse, Tdarr) drive
+        # scans externally — gating overall_ok on it was wrong.
+        assert all(i.severity == "recommended" for i in issues)
+        assert {i.flag for i in issues} == {
+            "FSEventLibraryUpdatesEnabled",
+            "FSEventLibraryPartialScanEnabled",
+            "ScheduledLibraryUpdatesEnabled",
+        }
 
     def test_empty_on_request_failure(self, plex_wrapper):
         # Plex unreachable → empty list (UI renders "unavailable", not "all good").
@@ -1029,11 +1035,13 @@ class TestPlexVendorExtractionStatus:
     where the full-section PUT 400s).
     """
 
-    def _make_section(self, *, key, title, bif_on):
+    def _make_section(self, *, key, title, bif_on, type="movie"):
         """Build a MagicMock section shaped like plexapi's LibrarySection.
 
         ``section.settings()`` returns a one-element list whose
         ``enableBIFGeneration`` Setting carries the ``bif_on`` value.
+        ``type`` mirrors plexapi's instance attribute — ``movie`` /
+        ``show`` / ``artist`` / ``photo``.
         """
         bif_setting = MagicMock()
         bif_setting.id = "enableBIFGeneration"
@@ -1041,6 +1049,7 @@ class TestPlexVendorExtractionStatus:
         section = MagicMock()
         section.key = key
         section.title = title
+        section.type = type
         section.settings = MagicMock(return_value=[bif_setting])
         return section
 
@@ -1090,10 +1099,10 @@ class TestPlexVendorExtractionStatus:
         bif_setting = MagicMock()
         bif_setting.id = "enableBIFGeneration"
         bif_setting.value = True
-        good = MagicMock(key=1, title="Movies")
+        good = MagicMock(key=1, title="Movies", type="movie")
         good.settings = MagicMock(return_value=[bif_setting])
 
-        broken = MagicMock(key=99, title="Broken")
+        broken = MagicMock(key=99, title="Broken", type="movie")
         broken.settings = MagicMock(side_effect=RuntimeError("malformed XML"))
 
         plex = MagicMock()
@@ -1106,6 +1115,67 @@ class TestPlexVendorExtractionStatus:
         assert libs_by_name["Movies"]["state"] == "extracting"
         assert libs_by_name["Broken"]["state"] == "skipped"
         assert status["skipped_count"] == 1
+
+    def test_skips_non_video_library_types(self, plex_wrapper):
+        """Issue #237: music (``artist``) and photo (``photo``) sections
+        must NOT appear in the vendor-extraction audit. They have no
+        ``enableBIFGeneration`` toggle in Plex's UI — emitting a row that
+        tells the user to disable it produced a confusing "Change in
+        Plex UI" instruction for a toggle that doesn't exist.
+
+        Filter mirrors ``api_libraries.py:108`` (same field, same set).
+        ``settings()`` is asserted NOT to be called on the non-video
+        sections — proves the filter runs before the (potentially slow)
+        per-library HTTP probe.
+        """
+        movies = self._make_section(key=1, title="Movies", bif_on=True, type="movie")
+        shows = self._make_section(key=2, title="TV", bif_on=False, type="show")
+        music = self._make_section(key=3, title="Music", bif_on=True, type="artist")
+        photos = self._make_section(key=4, title="Photos", bif_on=True, type="photo")
+        plex = MagicMock()
+        plex.library.sections.return_value = [movies, shows, music, photos]
+        plex_wrapper._plex = plex
+
+        status = plex_wrapper.get_vendor_extraction_status()
+
+        names = {lib["name"] for lib in status["libraries"]}
+        assert names == {"Movies", "TV"}, status
+        # extracting_count + stopped_count must reflect ONLY the video
+        # libraries — the filter sits before the state classification, so
+        # music/photos don't inflate any of the aggregate counters.
+        assert status["extracting_count"] == 1
+        assert status["stopped_count"] == 1
+        assert status["skipped_count"] == 0
+        assert status["total"] == 2
+        # Non-video sections must be skipped BEFORE the settings probe —
+        # we shouldn't even hit Plex for them.
+        music.settings.assert_not_called()
+        photos.settings.assert_not_called()
+
+    def test_set_vendor_extraction_skips_non_video_library_types(self, plex_wrapper):
+        """Defense-in-depth: ``set_vendor_extraction`` must NOT write
+        ``enableBIFGeneration`` on music/photo sections even when called
+        with ``library_ids=None`` (server-wide apply). The UI never
+        targets non-video libraries because ``get_vendor_extraction_status``
+        filters them out, but external API callers (Tdarr / curl /
+        bookmarklet) can still hit the write endpoint with no
+        library_ids — defend here too. Same defensive pattern applied
+        to Emby/Jellyfin write-sites for issue #237.
+        """
+        movies = self._make_section(key=1, title="Movies", bif_on=True, type="movie")
+        music = self._make_section(key=3, title="Music", bif_on=True, type="artist")
+        photos = self._make_section(key=4, title="Photos", bif_on=True, type="photo")
+        plex = MagicMock()
+        plex.library.sections.return_value = [movies, music, photos]
+        plex_wrapper._plex = plex
+
+        # library_ids=None → "every library on this server"
+        plex_wrapper.set_vendor_extraction(scan_extraction=False, library_ids=None)
+
+        # editAdvanced must run ONLY on the movies section.
+        movies.editAdvanced.assert_called_once()
+        music.editAdvanced.assert_not_called()
+        photos.editAdvanced.assert_not_called()
 
 
 class TestPlexPreviewsReadiness:
@@ -1241,17 +1311,22 @@ class TestPlexPreviewsReadiness:
 
         library_section = next(s for s in payload["sections"] if s["id"] == "library_settings")
         assert library_section["ok"] is False
-        # The section severity should reflect the critical pref.
-        assert library_section["severity"] == "critical"
+        # Issue #237: FSEvent prefs are all "recommended" now — the
+        # section's severity is "recommended" when any of them fails,
+        # never "critical". No FSEvent pref gates overall_ok.
+        assert library_section["severity"] == "recommended"
 
         bad_row = next(c for c in library_section["checks"] if c["meta"].get("flag") == "FSEventLibraryUpdatesEnabled")
         assert bad_row["ok"] is False
+        assert bad_row["severity"] == "recommended"
         enable = bad_row["actions"]["enable"]
         assert enable["action"] == "apply_flag"
         # Plex prefs are server-wide — no library_ids in args.
         assert enable["args"] == {"flag": "FSEventLibraryUpdatesEnabled", "value": True}
-        # Critical row → overall_ok must be False.
-        assert payload["overall_ok"] is False
+        # Recommended-only failure → overall_ok stays True (only critical
+        # checks gate the overall verdict). True blockers (connection,
+        # config folder unwritable) still fail overall_ok independently.
+        assert payload["overall_ok"] is True
 
     def test_vendor_extraction_emits_per_library_rows_when_some_extracting(self, plex_wrapper, tmp_path):
         """The vendor_extraction section now emits one actionable row per

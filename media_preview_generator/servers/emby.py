@@ -14,7 +14,7 @@ from typing import Any
 
 from loguru import logger
 
-from ._embyish import EmbyApiClient
+from ._embyish import EmbyApiClient, is_video_library_folder
 from .base import FlagTarget, HealthCheckIssue, ServerType, WebhookEvent
 
 
@@ -235,6 +235,10 @@ class EmbyServer(EmbyApiClient):
         for raw in folders:
             if not isinstance(raw, dict):
                 continue
+            # Issue #237: skip music/photo/book libraries entirely —
+            # they don't carry video preview options.
+            if not is_video_library_folder(raw):
+                continue
             options = raw.get("LibraryOptions") or {}
             all_recommended = True
             for flag, want in self._VENDOR_EXTRACTION_FLAGS:
@@ -330,6 +334,11 @@ class EmbyServer(EmbyApiClient):
         issues: list[HealthCheckIssue] = []
         for raw in folders:
             if not isinstance(raw, dict):
+                continue
+            # Issue #237: music/photo/book libraries don't expose the
+            # preview flags — surfacing a HealthCheckIssue against them
+            # tells users to disable a toggle that doesn't exist.
+            if not is_video_library_folder(raw):
                 continue
             lib_id = str(raw.get("ItemId") or raw.get("Id") or raw.get("Name") or "")
             lib_name = str(raw.get("Name") or "")
@@ -506,6 +515,11 @@ class EmbyServer(EmbyApiClient):
         for raw in folders:
             if not isinstance(raw, dict):
                 continue
+            # Issue #237: music/photo libraries have no video preview
+            # flags to flip. Even if the UI never sends a target for
+            # them, defend at the apply-site too.
+            if not is_video_library_folder(raw):
+                continue
             lib_id = str(raw.get("ItemId") or raw.get("Id") or raw.get("Name") or "")
             options = dict(raw.get("LibraryOptions") or {})
 
@@ -677,6 +691,11 @@ class EmbyServer(EmbyApiClient):
         if isinstance(folders, list):
             for raw in folders:
                 if not isinstance(raw, dict):
+                    continue
+                # Issue #237: skip music/photo/book libraries — they don't
+                # have video preview flags, so emitting per-flag rows for
+                # them tells users to disable settings that don't exist.
+                if not is_video_library_folder(raw):
                     continue
                 any_libraries_seen = True
                 lib_id = str(raw.get("ItemId") or raw.get("Id") or raw.get("Name") or "")
@@ -971,6 +990,11 @@ class EmbyServer(EmbyApiClient):
 
         for raw in folders:
             if not isinstance(raw, dict):
+                continue
+            # Issue #237: don't flip flags on music/photo/book libraries
+            # — they shouldn't have appeared in the UI list in the first
+            # place, but the apply-site guards independently.
+            if not is_video_library_folder(raw):
                 continue
             lib_id = str(raw.get("ItemId") or raw.get("Id") or raw.get("Name") or "")
             options = dict(raw.get("LibraryOptions") or {})

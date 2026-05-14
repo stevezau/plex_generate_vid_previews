@@ -1840,6 +1840,153 @@ class TestPreviewsReadinessJellyfin:
         assert "trickplay_options" in payload
         assert payload["overall_ok"] is True
 
+    def test_skips_non_video_collection_types(self, jelly):
+        """Issue #237: music / musicvideos / photos / books / audiobooks
+        libraries must NOT appear in the readiness card. They have no
+        trickplay flags, so emitting per-library rows for them tells the
+        user to disable settings Jellyfin doesn't expose for those types.
+
+        Also: a non-video library with
+        ``ExtractTrickplayImagesDuringLibraryScan=false`` must NOT push
+        the plugin section into "plugin required" — that's a video-only
+        concern. Pre-fix every library in folders got counted, so a music
+        library missing the flag (or having it explicitly False) would
+        spuriously mark the plugin as required.
+        """
+        jelly._media_preview_bridge_installed = True
+        good_movie_options = {
+            "EnableTrickplayImageExtraction": True,
+            "SaveTrickplayWithMedia": True,
+            "ExtractTrickplayImagesDuringLibraryScan": False,
+            "EnableRealtimeMonitor": True,
+        }
+        # Bad options on non-video libraries — proves the filter runs
+        # before per-flag evaluation. A buggy implementation would
+        # surface these as failing rows.
+        bad_options = {
+            "EnableTrickplayImageExtraction": False,
+            "SaveTrickplayWithMedia": False,
+            "ExtractTrickplayImagesDuringLibraryScan": True,
+            "EnableRealtimeMonitor": False,
+        }
+        good_trickplay = {
+            "TileWidth": 10,
+            "TileHeight": 10,
+            "Interval": 10000,
+            "WidthResolutions": [320],
+        }
+        folders = [
+            {"Name": "Movies", "ItemId": "m", "CollectionType": "movies", "LibraryOptions": good_movie_options},
+            {"Name": "Music", "ItemId": "music", "CollectionType": "music", "LibraryOptions": bad_options},
+            {"Name": "MV", "ItemId": "mv", "CollectionType": "musicvideos", "LibraryOptions": bad_options},
+            {"Name": "Photos", "ItemId": "p", "CollectionType": "photos", "LibraryOptions": bad_options},
+            {"Name": "Books", "ItemId": "b", "CollectionType": "books", "LibraryOptions": bad_options},
+            {"Name": "AB", "ItemId": "ab", "CollectionType": "audiobooks", "LibraryOptions": bad_options},
+        ]
+
+        def fake_request(method, url, **kwargs):
+            if url == "/MediaPreviewBridge/Ping":
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value={"ok": True, "version": "10.11.0.2"}),
+                )
+            if url == "/System/Info":
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value={"Version": "10.11.8"}),
+                    raise_for_status=MagicMock(),
+                )
+            if url == "/System/Configuration":
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value={"TrickplayOptions": good_trickplay}),
+                    raise_for_status=MagicMock(),
+                )
+            if url == "/Library/VirtualFolders":
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value=folders),
+                    raise_for_status=MagicMock(),
+                )
+            if url == "/ScheduledTasks":
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(
+                        return_value=[
+                            {
+                                "Name": "Generate Trickplay Images",
+                                "Key": "RefreshTrickplayImages",
+                                "Id": "sched-trickplay-id",
+                                "Triggers": [],
+                                "State": "Idle",
+                            }
+                        ]
+                    ),
+                    raise_for_status=MagicMock(),
+                )
+            raise AssertionError(f"unexpected {method} {url}")
+
+        with patch.object(JellyfinServer, "_request", side_effect=fake_request):
+            payload = jelly.previews_readiness()
+
+        # Per-library check rows reference ONLY the movies library.
+        for section in payload["sections"]:
+            for check in section.get("checks", []):
+                lib_id = check.get("meta", {}).get("library_id")
+                if lib_id is None:
+                    continue
+                assert lib_id == "m", (
+                    f"Non-video library {lib_id!r} leaked into Jellyfin readiness section "
+                    f"{section['id']}; check id={check['id']!r}"
+                )
+
+        # Plugin-required logic must ignore non-video libraries: with
+        # the plugin installed AND the only video library in Mode A,
+        # plugin row should be "plugin_instant" / ok=True. Music
+        # libraries having scan-extraction=true must not trigger a
+        # "plugin required" warning.
+        plugin_section = next(s for s in payload["sections"] if s["id"] == "plugin")
+        assert plugin_section["ok"] is True, plugin_section
+
+    def test_check_settings_health_skips_non_video_collection_types(self, jelly):
+        """The legacy ``check_settings_health`` must also skip non-video
+        libraries — same reason as ``previews_readiness``.
+        """
+        folders = [
+            {
+                "Name": "Movies",
+                "ItemId": "m",
+                "CollectionType": "movies",
+                "LibraryOptions": {
+                    "EnableTrickplayImageExtraction": True,
+                    "SaveTrickplayWithMedia": True,
+                    "ExtractTrickplayImagesDuringLibraryScan": False,
+                    "EnableRealtimeMonitor": True,
+                },
+            },
+            {
+                "Name": "Music",
+                "ItemId": "music",
+                "CollectionType": "music",
+                "LibraryOptions": {
+                    "EnableTrickplayImageExtraction": False,
+                    "SaveTrickplayWithMedia": False,
+                    "ExtractTrickplayImagesDuringLibraryScan": True,
+                    "EnableRealtimeMonitor": False,
+                },
+            },
+        ]
+        jelly._media_preview_bridge_installed = True
+        with patch.object(JellyfinServer, "_request") as req:
+            req.return_value = MagicMock(
+                json=MagicMock(return_value=folders),
+                raise_for_status=MagicMock(),
+            )
+            issues = jelly.check_settings_health()
+        # Movies row is clean → no issues. Music row is filtered out
+        # before per-flag evaluation → zero issues total.
+        assert issues == [], f"check_settings_health must not surface issues for music libraries; got {issues}"
+
 
 class TestScheduledTrickplayTaskReadiness:
     """Matrix coverage for the new scheduled-trickplay readiness check.

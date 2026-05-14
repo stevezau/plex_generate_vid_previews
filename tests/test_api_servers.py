@@ -1474,3 +1474,193 @@ class TestPreviewsReadinessRoute:
             "library recommendations default to plugin-absent (wrong in Mode A). "
             f"Got call order: {call_order[:5]}"
         )
+
+
+class TestPreviewsReadinessDismissal:
+    """Issue #237: per-check dismissal flow.
+
+    Two endpoints (POST dismiss/undismiss) + the GET handler tagging
+    dismissed checks. Storage: per-server ``health_dismissals`` list
+    inside ``media_servers[*]``.
+    """
+
+    def _seed_plex(self, dismissals: list[str] | None = None) -> None:
+        entry: dict = {
+            "id": "plex-1",
+            "type": "plex",
+            "name": "Plex",
+            "enabled": True,
+            "url": "http://plex:32400",
+            "auth": {"method": "token", "token": "t"},
+        }
+        if dismissals is not None:
+            entry["health_dismissals"] = list(dismissals)
+        _seed_media_servers([entry])
+
+    def test_dismiss_adds_check_id_to_list(self, client, auth_headers):
+        self._seed_plex()
+        response = client.post(
+            "/api/servers/plex-1/previews-readiness/dismiss",
+            headers=auth_headers,
+            json={"check_id": "library_settings:FSEventLibraryUpdatesEnabled"},
+        )
+        assert response.status_code == 200, response.get_json()
+        body = response.get_json()
+        assert body["ok"] is True
+        assert body["health_dismissals"] == ["library_settings:FSEventLibraryUpdatesEnabled"]
+        # Persisted to settings.json.
+        sm = get_settings_manager()
+        servers = sm.get("media_servers")
+        assert servers[0]["health_dismissals"] == ["library_settings:FSEventLibraryUpdatesEnabled"]
+
+    def test_dismiss_is_idempotent(self, client, auth_headers):
+        """Re-dismissing an already-dismissed check is a 200 no-op (no
+        duplicate entries). The frontend may double-click; the
+        backend must not pile up duplicates."""
+        self._seed_plex(dismissals=["library_settings:FSEventLibraryUpdatesEnabled"])
+        response = client.post(
+            "/api/servers/plex-1/previews-readiness/dismiss",
+            headers=auth_headers,
+            json={"check_id": "library_settings:FSEventLibraryUpdatesEnabled"},
+        )
+        assert response.status_code == 200
+        body = response.get_json()
+        assert body["health_dismissals"] == ["library_settings:FSEventLibraryUpdatesEnabled"]
+
+    def test_undismiss_removes_check_id(self, client, auth_headers):
+        self._seed_plex(
+            dismissals=[
+                "library_settings:FSEventLibraryUpdatesEnabled",
+                "vendor_extraction:5",
+            ]
+        )
+        response = client.post(
+            "/api/servers/plex-1/previews-readiness/undismiss",
+            headers=auth_headers,
+            json={"check_id": "library_settings:FSEventLibraryUpdatesEnabled"},
+        )
+        assert response.status_code == 200
+        body = response.get_json()
+        assert body["health_dismissals"] == ["vendor_extraction:5"]
+
+    def test_undismiss_of_absent_is_noop(self, client, auth_headers):
+        """Undismissing a check that wasn't dismissed is a 200 no-op."""
+        self._seed_plex(dismissals=["library_settings:FSEventLibraryUpdatesEnabled"])
+        response = client.post(
+            "/api/servers/plex-1/previews-readiness/undismiss",
+            headers=auth_headers,
+            json={"check_id": "never_dismissed"},
+        )
+        assert response.status_code == 200
+        body = response.get_json()
+        assert body["health_dismissals"] == ["library_settings:FSEventLibraryUpdatesEnabled"]
+
+    def test_dismiss_missing_check_id_returns_400(self, client, auth_headers):
+        self._seed_plex()
+        response = client.post(
+            "/api/servers/plex-1/previews-readiness/dismiss",
+            headers=auth_headers,
+            json={},
+        )
+        assert response.status_code == 400
+        assert response.get_json()["ok"] is False
+
+    def test_dismiss_unknown_server_returns_404(self, client, auth_headers):
+        self._seed_plex()
+        response = client.post(
+            "/api/servers/nope/previews-readiness/dismiss",
+            headers=auth_headers,
+            json={"check_id": "anything"},
+        )
+        assert response.status_code == 404
+
+    def test_get_handler_tags_dismissed_checks(self, client, auth_headers, monkeypatch):
+        """GET /previews-readiness must mark checks in the server's
+        health_dismissals list with ``dismissed: true``. Raw audit
+        state (ok, severity) is preserved — bucketing happens on the
+        frontend.
+
+        Matrix coverage: one dismissed check, one not dismissed,
+        same response. Asserts the tag is applied to the right row
+        and NOT to others.
+        """
+        from media_preview_generator.servers.plex import PlexServer
+
+        self._seed_plex(dismissals=["library_settings:FSEventLibraryUpdatesEnabled"])
+        payload = {
+            "vendor": "plex",
+            "overall_ok": True,
+            "sections": [
+                {
+                    "id": "library_settings",
+                    "title": "Library settings",
+                    "docs_anchor": "library-settings",
+                    "ok": False,
+                    "severity": "recommended",
+                    "checks": [
+                        {
+                            "id": "library_settings:FSEventLibraryUpdatesEnabled",
+                            "label": "Scan my library automatically",
+                            "ok": False,
+                            "severity": "recommended",
+                        },
+                        {
+                            "id": "library_settings:FSEventLibraryPartialScanEnabled",
+                            "label": "Run a partial scan when changes are detected",
+                            "ok": False,
+                            "severity": "recommended",
+                        },
+                    ],
+                },
+            ],
+        }
+        monkeypatch.setattr(PlexServer, "previews_readiness", lambda self: payload)
+
+        response = client.get(
+            "/api/servers/plex-1/previews-readiness",
+            headers=auth_headers,
+        )
+        assert response.status_code == 200
+        body = response.get_json()
+        checks = body["sections"][0]["checks"]
+        # Dismissed check is tagged.
+        dismissed_check = next(c for c in checks if c["id"] == "library_settings:FSEventLibraryUpdatesEnabled")
+        assert dismissed_check.get("dismissed") is True
+        # Raw audit state preserved — dismissal doesn't mutate ok/severity.
+        assert dismissed_check["ok"] is False
+        assert dismissed_check["severity"] == "recommended"
+        # Other check is NOT tagged.
+        other_check = next(c for c in checks if c["id"] == "library_settings:FSEventLibraryPartialScanEnabled")
+        assert "dismissed" not in other_check or other_check["dismissed"] is False
+
+    def test_get_handler_no_dismissals_returns_payload_unchanged(self, client, auth_headers, monkeypatch):
+        """When health_dismissals is absent/empty, the GET handler
+        must NOT add ``dismissed: false`` markers everywhere — the
+        payload should pass through verbatim. This keeps frontend
+        compatibility with older payloads / unaware vendors."""
+        from media_preview_generator.servers.plex import PlexServer
+
+        self._seed_plex()  # no health_dismissals field at all
+        payload = {
+            "vendor": "plex",
+            "overall_ok": True,
+            "sections": [
+                {
+                    "id": "library_settings",
+                    "title": "Library settings",
+                    "docs_anchor": "library-settings",
+                    "ok": True,
+                    "severity": "info",
+                    "checks": [{"id": "x", "label": "X", "ok": True, "severity": "info"}],
+                },
+            ],
+        }
+        monkeypatch.setattr(PlexServer, "previews_readiness", lambda self: payload)
+
+        response = client.get(
+            "/api/servers/plex-1/previews-readiness",
+            headers=auth_headers,
+        )
+        assert response.status_code == 200
+        check = response.get_json()["sections"][0]["checks"][0]
+        assert "dismissed" not in check

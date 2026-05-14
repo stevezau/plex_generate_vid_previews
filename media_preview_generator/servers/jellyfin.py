@@ -28,7 +28,7 @@ from typing import Any
 import requests
 from loguru import logger
 
-from ._embyish import EmbyApiClient
+from ._embyish import EmbyApiClient, is_video_library_folder
 from .base import FlagTarget, HealthCheckIssue, ServerType, WebhookEvent
 
 # Floor on how often a single Jellyfin server may receive a full
@@ -701,6 +701,10 @@ class JellyfinServer(EmbyApiClient):
         for raw in folders:
             if not isinstance(raw, dict):
                 continue
+            # Issue #237: music/photo/book libraries don't expose the
+            # trickplay flags — skip them before per-flag evaluation.
+            if not is_video_library_folder(raw):
+                continue
             lib_id = str(raw.get("ItemId") or raw.get("Id") or raw.get("Name") or "")
             lib_name = str(raw.get("Name") or "")
             options = raw.get("LibraryOptions") or {}
@@ -1064,6 +1068,11 @@ class JellyfinServer(EmbyApiClient):
         for raw in folders:
             if not isinstance(raw, dict):
                 continue
+            # Issue #237: don't flip flags on music/photo/book libraries
+            # — they shouldn't appear in the UI list, but defend at the
+            # apply-site too.
+            if not is_video_library_folder(raw):
+                continue
             lib_id = str(raw.get("ItemId") or raw.get("Id") or raw.get("Name") or "")
             options = dict(raw.get("LibraryOptions") or {})
 
@@ -1150,6 +1159,10 @@ class JellyfinServer(EmbyApiClient):
 
         for raw in folders:
             if not isinstance(raw, dict):
+                continue
+            # Issue #237: don't apply recommended flag values to
+            # music/photo/book libraries — they don't have these flags.
+            if not is_video_library_folder(raw):
                 continue
             lib_id = str(raw.get("ItemId") or raw.get("Id") or raw.get("Name") or "")
             options = dict(raw.get("LibraryOptions") or {})
@@ -1397,6 +1410,11 @@ class JellyfinServer(EmbyApiClient):
             for raw in folders:
                 if not isinstance(raw, dict):
                     continue
+                # Issue #237: music/photo libraries don't influence
+                # plugin-required logic — they can't be in Mode A
+                # meaningfully (no video tiles to register).
+                if not is_video_library_folder(raw):
+                    continue
                 options = raw.get("LibraryOptions") or {}
                 if options.get("ExtractTrickplayImagesDuringLibraryScan") is False:
                     mode_a_library_names.append(str(raw.get("Name") or "").strip() or "library")
@@ -1636,6 +1654,12 @@ class JellyfinServer(EmbyApiClient):
         if isinstance(folders, list):
             for raw in folders:
                 if not isinstance(raw, dict):
+                    continue
+                # Issue #237: skip music/photo/book libraries — they
+                # don't expose the trickplay flags, so emitting per-flag
+                # rows for them tells users to disable settings the host
+                # UI doesn't show.
+                if not is_video_library_folder(raw):
                     continue
                 lib_id = str(raw.get("ItemId") or raw.get("Id") or raw.get("Name") or "")
                 lib_name = str(raw.get("Name") or "")
@@ -2306,6 +2330,10 @@ class JellyfinServer(EmbyApiClient):
         for raw in folders:
             if not isinstance(raw, dict):
                 continue
+            # Issue #237: skip music/photo/book libraries from the audit
+            # — they have no trickplay flags to evaluate.
+            if not is_video_library_folder(raw):
+                continue
             options = raw.get("LibraryOptions") or {}
             all_recommended = all(
                 bool(options.get(flag, False)) == want for flag, want in self._VENDOR_EXTRACTION_FLAGS
@@ -2381,6 +2409,11 @@ class JellyfinServer(EmbyApiClient):
         target_ids = set(library_ids) if library_ids else None
         for raw in folders:
             if not isinstance(raw, dict):
+                continue
+            # Issue #237: never write trickplay flags to music/photo/book
+            # libraries even if a caller (UI, webhook, API) targets them
+            # by id — they have no trickplay path to gate.
+            if not is_video_library_folder(raw):
                 continue
             lib_id = str(raw.get("ItemId") or raw.get("Id") or raw.get("Name") or "")
             if target_ids is not None and lib_id not in target_ids:

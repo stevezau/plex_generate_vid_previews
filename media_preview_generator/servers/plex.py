@@ -351,6 +351,15 @@ class PlexServer(MediaServer):
         # Setting value goes to Plex as 0/1 in the query string.
         value = 1 if scan_extraction else 0
         for section in sections:
+            # Issue #237: never write enableBIFGeneration on
+            # music/photo libraries. The setting is video-specific,
+            # and our readiness UI doesn't surface them. But the route
+            # accepts library_ids=None (server-wide apply) and external
+            # callers (curl / Tdarr / API consumers) could trigger
+            # this path — defend at the write-site like Emby/Jellyfin.
+            section_type = str(getattr(section, "type", "") or "")
+            if section_type not in ("movie", "show"):
+                continue
             section_key = str(getattr(section, "key", "") or "")
             if not section_key:
                 continue
@@ -485,6 +494,21 @@ class PlexServer(MediaServer):
         extracting = stopped = skipped = 0
         libraries: list[dict[str, Any]] = []
         for section in sections:
+            # Issue #237: skip music/photo libraries entirely. The
+            # ``enableBIFGeneration`` setting only exists for video
+            # libraries — for music/photo it's either absent (would land
+            # in "skipped" with a misleading "Change in Plex UI" row that
+            # tells the user to disable a toggle that doesn't exist) or
+            # present but irrelevant. ``section.type`` is plexapi's raw
+            # type string (movie/show/artist/photo) — same field
+            # ``api_libraries.py`` uses to gate the library picker, so
+            # this filter is consistent with what users see elsewhere
+            # in the UI. ``METADATA_TYPE`` is intentionally not used: it
+            # resolves to "episode" for TV (item-level type, not
+            # section-level).
+            section_type = str(getattr(section, "type", "") or "")
+            if section_type not in ("movie", "show"):
+                continue
             section_key = str(getattr(section, "key", "") or "")
             section_title = str(getattr(section, "title", "") or section_key or "Unknown library")
             try:
@@ -557,7 +581,12 @@ class PlexServer(MediaServer):
             "FSEventLibraryUpdatesEnabled",
             "Scan my library automatically",
             True,
-            "critical",
+            # Recommended (not critical): this app has its own scan-nudge
+            # mechanism (SKIPPED_NOT_IN_LIBRARY) and webhook listeners, so
+            # external scan drivers like autopulse/Tdarr are legitimate
+            # alternatives. The opinion still surfaces — but as amber
+            # advice, not a red "Must fix" banner.
+            "recommended",
             "Without this, Plex doesn't react to filesystem events at all — your only signals "
             "for new files are this app's scan-nudges and the periodic timer. Most missed-file "
             "complaints come from this being off.",
@@ -1402,7 +1431,26 @@ class PlexServer(MediaServer):
             }
         )
 
-        overall_ok = connection_result.ok and library_section_ok and folder_ok and mappings_ok
+        # ``overall_ok`` gates the big red "action needed" banner on
+        # the modal header. Only TRUE blockers should fail it: any
+        # check (in any section) with severity=critical AND ok=False.
+        # Recommended-severity failures (library_settings FSEvent prefs
+        # post-#237, vendor_extraction per-library rows, path mapping
+        # warnings) live in the amber Recommended bucket and must not
+        # promote the header to red.
+        #
+        # Pre-#237 this was hard-coded to AND together connection_ok /
+        # library_section_ok / folder_ok / mappings_ok. After demoting
+        # FSEventLibraryUpdatesEnabled from critical to recommended,
+        # library_section_ok could still be False on a row that's only
+        # advisory — which spuriously failed overall_ok. The general
+        # form here walks the emitted checks, so new severities added
+        # later self-resolve without revisiting this line.
+        overall_ok = not any(
+            (check.get("severity") == "critical" and check.get("ok") is False)
+            for section in sections
+            for check in (section.get("checks") or [])
+        )
         return {
             "vendor": "plex",
             "overall_ok": overall_ok,

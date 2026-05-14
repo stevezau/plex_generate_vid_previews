@@ -777,13 +777,27 @@ def get_whats_new():
 def dismiss_whats_new():
     """Mark the current version's changelog as seen.
 
-    Only persists ``current_version`` when it parses cleanly as semver.
-    Dev/PR/local-build images report non-semver strings like
-    ``dev@abc1234`` or ``PR-42``; writing those into
-    ``last_seen_version`` would make every future
-    ``parse_version(last_seen)`` raise and silently swallow real
-    release entries on the next upgrade. Skipping the write keeps the
-    prior valid baseline (typically the user's pre-upgrade release).
+    Two flows:
+
+    1. ``current_version`` is parseable semver (release build) → persist
+       it directly. ``last_seen_version`` becomes the build the user just
+       dismissed, and any future release > that is shown.
+
+    2. ``current_version`` is non-semver (dev@SHA, PR-42, local build —
+       issue #237) → persist the MAX parseable release version returned
+       by ``_fetch_github_releases`` instead. Pre-fix this branch was a
+       silent no-op: the dismiss POST returned 200 but didn't write
+       anything, so the next ``/whats-new`` call recomputed the same
+       unseen list and the modal re-rendered on every Dashboard visit.
+       Writing the max release keeps ``last_seen_version`` always
+       semver-parseable and lets the comparison short-circuit on the
+       next visit. If we can't reach GitHub and no releases are bundled,
+       we still no-op — better than writing garbage.
+
+    0.0.0 / 0.0.0.dev0 are version-unknown sentinels from
+    ``get_current_version``'s fallback path; writing them would make
+    every real release look "newer" forever, so they stay a no-op
+    regardless.
     """
     from ...version_check import parse_version
     from ..settings_manager import get_settings_manager
@@ -793,16 +807,36 @@ def dismiss_whats_new():
     current = version_info.get("current_version", "")
     if not current:
         return jsonify({"ok": True})
-    # 0.0.0 / 0.0.0.dev0 are version-unknown sentinels from get_current_version's
-    # fallback path — they parse cleanly but writing them would make every real
-    # release look "newer" forever on the next upgrade.
     if current in ("0.0.0", "0.0.0.dev0"):
         return jsonify({"ok": True})
+
     try:
         parse_version(current)
-    except ValueError:
+        # Semver release build — store the current version directly.
+        settings.update({"last_seen_version": current})
         return jsonify({"ok": True})
-    settings.update({"last_seen_version": current})
+    except ValueError:
+        pass
+
+    # Issue #237: non-semver current (dev@SHA, PR-42, local build).
+    # Persist the highest parseable release version among recent
+    # releases so ``last_seen_version`` stays semver-parseable for the
+    # GET handler's comparison. _fetch_github_releases is cached
+    # (1 h TTL) so this costs the same as the readiness GET above.
+    releases = _fetch_github_releases(limit=10)
+    max_release: str | None = None
+    max_parsed: tuple[int, int, int] | None = None
+    for entry in releases:
+        v = (entry or {}).get("version") or ""
+        try:
+            parsed = parse_version(v)
+        except ValueError:
+            continue
+        if max_parsed is None or parsed > max_parsed:
+            max_release = v
+            max_parsed = parsed
+    if max_release:
+        settings.update({"last_seen_version": max_release})
     return jsonify({"ok": True})
 
 
