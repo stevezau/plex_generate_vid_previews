@@ -20,6 +20,10 @@ from media_preview_generator.servers import (
     find_owning_servers,
     server_owns_path,
 )
+from media_preview_generator.servers.ownership import (
+    apply_path_mappings,
+    apply_webhook_prefixes,
+)
 
 
 def _server(
@@ -381,3 +385,104 @@ class TestPathMappingMatrix:
             "trailing slash on library path / mapping prefix breaks ownership — "
             "user-typed paths must work regardless of trailing slash"
         )
+
+
+class TestWindowsBackslashPaths:
+    """GitHub #236 regression: Plex on a Windows host reports paths with
+    backslashes (``F:\\Musikvideos\\X.mkv``). The ownership/mapping helpers
+    must convert those to forward slashes before prefix matching AND when
+    splicing the tail into the local path, otherwise the dispatcher hands
+    a Windows-form path to ``os.path.isfile`` inside the Linux container.
+
+    The legacy resolver in ``config/paths.py`` already handles this; these
+    tests pin the same contract on the newer ``servers/ownership.py``
+    helpers, which silently regressed by omitting the conversion.
+    """
+
+    def test_apply_path_mappings_translates_windows_remote_to_local(self):
+        mappings = [{"remote_prefix": "F:\\", "local_prefix": "/media/F/"}]
+        result = apply_path_mappings(
+            "F:\\Musikvideos\\B\\Breaking Benjamin\\Ashes.mp4",
+            mappings,
+        )
+        assert result == [
+            "/media/F/Musikvideos/B/Breaking Benjamin/Ashes.mp4",
+        ], "Windows remote path must map cleanly to a forward-slash local path"
+
+    def test_apply_path_mappings_windows_prefix_in_mapping(self):
+        """Mapping prefix has backslashes; canonical path is the same form."""
+        mappings = [{"remote_prefix": "F:\\Videos\\TV Shows", "local_prefix": "/data/tv"}]
+        result = apply_path_mappings(
+            "F:\\Videos\\TV Shows\\Show\\S01E01.mkv",
+            mappings,
+        )
+        assert result == ["/data/tv/Show/S01E01.mkv"]
+
+    def test_apply_path_mappings_mixed_forms_match(self):
+        """The common UI config: user types the prefix as forward-slash
+        ``F:/Videos`` (or the UI normalizes display) while Plex still
+        reports the path with backslashes. The conversion has to apply
+        on the path side, not just the prefix side.
+        """
+        mappings = [{"remote_prefix": "F:/Videos", "local_prefix": "/data"}]
+        assert apply_path_mappings("F:\\Videos\\film.mkv", mappings) == ["/data/film.mkv"]
+        # And the symmetric case (backslash prefix, forward-slash path)
+        # in case a webhook source has already normalized the payload.
+        mappings_bs = [{"remote_prefix": "F:\\Videos", "local_prefix": "/data"}]
+        assert apply_path_mappings("F:/Videos/film.mkv", mappings_bs) == ["/data/film.mkv"]
+
+    def test_apply_path_mappings_legacy_plex_prefix_key_with_backslashes(self):
+        """Legacy ``plex_prefix`` key on the mapping row, Windows path."""
+        mappings = [{"plex_prefix": "F:\\Videos", "local_prefix": "/data"}]
+        result = apply_path_mappings("F:\\Videos\\film.mkv", mappings)
+        assert result == ["/data/film.mkv"]
+
+    def test_apply_webhook_prefixes_translates_windows_webhook_path(self):
+        mappings = [
+            {
+                "remote_prefix": "/srv/media",
+                "local_prefix": "/media/F",
+                "webhook_prefixes": ["F:\\"],
+            }
+        ]
+        result = apply_webhook_prefixes(
+            "F:\\Musikvideos\\B\\Ashes.mp4",
+            mappings,
+        )
+        assert result == ["/media/F/Musikvideos/B/Ashes.mp4"]
+
+    def test_server_owns_path_with_windows_mapping_and_local_canonical(self):
+        """Standard flow: the dispatcher has already converted the canonical
+        path to local form via ``apply_path_mappings``. Ownership must still
+        match when the library + mapping are configured with Windows-style
+        backslashes — i.e. backslash handling in ``apply_path_mappings``
+        (called inside ``server_owns_path``) must not have regressed."""
+        server = _server(
+            libraries=[Library(id="1", name="Music Videos", remote_paths=("F:\\Musikvideos",), enabled=True)],
+            path_mappings=[{"remote_prefix": "F:\\", "local_prefix": "/media/F/"}],
+        )
+        match = server_owns_path(
+            "/media/F/Musikvideos/B/Breaking Benjamin/Ashes.mp4",
+            server,
+        )
+        assert match is not None, (
+            "Windows-form library remote_paths + Windows-form remote_prefix must still "
+            "let a local-form canonical path own (GitHub #236)"
+        )
+        assert match.library_id == "1"
+
+    def test_server_owns_path_tolerates_windows_canonical_path(self):
+        """Defense-in-depth: even if a caller hands us a Windows-form
+        canonical path directly (bypassing the upstream conversion), the
+        ownership check must convert internally so the comparison works."""
+        server = _server(
+            libraries=[Library(id="1", name="Music Videos", remote_paths=("/media/F/Musikvideos",), enabled=True)],
+            path_mappings=[],
+        )
+        # Library is already in local form; canonical_path arrives in Windows
+        # form. _normalize() on both sides must converge.
+        match = server_owns_path(
+            "\\media\\F\\Musikvideos\\B\\Ashes.mp4",
+            server,
+        )
+        assert match is not None, "ownership check must handle backslashes in canonical_path"

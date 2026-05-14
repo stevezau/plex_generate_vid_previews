@@ -52,11 +52,18 @@ def _normalize(path: str) -> str:
     Without the trailing slash, ``/data/movies`` would falsely match
     ``/data/movies-archive/foo.mkv``.
 
+    Backslashes are converted to forward slashes so a Plex server on
+    Windows reporting ``F:\\Musikvideos\\…`` matches a mapping configured
+    with prefix ``F:\\``. Linux's path comparison treats ``\\`` as just
+    another character, so without this, no Windows-host mapping ever
+    matches. Mirrors the same conversion in
+    :func:`config.paths._normalize_prefix`.
+
     Also Unicode-NFC normalises so a Japanese folder like ``メディア``
     typed by the user (NFC) matches the same name read off an HFS+ source
     mount (NFD). NFC is a no-op for ASCII paths.
     """
-    return unicodedata.normalize("NFC", path.rstrip("/")) + "/"
+    return unicodedata.normalize("NFC", path.replace("\\", "/").rstrip("/")) + "/"
 
 
 def apply_webhook_prefixes(webhook_path: str, mappings: list[dict[str, Any]]) -> list[str]:
@@ -77,8 +84,14 @@ def apply_webhook_prefixes(webhook_path: str, mappings: list[dict[str, Any]]) ->
     if not mappings:
         return [webhook_path]
 
+    # Convert backslashes up-front on both sides so the tail-splice below
+    # operates on forward-slashed strings. Just fixing _normalize() would
+    # make startswith() succeed but still produce broken paths like
+    # ``/media/FMusikvideos\\B\\…`` (no separator, raw backslashes
+    # surviving into os.path.isfile). See GitHub #236.
+    webhook_path_fwd = (webhook_path or "").replace("\\", "/")
     candidates: list[str] = []
-    norm = _normalize(webhook_path)
+    norm = _normalize(webhook_path_fwd)
     for entry in mappings:
         local = entry.get("local_prefix") or ""
         if not local:
@@ -86,9 +99,10 @@ def apply_webhook_prefixes(webhook_path: str, mappings: list[dict[str, Any]]) ->
         for wp in entry.get("webhook_prefixes") or []:
             if not wp:
                 continue
-            norm_wp = _normalize(wp)
+            wp_fwd = wp.replace("\\", "/")
+            norm_wp = _normalize(wp_fwd)
             if norm.startswith(norm_wp):
-                tail = webhook_path[len(wp.rstrip("/")) :]
+                tail = webhook_path_fwd[len(wp_fwd.rstrip("/")) :]
                 candidates.append(local.rstrip("/") + tail)
     if not candidates:
         candidates.append(webhook_path)
@@ -110,16 +124,19 @@ def apply_path_mappings(remote_path: str, mappings: list[dict[str, Any]]) -> lis
     if not mappings:
         return [remote_path]
 
+    # Convert backslashes up-front on both sides — see apply_webhook_prefixes.
+    remote_path_fwd = (remote_path or "").replace("\\", "/")
     candidates: list[str] = []
-    norm = _normalize(remote_path)
+    norm = _normalize(remote_path_fwd)
     for entry in mappings:
         remote = entry.get("remote_prefix") or entry.get("plex_prefix") or ""
         local = entry.get("local_prefix") or ""
         if not remote or not local:
             continue
-        norm_remote = _normalize(remote)
+        remote_fwd = remote.replace("\\", "/")
+        norm_remote = _normalize(remote_fwd)
         if norm.startswith(norm_remote):
-            tail = remote_path[len(remote.rstrip("/")) :]
+            tail = remote_path_fwd[len(remote_fwd.rstrip("/")) :]
             candidates.append(local.rstrip("/") + tail)
     if not candidates:
         candidates.append(remote_path)
@@ -150,7 +167,12 @@ def server_owns_path(
     # NFC-normalise the canonical path *before* splitting; the basename
     # may be the bit that differs (NFD vs NFC) when the parent dir is
     # ASCII but the filename has accented characters.
-    canonical_path = unicodedata.normalize("NFC", canonical_path)
+    #
+    # Also convert backslashes to forward slashes — on Linux, posixpath
+    # treats ``\`` as a regular character, so ``dirname("F:\\X\\Y.mkv")``
+    # returns ``""`` and the whole Windows path leaks into the basename,
+    # which then can never match a forward-slash local_prefix. See #236.
+    canonical_path = unicodedata.normalize("NFC", canonical_path).replace("\\", "/")
     norm_path = _normalize(os.path.dirname(canonical_path)) + os.path.basename(canonical_path)
 
     for library in _enabled_libraries(server):
