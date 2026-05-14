@@ -374,3 +374,253 @@ class TestFireNowSkipsDebounce:
         assert r.status_code == 404, (
             f"fire-now for unknown key must return 404; got {r.status_code}. Body: {r.get_data(as_text=True)!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Case 4: webhook_fire_at is persisted on the Job so the dashboard row
+# can render its own countdown without a separate banner-API roundtrip.
+# ---------------------------------------------------------------------------
+
+
+class TestWebhookFireAtOnJobConfig:
+    """The webhook countdown UX consolidation (May 2026) moved the
+    "Fire now" affordance from a global banner into the per-row queue
+    controls. For that to work, the Job created at batch-open must
+    carry the debounce deadline on its ``config.webhook_fire_at`` so
+    the row's countdown ticker can bind to it.
+
+    Pins both paths:
+      * Fresh batch — webhook_fire_at set at create_job time
+      * Batch merge — webhook_fire_at refreshed alongside webhook_paths
+        because the merge resets the underlying threading.Timer
+    """
+
+    def test_fresh_batch_sets_webhook_fire_at_on_job_config(self, app_debounced):
+        from datetime import datetime, timezone
+
+        from media_preview_generator.web.jobs import get_job_manager
+
+        client = app_debounced.test_client()
+        with app_debounced.app_context():
+            r = client.post(
+                "/api/webhooks/sonarr",
+                json={
+                    "eventType": "Download",
+                    "series": {"title": "Show D"},
+                    "episodes": [{"seasonNumber": 1, "episodeNumber": 1}],
+                    "episodeFile": {"path": "/data/tv/Show D/S01E01.mkv"},
+                },
+                headers=_auth_headers(),
+            )
+            assert r.status_code == 202
+
+            jobs = get_job_manager().get_all_jobs()
+            assert len(jobs) == 1, f"Expected exactly 1 Job created; got {len(jobs)}: {[j.library_name for j in jobs]}"
+            cfg = jobs[0].config or {}
+            assert "webhook_fire_at" in cfg, (
+                "Job.config must carry ``webhook_fire_at`` so the dashboard row's countdown "
+                "can bind to it. Without this field, the row falls back to a 0% progress bar "
+                "and the user has no idea when the batch will dispatch."
+            )
+
+            # Parseable ISO-8601 with timezone (UTC). The frontend feeds
+            # this straight to ``new Date(...)``.
+            fire_at = datetime.fromisoformat(cfg["webhook_fire_at"])
+            assert fire_at.tzinfo is not None, f"webhook_fire_at must be timezone-aware; got {cfg['webhook_fire_at']!r}"
+
+            # Within the 60 s debounce window from "now". Allow 5 s slack
+            # for test scheduling jitter — anything outside that range
+            # means the timestamp wasn't computed from the current time.
+            now = datetime.now(timezone.utc)
+            remaining = (fire_at - now).total_seconds()
+            assert 55 <= remaining <= 60, (
+                f"webhook_fire_at must be ~60s in the future (the configured debounce); "
+                f"got {remaining:.1f}s remaining. Either the delay is wrong or the timestamp "
+                f"was computed from a stale clock."
+            )
+
+    def test_batch_merge_refreshes_webhook_fire_at(self, app_debounced):
+        """Second webhook for the same batch resets the debounce timer
+        (the existing fresh-batch contract). The Job's
+        ``webhook_fire_at`` must move forward in lockstep — otherwise
+        the row's countdown would tick into the past while Plex is
+        still happily waiting.
+        """
+        from datetime import datetime
+
+        from media_preview_generator.web.jobs import get_job_manager
+
+        client = app_debounced.test_client()
+        with app_debounced.app_context():
+            r1 = client.post(
+                "/api/webhooks/sonarr",
+                json={
+                    "eventType": "Download",
+                    "series": {"title": "Show E"},
+                    "episodes": [{"seasonNumber": 1, "episodeNumber": 1}],
+                    "episodeFile": {"path": "/data/tv/Show E/S01E01.mkv"},
+                },
+                headers=_auth_headers(),
+            )
+            assert r1.status_code == 202
+
+            jobs = get_job_manager().get_all_jobs()
+            assert len(jobs) == 1
+            first_fire_at = datetime.fromisoformat(jobs[0].config["webhook_fire_at"])
+
+            # Sleep just long enough for the second POST's "now" to be
+            # measurably later than the first's. Without this delta the
+            # asserted strict-inequality below would race.
+            time.sleep(0.1)
+
+            r2 = client.post(
+                "/api/webhooks/sonarr",
+                json={
+                    "eventType": "Download",
+                    "series": {"title": "Show E"},
+                    "episodes": [{"seasonNumber": 1, "episodeNumber": 2}],
+                    "episodeFile": {"path": "/data/tv/Show E/S01E02.mkv"},
+                },
+                headers=_auth_headers(),
+            )
+            assert r2.status_code == 202
+
+            # Same Job (batch merge, not a second create_job).
+            jobs_after = get_job_manager().get_all_jobs()
+            assert len(jobs_after) == 1, "Merge into existing batch must NOT create a second Job"
+            second_fire_at = datetime.fromisoformat(jobs_after[0].config["webhook_fire_at"])
+            assert second_fire_at > first_fire_at, (
+                f"webhook_fire_at must move forward when the timer resets; "
+                f"first={first_fire_at.isoformat()} second={second_fire_at.isoformat()}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Case 5: Per-job fire-webhook-now endpoint (the route the dashboard row
+# uses; mirrors the legacy debounce-key route).
+# ---------------------------------------------------------------------------
+
+
+class TestFireWebhookNowByJobId:
+    """The dashboard row knows ``job.id`` but not the in-memory
+    ``debounce_key`` (which is a server+source composite). The new
+    ``/api/jobs/<id>/fire-webhook-now`` endpoint does the lookup
+    internally and delegates to the same shared helper the legacy
+    route uses.
+
+    Three cells pinned:
+      * Happy path — job in pending-batch state → 202 + batch dispatches
+      * Job exists but no batch — returns 404 (already fired, restart, etc.)
+      * Unknown job_id — returns 404
+    """
+
+    def test_happy_path_fires_batch_and_dispatches(self, app_debounced):
+        from media_preview_generator.web.jobs import get_job_manager
+        from media_preview_generator.web.webhooks import _pending_batches, _pending_timers
+
+        run_event = threading.Event()
+
+        def fake_run_processing(config, selected_gpus, **kwargs):
+            run_event.set()
+            return {"outcome": {"generated": 1}}
+
+        client = app_debounced.test_client()
+        with (
+            app_debounced.app_context(),
+            patch(
+                "media_preview_generator.jobs.orchestrator.run_processing",
+                side_effect=fake_run_processing,
+            ),
+        ):
+            r = client.post(
+                "/api/webhooks/sonarr",
+                json={
+                    "eventType": "Download",
+                    "series": {"title": "Show F"},
+                    "episodes": [{"seasonNumber": 1, "episodeNumber": 1}],
+                    "episodeFile": {"path": "/data/tv/Show F/S01E01.mkv"},
+                },
+                headers=_auth_headers(),
+            )
+            assert r.status_code == 202
+
+            jobs = get_job_manager().get_all_jobs()
+            assert len(jobs) == 1
+            job_id = jobs[0].id
+
+            # Sanity: batch was queued under the source-derived key.
+            assert "sonarr" in _pending_batches
+
+            fire_response = client.post(
+                f"/api/jobs/{job_id}/fire-webhook-now",
+                headers=_auth_headers(),
+            )
+            assert fire_response.status_code == 202, (
+                f"fire-webhook-now (per-job) must return 202 on success; got {fire_response.status_code}. "
+                f"Body: {fire_response.get_data(as_text=True)!r}"
+            )
+
+            assert run_event.wait(timeout=3.0), (
+                "Per-job fire-webhook-now did not dispatch the batch within 3s — "
+                "the shared helper or the job→key lookup is broken."
+            )
+
+        # Same cleanup contract as the legacy route.
+        assert "sonarr" not in _pending_batches
+        assert "sonarr" not in _pending_timers
+
+    def test_unknown_job_id_returns_404(self, app_debounced):
+        client = app_debounced.test_client()
+        with app_debounced.app_context():
+            r = client.post(
+                "/api/jobs/no-such-job-id/fire-webhook-now",
+                headers=_auth_headers(),
+            )
+        assert r.status_code == 404, f"fire-webhook-now for unknown job_id must be 404; got {r.status_code}"
+
+    def test_job_without_pending_batch_returns_404(self, app_debounced):
+        """A Job exists (created by a webhook) but the batch has
+        already fired or was cleared by restart. The endpoint must
+        return 404 so the dashboard knows to refresh — NOT 500, NOT
+        a silent 202.
+        """
+        from media_preview_generator.web.jobs import get_job_manager
+        from media_preview_generator.web.webhooks import _pending_batches, _pending_timers
+
+        client = app_debounced.test_client()
+        with app_debounced.app_context():
+            r = client.post(
+                "/api/webhooks/sonarr",
+                json={
+                    "eventType": "Download",
+                    "series": {"title": "Show G"},
+                    "episodes": [{"seasonNumber": 1, "episodeNumber": 1}],
+                    "episodeFile": {"path": "/data/tv/Show G/S01E01.mkv"},
+                },
+                headers=_auth_headers(),
+            )
+            assert r.status_code == 202
+
+            jobs = get_job_manager().get_all_jobs()
+            assert len(jobs) == 1
+            job_id = jobs[0].id
+
+            # Simulate the batch having already fired (or restart-clear).
+            # Cancel the timer first so the test doesn't race with the
+            # 60s daemon timer firing during the assertion.
+            for t in _pending_timers.values():
+                try:
+                    t.cancel()
+                except Exception:
+                    pass
+            _pending_timers.clear()
+            _pending_batches.clear()
+
+            r2 = client.post(
+                f"/api/jobs/{job_id}/fire-webhook-now",
+                headers=_auth_headers(),
+            )
+        assert r2.status_code == 404, (
+            f"fire-webhook-now for a Job with no pending batch must be 404; got {r2.status_code}. "
+            f"Body: {r2.get_data(as_text=True)!r}"
+        )

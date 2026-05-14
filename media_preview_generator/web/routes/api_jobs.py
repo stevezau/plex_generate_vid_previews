@@ -745,6 +745,57 @@ def retry_now(job_id):
     return jsonify({"fired": True, "job_id": job_id, "retry_job_id": pending_child.id})
 
 
+@api.route("/jobs/<job_id>/fire-webhook-now", methods=["POST"])
+@api_token_required
+def fire_webhook_now(job_id):
+    """Skip the debounce window for a webhook-batch Job and dispatch
+    immediately.
+
+    Per-job equivalent of the legacy
+    ``/api/webhooks/pending/<debounce_key>/fire-now`` endpoint. The row
+    on the dashboard knows the ``job_id`` but not the in-memory
+    ``debounce_key`` (which is a server+source composite), so this
+    route does the lookup and delegates to the shared helper. Keeps
+    the older debounce-key route working for any external callers.
+
+    Returns:
+        202 + ``{"fired": True, "job_id": ...}`` when the batch was
+            cancelled-and-dispatched.
+        404 when the Job exists but has no live pending batch (already
+            fired, never had one, or container restart cleared the
+            in-memory dict — the user just needs to refresh).
+    """
+    from ..webhooks import _fire_pending_batch_now, find_pending_batch_key_for_job
+
+    job_manager = get_job_manager()
+    job = job_manager.get_job(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+
+    debounce_key = find_pending_batch_key_for_job(job_id)
+    if debounce_key is None:
+        return (
+            jsonify(
+                {
+                    "error": "No pending webhook batch to fire",
+                    "hint": (
+                        "The batch may have already fired or the container restarted since the "
+                        "webhook arrived. Refresh the dashboard to see the latest state."
+                    ),
+                }
+            ),
+            404,
+        )
+
+    if not _fire_pending_batch_now(debounce_key):
+        # Race: another caller fired between the lookup and the
+        # cancel. Return 404 so the frontend re-fetches.
+        return jsonify({"error": "Batch already fired"}), 404
+
+    job_manager.add_log(job_id, "INFO - Webhook batch fired by operator (Fire now)")
+    return jsonify({"fired": True, "job_id": job_id, "debounce_key": debounce_key}), 202
+
+
 @api.route("/jobs/<job_id>/pause", methods=["POST"])
 @api_token_required
 def pause_job(job_id):

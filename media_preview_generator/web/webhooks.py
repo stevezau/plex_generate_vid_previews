@@ -826,6 +826,17 @@ def _schedule_webhook_job(
             batch = _pending_batches.get(debounce_key)
             is_fresh_batch = batch is None
 
+            # Compute fire_at up-front so we can persist it onto the
+            # Job's config in BOTH the fresh-batch and merge paths.
+            # Pre-fix this lived only on the in-memory ``batch`` dict
+            # — meaning the dashboard's per-row countdown had no Job
+            # field to bind to and we leaned on the /api/webhooks/pending
+            # banner instead. Now the timestamp travels with the Job,
+            # the row renders the countdown natively, and the banner
+            # becomes redundant (issue: webhook countdown UX, May 2026).
+            fire_at_ts = datetime.now(timezone.utc).timestamp() + delay
+            fire_at_iso = datetime.fromtimestamp(fire_at_ts, tz=timezone.utc).isoformat()
+
             if is_fresh_batch:
                 # Pull server-context resolution forward so the Job can be
                 # created with the correct pinned-server fields. Previously
@@ -851,6 +862,9 @@ def _schedule_webhook_job(
                         # eight full-library scans of 128k items each
                         # across eleven revivals.
                         "webhook_paths": [normalized_path],
+                        # ISO timestamp the debounce timer will fire at;
+                        # the dashboard's job-row countdown reads this.
+                        "webhook_fire_at": fire_at_iso,
                     },
                     server_id=b_sid,
                     server_name=b_sname,
@@ -900,6 +914,12 @@ def _schedule_webhook_job(
                         # batch had accumulated. See the matching
                         # comment in the fresh-batch branch above.
                         "webhook_paths": batch_paths_sorted,
+                        # Refresh the countdown anchor: the timer has
+                        # been cancelled + reset by this merge, so the
+                        # Job's stored fire_at must move forward too,
+                        # or the row's countdown would tick into the
+                        # past while Plex is still waiting.
+                        "webhook_fire_at": fire_at_iso,
                     },
                 )
                 # Flip single-title → "N files" once the batch grows past 1.
@@ -913,8 +933,7 @@ def _schedule_webhook_job(
                     f"INFO - Webhook merged into batch: {safe_title} (batch now has {path_count} path(s))",
                 )
 
-            fire_at = datetime.now(timezone.utc).timestamp() + delay
-            batch["fire_at"] = fire_at
+            batch["fire_at"] = fire_at_ts
 
             timer = threading.Timer(delay, _execute_webhook_job, args=[debounce_key])
             timer.daemon = True
@@ -1817,22 +1836,19 @@ def get_pending_webhooks():
     return jsonify({"pending": pending})
 
 
-@webhooks_bp.route("/pending/<path:debounce_key>/fire-now", methods=["POST"])
-@api_token_required
-def fire_pending_webhook_now(debounce_key: str):
-    """Skip the debounce delay and dispatch this batch immediately.
+def _fire_pending_batch_now(debounce_key: str) -> bool:
+    """Cancel the debounce timer for ``debounce_key`` and dispatch the
+    batch on a daemon thread.
 
-    The debounce window exists so an *arr that drops 30 episodes in 5
-    seconds gets one job, not 30. But once the user can SEE the batch
-    and KNOWS what's in it, the wait is just friction. This lets them
-    short-circuit it. Cancels the queued threading.Timer + dispatches
-    the same callback synchronously so the job appears in the queue
-    on the next dashboard tick.
+    Returns True when the key matched a live batch (timer cancelled +
+    daemon spawned), False when no such batch exists. Shared between
+    the debounce-key route below and the per-job route in
+    ``api_jobs.py`` so the two surfaces never drift in behaviour.
     """
     cancelled_timer = False
     with _pending_lock:
         if debounce_key not in _pending_batches:
-            return jsonify({"error": "no pending batch with that key"}), 404
+            return False
         existing = _pending_timers.pop(debounce_key, None)
         if existing is not None:
             try:
@@ -1846,9 +1862,42 @@ def fire_pending_webhook_now(debounce_key: str):
         debounce_key,
         cancelled_timer,
     )
-    # Run on a daemon thread so we don't block the HTTP response on
-    # job-creation work (Plex resolution, registry build, etc.).
     threading.Thread(
         target=_execute_webhook_job, args=[debounce_key], daemon=True, name=f"webhook-firenow-{debounce_key[:24]}"
     ).start()
+    return True
+
+
+def find_pending_batch_key_for_job(job_id: str) -> str | None:
+    """Locate the in-memory ``debounce_key`` whose batch is bound to
+    ``job_id`` (the Job created at batch-open).
+
+    Returns the matching key, or ``None`` when no live batch carries
+    that Job id — already fired, never existed, or container restart
+    cleared the in-memory dict. Caller is responsible for translating
+    ``None`` into a 404 / 409.
+    """
+    if not job_id:
+        return None
+    with _pending_lock:
+        for key, batch in _pending_batches.items():
+            if batch.get("job_id") == job_id:
+                return key
+    return None
+
+
+@webhooks_bp.route("/pending/<path:debounce_key>/fire-now", methods=["POST"])
+@api_token_required
+def fire_pending_webhook_now(debounce_key: str):
+    """Skip the debounce delay and dispatch this batch immediately.
+
+    The debounce window exists so an *arr that drops 30 episodes in 5
+    seconds gets one job, not 30. But once the user can SEE the batch
+    and KNOWS what's in it, the wait is just friction. This lets them
+    short-circuit it. Cancels the queued threading.Timer + dispatches
+    the same callback synchronously so the job appears in the queue
+    on the next dashboard tick.
+    """
+    if not _fire_pending_batch_now(debounce_key):
+        return jsonify({"error": "no pending batch with that key"}), 404
     return jsonify({"success": True, "fired": debounce_key}), 202

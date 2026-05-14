@@ -903,6 +903,36 @@ document.addEventListener('click', async function (e) {
     }
 });
 
+// Per-row "Fire now" (webhook debounce) — POSTs the job-scoped
+// /api/jobs/<id>/fire-webhook-now and refreshes jobs + banner so the
+// row transitions out of pending and the banner clears any stale
+// _pending_batches reference.
+async function fireWebhookNow(jobId) {
+    if (!jobId) return;
+    try {
+        await apiPost('/api/jobs/' + encodeURIComponent(jobId) + '/fire-webhook-now', {});
+        showToast('Webhook Fired', 'Skipped the debounce — dispatching now.', 'success');
+        await Promise.all([loadJobs(), loadPendingWebhooks()]);
+    } catch (error) {
+        showToast('Error', 'Could not fire webhook: ' + (error && error.message || error), 'danger');
+    }
+}
+
+// Per-row "Retry now" (chain backoff) — POSTs to the existing
+// /api/jobs/<id>/retry-now endpoint (already consumed by the modal
+// footer button). Mirrors fireWebhookNow above so both row controls
+// share the same success/error toast pattern.
+async function retryNowFromRow(jobId) {
+    if (!jobId) return;
+    try {
+        await apiPost('/api/jobs/' + encodeURIComponent(jobId) + '/retry-now', {});
+        showToast('Retry Fired', 'Skipped the backoff — attempting now.', 'success');
+        await loadJobs();
+    } catch (error) {
+        showToast('Error', 'Could not fire retry: ' + (error && error.message || error), 'danger');
+    }
+}
+
 function renderGlobalPauseResume() {
     const pauseTitle = 'Pause all processing. No new jobs will start; active job will stop dispatching new tasks after current ones finish.';
     const resumeTitle = 'Resume processing. New jobs can start and dispatch will continue.';
@@ -1723,6 +1753,23 @@ function updateJobQueue() {
         const created = formatRelativeTime(job.created_at);
         let actionButtons = '';
 
+        // Per-row countdown flags. Computed once and reused for both
+        // the action-button group below AND the progress cell further
+        // down so the two stay consistent (button visible IFF
+        // countdown is visible).
+        const _scheduledAtPre = job.config && job.config.scheduled_at;
+        const _retryEtaPre = job.progress && job.progress.retry_eta;
+        const _inWorkerRetryWaitPre = !!_retryEtaPre && new Date(_retryEtaPre).getTime() > Date.now() - 1500;
+        const _isRetryRowPre = !!(job.config && (job.config.is_retry || job.config.is_retry_chain));
+        const isWaitingRetryRow =
+            (job.status === 'pending' && _isRetryRowPre && _scheduledAtPre) || _inWorkerRetryWaitPre;
+        const webhookFireAt = job.config && job.config.webhook_fire_at;
+        const isWaitingWebhookRow =
+            job.status === 'pending'
+            && !isWaitingRetryRow
+            && !!webhookFireAt
+            && new Date(webhookFireAt).getTime() > Date.now() - 1500;
+
         // Use a btn-group so spacing is consistent between adjacent
         // icon buttons and the row's right edge — previously buttons
         // had ad-hoc me-1 margins that produced different gaps depending
@@ -1732,10 +1779,35 @@ function updateJobQueue() {
             // users had no way to peek at a long-running job's logs or
             // open a retry-chain row's synthesized status. Adding View
             // Logs here mirrors the Active Jobs panel button group.
+            //
+            // The two "skip the wait" buttons live next to View Logs so
+            // the per-row controls match the per-row countdown in the
+            // progress cell:
+            //   * Fire now (bi-lightning)  — webhook debounce window;
+            //                                cancels the debounce timer
+            //                                and dispatches immediately.
+            //   * Retry now (bi-arrow-clockwise) — chain-head backoff;
+            //                                short-circuits the backoff
+            //                                wait so the next attempt
+            //                                fires immediately.
+            // Different icons + different tooltips on purpose: the verbs
+            // map to different upstream actions, even though both feel
+            // like "do it now" from the user's seat.
+            const fireWebhookBtn = isWaitingWebhookRow
+                ? `<button class="btn btn-outline-warning" onclick="fireWebhookNow('${escapeHtml(job.id)}')" title="Skip the webhook debounce — dispatch now" aria-label="Fire webhook now">
+                    <i class="bi bi-lightning-fill"></i>
+                </button>`
+                : '';
+            const retryNowBtn = isWaitingRetryRow
+                ? `<button class="btn btn-outline-warning" onclick="retryNowFromRow('${escapeHtml(job.id)}')" title="Skip the retry backoff — attempt now" aria-label="Retry now">
+                    <i class="bi bi-arrow-clockwise"></i>
+                </button>`
+                : '';
             actionButtons = `<div class="btn-group btn-group-sm icon-btn-group" role="group">
                 <button class="btn btn-outline-secondary" onclick="showLogsModal('${escapeHtml(job.id)}')" title="View logs" aria-label="View logs">
                     <i class="bi bi-file-text"></i>
                 </button>
+                ${fireWebhookBtn}${retryNowBtn}
                 <button class="btn btn-outline-danger" onclick="cancelJob('${escapeHtml(job.id)}')" title="Cancel" aria-label="Cancel job">
                     <i class="bi bi-x-lg"></i>
                 </button>
@@ -1788,10 +1860,18 @@ function updateJobQueue() {
         const retryEta = job.progress && job.progress.retry_eta;
         const inWorkerRetryWait = !!retryEta && new Date(retryEta).getTime() > Date.now() - 1500;
         const countdownTarget = inWorkerRetryWait ? retryEta : scheduledAt;
-        const _isRetryRow = !!(job.config && (job.config.is_retry || job.config.is_retry_chain));
-        const isWaitingRetry = (job.status === 'pending' && _isRetryRow && scheduledAt) || inWorkerRetryWait;
+        // ``isWaitingRetryRow`` / ``isWaitingWebhookRow`` were computed
+        // earlier (alongside the action-button group) so the same row
+        // ALWAYS shows matching button + progress-cell state. Don't
+        // recompute here — a divergent value would let the Fire-now /
+        // Retry-now button appear without the corresponding countdown
+        // (or vice versa).
         let progressCell;
-        if (isWaitingRetry) {
+        if (isWaitingWebhookRow) {
+            const remaining = Math.max(0, Math.ceil((new Date(webhookFireAt).getTime() - Date.now()) / 1000));
+            const label = remaining > 0 ? `Webhook firing in ${remaining}s` : 'Firing...';
+            progressCell = `<span class="text-warning small" data-webhook-fire-at="${escapeHtml(webhookFireAt)}"><i class="bi bi-hourglass-split me-1"></i>${label}</span>`;
+        } else if (isWaitingRetryRow) {
             const remaining = Math.max(0, Math.ceil((new Date(countdownTarget).getTime() - Date.now()) / 1000));
             const label = remaining > 0 ? `Retry starting in ${remaining}s` : 'Starting...';
             progressCell = `<span class="text-warning small" data-scheduled-at="${escapeHtml(countdownTarget)}"><i class="bi bi-hourglass-split me-1"></i>${label}</span>`;
@@ -3156,6 +3236,19 @@ function _updateElapsedTimers() {
             el.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Starting...';
         }
     });
+    // Webhook debounce countdown — same shape as the retry countdown
+    // above, different label ("Webhook firing in N s") and a separate
+    // data attribute so the row knows which copy to show. Lives on the
+    // same 1Hz tick interval so we don't multiply timers.
+    document.querySelectorAll('[data-webhook-fire-at]').forEach(function (el) {
+        var fireAt = new Date(el.getAttribute('data-webhook-fire-at')).getTime();
+        var remaining = Math.max(0, Math.ceil((fireAt - Date.now()) / 1000));
+        if (remaining > 0) {
+            el.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Webhook firing in ' + remaining + 's';
+        } else {
+            el.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Firing...';
+        }
+    });
     // Active-jobs retry countdown bars (data-retry-eta on the .progress
     // wrapper). Tick the inner bar's width + label in lockstep so the
     // bar visibly fills as the wait elapses, rather than sitting at 0%
@@ -3184,6 +3277,7 @@ function _ensureElapsedTimer() {
 function _stopElapsedTimer() {
     if (!_elapsedTimerInterval) return;
     if (document.querySelector('[data-scheduled-at]')) return;
+    if (document.querySelector('[data-webhook-fire-at]')) return;
     if (document.querySelector('.retry-countdown-bar[data-retry-eta]')) return;
     clearInterval(_elapsedTimerInterval);
     _elapsedTimerInterval = null;
