@@ -40,6 +40,41 @@ except ImportError:  # pragma: no cover
     pass
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _isolate_dotenv_from_tests():
+    """Prevent the developer's local ``.env`` from leaking into the test suite.
+
+    Production ``load_config()`` calls ``dotenv.load_dotenv()`` unconditionally,
+    which reads the repo-root ``.env`` into ``os.environ``. On a dev machine
+    that file holds real ``PLEX_URL`` / ``PLEX_TOKEN`` values; once they land in
+    ``os.environ`` they survive ``reset_settings_manager()`` and every
+    subsequent ``create_app()`` runs ``upgrade._migrate_env_vars()`` against the
+    still-poisoned env — writing real credentials into per-test temp
+    ``settings.json`` and breaking ~35 tests that assert on the absence of
+    ``plex_url`` / ``plex_token`` / ``setup_complete``.
+
+    Fix: (a) replace ``load_dotenv`` with a no-op for the test session, and
+    (b) pre-clean ``os.environ`` of every migration key (plus the deprecated
+    ones, in case a developer shell still sets them).
+    """
+    import media_preview_generator.config as _config_mod
+    from media_preview_generator.upgrade import _DEPRECATED_ENV_VARS, _ENV_MIGRATION_MAP
+
+    original_load_dotenv = _config_mod.load_dotenv
+    _config_mod.load_dotenv = lambda *a, **kw: None
+
+    keys_to_clean = [env_name for env_name, *_ in _ENV_MIGRATION_MAP] + list(_DEPRECATED_ENV_VARS)
+    saved = {k: os.environ.pop(k, None) for k in keys_to_clean}
+
+    try:
+        yield
+    finally:
+        _config_mod.load_dotenv = original_load_dotenv
+        for k, v in saved.items():
+            if v is not None:
+                os.environ[k] = v
+
+
 @pytest.fixture(autouse=True)
 def _reset_frame_cache_between_tests():
     """Drop the frame-cache singleton before AND after every test.
