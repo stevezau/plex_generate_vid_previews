@@ -1448,7 +1448,7 @@ def test_create_vendor_webhook_job_server_id_filter_pins_publishers(mock_start, 
 
 
 # ---------------------------------------------------------------------------
-# Hindsight backfills — HINDSIGHT_90_DAYS.md categories B/C
+# Hindsight backfills — categories B/C from the 90-day audit
 # ---------------------------------------------------------------------------
 
 

@@ -9,9 +9,8 @@ Commit ``2d29fe9`` ("fix: correct day-of-week offset in schedule cron
 expressions") shipped a real off-by-one bug to users for an unknown
 duration: APScheduler uses ISO weekday numbers (0=Mon..6=Sun) but the
 UI checkboxes used Unix cron numbering (0=Sun..6=Sat), so every weekly
-schedule fired one day late. The hindsight audit
-(``tests/audit/HINDSIGHT_90_DAYS.md``) explicitly flagged this gap:
-"Pure JS day arithmetic. No ``test_static_app_js.py`` coverage."
+schedule fired one day late. Pure JS day arithmetic with no
+``test_static_app_js.py`` coverage was the hindsight-flagged gap.
 
 The functions involved are pure arithmetic on strings and numbers — no
 real DOM behaviour is required to exercise the bug shape — so we run

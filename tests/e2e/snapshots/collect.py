@@ -9,10 +9,9 @@ settings / etc. in both light + dark themes at desktop + mobile
 viewports, and writes them to ``--out`` for the reviewer to attach
 to a PR description.
 
-This is the helper referenced by the per-PR template in
-``tests/VISUAL_REGRESSION_CHECKLIST.md`` (Option D — stay manual).
-It deliberately does NOT do diffing; that was the trade-off picked
-in the decision doc.
+This is the helper for the manual visual-regression review on each
+PR. It deliberately does NOT do pixel diffing — reviewer eyeballs
+the captured snapshots; image-diffing was rejected as too noisy.
 
 Requires: ``playwright install chromium`` (one-time setup).
 """

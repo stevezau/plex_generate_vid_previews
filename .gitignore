@@ -47,6 +47,9 @@ tmp_migration_test/
 # Local planning files
 plan.md
 
+# Superpowers skill artifacts (plans, audits, brainstorms) — local-only working notes
+docs/superpowers/
+
 # Claude Code local overrides (not for source control)
 CLAUDE.local.md
 .claude/settings.local.json

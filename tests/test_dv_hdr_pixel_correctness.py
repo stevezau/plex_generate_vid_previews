@@ -4,8 +4,7 @@ What this test catches
 ----------------------
 The HDR / Dolby-Vision tone-mapping path in
 ``media_preview_generator.processing.generator.generate_images`` is the
-highest-bug-rate code path in the repo (Category E in
-``tests/audit/HINDSIGHT_90_DAYS.md`` -- 9 recurring fixes in 90 days).
+highest-bug-rate code path in the repo (9 recurring fixes in 90 days).
 
 The unit suite in ``tests/test_media_processing.py`` only asserts
 **filter-string ordering**.  Real failures look nothing like that:
