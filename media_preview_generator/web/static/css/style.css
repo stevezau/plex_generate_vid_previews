@@ -2288,3 +2288,43 @@ html[data-bs-theme="light"] .kpi-tile {
         overflow-x: auto;
     }
 }
+
+/* Two final fixes from the user's gap-closing review.
+ *
+ * 1. Job-row hover in light mode — table-hover regression. My earlier
+ *    --bs-table-bg: transparent override only neutralised the BASE bg.
+ *    Bootstrap's .table-hover sets --bs-table-bg-state to a different
+ *    var on hover, which paints cells with --bs-table-hover-bg
+ *    (= slate-200) over the white parent card — same banded look the
+ *    user flagged in s1/s2 returns on hover. Neutralise the hover
+ *    state too: transparent base + a subtle row-level tint so the
+ *    "this is the row I'm pointing at" feedback survives without
+ *    repainting cells with body-bg.
+ *
+ * 2. Job Details modal log viewer — same WCAG fix as the /logs page
+ *    needs applying to #logsContent inside #logsModal. The modal log
+ *    panel uses bg-body-tertiary which is slate-100 in light, and
+ *    the neon log colors (debug grey, info teal, warning amber,
+ *    error red) were tuned for a dark canvas. Force the same
+ *    slate-900 dark terminal in light mode for the modal's log
+ *    panel so the colors stay legible.
+ */
+
+.jobs-table {
+    --bs-table-hover-bg: transparent;
+    --bs-table-color-state: inherit;
+}
+.jobs-table > tbody > tr:hover {
+    background-color: rgba(15, 23, 42, 0.04);
+}
+html[data-bs-theme="dark"] .jobs-table > tbody > tr:hover {
+    background-color: rgba(255, 255, 255, 0.04);
+}
+.jobs-table > tbody > tr:hover > * {
+    background-color: transparent !important;
+}
+
+html[data-bs-theme="light"] #logsContent {
+    background-color: #0f172a !important;
+    color: #e2e8f0;
+}
