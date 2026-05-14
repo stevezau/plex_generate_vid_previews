@@ -233,22 +233,30 @@
             // are checked so the glyph and the modal badge can never
             // disagree. Per-check counts drive the tooltip copy; a
             // section-level-only failure still registers in anyCritical
-            // / anyRecommended even when its checks[] is empty.
+            // / anyRecommended ONLY when its checks[] is empty — when
+            // checks[] is non-empty, the per-check walk is
+            // authoritative AND lets dismissed flags silence the
+            // recommended tier (issue #237).
             const sections = r.data.sections || [];
             let anyCritical = false;
             let anyRecommended = false;
             let criticalCount = 0;
             let recommendedCount = 0;
             for (const section of sections) {
-                if (section.ok === false) {
-                    if (section.severity === 'critical') anyCritical = true;
-                    else if (section.severity === 'recommended') anyRecommended = true;
+                if (!(section.checks && section.checks.length)) {
+                    if (section.ok === false) {
+                        if (section.severity === 'critical') anyCritical = true;
+                        else if (section.severity === 'recommended') anyRecommended = true;
+                    }
                 }
                 for (const check of (section.checks || [])) {
                     if (check.ok === false && check.severity === 'critical') {
+                        // Critical: dismiss flag is a no-op, mirrors
+                        // partition-layer safety enforcement.
                         anyCritical = true;
                         criticalCount += 1;
                     } else if (check.ok === false && check.severity === 'recommended') {
+                        if (check.dismissed === true) continue;
                         anyRecommended = true;
                         recommendedCount += 1;
                     }
@@ -1844,11 +1852,19 @@
         let anyRecommended = false;
         let pluginInstalled = null;
         for (const section of sections) {
-            if (section.ok === false && section.severity === 'critical') {
-                anyCritical = true;
-            }
-            if (section.ok === false && section.severity === 'recommended') {
-                anyRecommended = true;
+            // Section-level summary is the FALLBACK for sections that
+            // emit no checks[] — when checks[] is non-empty, the
+            // per-check walk below is authoritative. The section-level
+            // line is dismissed-blind on purpose: dismissed flags live
+            // on individual checks, not sections; a section with no
+            // checks at all has nothing to silence.
+            if (!(section.checks && section.checks.length)) {
+                if (section.ok === false && section.severity === 'critical') {
+                    anyCritical = true;
+                }
+                if (section.ok === false && section.severity === 'recommended') {
+                    anyRecommended = true;
+                }
             }
             if (section.id === 'plugin' && section.checks && section.checks.length) {
                 // Plugin section carries the installed bit in the first row's
@@ -1856,8 +1872,26 @@
                 pluginInstalled = section.checks[0].current !== 'not installed';
             }
             for (const check of section.checks || []) {
-                if (check.ok === false && check.severity === 'critical') anyCritical = true;
-                if (check.ok === false && check.severity === 'recommended') anyRecommended = true;
+                if (check.ok === false && check.severity === 'critical') {
+                    // Issue #237: critical failures ignore the
+                    // dismissed flag — the safety enforcement at the
+                    // partition layer forces them into mustFix
+                    // regardless, so the badge must escalate too. A
+                    // user can't silence a true blocker by POSTing its
+                    // id to the dismiss endpoint.
+                    anyCritical = true;
+                }
+                if (check.ok === false && check.severity === 'recommended') {
+                    // Issue #237: recommended dismissals DO silence
+                    // the yellow tier. If every recommended check is
+                    // dismissed, the badge falls through to "ready" —
+                    // the user has acknowledged each row and doesn't
+                    // need the modal header nagging anymore. They can
+                    // still see what's dismissed under
+                    // "All good → Dismissed (N)".
+                    if (check.dismissed === true) continue;
+                    anyRecommended = true;
+                }
             }
         }
         // `tier` is the stable string consumers key off (badge, tab marker, glyph) —
