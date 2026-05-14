@@ -572,6 +572,37 @@ class EmbyApiClient(MediaServer):
                 raise exc
 
             raw_items = payload.get("Items", []) or []
+            # Per-page progress log so the per-job log shows steady
+            # pagination progress instead of a 30s+ silent gap between
+            # "Querying library …" and "Found N item(s)". For a 118k
+            # Shows library at 1000/page this produces ~119 lines over
+            # the enumeration phase — paced at the network round-trip
+            # rate (so 1-10 lines/sec). Includes ``TotalRecordCount``
+            # when the server returned one so the user can see "page
+            # 5/119" not just "page 5 of unknown".
+            total = payload.get("TotalRecordCount")
+            page_n = (start_index // _LIST_ITEMS_PAGE_SIZE) + 1
+            if isinstance(total, int) and total > 0:
+                total_pages = (total + _LIST_ITEMS_PAGE_SIZE - 1) // _LIST_ITEMS_PAGE_SIZE
+                logger.info(
+                    "{} /Items page {}/{} (library={}, StartIndex={}, items returned={}, library total={})",
+                    self.vendor_name,
+                    page_n,
+                    total_pages,
+                    library_id,
+                    start_index,
+                    len(raw_items),
+                    total,
+                )
+            else:
+                logger.info(
+                    "{} /Items page {} (library={}, StartIndex={}, items returned={})",
+                    self.vendor_name,
+                    page_n,
+                    library_id,
+                    start_index,
+                    len(raw_items),
+                )
             for raw in raw_items:
                 if not isinstance(raw, dict):
                     continue
@@ -591,7 +622,6 @@ class EmbyApiClient(MediaServer):
             # we've already requested everything. Without this, a server
             # that returns a full page on the boundary would cost one
             # extra round-trip that confirms emptiness — cheap but noisy.
-            total = payload.get("TotalRecordCount")
             if isinstance(total, int) and start_index + len(raw_items) >= total:
                 return
             start_index += len(raw_items)

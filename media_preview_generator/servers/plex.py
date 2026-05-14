@@ -1448,8 +1448,26 @@ class PlexServer(MediaServer):
             return
 
         try:
+            # ``plexapi.LibrarySection.search()`` handles HTTP pagination
+            # internally (default container_size=100) and returns the
+            # full list once it finishes — so unlike Emby/Jellyfin we
+            # can't log per-page progress without forking the search
+            # call. Bracket it with two INFO lines so the per-job log
+            # has something between the existing "Querying library …"
+            # banner and the first item dispatch, instead of a silent
+            # 30-120s gap on a large library.
             if target.METADATA_TYPE == "episode":
+                logger.info(
+                    "Plex library {!r}: requesting full episode list from server "
+                    "(plexapi paginates internally; this can take 30-120s for large libraries)…",
+                    target.title,
+                )
                 results = retry_plex_call(target.search, libtype="episode")
+                logger.info(
+                    "Plex library {!r}: received {} episode(s) from server, starting to yield items.",
+                    target.title,
+                    len(results),
+                )
                 for m in results:
                     locations = _extract_item_locations(m)
                     if not locations:
@@ -1462,7 +1480,18 @@ class PlexServer(MediaServer):
                         bundle_metadata=_extract_plex_bundle_metadata(m),
                     )
             elif target.METADATA_TYPE == "movie":
-                for m in retry_plex_call(target.search):
+                logger.info(
+                    "Plex library {!r}: requesting full movie list from server "
+                    "(plexapi paginates internally; this can take 30-120s for large libraries)…",
+                    target.title,
+                )
+                results = retry_plex_call(target.search)
+                logger.info(
+                    "Plex library {!r}: received {} movie(s) from server, starting to yield items.",
+                    target.title,
+                    len(results),
+                )
+                for m in results:
                     locations = _extract_item_locations(m)
                     if not locations:
                         continue
