@@ -1295,8 +1295,18 @@ def _enumerate_items_for_servers(
     captures the only thing that actually differs between the two callers
     (``processor.list_canonical_paths`` vs ``processor.scan_recently_added``).
 
-    Returns a list of ``(server_config, ProcessableItem)`` ready to feed
-    into :func:`_dispatch_processable_items`.
+    Returns ``(all_items, enumeration_errors)``:
+    * ``all_items`` — list of ``(server_config, ProcessableItem)`` ready
+      to feed into :func:`_dispatch_processable_items`.
+    * ``enumeration_errors`` — list of ``(server_label, "ExcName: msg")``
+      tuples, one per server whose enumeration raised. Callers use
+      this to distinguish "library was empty" (zero items, no errors —
+      green badge fine) from "library couldn't be reached" (zero items
+      AND error logged — should surface as a job-level warning so the
+      user sees the amber badge instead of a misleading green check).
+      Job b6deeac3 was the originating regression: Jellyfin's /Items
+      timed out, the library was skipped, and the job reported
+      "completed" with no indication anything went wrong.
 
     De-duping across servers (Phase P4) lives in this helper so it
     applies uniformly to full-scan AND recently-added flows.
@@ -1304,6 +1314,7 @@ def _enumerate_items_for_servers(
     from ..processing import get_processor_for
 
     all_items: list = []
+    enumeration_errors: list[tuple[str, str]] = []
     by_canonical: dict[str, int] = {}  # canonical_path → index in all_items
 
     for server_cfg in candidates:
@@ -1315,10 +1326,11 @@ def _enumerate_items_for_servers(
                 server_cfg.type,
                 exc,
             )
+            enumeration_errors.append((server_cfg.name or server_cfg.id or server_cfg.type.value, f"KeyError: {exc}"))
             continue
         if cancel_check and cancel_check():
             logger.info("Cancellation requested while enumerating items — aborting {}.", label)
-            return all_items
+            return all_items, enumeration_errors
         # Surface a "Querying…" status BEFORE the per-server walk so the UI
         # progress bar shows the system is alive during the slow library
         # enumeration phase (Emby/Jellyfin TV libraries can take 10–60s
@@ -1338,7 +1350,7 @@ def _enumerate_items_for_servers(
             for item in enumerate_one(processor, server_cfg):
                 if cancel_check and cancel_check():
                     logger.info("Cancellation requested mid-enumeration — aborting {}.", label)
-                    return all_items
+                    return all_items, enumeration_errors
 
                 # Phase P4: when the same canonical_path appears on more
                 # than one server (typical: Plex+Jellyfin sharing media,
@@ -1376,8 +1388,14 @@ def _enumerate_items_for_servers(
                 type(exc).__name__,
                 exc,
             )
+            enumeration_errors.append(
+                (
+                    server_cfg.name or server_cfg.id or server_cfg.type.value,
+                    f"{type(exc).__name__}: {exc}",
+                )
+            )
 
-    return all_items
+    return all_items, enumeration_errors
 
 
 def _build_multi_server_registry(config):
@@ -1424,6 +1442,7 @@ def _run_full_scan_multi_server(
     job_id: str | None = None,
     worker_callback=None,
     on_dispatch_start=None,
+    warnings_out: list[str] | None = None,
 ) -> dict:
     """Multi-server full-library scan via the per-vendor :class:`VendorProcessor`.
 
@@ -1441,6 +1460,16 @@ def _run_full_scan_multi_server(
 
     Returns the aggregated ProcessingResult counts keyed by enum value
     (same shape as :func:`_dispatch_webhook_paths_multi_server`).
+
+    ``warnings_out``: optional list the caller passes in to collect
+    user-visible warning strings. The function appends one string per
+    server whose enumeration failed AND ended up contributing zero
+    items to the scan — these surface in the job UI's amber-badge
+    "completed with warning" state via ``complete_job(warning=...)``.
+    Job b6deeac3 reproduced the silent-green-badge regression this
+    out-parameter addresses: Jellyfin's /Items timed out, the library
+    was skipped, and the job ended as "completed successfully" with
+    zero items processed.
     """
     counts = {r.value: 0 for r in ProcessingResult}
 
@@ -1458,7 +1487,7 @@ def _run_full_scan_multi_server(
         )
         return counts
 
-    all_items = _enumerate_items_for_servers(
+    all_items, enumeration_errors = _enumerate_items_for_servers(
         candidates,
         enumerate_one=lambda processor, server_cfg: processor.list_canonical_paths(
             server_cfg,
@@ -1470,6 +1499,33 @@ def _run_full_scan_multi_server(
         label="full scan",
         progress_callback=progress_callback,
     )
+
+    # Surface enumeration failures regardless of whether any items
+    # came through from OTHER servers. The 2×2 matrix is
+    # ``{items=0, items>0} × {errors=0, errors>0}``. The cell
+    # ``items>0 AND errors>0`` (e.g. Plex enumerated fine, Jellyfin
+    # timed out) is the multi-server analogue of job b6deeac3 — the
+    # job processes some files but silently drops every Jellyfin
+    # path. Without this hoist the badge stays green and the user
+    # has no signal that Jellyfin's catalogue was missed. The
+    # legitimate-empty-library case (no enumeration_errors at all)
+    # still falls through to plain green.
+    if warnings_out is not None and enumeration_errors:
+        servers_with_errors = ", ".join(name for name, _err in enumeration_errors)
+        error_detail = "; ".join(f"{name}: {msg}" for name, msg in enumeration_errors)
+        if all_items:
+            warnings_out.append(
+                f"Enumeration failed for {len(enumeration_errors)} server(s) "
+                f"({servers_with_errors}) — these libraries were skipped but other "
+                f"servers contributed items. {error_detail}. Retry the scan once "
+                f"the server is healthy to pick up the missed catalogue."
+            )
+        else:
+            warnings_out.append(
+                f"Enumeration failed for {len(enumeration_errors)} server(s) "
+                f"({servers_with_errors}) — zero items processed. {error_detail}. "
+                f"Retry the scan once the server is healthy."
+            )
 
     if not all_items:
         # Was INFO. WARN it: a "successful" scan that processed nothing is
@@ -1484,8 +1540,7 @@ def _run_full_scan_multi_server(
             "no longer match a library on the server (try Refresh libraries on the "
             "Servers page), (b) the auth token can't see this library, (c) the "
             "vendor hasn't finished its own library scan yet, or (d) the library "
-            "contains no Movie/Episode items. The job will report success but no "
-            "work happened.",
+            "contains no Movie/Episode items.",
             len(candidates),
             library_ids,
         )
@@ -1520,6 +1575,7 @@ def _run_recently_added_multi_server(
     job_id: str | None = None,
     worker_callback=None,
     on_dispatch_start=None,
+    warnings_out: list[str] | None = None,
 ) -> dict:
     """Recently-added scan for any vendor via :class:`VendorProcessor`.
 
@@ -1529,7 +1585,11 @@ def _run_recently_added_multi_server(
     Emby/Jellyfin's ``DateCreated`` sort) so the orchestrator stays
     vendor-agnostic.
 
-    Returns the aggregated ProcessingResult counts.
+    Returns the aggregated ProcessingResult counts. ``warnings_out``
+    mirrors :func:`_run_full_scan_multi_server` — without this plumbing
+    a Sonarr/Radarr-driven recently-added scan whose Jellyfin /Items
+    times out would silently report "completed" with zero items, the
+    same shape of bug as job b6deeac3.
     """
     counts = {r.value: 0 for r in ProcessingResult}
 
@@ -1548,7 +1608,7 @@ def _run_recently_added_multi_server(
         return counts
 
     lookback_int = int(max(1, lookback_hours))
-    all_items = _enumerate_items_for_servers(
+    all_items, enumeration_errors = _enumerate_items_for_servers(
         candidates,
         enumerate_one=lambda processor, server_cfg: processor.scan_recently_added(
             server_cfg,
@@ -1559,6 +1619,24 @@ def _run_recently_added_multi_server(
         label="recently-added scan",
         progress_callback=progress_callback,
     )
+
+    # Same warning-on-enumeration-failure contract as the full-scan
+    # path — partial-success and zero-success cells both surface a
+    # warning when any server's enumeration raised.
+    if warnings_out is not None and enumeration_errors:
+        servers_with_errors = ", ".join(name for name, _err in enumeration_errors)
+        error_detail = "; ".join(f"{name}: {msg}" for name, msg in enumeration_errors)
+        if all_items:
+            warnings_out.append(
+                f"Recently-added enumeration failed for {len(enumeration_errors)} server(s) "
+                f"({servers_with_errors}) — those libraries were skipped but other servers "
+                f"contributed items. {error_detail}."
+            )
+        else:
+            warnings_out.append(
+                f"Recently-added enumeration failed for {len(enumeration_errors)} server(s) "
+                f"({servers_with_errors}) — zero items processed. {error_detail}."
+            )
 
     if not all_items:
         logger.info(
@@ -2184,6 +2262,7 @@ def run_processing(
 
         if _should_use_multi_server_full_scan(config, pinned_type):
             library_ids = list(getattr(config, "plex_library_ids", None) or [])
+            scan_warnings: list[str] = []
             outcome_counts = _run_full_scan_multi_server(
                 config,
                 selected_gpus=selected_gpus,
@@ -2195,8 +2274,17 @@ def run_processing(
                 job_id=job_id,
                 worker_callback=worker_callback,
                 on_dispatch_start=on_dispatch_start,
+                warnings_out=scan_warnings,
             )
-            return {"outcome": outcome_counts}
+            result: dict = {"outcome": outcome_counts}
+            if scan_warnings:
+                # Joined warning string the job_runner pipes into
+                # ``complete_job(warning=...)`` — flips the dashboard
+                # badge from green "completed" to amber "completed
+                # with warning" so a silently-failed enumeration
+                # doesn't masquerade as a successful run.
+                result["warning"] = " | ".join(scan_warnings)
+            return result
 
         # Per-server PlexServer instances are established lazily by
         # the dispatch path (`process_canonical_path` → adapter →

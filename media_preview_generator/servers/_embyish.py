@@ -57,6 +57,21 @@ _REVERSE_LOOKUP_TTL_S = 300.0
 # exhausted) so libraries of any size enumerate fully.
 _LIST_ITEMS_PAGE_SIZE = 1000
 
+# Retry / backoff for transient ``/Items`` page failures during
+# ``list_items``. Job b6deeac3 reproducer: Jellyfin took >30s to
+# answer the first /Items query on a 118k-item Shows library
+# (transient — the same query ran in 0.2s minutes later), the
+# request timed out, and the library was silently skipped. With
+# 3 attempts and a 2s base wait between, the next two retries
+# almost always catch the server once it's idle again. Total
+# worst-case wait before giving up: ``request_timeout × 3 +
+# backoff_waits`` ≈ ~100s, comfortably under the job-level
+# graceful timeout. Tuned conservatively because every retry
+# costs a fresh HTTP round-trip against a Jellyfin server that's
+# already shown signs of stress.
+_LIST_ITEMS_MAX_ATTEMPTS = 3
+_LIST_ITEMS_RETRY_BASE_WAIT_S = 2.0
+
 
 class EmbyApiClient(MediaServer):
     """Base class for Emby and Jellyfin clients.
@@ -467,36 +482,68 @@ class EmbyApiClient(MediaServer):
                 "Limit": _LIST_ITEMS_PAGE_SIZE,
                 "StartIndex": start_index,
             }
-            try:
-                response = self._request("GET", "/Items", params=params)
-                response.raise_for_status()
-                payload = response.json()
-            except Exception as exc:
+            payload = None
+            last_exc: Exception | None = None
+            for attempt in range(1, _LIST_ITEMS_MAX_ATTEMPTS + 1):
+                try:
+                    response = self._request("GET", "/Items", params=params)
+                    response.raise_for_status()
+                    payload = response.json()
+                    last_exc = None
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    if attempt >= _LIST_ITEMS_MAX_ATTEMPTS:
+                        break
+                    # Exponential backoff between attempts. Logging at
+                    # INFO so the per-job log shows the recovery
+                    # narrative (timeout → wait → retry) instead of a
+                    # mystery delay between two WARNING / ERROR lines.
+                    wait = _LIST_ITEMS_RETRY_BASE_WAIT_S * (2 ** (attempt - 1))
+                    logger.info(
+                        "{} /Items page (library={}, StartIndex={}) attempt {}/{} failed "
+                        "({}: {}); retrying in {:.1f}s.",
+                        self.vendor_name,
+                        library_id,
+                        start_index,
+                        attempt,
+                        _LIST_ITEMS_MAX_ATTEMPTS,
+                        type(exc).__name__,
+                        exc,
+                        wait,
+                    )
+                    time.sleep(wait)
+            if payload is None:
+                exc = last_exc if last_exc is not None else RuntimeError("exhausted retries with no exception captured")
                 if start_index == 0:
                     logger.warning(
-                        "Could not list items in {} library {} (first page, {}: {}). "
-                        "This library will be skipped for this run — verify the server is reachable, "
-                        "the API key / token is still valid, and that the library hasn't been deleted "
+                        "Could not list items in {} library {} (first page exhausted "
+                        "{} attempts, last error {}: {}). This library will be skipped "
+                        "for this run — verify the server is reachable, the API key / "
+                        "token is still valid, and that the library hasn't been deleted "
                         "on the server side.",
                         self.vendor_name,
                         library_id,
+                        _LIST_ITEMS_MAX_ATTEMPTS,
                         type(exc).__name__,
                         exc,
                     )
                     return
                 logger.error(
-                    "Partial enumeration of {} library {}: page starting at StartIndex={} failed "
-                    "({}: {}). {} item(s) already yielded; re-raising so the caller treats this "
-                    "library as INCOMPLETE rather than silently dropping every item past the "
-                    "failed page. Re-run the scan once the server is healthy to pick up the rest.",
+                    "Partial enumeration of {} library {}: page starting at StartIndex={} "
+                    "exhausted {} attempts (last error {}: {}). {} item(s) already yielded; "
+                    "re-raising so the caller treats this library as INCOMPLETE rather than "
+                    "silently dropping every item past the failed page. Re-run the scan once "
+                    "the server is healthy to pick up the rest.",
                     self.vendor_name,
                     library_id,
                     start_index,
+                    _LIST_ITEMS_MAX_ATTEMPTS,
                     type(exc).__name__,
                     exc,
                     start_index,
                 )
-                raise
+                raise exc
 
             raw_items = payload.get("Items", []) or []
             for raw in raw_items:

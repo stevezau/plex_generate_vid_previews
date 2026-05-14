@@ -1417,8 +1417,23 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                                 job_manager.add_log(job_id, "INFO - Retry job completed successfully")
                                 job_manager.complete_job(job_id)
                             else:
-                                job_manager.add_log(job_id, "INFO - Job completed successfully")
-                                job_manager.complete_job(job_id)
+                                # ``result["warning"]`` flows up from
+                                # ``run_processing`` when the multi-server
+                                # full-scan path collected enumeration
+                                # warnings (e.g. Jellyfin /Items timed
+                                # out and the library was skipped). Job
+                                # b6deeac3 reproducer: without this
+                                # branch a failed enumeration ended as
+                                # plain green "completed", misleading
+                                # the user into thinking nothing went
+                                # wrong despite zero items processed.
+                                enumeration_warning = (result or {}).get("warning")
+                                if enumeration_warning:
+                                    job_manager.add_log(job_id, f"WARNING - {enumeration_warning}")
+                                    job_manager.complete_job(job_id, warning=enumeration_warning)
+                                else:
+                                    job_manager.add_log(job_id, "INFO - Job completed successfully")
+                                    job_manager.complete_job(job_id)
             finally:
                 # Release the per-job failure bucket before the scope exits
                 # so the dict entry doesn't linger after the job ends.
@@ -1671,6 +1686,7 @@ def _start_recently_added_job_async(
             from ...processing.generator import failure_scope
 
             with failure_scope(job_id):
+                scan_warnings: list[str] = []
                 counts = _run_recently_added_multi_server(
                     config,
                     selected_gpus=selected_gpus,
@@ -1684,11 +1700,17 @@ def _start_recently_added_job_async(
                     ),
                     job_id=job_id,
                     worker_callback=worker_callback,
+                    warnings_out=scan_warnings,
                 )
 
                 if counts:
                     job_manager.set_job_outcome(job_id, counts)
-                job_manager.complete_job(job_id)
+                if scan_warnings:
+                    warning_msg = " | ".join(scan_warnings)
+                    job_manager.add_log(job_id, f"WARNING - {warning_msg}")
+                    job_manager.complete_job(job_id, warning=warning_msg)
+                else:
+                    job_manager.complete_job(job_id)
 
         except Exception as exc:
             logger.exception("Scheduled recently-added scan {} failed", job_id)

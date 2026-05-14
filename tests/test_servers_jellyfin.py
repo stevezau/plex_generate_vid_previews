@@ -297,6 +297,96 @@ class TestListItems:
             items = list(jelly.list_items("lib-1"))
         assert items == []
 
+    def test_first_page_retries_on_transient_timeout_then_succeeds(self, jelly):
+        """Job b6deeac3 regression: Jellyfin took >30s to respond on a
+        118k-item Shows library, ``_request`` raised ``ReadTimeout``,
+        and the existing first-page-fail path bailed silently. Same
+        query ran in 0.2s minutes later — the failure was transient.
+
+        ``list_items`` must retry with backoff before giving up.
+        Without this, a 30-second blip on a busy Jellyfin server
+        nukes the entire scan and the user sees "0 items processed,
+        completed successfully" — exactly the symptom this test
+        defends against.
+        """
+        import requests as _requests
+
+        page_payload = [{"Id": str(i), "Type": "Movie", "Name": f"Movie {i}", "Path": f"/m/{i}.mkv"} for i in range(5)]
+        good_response = MagicMock()
+        good_response.json.return_value = {"Items": page_payload, "TotalRecordCount": 5}
+        good_response.raise_for_status.return_value = None
+
+        attempts: list[int] = []
+
+        def _flaky(method, path, **kwargs):
+            attempts.append(len(attempts) + 1)
+            if len(attempts) < 3:
+                raise _requests.exceptions.ReadTimeout("simulated transient timeout")
+            return good_response
+
+        from media_preview_generator.servers._embyish import _LIST_ITEMS_RETRY_BASE_WAIT_S
+
+        with (
+            patch.object(JellyfinServer, "_request", side_effect=_flaky),
+            patch("media_preview_generator.servers._embyish.time.sleep") as mock_sleep,
+        ):
+            items = list(jelly.list_items("lib-1"))
+
+        assert len(attempts) == 3, (
+            f"Expected 3 attempts (fail, fail, succeed); got {len(attempts)}. "
+            f"Without retry, a transient timeout fails the entire library scan and "
+            f"the job UI silently reports 'completed' with zero items processed — "
+            f"the user-visible symptom of job b6deeac3."
+        )
+        assert len(items) == 5
+        # Pin the backoff: two sleeps between three attempts, growing
+        # exponentially from the configured base. A regression that
+        # removes the sleep (retry-as-tight-CPU-spin) or flattens the
+        # growth to a constant would slip past the attempt-count check.
+        assert mock_sleep.call_count == 2, (
+            f"Expected 2 sleeps between 3 attempts; got {mock_sleep.call_count}. "
+            f"If sleep is bypassed the retries become a tight loop against the failing server."
+        )
+        wait_args = [call.args[0] for call in mock_sleep.call_args_list]
+        assert wait_args == [_LIST_ITEMS_RETRY_BASE_WAIT_S, _LIST_ITEMS_RETRY_BASE_WAIT_S * 2], (
+            f"Backoff must be exponential starting at _LIST_ITEMS_RETRY_BASE_WAIT_S; observed: {wait_args!r}"
+        )
+
+    def test_first_page_gives_up_after_max_retries(self, jelly):
+        """If every attempt fails, the existing first-page contract still
+        applies — log a warning, yield no items, return cleanly. The
+        caller in ``_shared.py:list_canonical_paths`` treats this as a
+        whole-library outage and skips to the next library; the
+        job-status propagation fix surfaces it as an amber warning
+        badge at the job level.
+
+        Pins the retry budget EXACTLY (not ``>= 3``) so a future
+        ``_LIST_ITEMS_MAX_ATTEMPTS = 50`` change has to update this
+        test explicitly. Bug-blind would let a silent budget
+        inflation ship.
+        """
+        import requests as _requests
+
+        from media_preview_generator.servers._embyish import _LIST_ITEMS_MAX_ATTEMPTS
+
+        attempts: list[int] = []
+
+        def _always_fails(method, path, **kwargs):
+            attempts.append(len(attempts) + 1)
+            raise _requests.exceptions.ReadTimeout("simulated persistent timeout")
+
+        with (
+            patch.object(JellyfinServer, "_request", side_effect=_always_fails),
+            patch("media_preview_generator.servers._embyish.time.sleep"),
+        ):
+            items = list(jelly.list_items("lib-1"))
+
+        assert items == []
+        assert len(attempts) == _LIST_ITEMS_MAX_ATTEMPTS, (
+            f"Expected exactly _LIST_ITEMS_MAX_ATTEMPTS={_LIST_ITEMS_MAX_ATTEMPTS} attempts; "
+            f"got {len(attempts)}. Pin the budget exactly so a silent inflation can't ship."
+        )
+
     def test_mid_pagination_failure_raises_to_avoid_silent_truncation(self, jelly):
         """Transient failure on page N>0 must NOT silently report a
         partial library as complete. Pre-MED-fix, a successful page 1
@@ -308,17 +398,23 @@ class TestListItems:
         a visible WARNING instead of a silent truncation. Items already
         yielded stay yielded — they're still valid work; the
         re-raise's job is to make the partial-completion **visible**."""
-        from media_preview_generator.servers._embyish import _LIST_ITEMS_PAGE_SIZE
+        from media_preview_generator.servers._embyish import _LIST_ITEMS_MAX_ATTEMPTS, _LIST_ITEMS_PAGE_SIZE
 
         page1 = [
             {"Id": str(i), "Type": "Movie", "Name": f"Movie {i}", "Path": f"/m/{i}.mkv"}
             for i in range(_LIST_ITEMS_PAGE_SIZE)
         ]
-        with patch.object(JellyfinServer, "_request") as req:
+        with (
+            patch.object(JellyfinServer, "_request") as req,
+            patch("media_preview_generator.servers._embyish.time.sleep"),
+        ):
             resp1 = MagicMock()
             resp1.json.return_value = {"Items": page1, "TotalRecordCount": _LIST_ITEMS_PAGE_SIZE + 50}
             resp1.raise_for_status.return_value = None
-            req.side_effect = [resp1, RuntimeError("transient 502 on page 2")]
+            # Page 1 succeeds; page 2 fails every retry attempt so the
+            # exhausted-retries branch raises. ``_LIST_ITEMS_MAX_ATTEMPTS``
+            # is the per-page retry budget.
+            req.side_effect = [resp1] + [RuntimeError("transient 502 on page 2")] * _LIST_ITEMS_MAX_ATTEMPTS
 
             yielded: list = []
             with pytest.raises(RuntimeError, match="transient 502"):
@@ -330,7 +426,8 @@ class TestListItems:
             "before the re-raise — they're real items that should still be "
             "processed; the re-raise only signals 'this library is incomplete'."
         )
-        assert req.call_count == 2
+        # 1 success on page 1 + N retries on page 2 before giving up.
+        assert req.call_count == 1 + _LIST_ITEMS_MAX_ATTEMPTS
 
 
 class TestResolveItemToRemotePath:

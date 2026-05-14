@@ -14,6 +14,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from requests.exceptions import ReadTimeout as requests_ReadTimeout
+
 from media_preview_generator.jobs.orchestrator import _run_full_scan_multi_server
 from media_preview_generator.processing import ProcessingResult
 from media_preview_generator.processing.types import ProcessableItem
@@ -2607,6 +2609,102 @@ class TestProgressEmissionInCompletionOrder:
         # exception swallowed by the background thread.
         assert dispatch_result.get("counts") is not None
         _time.sleep(0)  # let any daemon poller threads finish their tick
+
+
+class TestEnumerationFailurePropagatesAsWarning:
+    """Job b6deeac3 regression: Jellyfin's /Items query timed out on a
+    118k-item Shows library (transient — same query ran in 0.2s minutes
+    later), ``list_items`` exhausted its retries, the library was
+    skipped, and the job was marked "completed successfully" with a
+    green checkmark despite zero items being processed. The user is
+    misled into thinking nothing's wrong.
+
+    Contract:
+    * When ``_run_full_scan_multi_server`` finds zero items because
+      enumeration FAILED (HTTP error, timeout, etc.), the result must
+      surface a warning string the upstream caller can pipe into
+      ``complete_job(warning=...)`` so the job ends with an amber
+      badge instead of green.
+    * The empty-but-legitimately-empty case (library exists and is
+      empty) still ends as plain success — the difference is whether
+      ``_enumerate_items_for_servers`` saw any exceptions while
+      iterating.
+    """
+
+    def test_run_full_scan_multi_server_surfaces_warning_when_enumeration_fails(self, tmp_path):
+        """The function appends a human-readable error to the caller's
+        ``warnings_out`` list when enumeration fails for every
+        candidate server AND no items were yielded. The caller
+        (``run_processing`` → ``job_runner``) pipes the joined warnings
+        into ``complete_job(warning=...)`` so the job ends with an
+        amber badge instead of green.
+        """
+        from media_preview_generator.jobs.orchestrator import _run_full_scan_multi_server
+
+        cfg_a = _server_config("srv-a", ServerType.JELLYFIN)
+
+        registry_mock = MagicMock()
+        registry_mock.configs.return_value = [cfg_a]
+
+        proc_a = MagicMock()
+
+        def _failing_enumeration():
+            raise requests_ReadTimeout("simulated transient timeout, retries exhausted")
+            yield  # pragma: no cover  # makes Python treat this as a generator
+
+        proc_a.list_canonical_paths.return_value = _failing_enumeration()
+
+        warnings: list[str] = []
+        with (
+            patch("media_preview_generator.processing.get_processor_for", return_value=proc_a),
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+            patch("media_preview_generator.servers.ServerRegistry.from_settings", return_value=registry_mock),
+        ):
+            mock_sm.return_value.get.return_value = [
+                {
+                    "id": "srv-a",
+                    "type": "jellyfin",
+                    "name": "JellyTest",
+                    "enabled": True,
+                    "url": "http://test",
+                    "auth": {"access_token": "t"},
+                    "libraries": [],
+                }
+            ]
+            counts = _run_full_scan_multi_server(_config(), selected_gpus=[], warnings_out=warnings)
+
+        # Counts return shape is unchanged — backward compatible with
+        # every other test that just reads counts.values().
+        assert isinstance(counts, dict)
+        assert "generated" in counts
+        # The new contract: when enumeration fails for all candidates
+        # AND no items were processed, the warnings_out list is
+        # populated. The user-visible content is a docstring-quality
+        # concern; what we pin is "present and non-empty."
+        assert warnings, (
+            f"_run_full_scan_multi_server appended no warning despite a failing "
+            f"list_canonical_paths. The user sees 'completed' in the UI even though zero "
+            f"items were processed and the library couldn't be reached — that's exactly "
+            f"the misleading green badge job b6deeac3 reproduced. counts={counts!r}"
+        )
+        # Pin the SUT's contract: the warning must name the failing
+        # server so the user knows WHICH server timed out, and must
+        # name the exception class so the warning text gives them
+        # something to grep for / paste into a support thread.
+        # Without these the test passes for any non-empty list,
+        # including "server foo enumerated 0 items" — bug-blind on
+        # the actual UX contract.
+        joined = " | ".join(warnings)
+        # ``_server_config`` builds the name "Test jellyfin" via
+        # ``f"Test {server_type.value}"`` — pin against THAT so the
+        # test isn't fooled by a generic "unknown server" string.
+        assert "Test jellyfin" in joined, (
+            f"warning must name the failing server (expected 'Test jellyfin' in: {joined!r})"
+        )
+        assert "ReadTimeout" in joined, (
+            f"warning must include the exception class so the user has something concrete "
+            f"to investigate (expected 'ReadTimeout' in: {joined!r})"
+        )
 
 
 class TestWorkerFFmpegStartedFlag:
