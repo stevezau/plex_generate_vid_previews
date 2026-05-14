@@ -179,8 +179,16 @@ class ServerRegistry:
 
         # Reuse the migration helper by adapting the Config to a SettingsManager
         # protocol — only ``.get(key, default)`` is needed.
+        #
+        # ``id_override="plex-default"`` keeps this fallback's id stable
+        # across calls. The migration helper would otherwise generate a
+        # fresh uuid every invocation, which would break dispatch lookups
+        # (a job pinned to <uuid_A> would not be findable in a later
+        # registry rebuilt with <uuid_B>). Persisted installs go through
+        # the v7+v12 path and get UUIDs in settings.json; this runtime
+        # stub is in-memory only and never reaches the UI.
         snapshot = _ConfigGetterShim(config)
-        entry = _legacy_plex_to_media_server(snapshot)
+        entry = _legacy_plex_to_media_server(snapshot, id_override="plex-default")
         if entry is None:
             return cls()
         return cls.from_settings([entry], legacy_config=config)

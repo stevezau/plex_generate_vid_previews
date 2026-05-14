@@ -1,6 +1,7 @@
 """Settings and setup wizard API routes."""
 
 import os
+import uuid
 from urllib.parse import urlparse
 
 from flask import jsonify, request
@@ -127,7 +128,9 @@ def _route_legacy_plex_fields_into_media_servers(settings, updates: dict) -> tup
     - The token field of value ``"****"`` (four asterisks) means
       "the user didn't change it" — the existing token is preserved.
     - When no Plex entry exists yet (fresh install, completing the
-      Setup Wizard), a new ``plex-default`` entry is created.
+      Setup Wizard), a new entry is created with a UUID id matching
+      the shape of every other server in ``media_servers`` (the legacy
+      ``plex-default`` slug was retired by the v12 schema migration).
     - Per-library toggles in the existing ``media_servers[0].libraries``
       list are preserved when ``selected_libraries`` is updated; only
       the ``enabled`` flag is recomputed from the new selection.
@@ -151,7 +154,7 @@ def _route_legacy_plex_fields_into_media_servers(settings, updates: dict) -> tup
         # produced by upgrade.py::_legacy_plex_to_media_server so old
         # and new flow result in identical settings.json.
         plex_entry: dict = {
-            "id": "plex-default",
+            "id": uuid.uuid4().hex,
             "type": "plex",
             "name": "Plex",
             "enabled": True,
@@ -498,7 +501,10 @@ def _reregister_plex_webhooks_after_secret_rotation(settings) -> None:
             if not new_auth:
                 continue
             try:
-                pwh.register(token, public_url, auth_token=new_auth, server_id=entry.get("id"))
+                # No ``server_id=`` kwarg — the per-server path already
+                # encodes it; appending it as a query would land a
+                # redundant ``&server_id=`` on the URL plex.tv stores.
+                pwh.register(token, public_url, auth_token=new_auth)
                 logger.info(
                     "Plex webhook re-registered for {!r} after secret rotation",
                     entry.get("name") or entry.get("id"),

@@ -520,24 +520,39 @@
                             <div class="card-body">
                                 <p class="mb-2">
                                     Configure your media server's webhook plugin to POST events to this URL.
-                                    The same endpoint receives Plex, Emby and Jellyfin events — the server
-                                    is identified by the payload itself.
+                                    Each server has its own URL so payloads can be routed to the right server
+                                    even when you have multiple Emby or Jellyfin installs.
                                 </p>
-                                <label class="form-label small text-muted">Webhook URL (with auth token)</label>
-                                <div class="input-group input-group-sm mb-2">
+                                <label class="form-label small text-muted">
+                                    Webhook URL
+                                    <i class="bi bi-info-circle text-muted ms-1" data-bs-toggle="tooltip"
+                                       title="Pinned to this server's ID. The router dispatches previews only to this server, even if a sibling server owns the same path."></i>
+                                </label>
+                                <div class="input-group input-group-sm mb-3">
                                     <input type="text" class="form-control font-monospace" id="editVendorWebhookUrl" readonly>
-                                    <button class="btn btn-outline-secondary" type="button" id="editVendorWebhookCopyBtn" title="Copy to clipboard">
+                                    <button class="btn btn-outline-secondary" type="button" id="editVendorWebhookCopyBtn" title="Copy URL to clipboard">
                                         <i class="bi bi-clipboard"></i>
                                     </button>
                                 </div>
+                                <div id="editVendorWebhookAuthBlock" class="alert alert-warning small mb-3">
+                                    <div class="fw-semibold mb-1">
+                                        <i class="bi bi-shield-lock me-1"></i>Auth header (required)
+                                    </div>
+                                    <div>
+                                        In your plugin's <strong>Headers</strong> / <strong>Request Headers</strong> section, add a custom header:
+                                    </div>
+                                    <ul class="mb-1 mt-1" style="margin-bottom:0;">
+                                        <li>Name: <code id="editVendorWebhookHeaderName">X-Auth-Token</code></li>
+                                        <li>Value: <code id="editVendorWebhookHeaderValuePlaceholder">[THIS APP'S TOKEN]</code></li>
+                                    </ul>
+                                    <div class="small text-muted">
+                                        Use this app's web-auth token as the value. You can find or rotate it under
+                                        <a href="/settings#section-auth">Settings → Authentication</a>.
+                                        Sending the token as a header keeps it out of access logs, screenshots, and clipboard history.
+                                    </div>
+                                </div>
                                 <div id="editVendorWebhookPluginHint" class="alert alert-info small mb-2"></div>
                                 <ol id="editVendorWebhookSteps" class="mb-3 small"></ol>
-                                <div class="d-flex gap-2 flex-wrap">
-                                    <button class="btn btn-sm btn-outline-primary" type="button" id="editVendorWebhookTestBtn">
-                                        <i class="bi bi-broadcast-pin me-1"></i>Test webhook
-                                    </button>
-                                </div>
-                                <div id="editVendorWebhookTestResult" class="small mt-2"></div>
                             </div>
                         </div>
 
@@ -577,7 +592,7 @@
                                     <li class="mb-3">
                                         Confirm the URL Plex will POST to. The default is the URL you're using right now, which works for most same-host setups. Override it if Plex is on a different machine or behind a different network/proxy.
                                         <div class="input-group input-group-sm mt-2">
-                                            <input type="text" class="form-control" id="plexWebhookPublicUrl" placeholder="http://your-host:8080/api/webhooks/incoming">
+                                            <input type="text" class="form-control" id="plexWebhookPublicUrl" placeholder="http://your-host:8080/api/webhooks/server/&lt;this-server-id&gt;">
                                             <button class="btn btn-outline-secondary" type="button" id="plexWebhookResetUrlBtn" title="Reset to detected URL">
                                                 <i class="bi bi-arrow-counterclockwise"></i>
                                             </button>
@@ -593,14 +608,10 @@
                                     <button class="btn btn-sm btn-primary" type="button" id="plexWebhookRegisterBtn">
                                         <i class="bi bi-plus-circle me-1"></i><span>Register with Plex</span>
                                     </button>
-                                    <button class="btn btn-sm btn-outline-secondary" type="button" id="plexWebhookTestBtn">
-                                        <i class="bi bi-broadcast-pin me-1"></i>Test reachability
-                                    </button>
                                     <button class="btn btn-sm btn-outline-danger d-none" type="button" id="plexWebhookUnregisterBtn">
                                         <i class="bi bi-x-circle me-1"></i>Remove from Plex
                                     </button>
                                 </div>
-                                <div id="plexWebhookTestResult" class="small mt-2"></div>
                             </div>
                         </div>
 

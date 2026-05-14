@@ -958,17 +958,15 @@
 
         const headerEl = document.getElementById('editVendorWebhookHeader');
         const urlInput = document.getElementById('editVendorWebhookUrl');
+        const headerNameEl = document.getElementById('editVendorWebhookHeaderName');
         const hintEl = document.getElementById('editVendorWebhookPluginHint');
         const stepsEl = document.getElementById('editVendorWebhookSteps');
-        const testBtn = document.getElementById('editVendorWebhookTestBtn');
-        const testResult = document.getElementById('editVendorWebhookTestResult');
         const copyBtn = document.getElementById('editVendorWebhookCopyBtn');
 
         if (headerEl) headerEl.textContent = (t === 'emby' ? 'Emby' : 'Jellyfin') + ' Webhook';
         if (urlInput) urlInput.value = 'Loading…';
         if (hintEl) hintEl.textContent = '';
         if (stepsEl) stepsEl.innerHTML = '';
-        if (testResult) testResult.textContent = '';
 
         let info;
         try {
@@ -984,7 +982,12 @@
             return;
         }
 
-        if (urlInput) urlInput.value = info.webhook_url_with_token || info.webhook_url || '';
+        if (urlInput) urlInput.value = info.webhook_url_per_server || info.webhook_url || '';
+        // Header name is static prose (X-Auth-Token) — the API confirms
+        // it but never returns the value. We deliberately don't expose
+        // the actual token in this UI: the user looks it up under
+        // Settings → Authentication and pastes it into their plugin.
+        if (headerNameEl) headerNameEl.textContent = info.auth_header_name || 'X-Auth-Token';
         if (hintEl) {
             hintEl.classList.remove('alert-danger');
             hintEl.classList.add('alert-info');
@@ -994,7 +997,7 @@
                 : '';
             hintEl.innerHTML = '<i class="bi bi-info-circle me-1"></i>' +
                 'You need the ' + escapeHtml(plugin.plugin_name || 'webhook plugin') +
-                ' installed on your ' + escapeHtml(t === 'emby' ? 'Emby' : 'Jellyfin') +
+                ' configured on your ' + escapeHtml(t === 'emby' ? 'Emby' : 'Jellyfin') +
                 ' server.' + installLink;
         }
         if (stepsEl) {
@@ -1004,35 +1007,15 @@
 
         if (copyBtn && urlInput) {
             copyBtn.onclick = () => {
-                urlInput.select();
+                const value = urlInput.value;
                 if (navigator.clipboard && navigator.clipboard.writeText) {
-                    navigator.clipboard.writeText(urlInput.value).catch(() => {});
+                    navigator.clipboard.writeText(value).catch(() => {});
                 } else {
+                    urlInput.select();
                     try { document.execCommand('copy'); } catch (_) {}
                 }
                 copyBtn.innerHTML = '<i class="bi bi-check2"></i>';
                 setTimeout(() => { copyBtn.innerHTML = '<i class="bi bi-clipboard"></i>'; }, 1500);
-            };
-        }
-
-        if (testBtn) {
-            testBtn.onclick = async () => {
-                if (!testResult) return;
-                testResult.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Testing…';
-                try {
-                    const url = '/api/settings/' + t + '_webhook/test?server_id=' + encodeURIComponent(server.id);
-                    const result = await apiPost(url, {});
-                    if (result && result.success) {
-                        testResult.innerHTML = '<i class="bi bi-check-circle-fill text-success me-1"></i>' +
-                            escapeHtml(result.message || 'Round-trip OK.');
-                    } else {
-                        testResult.innerHTML = '<i class="bi bi-x-circle-fill text-danger me-1"></i>' +
-                            escapeHtml((result && (result.error || result.hint)) || 'Webhook test failed.');
-                    }
-                } catch (err) {
-                    const msg = (err && err.body && (err.body.error || err.body.hint)) || (err && err.message) || 'Webhook test failed';
-                    testResult.innerHTML = '<i class="bi bi-x-circle-fill text-danger me-1"></i>' + escapeHtml(msg);
-                }
             };
         }
     }

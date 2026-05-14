@@ -126,9 +126,12 @@ function resetPlexWebhookUrl() {
     const origin = window.location.origin;
     const input = document.getElementById('plexWebhookPublicUrl');
     if (!input) return;
-    input.value = origin + '/api/webhooks/incoming';
+    const path = _pwpServerId
+        ? '/api/webhooks/server/' + encodeURIComponent(_pwpServerId)
+        : '/api/webhooks/incoming';
+    input.value = origin + path;
     if (typeof showToast === 'function') {
-        showToast('Reset', 'URL reset to ' + origin + '/api/webhooks/incoming', 'info');
+        showToast('Reset', 'URL reset to ' + origin + path, 'info');
     }
 }
 
@@ -172,34 +175,6 @@ async function unregisterPlexWebhook() {
         btn.disabled = false;
         btn.innerHTML = '<i class="bi bi-x-circle me-1"></i>Remove from Plex';
         loadPlexWebhookStatus();
-    }
-}
-
-async function testPlexWebhookReachability() {
-    const btn = document.getElementById('plexWebhookTestBtn');
-    const result = document.getElementById('plexWebhookTestResult');
-    const input = document.getElementById('plexWebhookPublicUrl');
-    if (!btn || !input || !result) return;
-    const url = input.value.trim();
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Testing…';
-    result.textContent = '';
-    result.className = 'small mt-2';
-    try {
-        const data = await apiPost('/api/settings/plex_webhook/test', _serverIdBody({ public_url: url }));
-        if (data.success) {
-            result.className = 'small mt-2 text-success';
-            result.innerHTML = '<i class="bi bi-check-circle me-1"></i>Reachable (HTTP ' + data.status_code + '). Plex should be able to deliver events here.';
-        } else {
-            result.className = 'small mt-2 text-danger';
-            result.innerHTML = '<i class="bi bi-exclamation-triangle me-1"></i>' + (data.error || ('Unexpected status ' + data.status_code));
-        }
-    } catch (e) {
-        result.className = 'small mt-2 text-danger';
-        result.innerHTML = '<i class="bi bi-exclamation-triangle me-1"></i>' + ((e && e.message) || 'Test failed');
-    } finally {
-        btn.disabled = false;
-        btn.innerHTML = '<i class="bi bi-broadcast-pin me-1"></i>Test reachability';
     }
 }
 
@@ -301,7 +276,6 @@ function _wirePlexWebhookPanel() {
     };
     wire('plexWebhookRegisterBtn', 'click', registerPlexWebhook);
     wire('plexWebhookUnregisterBtn', 'click', unregisterPlexWebhook);
-    wire('plexWebhookTestBtn', 'click', testPlexWebhookReachability);
     wire('plexWebhookResetUrlBtn', 'click', resetPlexWebhookUrl);
     wire('recentlyAddedScanNowBtn', 'click', scanAllRecentlyAddedNow);
 }

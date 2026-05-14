@@ -66,7 +66,10 @@ class TestServersPage:
         # Key landmarks of the rendered page.
         assert "Media Servers" in body
         assert "Add Server" in body
-        assert "/api/webhooks/incoming" in body or "webhookUrl" in body
+        # The webhook URL placeholder is now the per-server pinned form
+        # (multi-server-safe). Either landmark proves the Webhook & Scanner
+        # tab rendered.
+        assert "/api/webhooks/server/" in body or "webhookUrl" in body
         assert 'data-type="plex"' in body
         assert 'data-type="emby"' in body
         assert 'data-type="jellyfin"' in body

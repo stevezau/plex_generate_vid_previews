@@ -17,9 +17,6 @@ and :mod:`media_preview_generator.web.webhook_router` — this module only
 manages the registration metadata that tells Plex where to send them.
 """
 
-import json as _json
-
-import requests
 from flask import jsonify, request
 from loguru import logger
 
@@ -28,7 +25,7 @@ from . import api
 from .api_settings import _loopback_in_docker_warning
 
 
-def _default_plex_webhook_url() -> str:
+def _default_plex_webhook_url(server_id: str | None = None) -> str:
     """Build the default webhook URL Plex should POST to.
 
     Uses the request's effective host/scheme so the same browser
@@ -36,9 +33,42 @@ def _default_plex_webhook_url() -> str:
     Plex Media Server is likely to be able to reach (typical
     same-host or same-LAN setups).  Users on reverse proxies / split
     networks override this manually.
+
+    When ``server_id`` is supplied the per-server pinned route is
+    returned so multi-Plex installs route unambiguously by path. The
+    auth token is appended at registration time (Plex's webhook UI has
+    no header field) — the UI never displays the token.
     """
     base = request.host_url.rstrip("/")
+    if server_id:
+        return f"{base}/api/webhooks/server/{server_id}"
     return f"{base}/api/webhooks/incoming"
+
+
+def _rebuild_path_preserving_host(url: str | None, server_id: str | None) -> str:
+    """Rewrite ``url``'s path to ``/api/webhooks/server/<id>`` while keeping scheme+host.
+
+    Existing installs persisted ``output.webhook_public_url`` pointing
+    at the legacy ``/api/webhooks/incoming`` route. The user's custom
+    host (e.g. a reverse-proxy domain like ``previews.example.com``) is
+    the load-bearing bit — Plex Media Server has to be able to reach
+    it. The path is ours to migrate. So: keep the host the user
+    configured, swap the path for the per-server form.
+
+    When ``url`` is empty or unparseable, falls back to
+    :func:`_default_plex_webhook_url`. When ``server_id`` is empty,
+    falls back to the legacy ``/incoming`` path because we have nothing
+    to pin to.
+    """
+    from urllib.parse import urlparse, urlunparse
+
+    if not url:
+        return _default_plex_webhook_url(server_id)
+    parsed = urlparse(url.strip())
+    if not parsed.scheme or not parsed.netloc:
+        return _default_plex_webhook_url(server_id)
+    new_path = f"/api/webhooks/server/{server_id}" if server_id else "/api/webhooks/incoming"
+    return urlunparse((parsed.scheme, parsed.netloc, new_path, "", "", ""))
 
 
 def _resolve_plex_server_for_webhook(server_id: str | None) -> tuple[dict | None, str | None, int | None]:
@@ -93,6 +123,7 @@ def _server_webhook_url(server_entry: dict | None) -> str:
         url = ((server_entry.get("output") or {}).get("webhook_public_url") or "").strip()
         if url:
             return url
+        return _default_plex_webhook_url(server_entry.get("id"))
     return _default_plex_webhook_url()
 
 
@@ -161,7 +192,17 @@ def plex_webhook_status():
         return jsonify({"error": err, "error_reason": "server_not_found"}), status
 
     token = _server_token(server_entry)
-    public_url = _server_webhook_url(server_entry)
+    # The input field always pre-fills with the per-server recommended
+    # URL (path rebuilt; host preserved from any stored override or
+    # falling back to the request host). The badge probe also tries
+    # the stored URL in case plex.tv still has the legacy ``/incoming``
+    # registration — that prevents the UI from claiming "Not registered"
+    # while a perfectly working legacy webhook is still firing.
+    stored_url = ""
+    if server_entry:
+        stored_url = ((server_entry.get("output") or {}).get("webhook_public_url") or "").strip()
+    recommended_id = server_entry.get("id") if server_entry else None
+    public_url = _rebuild_path_preserving_host(stored_url, recommended_id)
 
     has_pass: bool | None
     registered = False
@@ -175,6 +216,8 @@ def plex_webhook_status():
     else:
         try:
             registered = pwh.is_registered(token, public_url)
+            if not registered and stored_url:
+                registered = pwh.is_registered(token, stored_url)
             has_pass = True
         except pwh.PlexWebhookError as exc:
             registered = False
@@ -194,7 +237,7 @@ def plex_webhook_status():
             "server_name": server_entry.get("name") if server_entry else None,
             "registered_in_plex": registered,
             "public_url": public_url,
-            "default_url": _default_plex_webhook_url(),
+            "default_url": _default_plex_webhook_url(server_entry.get("id") if server_entry else None),
             "has_plex_pass": has_pass,
             "error": error,
             "error_reason": error_reason,
@@ -251,15 +294,27 @@ def plex_webhook_register():
             400,
         )
 
+    registered_server_id = server_entry.get("id") if server_entry else None
+    # The user's input can override the *host* (reverse proxy DNS,
+    # different LAN address, etc.) — the *path* is ours and always
+    # gets rebuilt to the per-server form. This self-heals legacy
+    # ``/api/webhooks/incoming`` registrations without losing the
+    # user's reverse-proxy host. Source preference: typed input →
+    # stored override → request host.
     raw_url = (data.get("public_url") or "").strip()
-    public_url = raw_url or _server_webhook_url(server_entry)
+    stored_url = ""
+    if server_entry:
+        stored_url = ((server_entry.get("output") or {}).get("webhook_public_url") or "").strip()
+    source_url = raw_url or stored_url
+    public_url = _rebuild_path_preserving_host(source_url, registered_server_id)
 
     try:
-        # K6: pass server_id so the registered URL embeds it. Inbound Plex
-        # POSTs then arrive with `?server_id=<id>` and _authenticate_webhook
-        # can validate against that server's per-server secret.
-        registered_server_id = server_entry.get("id") if server_entry else None
-        pwh.register(token, public_url, auth_token=auth_token, server_id=registered_server_id)
+        # No ``server_id=`` kwarg: the per-server path already encodes
+        # it (``/api/webhooks/server/<id>``). Passing it would land a
+        # redundant ``&server_id=<id>`` on the URL plex.tv stores, and
+        # nothing on the receiving side reads that query param —
+        # routing matches on the Plex payload's ``Server.uuid``.
+        pwh.register(token, public_url, auth_token=auth_token)
     except pwh.PlexWebhookError as exc:
         status_code = 400 if exc.reason in ("missing_url", "missing_token") else 502
         if exc.reason == "plex_pass_required":
@@ -317,90 +372,5 @@ def plex_webhook_unregister():
             "success": True,
             "server_id": server_entry.get("id") if server_entry else None,
             "registered_in_plex": False,
-        }
-    )
-
-
-@api.route("/settings/plex_webhook/test", methods=["POST"])
-@setup_or_auth_required
-def plex_webhook_test_reachability():
-    """Self-POST a synthetic ping to the configured public URL.
-
-    Mirrors what real Plex POSTs look like as closely as possible —
-    multipart/form-data, ``payload`` part with JSON, and the auth token
-    in a ``?token=`` query parameter rather than a header.  Success
-    means the URL is routable from this app's process *and* the
-    auth token works, which is a strong proxy for whether Plex Media
-    Server will actually be able to deliver events.
-    """
-    from .. import plex_webhook_registration as pwh
-
-    data = request.get_json() or {}
-    server_id = (data.get("server_id") or request.args.get("server_id") or "").strip() or None
-    server_entry, err, status = _resolve_plex_server_for_webhook(server_id)
-    if err:
-        return jsonify({"success": False, "error": err}), status
-
-    raw_url = (data.get("public_url") or "").strip()
-    public_url = raw_url or _server_webhook_url(server_entry)
-
-    auth_token = _plex_webhook_auth_token()
-    if not auth_token:
-        return (
-            jsonify(
-                {
-                    "success": False,
-                    "error": ("No webhook secret or API token available to authenticate the test request."),
-                }
-            ),
-            400,
-        )
-
-    loopback_warning = _loopback_in_docker_warning(public_url)
-    if loopback_warning:
-        return jsonify(
-            {
-                "success": False,
-                "error": loopback_warning,
-                "public_url": public_url,
-            }
-        )
-
-    test_url = pwh._build_authenticated_url(public_url, auth_token)
-    payload = {"event": "test.ping", "source": "plex-previews-self-test"}
-    multipart = {"payload": (None, _json.dumps(payload), "application/json")}
-
-    # Default verify=False: home-lab users commonly front the app with
-    # self-signed TLS, so strict verification would fail the test for
-    # exactly the valid deployments it's meant to check. Caller can pass
-    # ``verify_ssl: true`` to opt into strict verification when they have
-    # a real cert and want to validate the chain.
-    verify_tls = bool(data.get("verify_ssl", False))
-    try:
-        response = requests.post(
-            test_url,
-            files=multipart,
-            timeout=10,
-            verify=verify_tls,  # nosec B501 — opt-in via verify_ssl param
-        )
-    except requests.exceptions.RequestException as exc:
-        return (
-            jsonify(
-                {
-                    "success": False,
-                    "error": f"Could not reach {public_url}: {exc}",
-                    "public_url": public_url,
-                }
-            ),
-            200,
-        )
-
-    ok = 200 <= response.status_code < 300
-    return jsonify(
-        {
-            "success": ok,
-            "status_code": response.status_code,
-            "public_url": public_url,
-            "response_excerpt": (response.text or "")[:200],
         }
     )
