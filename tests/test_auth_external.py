@@ -4,25 +4,25 @@ import json
 
 import pytest
 
-from plex_generate_previews.web.auth import (
+from media_preview_generator.web.auth import (
     AUTH_METHOD_EXTERNAL,
     AUTH_METHOD_INTERNAL,
     get_auth_method,
     is_auth_external,
 )
-from plex_generate_previews.web.settings_manager import get_settings_manager
+from media_preview_generator.web.settings_manager import get_settings_manager
 
 
 @pytest.fixture
 def mock_auth_config(tmp_path, monkeypatch):
     """Mock auth module to use temp directory."""
     auth_file = str(tmp_path / "auth.json")
-    monkeypatch.setattr("plex_generate_previews.web.auth.AUTH_FILE", auth_file)
-    monkeypatch.setattr("plex_generate_previews.web.auth.get_config_dir", lambda: str(tmp_path))
-    from plex_generate_previews.web.settings_manager import reset_settings_manager
+    monkeypatch.setattr("media_preview_generator.web.auth.AUTH_FILE", auth_file)
+    monkeypatch.setattr("media_preview_generator.web.auth.get_config_dir", lambda: str(tmp_path))
+    from media_preview_generator.web.settings_manager import reset_settings_manager
 
     reset_settings_manager()
-    from plex_generate_previews.web.routes import clear_gpu_cache
+    from media_preview_generator.web.routes import clear_gpu_cache
 
     clear_gpu_cache()
     return str(tmp_path)
@@ -31,7 +31,7 @@ def mock_auth_config(tmp_path, monkeypatch):
 @pytest.fixture
 def flask_app(tmp_path, mock_auth_config):
     """Create Flask test app with temp directory."""
-    from plex_generate_previews.web.app import create_app
+    from media_preview_generator.web.app import create_app
 
     app = create_app(config_dir=str(tmp_path))
     app.config["TESTING"] = True
@@ -47,7 +47,7 @@ def client(flask_app):
 @pytest.fixture
 def auth_headers():
     """Generate valid auth headers with token."""
-    from plex_generate_previews.web.auth import get_auth_token
+    from media_preview_generator.web.auth import get_auth_token
 
     token = get_auth_token()
     return {"X-Auth-Token": token}
@@ -212,17 +212,29 @@ class TestWebhookAuthNotBypassed:
     def test_custom_webhook_not_auto_authenticated(self, client):
         """POST /api/webhooks/custom is not bypassed by external auth.
 
-        The custom endpoint is not CSRF-exempt (pre-existing), so without a
-        browser session it returns 302 rather than 401.  Either way, the
-        request must NOT succeed (200) -- proving _authenticate_webhook is
-        independent from is_authenticated().
+        Audit fix — the original ``response.status_code != 200`` is a
+        dangerous negation: a 500 crash passes, a 302 to login passes,
+        only the actual contract (401/403/302) is meaningful. Now the
+        test enumerates the acceptable rejection codes explicitly so a
+        regression that returned 500 silently can't slip through.
+
+        The custom endpoint is not CSRF-exempt (pre-existing), so without
+        a browser session it returns 302 rather than 401. Either is fine
+        — both reject. A 500 is NOT.
         """
         response = client.post(
             "/api/webhooks/custom",
             data=json.dumps({"eventType": "Test"}),
             content_type="application/json",
         )
-        assert response.status_code != 200
+        assert response.status_code in (
+            302,
+            401,
+            403,
+        ), (
+            f"custom webhook must reject unauthenticated POST with 302/401/403; "
+            f"got {response.status_code} (a 500 indicates a crash, not a security boundary)"
+        )
 
     def test_radarr_webhook_succeeds_with_valid_token(self, client, auth_headers):
         """POST /api/webhooks/radarr succeeds with valid token even when external."""
@@ -257,14 +269,14 @@ class TestTokenInfoIncludesAuthMethod:
 
     def test_token_info_internal(self, mock_auth_config, monkeypatch):
         monkeypatch.setenv("AUTH_METHOD", "internal")
-        from plex_generate_previews.web.auth import get_token_info
+        from media_preview_generator.web.auth import get_token_info
 
         info = get_token_info()
         assert info["auth_method"] == "internal"
 
     def test_token_info_external(self, mock_auth_config, monkeypatch):
         monkeypatch.setenv("AUTH_METHOD", "external")
-        from plex_generate_previews.web.auth import get_token_info
+        from media_preview_generator.web.auth import get_token_info
 
         info = get_token_info()
         assert info["auth_method"] == "external"

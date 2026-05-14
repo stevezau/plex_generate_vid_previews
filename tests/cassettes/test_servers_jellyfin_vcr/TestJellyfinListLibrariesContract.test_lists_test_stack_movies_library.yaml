@@ -1,0 +1,38 @@
+interactions:
+- request:
+    body: null
+    headers:
+      Accept:
+      - application/json
+      Accept-Encoding:
+      - gzip, deflate, br
+      Connection:
+      - keep-alive
+      User-Agent:
+      - python-requests/2.33.0
+      X-Emby-Token:
+      - FAKE_EMBY_TOKEN
+    method: GET
+    uri: http://fake-server/Library/VirtualFolders
+  response:
+    body:
+      string: '[{"Name":"Movies","Locations":["/jf-media/Movies"],"CollectionType":"movies","LibraryOptions":{"Enabled":true,"EnablePhotos":true,"EnableRealtimeMonitor":false,"EnableLUFSScan":false,"EnableChapterImageExtraction":false,"ExtractChapterImagesDuringLibraryScan":false,"EnableTrickplayImageExtraction":true,"ExtractTrickplayImagesDuringLibraryScan":true,"PathInfos":[{"Path":"/jf-media/Movies"}],"SaveLocalMetadata":false,"EnableInternetProviders":false,"EnableAutomaticSeriesGrouping":true,"EnableEmbeddedTitles":false,"EnableEmbeddedExtrasTitles":false,"EnableEmbeddedEpisodeInfos":false,"AutomaticRefreshIntervalDays":0,"SeasonZeroDisplayName":"Specials","DisabledLocalMetadataReaders":[],"DisabledSubtitleFetchers":[],"SubtitleFetcherOrder":[],"SkipSubtitlesIfEmbeddedSubtitlesPresent":false,"SkipSubtitlesIfAudioTrackMatches":true,"RequirePerfectSubtitleMatch":true,"SaveSubtitlesWithMedia":true,"SaveLyricsWithMedia":false,"AutomaticallyAddToCollection":false,"AllowEmbeddedSubtitles":"AllowAll","TypeOptions":[]},"ItemId":"f137a2dd21bbc1b99aa5c0f6bf02a805","PrimaryImageItemId":"f137a2dd21bbc1b99aa5c0f6bf02a805","RefreshStatus":"Idle"}]'
+    headers:
+      Content-Type:
+      - application/json; charset=utf-8
+      Date:
+      - Wed, 06 May 2026 03:44:31 GMT
+      Server:
+      - Kestrel
+      Transfer-Encoding:
+      - chunked
+      Vary:
+      - Accept-Encoding
+      X-Response-Time-ms:
+      - '15.4981'
+      content-length:
+      - '1141'
+    status:
+      code: 200
+      message: OK
+version: 1

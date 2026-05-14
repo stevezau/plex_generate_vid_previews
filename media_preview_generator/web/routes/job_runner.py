@@ -1,0 +1,1749 @@
+"""Background job execution for the web interface.
+
+Contains _start_job_async which runs processing jobs in background threads.
+Separated from route handlers for clarity -- this is the bridge between
+the web layer and the CLI processing pipeline.
+"""
+
+import threading
+from contextlib import ExitStack
+
+from loguru import logger
+
+from ..jobs import get_job_manager
+
+# Tracks job IDs that already have a run_job thread in flight so that
+# resume / auto-resume calls during the long library scan don't spawn
+# duplicate threads for the same job.
+_inflight_jobs: set = set()
+_inflight_lock = threading.Lock()
+
+
+def _classify_job_completion(
+    *,
+    failures: list,
+    outcome: dict | None,
+    is_retry: bool,
+    retry_paths: list,
+    spawned_retry_id: str | None,
+    total_paths: int,
+    resolved_count: int,
+) -> str:
+    """Classify a finished job as ``"error"`` (red badge) or ``"warning"`` (amber).
+
+    Pure function so the classification rule is testable without spinning
+    up the whole ``run_job`` closure.
+
+    Returns:
+        ``"error"`` for hard failures (nothing succeeded, unresolved retry
+        paths, every file missing on disk), or ``"warning"`` for partial
+        failures where at least one item succeeded.
+
+    Rule change (deea99db regression): the classifier used to start with
+    ``bool(failures)`` — any single FFmpeg crash flipped the badge red
+    regardless of how many items succeeded. On a 128k-item scan with one
+    FFmpeg crash and 128000 successes, the badge reported "Failed".
+    We now treat a non-empty ``failures`` list the same as any other
+    partial failure: red only when the all-failed gate (nothing in the
+    success columns) also trips.
+    """
+    outcome = outcome or {}
+    success_total = (
+        outcome.get("generated", 0)
+        + outcome.get("published", 0)
+        + outcome.get("skipped_output_exists", 0)
+        + outcome.get("skipped_bif_exists", 0)
+    )
+    has_any_failure = bool(failures) or outcome.get("failed", 0) > 0
+    all_not_found = (
+        outcome.get("generated", 0) == 0 and outcome.get("skipped_file_not_found", 0) > 0 and not spawned_retry_id
+    )
+    all_items_failed = has_any_failure and success_total == 0
+    nothing_resolved = total_paths > 0 and resolved_count == 0 and not spawned_retry_id
+    retry_exhausted = is_retry and bool(retry_paths) and not spawned_retry_id
+
+    if all_items_failed or all_not_found or nothing_resolved or retry_exhausted:
+        return "error"
+    return "warning"
+
+
+def _format_eta(seconds: float) -> str:
+    """Format seconds into a human-readable ETA string.
+
+    Used by ``run_job``'s worker_callback to surface FFmpeg's
+    ``remaining_time`` as a UI-friendly string (e.g. ``2m 5s``).
+    """
+    if seconds < 60:
+        return f"{int(seconds)}s"
+    elif seconds < 3600:
+        return f"{int(seconds // 60)}m {int(seconds % 60)}s"
+    else:
+        return f"{int(seconds // 3600)}h {int((seconds % 3600) // 60)}m"
+
+
+def _build_selected_gpus(settings) -> list:
+    """Build the selected_gpus list from gpu_config and GPU cache.
+
+    Merges persisted gpu_config (enabled/workers/ffmpeg_threads per GPU)
+    with the live GPU detection cache.  Only enabled GPUs are returned.
+    The ``ffmpeg_threads`` value from gpu_config is attached to each
+    gpu_info dict so WorkerPool._create_worker can pick it up.
+
+    Args:
+        settings: SettingsManager instance.
+
+    Returns:
+        List of (gpu_type, gpu_device, gpu_info) tuples for enabled GPUs.
+
+    """
+    from ._helpers import _ensure_gpu_cache, _gpu_cache, _gpu_cache_lock
+
+    _ensure_gpu_cache()
+    with _gpu_cache_lock:
+        cached_gpus = _gpu_cache["result"] or []
+
+    gpu_config = settings.gpu_config  # list of per-GPU config dicts
+
+    # Build a lookup from device path -> gpu_config entry
+    config_by_device = {
+        entry["device"]: entry for entry in gpu_config if isinstance(entry, dict) and entry.get("device")
+    }
+
+    selected = []
+    for g in cached_gpus:
+        if g.get("status") == "failed":
+            continue
+        device = g.get("device", "")
+        entry = config_by_device.get(device)
+        if entry is not None:
+            if not entry.get("enabled", True):
+                continue
+            workers = entry.get("workers", 1)
+            if workers <= 0:
+                continue
+            info = dict(g)
+            info["ffmpeg_threads"] = entry.get("ffmpeg_threads", 2)
+            info["workers"] = workers
+            selected.append((g["type"], device, info))
+        else:
+            # GPU not in config yet (newly detected); include with defaults
+            info = dict(g)
+            info["ffmpeg_threads"] = 2
+            info["workers"] = 1
+            selected.append((g["type"], device, info))
+
+    return selected
+
+
+def _is_force_fire_now_set(job_manager, job_id: str) -> bool:
+    """Return True iff the Job's config carries ``force_fire_now: True``.
+
+    Extracted from the retry backoff-wait loop so the writer
+    (``api_jobs.retry_now``) and the reader (the wait loop's polling
+    branch) are coupled to a single helper. Otherwise a typo on either
+    side (``force_fire`` vs ``force_fire_now``) would silently disable
+    the "Retry now" button without breaking any single-sided test.
+
+    Returns False when the Job is missing (race with deletion); the
+    caller treats that as "don't force-fire" and waits out the
+    countdown normally.
+    """
+    job = job_manager.get_job(job_id)
+    if job is None:
+        return False
+    return bool((job.config or {}).get("force_fire_now"))
+
+
+def _start_job_async(job_id: str, config_overrides: dict | None = None):
+    """Start job execution in a background thread.
+
+    If a thread is already in-flight for *job_id* (e.g. still scanning
+    libraries after a revive), the call is silently skipped to avoid
+    duplicate work.
+    """
+    with _inflight_lock:
+        if job_id in _inflight_jobs:
+            logger.info("Skipping duplicate _start_job_async for {} — already in flight", job_id)
+            return
+        _inflight_jobs.add(job_id)
+
+    def run_job():
+        log_handler_id = None
+        job_manager = None
+        # Tracks whether this thread holds a JobGate slot. The outer
+        # finally uses this flag to decide whether to call
+        # ``release()``. Release-without-hold would let an extra job
+        # through the cap — the early-exception branches (config load
+        # at line ~214, tmp folder at line ~340, paused at line ~143)
+        # all run BEFORE the gate is acquired, so this flag stays
+        # False for those paths.
+        _slot_held = False
+        try:
+            import os
+
+            from loguru import logger as loguru_logger
+
+            from ...config import ConfigValidationError, load_config
+            from ...jobs.orchestrator import run_processing
+            from ...jobs.worker import is_job_thread_for, register_job_thread
+            from ...processing.generator import (
+                _verify_tmp_folder_health,
+                clear_failures,
+                failure_scope,
+                get_failures,
+                set_file_result_callback,
+            )
+            from ...utils import setup_working_directory as create_working_directory
+            from ..settings_manager import get_settings_manager
+
+            # Register THIS job's main thread under THIS job's id so the
+            # per-job log handler captures only this job's messages, not a
+            # concurrently-running sibling job's (D5).
+            register_job_thread(job_id)
+
+            job_manager = get_job_manager()
+            job = job_manager.get_job(job_id)
+            if not job:
+                return
+
+            if get_settings_manager().processing_paused:
+                merged = {**(job.config or {}), **(config_overrides or {})}
+                wp = merged.get("webhook_paths")
+                if wp and not merged.get("webhook_basenames"):
+                    merged["webhook_basenames"] = [os.path.basename(p) for p in wp][:20]
+                    if not merged.get("path_count"):
+                        merged["path_count"] = len(wp)
+                job_manager.update_job_config(job_id, merged)
+                logger.info("Job {} not started — global processing paused; job remains pending", job_id)
+                return
+
+            def log_sink(message):
+                """Capture log messages for this job."""
+                record = message.record
+                log_text = f"{record['level'].name} - {record['message']}"
+                job_manager.add_log(job_id, log_text)
+
+            def job_thread_filter(record: dict) -> bool:
+                """Capture only THIS job's thread messages.
+
+                The thread→job_id mapping in worker.py is keyed per job, so
+                a sibling job's worker threads (e.g. a Radarr webhook
+                completing while a manual library scan is winding down)
+                won't leak into this job's log buffer (D5).
+                """
+                return is_job_thread_for(record["thread"].id, job_id)
+
+            sm = get_settings_manager()
+            job_log_level = sm.get("log_level", "INFO").upper()
+
+            log_handler_id = loguru_logger.add(
+                log_sink,
+                level=job_log_level,
+                format="{message}",
+                filter=job_thread_filter,
+                enqueue=True,
+            )
+
+            job = job_manager.get_job(job_id)
+            if job and config_overrides:
+                merged = {**(job.config or {}), **(config_overrides or {})}
+                job_manager.update_job_config(job_id, merged)
+
+            # Ensure webhook_basenames is populated for UI file display.
+            # Some code paths (resume from pause, requeue after restart)
+            # pass config_overrides without basenames, so derive them from
+            # webhook_paths when missing.
+            job = job_manager.get_job(job_id)
+            if job:
+                cfg = job.config or {}
+                wp = cfg.get("webhook_paths")
+                if wp and not cfg.get("webhook_basenames"):
+                    cfg["webhook_basenames"] = [os.path.basename(p) for p in wp][:20]
+                    if not cfg.get("path_count"):
+                        cfg["path_count"] = len(wp)
+                    job_manager.update_job_config(job_id, cfg)
+
+            # Job stays PENDING until _on_dispatch_start fires (the
+            # moment the shared dispatcher actually pulls the first
+            # item for this job from the worker pool). Before this
+            # gate existed we flipped to RUNNING as soon as the job
+            # thread woke up, which painted a misleading picture:
+            # during webhook bursts 30+ threads would all show
+            # ``running`` while only the one holding the worker pool
+            # was actually processing.
+            #
+            # To keep the UI informative while still PENDING, push a
+            # user-visible status message — the dashboard reads
+            # ``current_item`` regardless of job status, so this shows
+            # in the progress strip without claiming the job is
+            # actually running yet.
+            job_manager.update_progress(
+                job_id,
+                percent=0,
+                processed_items=0,
+                total_items=0,
+                current_item="Starting — loading configuration...",
+            )
+
+            try:
+                config = load_config()
+            except ConfigValidationError as exc:
+                detail = "; ".join(exc.errors)
+                job_manager.complete_job(
+                    job_id,
+                    error=f"Configuration validation failed: {detail}",
+                )
+                return
+
+            settings = get_settings_manager()
+
+            from ...config import (
+                derive_legacy_plex_view,
+                normalize_exclude_paths,
+                normalize_path_mappings,
+                split_library_selectors,
+            )
+
+            # Layer the per-server Plex view over legacy global keys so reads
+            # here match what load_config does. Without this, a settings.json
+            # that only has media_servers[N] (no legacy plex_url/plex_token/etc)
+            # would miss them at job-start time.
+            #
+            # Multi-Plex support: when this job is pinned to a specific server
+            # via config_overrides["server_id"], project from THAT entry so the
+            # legacy orchestrator path uses the right Plex URL, token, config
+            # folder, and path mappings — not whatever media_servers[0] has.
+            pinned_server_id = (config_overrides or {}).get("server_id") or None
+            plex_view = derive_legacy_plex_view(
+                settings.get("media_servers") or [],
+                server_id=pinned_server_id,
+            )
+            effective = {**settings.get_all(), **plex_view}
+
+            plex_url = effective.get("plex_url")
+            plex_token = effective.get("plex_token")
+            plex_config_folder = effective.get("plex_config_folder")
+            server_display_name = effective.get("server_display_name")
+            if plex_url:
+                config.plex_url = plex_url
+            if plex_token:
+                config.plex_token = plex_token
+            if plex_config_folder:
+                config.plex_config_folder = plex_config_folder
+            # K3: thread the per-server display name so log emitters in the
+            # legacy resolver/worker path prefix lines as "[<name>] ...".
+            # Critical when this job is pinned to a specific server in a
+            # multi-Plex install — without this every log line would just
+            # say "Plex" with no disambiguation.
+            if server_display_name:
+                config.server_display_name = server_display_name
+            elif pinned_server_id and not server_display_name:
+                # Caller asked for a specific server but derive_legacy_plex_view
+                # didn't find it — log a WARN so misuse is easy to spot.
+                logger.warning(
+                    "Job pinned to server_id={!r} but no matching Plex entry was found; "
+                    "falling back to the first-enabled Plex view. "
+                    "Check that the configured server still exists.",
+                    pinned_server_id,
+                )
+
+            selected_libs = effective.get("selected_libraries", [])
+            if selected_libs:
+                selected_ids, selected_titles = split_library_selectors(selected_libs)
+                config.plex_library_ids = selected_ids or None
+                config.plex_libraries = selected_titles
+
+            path_mappings = normalize_path_mappings(effective)
+            if path_mappings:
+                config.path_mappings = path_mappings
+            config.exclude_paths = normalize_exclude_paths(effective.get("exclude_paths"))
+            if effective.get("plex_videos_path_mapping"):
+                config.plex_videos_path_mapping = effective.get("plex_videos_path_mapping")
+            if effective.get("plex_local_videos_path_mapping"):
+                config.plex_local_videos_path_mapping = effective.get("plex_local_videos_path_mapping")
+
+            if config_overrides:
+                for key, value in config_overrides.items():
+                    if key == "selected_libraries":
+                        selected_ids, selected_titles = split_library_selectors(value)
+                        config.plex_library_ids = selected_ids or None
+                        config.plex_libraries = selected_titles
+                    elif key == "selected_library_ids":
+                        selected_ids, _ = split_library_selectors(value)
+                        config.plex_library_ids = selected_ids or None
+                    elif key == "force_generate":
+                        config.regenerate_thumbnails = bool(value)
+                    elif key == "webhook_paths":
+                        config.webhook_paths = [str(path).strip() for path in value if str(path).strip()]
+                    elif key == "webhook_deleted_paths":
+                        # Radarr/Sonarr deletedFiles[] from upgrade events.
+                        # Forwarded to process_canonical_path so cleanup +
+                        # deleted-path nudge target the right paths.
+                        if isinstance(value, list | tuple):
+                            config.webhook_deleted_paths = [
+                                str(path).strip() for path in value if str(path).strip()
+                            ] or None
+                    elif key == "source":
+                        # Trigger pill (sonarr/radarr/sportarr/plex/…) so
+                        # spawned retry-chain rows can render the same
+                        # source pill the parent dispatch row carries.
+                        if value:
+                            config.webhook_source = str(value).strip().lower() or None
+                    elif key == "webhook_item_id_hints":
+                        # Per-path ``{server_id: item_id}`` hints from vendor
+                        # webhooks — passed through to process_canonical_path
+                        # so it skips reverse lookups.
+                        if isinstance(value, dict) and value:
+                            cleaned: dict[str, dict[str, str]] = {}
+                            for path, by_server in value.items():
+                                if not isinstance(path, str) or not path:
+                                    continue
+                                if not isinstance(by_server, dict):
+                                    continue
+                                inner = {
+                                    str(sid): str(item_id) for sid, item_id in by_server.items() if sid and item_id
+                                }
+                                if inner:
+                                    cleaned[path] = inner
+                            config.webhook_item_id_hints = cleaned or None
+                    elif key == "server_id":
+                        # Pin downstream dispatchers to publish for this server only.
+                        config.server_id_filter = str(value) if value else None
+                    elif hasattr(config, key):
+                        setattr(config, key, value)
+
+            config.working_tmp_folder = create_working_directory(config.tmp_folder)
+            logger.debug("Created working temp folder: {}", config.working_tmp_folder)
+
+            tmp_ok, tmp_messages = _verify_tmp_folder_health(config.working_tmp_folder)
+            for message in tmp_messages:
+                logger.warning(
+                    "Working temp folder health check on {}: {}. "
+                    "If the message above mentions disk space or permissions, fix that and the next job "
+                    "should succeed; otherwise jobs may fail. The current job will still attempt to run.",
+                    config.working_tmp_folder,
+                    message,
+                )
+                job_manager.add_log(job_id, f"WARNING - {message}")
+            if not tmp_ok:
+                raise RuntimeError(f"Working temp folder is not healthy: {config.working_tmp_folder}")
+
+            selected_gpus = _build_selected_gpus(settings)
+
+            def progress_callback(
+                current: int,
+                total: int,
+                message: str,
+                percent_override: float | None = None,
+            ):
+                """Update job progress from processing."""
+                if percent_override is not None:
+                    percent = percent_override
+                else:
+                    percent = (current / total * 100) if total > 0 else 0
+                job_manager.update_progress(
+                    job_id,
+                    percent=percent,
+                    processed_items=current,
+                    total_items=total,
+                    current_item=message,
+                )
+
+            def worker_callback(workers_list):
+                """Update worker statuses from processing."""
+                from ..jobs import WorkerStatus
+
+                active_worker_keys = set()
+                for worker_data in workers_list:
+                    worker_key = f"{worker_data['worker_type']}_{worker_data['worker_id']}"
+                    active_worker_keys.add(worker_key)
+                    remaining_time = worker_data.get("remaining_time")
+                    worker_eta = ""
+                    if isinstance(remaining_time, int | float) and remaining_time > 0:
+                        worker_eta = _format_eta(float(remaining_time))
+                    status = WorkerStatus(
+                        worker_id=worker_data["worker_id"],
+                        worker_type=worker_data["worker_type"],
+                        worker_name=worker_data["worker_name"],
+                        status=worker_data["status"],
+                        current_title=worker_data.get("current_title", ""),
+                        library_name=worker_data.get("library_name", ""),
+                        progress_percent=worker_data.get("progress_percent", 0),
+                        speed=worker_data.get("speed", "0.0x"),
+                        eta=worker_eta,
+                        ffmpeg_started=bool(worker_data.get("ffmpeg_started", False)),
+                        current_phase=worker_data.get("current_phase", "") or "",
+                    )
+                    job_manager.update_worker_status(worker_key, status)
+                job_manager.prune_worker_statuses(active_worker_keys)
+                job_manager.emit_worker_statuses()
+
+            _retry_cancelled = False
+            run_job_config = job_manager.get_job(job_id)
+            if run_job_config and run_job_config.config.get("is_retry"):
+                import time as _time
+                from datetime import datetime, timedelta, timezone
+
+                delay_sec = max(1, int(run_job_config.config.get("retry_delay", 30)))
+                retry_eta = (datetime.now(timezone.utc) + timedelta(seconds=delay_sec)).isoformat()
+                job_manager.add_log(
+                    job_id,
+                    f"INFO - Waiting {delay_sec}s before retry (Plex may still be indexing)",
+                )
+                job_manager.update_progress(
+                    job_id,
+                    percent=0,
+                    processed_items=0,
+                    total_items=0,
+                    current_item=f"Retry starting in {delay_sec}s...",
+                    retry_eta=retry_eta,
+                    retry_wait_total=delay_sec,
+                )
+                elapsed = 0
+                while elapsed < delay_sec:
+                    if job_manager.is_cancellation_requested(job_id):
+                        _retry_cancelled = True
+                        break
+                    # "Retry now" signal: the api_jobs.retry_now endpoint
+                    # sets force_fire_now on this Job's config when the
+                    # operator clicks the modal button. Break out of the
+                    # backoff loop immediately so the gate-acquire + run
+                    # happens without waiting out the remaining countdown.
+                    if _is_force_fire_now_set(job_manager, job_id):
+                        job_manager.add_log(
+                            job_id,
+                            "INFO - Retry backoff skipped — operator forced fire-now",
+                        )
+                        break
+                    if get_settings_manager().processing_paused:
+                        _time.sleep(0.5)
+                        continue
+                    sleep_chunk = min(2, delay_sec - elapsed)
+                    _time.sleep(sleep_chunk)
+                    elapsed += sleep_chunk
+                    remaining = max(0, int(delay_sec - elapsed))
+                    job_manager.update_progress(
+                        job_id,
+                        percent=0,
+                        processed_items=0,
+                        total_items=0,
+                        current_item=f"Retry starting in {remaining}s...",
+                    )
+                # Wait done — clear the countdown so the UI flips back
+                # to a normal progress card the moment work begins.
+                job_manager.update_progress(
+                    job_id,
+                    current_item="",
+                    retry_eta=None,
+                    retry_wait_total=None,
+                )
+
+            # Per-job failure scope — isolates this job's failure records
+            # from any concurrent job in the same process.  Workers running
+            # on behalf of this job re-enter the same scope on their own
+            # threads (see worker._process_item) so record_failure() calls
+            # deep inside the FFmpeg path land in this job's bucket.
+            _job_scope = ExitStack()
+            _job_scope.enter_context(failure_scope(job_id))
+            try:
+                if _retry_cancelled:
+                    job_manager.add_log(job_id, "WARNING - Retry cancelled by user during wait")
+                    job_manager.cancel_job(job_id)
+                else:
+                    # --- Concurrency gate ---------------------------------
+                    # Acquire AFTER the retry-backoff wait (lines 392-439)
+                    # so a 60-minute backoff doesn't idle-hold a slot and
+                    # BEFORE run_processing so enumeration/API calls are
+                    # bounded by the user's max_concurrent_jobs setting.
+                    # Cancel-while-waiting is handled by acquire() polling
+                    # cancel_check; returns False so we transition the
+                    # job to CANCELLED without ever consuming a slot.
+                    from ..job_gate import get_job_gate
+
+                    def _on_wait(active: int, cap: int) -> None:
+                        # Fires on every 1s poll tick while waiting.
+                        # Safe to take job_manager._lock here — the gate
+                        # releases its Condition during wait(), and no
+                        # job_manager codepath acquires the gate's lock.
+                        job_manager.update_progress(
+                            job_id,
+                            percent=0,
+                            processed_items=0,
+                            total_items=0,
+                            current_item=f"Queued — waiting for active slot ({active} of {cap} busy)",
+                        )
+
+                    admitted = get_job_gate().acquire(
+                        priority=job.priority,
+                        cancel_check=lambda: job_manager.is_cancellation_requested(job_id),
+                        on_wait=_on_wait,
+                    )
+                    if not admitted:
+                        # User cancelled while the job was waiting for a
+                        # slot. Transition to CANCELLED and exit — the
+                        # outer finally will skip release() because
+                        # _slot_held is still False.
+                        job_manager.add_log(
+                            job_id,
+                            "WARNING - Job cancelled while waiting for active slot",
+                        )
+                        job_manager.cancel_job(job_id)
+                        return
+                    _slot_held = True
+                    # Flip to RUNNING the moment the slot is acquired —
+                    # library enumeration / webhook resolution IS
+                    # active work (often 30-120s of real API calls) and
+                    # the user should see that reflected in the status.
+                    # PENDING is now reserved for jobs truly idle
+                    # (queued at the gate, waiting retry backoff, or
+                    # blocked by global pause). _on_dispatch_start is
+                    # still called later when items start flowing, but
+                    # it becomes a no-op after this first transition
+                    # because start_job is idempotent.
+                    job_manager.start_job(job_id)
+                    # Retry Jobs: also flip the PARENT into chain RUNNING
+                    # state so the user-visible row reflects "currently
+                    # re-running" instead of "waiting in countdown". The
+                    # retry Job itself is hidden via /api/jobs's is_retry
+                    # filter; the parent is what the user sees.
+                    _retry_parent_id = (
+                        (job_manager.get_job(job_id).config or {}).get("parent_job_id")
+                        if job_manager.get_job(job_id) and job_manager.get_job(job_id).config.get("is_retry")
+                        else None
+                    )
+                    if _retry_parent_id:
+                        try:
+                            _parent_job = job_manager.get_job(_retry_parent_id)
+                            _parent_library = (_parent_job.library_name or "") if _parent_job else ""
+                            _retry_attempt_val = int(job_manager.get_job(job_id).config.get("retry_attempt", 0))
+                            _max_attempts_val = int(job_manager.get_job(job_id).config.get("max_retries", 0))
+                            job_manager.upsert_retry_chain_job(
+                                canonical_path="",
+                                basename=_parent_library,
+                                attempt=_retry_attempt_val,
+                                max_attempts=_max_attempts_val,
+                                next_run_at=None,
+                                wait_seconds=None,
+                                outcome="running",
+                                originating_job_id=_retry_parent_id,
+                                source=(_parent_job.config or {}).get("source") if _parent_job else None,
+                            )
+                        except Exception as exc:
+                            # WARNING (not DEBUG): operator-visible. A
+                            # regression here silently leaves the parent's
+                            # chip stuck on the previous attempt's state.
+                            logger.warning(
+                                "upsert_retry_chain_job(running) failed for parent {}: {}: {}",
+                                _retry_parent_id,
+                                type(exc).__name__,
+                                exc,
+                            )
+                    job_manager.add_log(job_id, "INFO - Job started")
+                    # Clear the "Queued —" message the moment we enter
+                    # so the UI shows the regular startup progress as
+                    # soon as the slot is acquired.
+                    job_manager.update_progress(
+                        job_id,
+                        percent=0,
+                        processed_items=0,
+                        total_items=0,
+                        current_item="Starting — loading configuration...",
+                    )
+                    clear_failures()
+
+                    # Retry Jobs (is_retry=True) write their per-file
+                    # outcomes to the PARENT'S JSONL — the parent is the
+                    # user-visible row, and the Files panel reads from the
+                    # parent's job_id. Without this redirect a retry that
+                    # successfully registers a previously-pending file would
+                    # leave the parent's Files panel showing the stale
+                    # ``pending_registration`` row forever.
+                    _current_job_for_cfg = job_manager.get_job(job_id)
+                    _file_results_target = (
+                        (_current_job_for_cfg.config or {}).get("parent_job_id")
+                        if _current_job_for_cfg and (_current_job_for_cfg.config or {}).get("is_retry")
+                        else None
+                    ) or job_id
+
+                    def _file_result_cb(file_path, outcome_str, reason, worker, servers=None):
+                        job_manager.record_file_result(
+                            _file_results_target,
+                            file_path,
+                            outcome_str,
+                            reason,
+                            worker,
+                            servers=servers,
+                        )
+
+                    # Keyed by job_id so concurrent jobs don't clobber each
+                    # other's callbacks. Without this, a short job starting
+                    # mid-run would overwrite the long-running job's
+                    # callback, and its `finally: set_file_result_callback(None)`
+                    # would silence every subsequent file result on the
+                    # long-running job. Production incident: deea99db's
+                    # JSONL stopped growing after 6 seconds of a ~13min run.
+                    set_file_result_callback(_file_result_cb, job_id=job_id)
+
+                    def _on_item_complete(display_name, title, success):
+                        outcome = "success" if success else "failed"
+                        logger.info("{} completed: {!r} ({})", display_name, title, outcome)
+
+                    def _on_dispatch_start():
+                        """Transition PENDING -> RUNNING when items are dispatched."""
+                        job_manager.start_job(job_id)
+                        job_manager.add_log(job_id, "INFO - Job started")
+
+                    def _on_pool_available(pool):
+                        """Register pool and reconcile workers with current settings.
+
+                        The pool may have been created with stale config (e.g. 0
+                        workers because the user hadn't configured GPUs yet at
+                        startup).  Re-reading settings here ensures the pool
+                        matches whatever the user configured in the meantime.
+                        """
+                        if pool is None:
+                            job_manager.clear_active_worker_pool(job_id)
+                            return
+                        job_manager.set_active_worker_pool(job_id, pool)
+                        try:
+                            fresh_gpus = _build_selected_gpus(get_settings_manager())
+                            if fresh_gpus:
+                                pool.reconcile_gpu_workers(fresh_gpus)
+                        except Exception:
+                            logger.debug(
+                                "Could not reconcile pool on dispatch",
+                                exc_info=True,
+                            )
+
+                    result = run_processing(
+                        config,
+                        selected_gpus,
+                        progress_callback=progress_callback,
+                        worker_callback=worker_callback,
+                        item_complete_callback=_on_item_complete,
+                        cancel_check=lambda: job_manager.is_cancellation_requested(job_id),
+                        pause_check=lambda: (
+                            job_manager.is_pause_requested(job_id) or get_settings_manager().processing_paused
+                        ),
+                        worker_pool_callback=_on_pool_available,
+                        job_id=job_id,
+                        on_dispatch_start=_on_dispatch_start,
+                        priority=job.priority,
+                    )
+                    set_file_result_callback(None, job_id=job_id)
+
+                    # run_processing returns None when it bailed on a
+                    # connection / interrupt error (logged with actionable
+                    # text by the orchestrator). Without surfacing it here
+                    # the job lands as a green "completed" with no output —
+                    # the dashboard badge would mask a Plex outage as
+                    # success. Mark FAILED so the user sees the red badge
+                    # and can re-run once the upstream is back.
+                    if result is None:
+                        job_manager.add_log(
+                            job_id,
+                            "ERROR - Job aborted before any items were processed (connection/interrupt). "
+                            "See the application log for the specific cause.",
+                        )
+                        job_manager.complete_job(
+                            job_id,
+                            error=(
+                                "Job aborted before any items were processed — most commonly because Plex "
+                                "could not be reached. Check the app log for the specific cause and re-run."
+                            ),
+                        )
+                        return
+
+                    result = result or {}
+                    failures = get_failures()
+
+                    outcome = result.get("outcome")
+                    if outcome:
+                        job_manager.set_job_outcome(job_id, outcome)
+
+                    current_job = job_manager.get_job(job_id)
+                    status_value = getattr(current_job.status, "value", current_job.status) if current_job else None
+                    job_config = (current_job.config or {}) if current_job else {}
+
+                    resolution = result.get("webhook_resolution", {})
+                    unresolved_paths = resolution.get("unresolved_paths") or []
+                    total_paths = resolution.get("total_paths", 0)
+                    resolved_count = resolution.get("resolved_count", 0)
+                    path_hints = resolution.get("path_hints") or []
+                    # Audit P4 \u2014 per-path hint map. Fallback to the flat
+                    # ``path_hints`` list (legacy callers may still
+                    # produce it) when the map isn't present, but this
+                    # is the canonical source post-unification.
+                    path_hint_map: dict[str, str] = resolution.get("path_hint_map") or {}
+
+                    if path_hints:
+                        for hint in path_hints:
+                            job_manager.add_log(job_id, f"INFO - {hint}")
+
+                    # Unified-dispatch payload: the orchestrator already
+                    # walked every configured server's ownership and
+                    # fanned out per-server publishers. Anything left in
+                    # ``unresolved_paths`` is either (a) owned by no
+                    # enabled server, or (b) owned but every publisher
+                    # failed. Per-server outcome counters in ``outcome``
+                    # carry the precise breakdown \u2014 this row is the
+                    # job-level summary line.
+                    generic_detail = "file may not be scanned yet, or path mappings in Settings may need adjusting"
+                    # Legacy fallback: when ``path_hint_map`` isn't
+                    # populated (older payloads, single-path callers
+                    # that didn't bother building a map), fall back to
+                    # ``path_hints[0]`` for every row. Worse than
+                    # per-path correspondence but better than the
+                    # generic message \u2014 and only fires when we know
+                    # there's exactly one mismatch class in play.
+                    legacy_single_hint = path_hints[0] if path_hints and not path_hint_map else None
+                    unresolved_outcome = "unresolved_vendor"
+                    unresolved_label = "Not found on any configured media server"
+                    # Retry Jobs append to the PARENT's JSONL (see
+                    # _file_result_cb redirect above) so the user-visible
+                    # Files panel reflects the latest outcome per path.
+                    _unresolved_target = (
+                        job_config.get("parent_job_id") if job_config.get("is_retry") else None
+                    ) or job_id
+                    for upath in unresolved_paths:
+                        # Audit P4: pick THIS path's hint, not slot 0
+                        # of the flat list. Multi-path webhooks with
+                        # different mismatches now show the right hint
+                        # on each row instead of borrowing the first
+                        # hint for everything.
+                        per_path_detail = path_hint_map.get(upath) or legacy_single_hint or generic_detail
+                        job_manager.record_file_result(
+                            _unresolved_target,
+                            upath,
+                            unresolved_outcome,
+                            f"{unresolved_label} \u2014 {per_path_detail}",
+                        )
+                    is_retry = job_config.get("is_retry", False)
+                    retry_attempt = int(job_config.get("retry_attempt", 0))
+                    max_retries = int(job_config.get("max_retries", 0))
+                    # Webhook jobs inject ``webhook_retry_count`` into their
+                    # config at creation time; scheduled scans, manual
+                    # reruns, and recently-added scans don't. Pre-2026-05-13
+                    # the per-file retry queue handled PENDING_REGISTRATION
+                    # for ALL job types regardless of config — it was a
+                    # separate mechanism. Post-refactor everything routes
+                    # through the per-job retry path, so we must apply the
+                    # same "implicit" retry budget here: fall back to the
+                    # global setting when the job config doesn't carry one.
+                    # A user who has explicitly set webhook_retry_count=0
+                    # in settings still gets 0 retries everywhere.
+                    _cfg_retry_count = job_config.get("webhook_retry_count")
+                    if _cfg_retry_count is None:
+                        try:
+                            from ..settings_manager import get_settings_manager as _gsm
+
+                            _cfg_retry_count = _gsm().get("webhook_retry_count", 3)
+                        except Exception:
+                            _cfg_retry_count = 3
+                    retry_count = max(0, int(_cfg_retry_count))
+                    _cfg_retry_delay = job_config.get("webhook_retry_delay")
+                    if _cfg_retry_delay is None:
+                        try:
+                            from ..settings_manager import get_settings_manager as _gsm2
+
+                            _cfg_retry_delay = _gsm2().get("webhook_retry_delay", 30)
+                        except Exception:
+                            _cfg_retry_delay = 30
+                    retry_delay_sec = max(10, min(300, int(_cfg_retry_delay)))
+                    effective_max = max_retries or retry_count
+
+                    # Collect every path that needs a retry — across all three
+                    # failure classes:
+                    #   1. ``unresolved_paths`` — Plex didn't know the file
+                    #      (came from the resolution layer).
+                    #   2. ``not_found_on_disk`` — Plex returned a stale path
+                    #      that doesn't exist (came from per-file JSONL).
+                    #   3. ``pending_registration_paths`` — file was published
+                    #      but the destination server (Jellyfin/Emby) hadn't
+                    #      indexed it yet, so per-item registration didn't
+                    #      fire. Source: per-publisher status on JSONL rows.
+                    #
+                    # Pre-2026-05-13 (3) was handled by an entirely separate
+                    # per-file retry chain in processing/retry_queue.py that
+                    # spawned one Timer per pending file — for a 333-path
+                    # Sonarr batch where 61 were pending this produced 191
+                    # per-attempt child Jobs collapsed onto the dispatcher
+                    # row (job 756255aa, 2026-05-12). Routing all three
+                    # failure classes through one job-level retry path
+                    # collapses N timers into one and gives the user a single
+                    # row per dispatch.
+                    not_found_on_disk: list[str] = []
+                    pending_registration_paths: list[str] = []
+
+                    # Per-publisher statuses that mean "this file needs
+                    # another attempt because the destination server
+                    # isn't ready yet." The values are PublisherStatus
+                    # enum values serialised as their .value strings via
+                    # Worker._capture_publishers (see jobs/worker.py).
+                    # We always scan the JSONL — PENDING_REGISTRATION
+                    # lives on per-publisher status, not the aggregate
+                    # outcome counter, so the only way to detect it is
+                    # to inspect each row's ``servers`` field. The set
+                    # is defined once in ``retry_queue`` so this scan
+                    # and the ``/attempts`` endpoint's ``pending_servers``
+                    # helper can't drift.
+                    from media_preview_generator.processing.retry_queue import (
+                        PENDING_PUBLISHER_STATUSES as RETRY_PUBLISHER_STATUSES,
+                    )
+
+                    # Retry children write their per-file outcomes to the
+                    # PARENT's JSONL (see _file_result_cb redirect above).
+                    # When THIS run is a retry, the retry-decision scan must
+                    # read the parent's JSONL too — otherwise we'd see an
+                    # empty list and incorrectly mark the chain "completed"
+                    # even when files are still pending. Verified live:
+                    # chain ae4bb6aa marked COMPLETED while JellyTest still
+                    # reported published_pending_registration × 4.
+                    _retry_scan_target = job_config.get("parent_job_id") if job_config.get("is_retry") else None
+                    _retry_scan_target = _retry_scan_target or job_id
+                    # While scanning for retry-eligible paths, also tally a
+                    # per-server pending count. The reason-building blocks
+                    # below use it to produce log lines like
+                    # "Retry 1/3: JellyTest pending × 4, next retry in 120s"
+                    # so the operator sees the actual blocker — and the
+                    # frontend can derive the chain-summary subtitle from
+                    # the /attempts response that mirrors this data.
+                    pending_by_server: dict[str, int] = {}
+                    for fr in job_manager.get_file_results(_retry_scan_target, dedup_by_path=True):
+                        file_path = fr.get("file")
+                        if not file_path:
+                            continue
+                        if fr.get("outcome") == "skipped_file_not_found":
+                            not_found_on_disk.append(file_path)
+                        else:
+                            servers = fr.get("servers") or []
+                            pending_server_names = [
+                                s.get("name") or "?" for s in servers if s.get("status") in RETRY_PUBLISHER_STATUSES
+                            ]
+                            if pending_server_names:
+                                pending_registration_paths.append(file_path)
+                                for _name in pending_server_names:
+                                    pending_by_server[_name] = pending_by_server.get(_name, 0) + 1
+
+                    # Combine paths that need a Plex rescan: unresolved
+                    # (Plex doesn't know the file) + not-found-on-disk (Plex
+                    # returned a stale path).
+                    all_scan_paths = list(unresolved_paths) + not_found_on_disk
+
+                    # For retries, start with unresolved webhook paths and add
+                    # original webhook paths when files were not found on disk
+                    # (we can't reverse-map stale Plex paths back to webhook
+                    # paths, so resubmit the originals — already-processed
+                    # items will be skipped as bif_exists). Pending-registration
+                    # paths are appended directly (already the canonical path
+                    # on disk; the fast path in process_canonical_path skips
+                    # files whose outputs+sidecars are fresh).
+                    #
+                    # webhook_paths lives on the JOB's config dict, not on
+                    # global settings — older code read settings.get(...)
+                    # which would silently inherit stale paths from any
+                    # past job that ever wrote the key globally.
+                    retry_paths = list(unresolved_paths)
+                    if not_found_on_disk:
+                        for wp in job_config.get("webhook_paths") or []:
+                            if wp not in retry_paths:
+                                retry_paths.append(wp)
+                    for pp in pending_registration_paths:
+                        if pp not in retry_paths:
+                            retry_paths.append(pp)
+
+                    def _spawn_retry_job(paths, attempt):
+                        """Create and start a retry job for unresolved webhook paths."""
+                        import os as _os
+                        from datetime import datetime, timedelta, timezone
+
+                        from media_preview_generator.processing.retry_queue import BACKOFF_SCHEDULE
+
+                        # Drop the legacy "Sonarr: " / "Radarr: " prefix from the
+                        # parent name — the source chip on the row carries the
+                        # trigger label now, so the prefix is duplicate noise.
+                        # The "Retry:" prefix stays — it tells the user this row
+                        # is a retry, not the original.
+                        #
+                        # Inherit the parent job's library_name so retry rows
+                        # read identically to their parent (e.g. parent
+                        # "Chelsea vs Nottingham Forest" → retry
+                        # "Retry: Chelsea vs Nottingham Forest"). Webhooks
+                        # build the parent's library_name from the structured
+                        # payload (Sonarr series + episode title, Radarr movie
+                        # title) which is the human-readable form; the legacy
+                        # raw-basename fallback only applies when no parent
+                        # title can be recovered. Strips any existing "Retry: "
+                        # to avoid stacking on a retry-of-a-retry.
+                        basenames = [_os.path.basename(p) for p in paths]
+                        parent_library = (current_job.library_name or "") if current_job else ""
+                        if parent_library.startswith("Retry: "):
+                            parent_library = parent_library[len("Retry: ") :]
+                        if not parent_library:
+                            parent_library = basenames[0] if len(paths) == 1 else f"{len(paths)} files"
+                        retry_library_name = f"Retry: {parent_library}"
+                        parent_id = job_config.get("parent_job_id") or job_id
+                        # D15 — borrow the slow-backoff schedule from the
+                        # publisher-step retry queue (30s, 2m, 5m, 15m, 60m).
+                        # The old formula `30 * 2^(n-1)` capped at 5min spaced
+                        # 3 attempts inside ~3.5 minutes — far too tight for
+                        # "Plex hasn't scanned the file yet", which routinely
+                        # takes minutes. Users would see 4 retry jobs in the
+                        # History, all failing for the same reason. The user-
+                        # tunable webhook_retry_delay (default 30) now scales
+                        # the schedule so manual tuning still works.
+                        scale = max(0.5, retry_delay_sec / 30.0)
+                        slow_idx = min(attempt - 1, len(BACKOFF_SCHEDULE) - 1)
+                        backoff_delay = max(1, int(BACKOFF_SCHEDULE[slow_idx] * scale))
+                        scheduled_at = (datetime.now(timezone.utc) + timedelta(seconds=backoff_delay)).isoformat()
+                        parent_priority = current_job.priority if current_job else 2
+                        # K1: preserve the originating server triple so retry
+                        # jobs stay scoped to whichever server fired the
+                        # webhook. The TOP-LEVEL server_id flows through to
+                        # the retry Job's row so the dashboard renders the
+                        # right source pill. CONFIG.server_id is the
+                        # publish-pin (worker reads it as
+                        # ``server_id_filter``) and is handled separately
+                        # below — see the explicit-pin discrimination at
+                        # line ~1038.
+                        parent_server_id = current_job.server_id if current_job else None
+                        parent_server_name = current_job.server_name if current_job else None
+                        parent_server_type = current_job.server_type if current_job else None
+                        # The EXPLICIT publish-pin (vs source attribution).
+                        # Webhooks set the top-level server_id for display
+                        # but leave config.server_id unset when the dispatch
+                        # should fan out to all owning servers (the Plex
+                        # ``media.added`` cross-vendor publish path).
+                        # Manual reprocess and multi-Plex pinned jobs DO
+                        # set config.server_id — those should keep the pin
+                        # on retry so the user-targeted server is the only
+                        # one re-attempted. Live evidence the
+                        # distinction matters: chain ``2f7132d5`` (Plex
+                        # source webhook) had Jellyfin
+                        # ``published_pending_registration`` on the initial
+                        # dispatch; the old code inherited ``parent_server_id``
+                        # straight into the retry's config which pinned the
+                        # worker to Plex (already done) and never re-attempted
+                        # Jellyfin's registration.
+                        parent_explicit_pin = (current_job.config or {}).get("server_id") if current_job else None
+                        rj = job_manager.create_job(
+                            library_name=retry_library_name,
+                            config={
+                                "is_retry": True,
+                                "parent_job_id": parent_id,
+                                "retry_attempt": attempt,
+                                "max_retries": effective_max,
+                                "retry_delay": backoff_delay,
+                                "scheduled_at": scheduled_at,
+                                "path_count": len(paths),
+                                "webhook_basenames": basenames[:20],
+                            },
+                            priority=parent_priority,
+                            server_id=parent_server_id,
+                            server_name=parent_server_name,
+                            server_type=parent_server_type,
+                        )
+                        selected_libs = settings.get("selected_libraries", []) or []
+                        if not isinstance(selected_libs, list):
+                            selected_libs = []
+                        selected_libs = [str(x).strip() for x in selected_libs if str(x).strip()]
+                        retry_async_config = {
+                            "selected_libraries": selected_libs,
+                            "sort_by": "newest",
+                            "webhook_paths": paths,
+                            "webhook_retry_count": effective_max,
+                            "webhook_retry_delay": retry_delay_sec,
+                        }
+                        # K1: thread server_id through so the retry's worker
+                        # builds Config from the right per-server view.
+                        # CRITICAL: only inherit the publish-pin when the
+                        # parent had an EXPLICIT pin in its config. The
+                        # top-level ``parent_server_id`` reflects WHICH
+                        # SERVER FIRED the webhook (source attribution);
+                        # the parent's ``config.server_id`` reflects
+                        # WHICH SERVER TO PUBLISH TO (explicit operator/
+                        # multi-Plex pin). Plex ``media.added`` webhooks
+                        # set top-level but leave config unpinned so the
+                        # initial dispatch fans out — the retry must
+                        # match that semantics, otherwise pending
+                        # registrations on Jellyfin/Emby get
+                        # un-retried while the retry uselessly re-runs
+                        # against the already-done Plex (chain
+                        # ``2f7132d5``, 2026-05-13).
+                        if parent_explicit_pin:
+                            retry_async_config["server_id"] = parent_explicit_pin
+                        # Preserve vendor-webhook hints on the retry so the
+                        # retry takes the orchestrator's hint short-circuit
+                        # (skipping a slow Plex resolution roundtrip) instead
+                        # of silently falling back to the legacy resolution
+                        # path. Audit #2 / round-1 fix: without this, retries
+                        # of a Jellyfin-only webhook would 500 in plex_server()
+                        # because Plex isn't configured.
+                        parent_hints_raw = (current_job.config or {}).get("webhook_item_id_hints")
+                        if parent_hints_raw:
+                            retained = {p: parent_hints_raw[p] for p in paths if p in parent_hints_raw}
+                            if retained:
+                                retry_async_config["webhook_item_id_hints"] = retained
+                        # Mutate the PARENT Job into chain mode so the user-
+                        # visible row shows the "Retry N/M" chip + countdown.
+                        # The retry Job itself (rj) is hidden via the /api/jobs
+                        # is_retry filter — the parent is the single lifecycle
+                        # row the user sees. The chain state machine:
+                        #   scheduled → parent.status PENDING + retry_eta
+                        #   running   → parent.status RUNNING (set when rj
+                        #               acquires the gate, below)
+                        #   completed → parent.status COMPLETED (set at end
+                        #               of rj when no more pending)
+                        #   exhausted → parent.status FAILED (set at end of
+                        #               rj when max attempts hit)
+                        #
+                        # ``source`` comes from the chain head (``parent_id``)
+                        # not from ``current_job`` — when this spawner runs
+                        # inside an already-active retry continuation,
+                        # current_job is the retry child and its config
+                        # doesn't carry the trigger label.
+                        _chain_head_for_source = job_manager.get_job(parent_id) if parent_id != job_id else current_job
+                        _chain_head_source = (
+                            (_chain_head_for_source.config or {}).get("source") if _chain_head_for_source else None
+                        )
+                        try:
+                            job_manager.upsert_retry_chain_job(
+                                canonical_path="",
+                                basename=parent_library,
+                                attempt=attempt,
+                                max_attempts=effective_max,
+                                next_run_at=scheduled_at,
+                                wait_seconds=backoff_delay,
+                                outcome="scheduled",
+                                originating_job_id=parent_id,
+                                server_id=parent_server_id,
+                                server_name=parent_server_name,
+                                server_type=parent_server_type,
+                                source=_chain_head_source,
+                            )
+                        except Exception as exc:
+                            # Best-effort: chain-state mutation failures must
+                            # not block the retry from being scheduled. The
+                            # retry Job still runs; the parent's chip just
+                            # won't tick down. Log at WARNING so operators
+                            # see a chain-state regression in normal logs —
+                            # DEBUG would hide a silently-broken chip.
+                            logger.warning(
+                                "upsert_retry_chain_job(scheduled) failed for parent {}: {}: {}",
+                                parent_id,
+                                type(exc).__name__,
+                                exc,
+                            )
+                        _start_job_async(rj.id, retry_async_config)
+                        return rj.id
+
+                    # Per-server scan-nudges already fired from
+                    # ``multi_server.py`` for every publisher whose
+                    # SKIPPED_NOT_IN_LIBRARY branch ran (Plex's partial
+                    # scan, Emby's /Library/Media/Updated, Jellyfin's
+                    # equivalent). The job-level Plex partial-scan call
+                    # that lived here pre-unification is redundant now
+                    # that every server's adapter triggers its own
+                    # scan-nudge for unresolved paths.
+                    del all_scan_paths
+
+                    spawned_retry_id = None
+                    if retry_paths and not (result.get("cancelled") or status_value == "cancelled"):
+                        if is_retry and retry_attempt < effective_max:
+                            next_attempt = retry_attempt + 1
+                            spawned_retry_id = _spawn_retry_job(retry_paths, next_attempt)
+                            from media_preview_generator.processing.retry_queue import BACKOFF_SCHEDULE
+
+                            scale = max(0.5, retry_delay_sec / 30.0)
+                            slow_idx = min(next_attempt - 1, len(BACKOFF_SCHEDULE) - 1)
+                            next_delay = max(1, int(BACKOFF_SCHEDULE[slow_idx] * scale))
+                            reason_parts = []
+                            if unresolved_paths:
+                                reason_parts.append(f"{len(unresolved_paths)} unresolved")
+                            if not_found_on_disk:
+                                reason_parts.append(f"{len(not_found_on_disk)} stale path(s)")
+                            if pending_by_server:
+                                _by_server_sorted = sorted(pending_by_server.items(), key=lambda kv: -kv[1])
+                                reason_parts.append(", ".join(f"{name} pending × {n}" for name, n in _by_server_sorted))
+                            reason = " + ".join(reason_parts) or "issues"
+                            # WARNING (not INFO): a retry being scheduled
+                            # means something on this run didn't resolve.
+                            # Bumped from INFO so the Job log viewer
+                            # surfaces it in warn color — chains that need
+                            # 3 retries on Jellyfin indexing are now
+                            # visually distinct from routine dispatch
+                            # progress lines.
+                            job_manager.add_log(
+                                job_id,
+                                f"WARNING - Retry {retry_attempt}/{effective_max}: {reason}, next retry in {next_delay}s",
+                            )
+                        elif not is_retry and effective_max > 0:
+                            spawned_retry_id = _spawn_retry_job(retry_paths, 1)
+                            reason_parts = []
+                            if unresolved_paths:
+                                reason_parts.append(f"{len(unresolved_paths)} not found in Plex")
+                            if not_found_on_disk:
+                                reason_parts.append(f"{len(not_found_on_disk)} stale path(s)")
+                            if pending_by_server:
+                                _by_server_sorted = sorted(pending_by_server.items(), key=lambda kv: -kv[1])
+                                reason_parts.append(", ".join(f"{name} pending × {n}" for name, n in _by_server_sorted))
+                            reason = ", ".join(reason_parts) or "issues"
+                            # WARNING (not INFO): same rationale as the
+                            # is_retry branch above — the original dispatch
+                            # didn't fully resolve and a retry is now
+                            # scheduled. Operator-visible signal.
+                            job_manager.add_log(
+                                job_id,
+                                f"WARNING - {reason}, retry scheduled in {retry_delay_sec}s",
+                            )
+
+                    # Terminal chain transition: this is a retry Job, it
+                    # didn't spawn another retry, and the parent Job is
+                    # the user-visible chain row. Mark the parent terminal:
+                    #   - retry_paths empty → chain succeeded → parent COMPLETED
+                    #   - retry_paths non-empty but max attempts hit →
+                    #     chain exhausted → parent FAILED
+                    # Cancellation is handled in the next block.
+                    if (
+                        is_retry
+                        and not spawned_retry_id
+                        and not (result.get("cancelled") or status_value == "cancelled")
+                    ):
+                        _chain_parent_id = job_config.get("parent_job_id")
+                        if _chain_parent_id:
+                            _chain_parent = job_manager.get_job(_chain_parent_id)
+                            if _chain_parent is not None:
+                                if retry_paths:
+                                    _chain_outcome = "exhausted"
+                                    _chain_reason = (
+                                        f"Source server did not register {len(retry_paths)} "
+                                        f"file(s) after {effective_max} retry attempts. "
+                                        f"Check the Files panel for the affected paths."
+                                    )
+                                else:
+                                    _chain_outcome = "completed"
+                                    _chain_reason = None
+
+                                # Refresh the chain head's publishers snapshot
+                                # from the parent's JSONL. Walks every attempt
+                                # (not just the latest) and picks the BEST
+                                # status per (server, path) — see
+                                # ``merge_chain_publishers_best_per_path`` for
+                                # the precedence table + the bug it fixes.
+                                # Pre-fix this used ``dedup_by_path=True`` and
+                                # took the latest row, which silently
+                                # overwrote Plex/Emby ``published`` with the
+                                # retry's no-op ``skipped_output_exists`` and
+                                # the modal displayed "already existed"
+                                # everywhere for freshly-generated previews.
+                                _chain_publishers = None
+                                try:
+                                    from ...jobs.orchestrator import merge_chain_publishers_best_per_path
+
+                                    _chain_publishers = (
+                                        merge_chain_publishers_best_per_path(
+                                            list(
+                                                job_manager.get_file_results(
+                                                    _chain_parent_id,
+                                                    dedup_by_path=False,
+                                                )
+                                            )
+                                        )
+                                        or None
+                                    )
+                                except Exception as exc:
+                                    logger.debug(
+                                        "Could not aggregate publishers for chain {}: {}: {}",
+                                        _chain_parent_id,
+                                        type(exc).__name__,
+                                        exc,
+                                    )
+
+                                try:
+                                    job_manager.upsert_retry_chain_job(
+                                        canonical_path="",
+                                        basename=(_chain_parent.library_name or ""),
+                                        attempt=retry_attempt,
+                                        max_attempts=effective_max,
+                                        next_run_at=None,
+                                        wait_seconds=None,
+                                        outcome=_chain_outcome,
+                                        originating_job_id=_chain_parent_id,
+                                        reason=_chain_reason,
+                                        source=(_chain_parent.config or {}).get("source"),
+                                        publishers=_chain_publishers,
+                                    )
+                                except Exception as exc:
+                                    # WARNING (not DEBUG): a terminal-state
+                                    # upsert failure leaves the chain head
+                                    # stuck PENDING/RUNNING forever even
+                                    # though no further retries will fire.
+                                    logger.warning(
+                                        "upsert_retry_chain_job({}) failed for parent {}: {}: {}",
+                                        _chain_outcome,
+                                        _chain_parent_id,
+                                        type(exc).__name__,
+                                        exc,
+                                    )
+
+                    if result.get("cancelled") or status_value == "cancelled":
+                        job_manager.add_log(job_id, "WARNING - Job cancelled by user")
+                        job_manager.cancel_job(job_id)
+                    else:
+                        error_parts = []
+
+                        if failures:
+                            job_manager.add_log(
+                                job_id,
+                                f"WARNING - {len(failures)} file(s) failed during processing",
+                            )
+                            for i, f in enumerate(failures, 1):
+                                wt = f"[{f['worker_type']}] " if f.get("worker_type") else ""
+                                job_manager.add_log(
+                                    job_id,
+                                    f"ERROR - {i}. {wt}exit={f['exit_code']} | {f['reason']} | {f['file']}",
+                                )
+                            error_parts.append(f"{len(failures)} failed file(s)")
+
+                        if outcome:
+                            not_found = outcome.get("skipped_file_not_found", 0)
+                            generated = outcome.get("generated", 0)
+                            outcome_failed = outcome.get("failed", 0)
+                            total_outcome = sum(outcome.values())
+                            if not_found > 0 and generated == 0:
+                                if spawned_retry_id:
+                                    msg = (
+                                        f"{not_found} of {total_outcome} items "
+                                        "had stale Plex paths — Plex rescan "
+                                        "triggered, retry scheduled"
+                                    )
+                                else:
+                                    msg = (
+                                        f"{not_found} of {total_outcome} items "
+                                        "skipped (file not found locally) — "
+                                        "check path mapping configuration"
+                                    )
+                                job_manager.add_log(job_id, f"WARNING - {msg}")
+                                error_parts.append(msg)
+                            # Per-item failures (FFmpeg crashes, adapter errors)
+                            # leave the job-level result as "completed" but the
+                            # item outcome counter records them. Surface them
+                            # so the UI badge reflects "all items failed" jobs
+                            # as Failed, not green-Completed.
+                            #
+                            # "Success" includes both legacy ``generated`` AND
+                            # multi-server ``published`` / ``skipped_output_exists``
+                            # — anything where a publisher actually wrote (or
+                            # confirmed) an output counts. Without this, jobs
+                            # that ran via the multi-server scan would always
+                            # report ``generated == 0`` and trip the all-failed
+                            # branch even when most items succeeded.
+                            elif outcome_failed > 0:
+                                published_total = (
+                                    generated
+                                    + outcome.get("published", 0)
+                                    + outcome.get("skipped_output_exists", 0)
+                                    + outcome.get("skipped_bif_exists", 0)
+                                    + outcome.get("skipped_not_indexed", 0)
+                                )
+                                if published_total == 0:
+                                    msg = (
+                                        f"{outcome_failed} of {total_outcome} item(s) failed; "
+                                        "no previews were generated. Check the per-item logs above."
+                                    )
+                                else:
+                                    msg = (
+                                        f"{outcome_failed} of {total_outcome} item(s) failed "
+                                        f"(but {published_total} succeeded)."
+                                    )
+                                job_manager.add_log(job_id, f"WARNING - {msg}")
+                                error_parts.append(msg)
+
+                        if spawned_retry_id:
+                            error_parts.append(f"{len(retry_paths)} path(s) sent for retry")
+                            summary = dict(job_config)
+                            summary["resolution_summary"] = {
+                                "total": total_paths,
+                                "resolved": resolved_count,
+                                "unresolved": len(unresolved_paths),
+                                "not_found_on_disk": len(not_found_on_disk),
+                                "retry_job_ids": [spawned_retry_id],
+                            }
+                            job_manager.update_job_config(job_id, summary)
+                        elif unresolved_paths:
+                            if is_retry:
+                                error_parts.append(f"Could not find in Plex after {effective_max} attempt(s)")
+                            else:
+                                error_parts.append(f"{len(unresolved_paths)} item(s) not found in Plex")
+
+                        if error_parts:
+                            if total_paths > 0 and resolved_count < total_paths:
+                                error_msg = f"{resolved_count}/{total_paths} processed; " + ", ".join(error_parts)
+                            else:
+                                error_msg = "; ".join(error_parts)
+                            job_manager.add_log(job_id, f"WARNING - {error_msg}")
+                            classification = _classify_job_completion(
+                                failures=failures,
+                                outcome=outcome,
+                                is_retry=is_retry,
+                                retry_paths=retry_paths,
+                                spawned_retry_id=spawned_retry_id,
+                                total_paths=total_paths,
+                                resolved_count=resolved_count,
+                            )
+                            if classification == "error":
+                                job_manager.complete_job(job_id, error=error_msg)
+                            else:
+                                job_manager.complete_job(job_id, warning=error_msg)
+                        else:
+                            # D25 — when files ended in skipped_not_indexed,
+                            # the JOB has finished dispatching but background
+                            # retries are still pending. Marking it plain
+                            # "Completed" (green) is misleading because more
+                            # work IS scheduled. Surface as a warning so the
+                            # user sees an amber badge with a clear message.
+                            not_indexed_count = (outcome or {}).get("skipped_not_indexed", 0) if outcome else 0
+                            if not_indexed_count > 0:
+                                msg = (
+                                    f"{not_indexed_count} file(s) waiting for the media server to scan / "
+                                    "analyse them (the media server hasn't finished its own analysis pass "
+                                    "for these files, so we don't have the bundle hash needed to publish the "
+                                    "BIF). They'll be retried automatically — slow backoff: 1m → 2m → 5m "
+                                    "→ 15m → 60m."
+                                )
+                                job_manager.add_log(job_id, f"INFO - {msg}")
+                                job_manager.complete_job(job_id, warning=msg)
+                            elif is_retry:
+                                job_manager.add_log(job_id, "INFO - Retry job completed successfully")
+                                job_manager.complete_job(job_id)
+                            else:
+                                # ``result["warning"]`` flows up from
+                                # ``run_processing`` when the multi-server
+                                # full-scan path collected enumeration
+                                # warnings (e.g. Jellyfin /Items timed
+                                # out and the library was skipped). Job
+                                # b6deeac3 reproducer: without this
+                                # branch a failed enumeration ended as
+                                # plain green "completed", misleading
+                                # the user into thinking nothing went
+                                # wrong despite zero items processed.
+                                enumeration_warning = (result or {}).get("warning")
+                                if enumeration_warning:
+                                    job_manager.add_log(job_id, f"WARNING - {enumeration_warning}")
+                                    job_manager.complete_job(job_id, warning=enumeration_warning)
+                                else:
+                                    job_manager.add_log(job_id, "INFO - Job completed successfully")
+                                    job_manager.complete_job(job_id)
+            finally:
+                # Release the per-job failure bucket before the scope exits
+                # so the dict entry doesn't linger after the job ends.
+                clear_failures()
+                _job_scope.close()
+                job_manager.clear_pause_flag(job_id)
+                job_manager.clear_cancellation_flag(job_id)
+                job_manager.clear_active_worker_pool(job_id)
+                if not job_manager.get_running_jobs():
+                    job_manager.clear_worker_statuses()
+
+                import shutil
+
+                if config.working_tmp_folder and os.path.isdir(config.working_tmp_folder):
+                    try:
+                        logger.debug("Cleaning up working temp folder: {}", config.working_tmp_folder)
+                        shutil.rmtree(config.working_tmp_folder)
+                        logger.debug("Cleaned up working temp folder: {}", config.working_tmp_folder)
+                    except Exception as cleanup_error:
+                        logger.warning(
+                            "Could not clean up the working temp folder at {} ({}). "
+                            "Leftover scratch files won't affect future jobs but will use disk space — "
+                            "you can safely delete this folder manually if it grows too large.",
+                            config.working_tmp_folder,
+                            cleanup_error,
+                        )
+                elif config.working_tmp_folder:
+                    logger.debug("Working temp folder already absent, skipping cleanup: {}", config.working_tmp_folder)
+
+        except Exception as e:
+            logger.exception(
+                "Job {} failed with an unexpected error. "
+                "The job is marked failed in the Jobs page; you can re-run it from there once the cause "
+                "is fixed. The full traceback is included above; if the cause isn't obvious, please open "
+                "a GitHub issue with these lines.",
+                job_id,
+            )
+            if job_manager is None:
+                job_manager = get_job_manager()
+            job_manager.add_log(job_id, f"ERROR - Job failed: {e}")
+            job_manager.complete_job(job_id, error=str(e))
+        finally:
+            # Release the concurrency slot first so the next waiter can
+            # admit itself as soon as possible — beating the per-thread
+            # log-handler teardown (which can take tens of ms) off the
+            # critical path. Guarded by _slot_held so the early-failure
+            # branches (config load / tmp folder / paused) don't over-
+            # release. Double-release is clamped by the gate's
+            # max(0, _active-1), but the flag lets us avoid noisy
+            # debug logs on the cold path.
+            if _slot_held:
+                try:
+                    from ..job_gate import get_job_gate
+
+                    get_job_gate().release()
+                except Exception as gate_err:
+                    logger.debug("Could not release job gate for {}: {}", job_id, gate_err)
+                finally:
+                    _slot_held = False
+            set_file_result_callback(None, job_id=job_id)
+            from ...jobs.worker import unregister_job_thread
+
+            unregister_job_thread()
+            with _inflight_lock:
+                _inflight_jobs.discard(job_id)
+            if log_handler_id is not None:
+                try:
+                    from loguru import logger as loguru_logger
+
+                    loguru_logger.complete()
+                    loguru_logger.remove(log_handler_id)
+                except (ValueError, TypeError):
+                    logger.debug("Could not remove job log handler", exc_info=True)
+
+    thread = threading.Thread(target=run_job, daemon=True)
+    thread.start()
+
+
+def _start_recently_added_job_async(
+    *,
+    schedule_id: str,
+    server_id: str | None,
+    library_ids: list[str] | None,
+    lookback_hours: float,
+    library_name: str,
+) -> str:
+    """Spawn a gated daemon thread for a scheduled "Recently Added" scan.
+
+    Mirrors :func:`_start_job_async`'s gate-aware lifecycle but calls
+    :func:`_run_recently_added_multi_server` instead of ``run_processing``.
+    The scan becomes a first-class Job: visible in the Jobs UI,
+    cancellable, and counted against ``max_concurrent_jobs``.
+
+    Before this helper existed, scheduled recently-added scans ran INLINE
+    on the APScheduler worker thread (see ``web/scheduler.py:398`` pre-fix)
+    — they did real publish work without acquiring the JobGate, so they
+    could push concurrent activity above the user's cap, and they didn't
+    appear as Job rows in the UI (only ``schedules.json``'s ``last_run``
+    recorded them). This helper closes both gaps: the scan goes through
+    the same gate every other dispatch obeys, AND it surfaces as a Job
+    row the operator can monitor / pause / cancel.
+
+    Returns the new Job's UUID.
+    """
+    from ...config import load_config
+    from ...jobs.orchestrator import _run_recently_added_multi_server
+    from ..settings_manager import get_settings_manager
+
+    job_manager = get_job_manager()
+    job = job_manager.create_job(
+        library_name=library_name,
+        config={
+            "source": "scheduled_recently_added",
+            "parent_schedule_id": schedule_id,
+            "server_id": server_id,
+            "library_ids": library_ids,
+            "lookback_hours": lookback_hours,
+        },
+        server_id=server_id,
+    )
+    job_id = job.id
+
+    with _inflight_lock:
+        if job_id in _inflight_jobs:
+            logger.info(
+                "Skipping duplicate _start_recently_added_job_async for {} — already in flight",
+                job_id,
+            )
+            return job_id
+        _inflight_jobs.add(job_id)
+
+    def run_job():
+        log_handler_id = None
+        _slot_held = False
+        try:
+            from loguru import logger as loguru_logger
+
+            from ...jobs.worker import is_job_thread_for, register_job_thread, unregister_job_thread
+
+            register_job_thread(job_id)
+
+            def log_sink(message):
+                record = message.record
+                log_text = f"{record['level'].name} - {record['message']}"
+                job_manager.add_log(job_id, log_text)
+
+            def job_thread_filter(record: dict) -> bool:
+                return is_job_thread_for(record["thread"].id, job_id)
+
+            log_handler_id = loguru_logger.add(
+                log_sink,
+                level=get_settings_manager().get("log_level", "INFO").upper(),
+                format="{message}",
+                filter=job_thread_filter,
+                enqueue=True,
+            )
+
+            # Same gate pattern as _start_job_async — the recently-added
+            # scan acquires before any enumeration / API calls so a cap
+            # of N really means "at most N concurrent dispatches/scans".
+            from ..job_gate import get_job_gate
+
+            def _on_wait(active: int, cap: int) -> None:
+                job_manager.update_progress(
+                    job_id,
+                    percent=0,
+                    processed_items=0,
+                    total_items=0,
+                    current_item=f"Queued — waiting for active slot ({active} of {cap} busy)",
+                )
+
+            admitted = get_job_gate().acquire(
+                priority=job.priority,
+                cancel_check=lambda: job_manager.is_cancellation_requested(job_id),
+                on_wait=_on_wait,
+            )
+            if not admitted:
+                job_manager.add_log(
+                    job_id,
+                    "WARNING - Job cancelled while waiting for active slot",
+                )
+                job_manager.cancel_job(job_id)
+                return
+            _slot_held = True
+
+            job_manager.start_job(job_id)
+            job_manager.add_log(job_id, "INFO - Scheduled recently-added scan started")
+            job_manager.update_progress(
+                job_id,
+                percent=0,
+                processed_items=0,
+                total_items=0,
+                current_item="Starting — loading configuration...",
+            )
+
+            config = load_config()
+            settings = get_settings_manager()
+            selected_gpus = _build_selected_gpus(settings)
+
+            def progress_callback(current, total, message, percent_override=None):
+                if percent_override is not None:
+                    percent = percent_override
+                else:
+                    percent = (current / total * 100) if total > 0 else 0
+                job_manager.update_progress(
+                    job_id,
+                    percent=percent,
+                    processed_items=current,
+                    total_items=total,
+                    current_item=message,
+                )
+
+            def worker_callback(workers_list):
+                from ...jobs import WorkerStatus
+
+                active_keys = set()
+                for worker_data in workers_list:
+                    key = f"{worker_data['worker_type']}_{worker_data['worker_id']}"
+                    active_keys.add(key)
+                    remaining_time = worker_data.get("remaining_time")
+                    worker_eta = ""
+                    if isinstance(remaining_time, int | float) and remaining_time > 0:
+                        worker_eta = _format_eta(float(remaining_time))
+                    status = WorkerStatus(
+                        worker_id=worker_data["worker_id"],
+                        worker_type=worker_data["worker_type"],
+                        worker_name=worker_data["worker_name"],
+                        status=worker_data["status"],
+                        current_title=worker_data.get("current_title", ""),
+                        library_name=worker_data.get("library_name", ""),
+                        progress_percent=worker_data.get("progress_percent", 0),
+                        speed=worker_data.get("speed", "0.0x"),
+                        eta=worker_eta,
+                        ffmpeg_started=bool(worker_data.get("ffmpeg_started", False)),
+                        current_phase=worker_data.get("current_phase", "") or "",
+                    )
+                    job_manager.update_worker_status(key, status)
+                job_manager.prune_worker_statuses(active_keys)
+                job_manager.emit_worker_statuses()
+
+            # Bind the per-job failure_scope around the scan + completion.
+            # Mirrors _start_job_async's ExitStack pattern at line 516-517 so
+            # ``record_failure`` calls deep in the enumeration / publisher
+            # path attribute to THIS job, not a sibling that happened to be
+            # running on the same thread pool. Without this scope, the
+            # enumeration phase (before the per-item failure_scope inside
+            # _dispatch_processable_items) emits the "Internal bookkeeping
+            # bug: failure ... reported outside an active job" warning on
+            # auth/connectivity errors.
+            from ...processing.generator import failure_scope
+
+            with failure_scope(job_id):
+                scan_warnings: list[str] = []
+                counts = _run_recently_added_multi_server(
+                    config,
+                    selected_gpus=selected_gpus,
+                    server_id_filter=server_id,
+                    library_ids=library_ids,
+                    lookback_hours=lookback_hours,
+                    progress_callback=progress_callback,
+                    cancel_check=lambda: job_manager.is_cancellation_requested(job_id),
+                    pause_check=lambda: (
+                        job_manager.is_pause_requested(job_id) or get_settings_manager().processing_paused
+                    ),
+                    job_id=job_id,
+                    worker_callback=worker_callback,
+                    warnings_out=scan_warnings,
+                )
+
+                if counts:
+                    job_manager.set_job_outcome(job_id, counts)
+                if scan_warnings:
+                    warning_msg = " | ".join(scan_warnings)
+                    job_manager.add_log(job_id, f"WARNING - {warning_msg}")
+                    job_manager.complete_job(job_id, warning=warning_msg)
+                else:
+                    job_manager.complete_job(job_id)
+
+        except Exception as exc:
+            logger.exception("Scheduled recently-added scan {} failed", job_id)
+            try:
+                job_manager.complete_job(job_id, error=f"{type(exc).__name__}: {exc}")
+            except Exception:
+                pass
+        finally:
+            if _slot_held:
+                try:
+                    from ..job_gate import get_job_gate
+
+                    get_job_gate().release()
+                except Exception as gate_err:
+                    logger.debug("Could not release job gate for {}: {}", job_id, gate_err)
+                _slot_held = False
+            try:
+                from ...jobs.worker import unregister_job_thread
+
+                unregister_job_thread()
+            except Exception:
+                pass
+            with _inflight_lock:
+                _inflight_jobs.discard(job_id)
+            if log_handler_id is not None:
+                try:
+                    from loguru import logger as loguru_logger
+
+                    loguru_logger.complete()
+                    loguru_logger.remove(log_handler_id)
+                except (ValueError, TypeError):
+                    logger.debug("Could not remove job log handler", exc_info=True)
+
+    thread = threading.Thread(target=run_job, daemon=True, name=f"run_job_recently_added_{job_id}")
+    thread.start()
+    return job_id

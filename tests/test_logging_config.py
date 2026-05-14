@@ -9,8 +9,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import plex_generate_previews.logging_config as _logging_mod
-from plex_generate_previews.logging_config import (
+import media_preview_generator.logging_config as _logging_mod
+from media_preview_generator.logging_config import (
     _json_sink,
     _jsonl_record_patcher,
     get_app_log_path,
@@ -20,52 +20,111 @@ from plex_generate_previews.logging_config import (
 
 @pytest.fixture(autouse=True)
 def _reset_logging_state():
-    """Reset setup_logging module globals between tests."""
+    """Reset setup_logging module globals AND loguru sinks between tests.
+
+    Without snapshotting loguru's own _core.handlers, tests that call
+    setup_logging() (which removes existing handlers and adds new ones
+    bound to test-scoped StringIO objects) leave the global loguru in a
+    broken state. Background threads from other test modules — the job
+    dispatcher, scheduler, retry queue, webhook timers — keep emitting
+    into those torn-down sinks and can crash with
+    "I/O operation on closed file" when the captured StringIO is GC'd.
+
+    Snapshot loguru's handler set on entry, restore on exit so the
+    next test (or a daemon thread that survives this test) sees a sane
+    sink configuration.
+    """
+    from loguru import logger as _loguru_logger
+
+    snapshot = dict(_loguru_logger._core.handlers)  # noqa: SLF001
     _logging_mod._managed_handler_ids = []
     _logging_mod._initial_setup_done = False
     old_broadcaster = _logging_mod._broadcaster
     _logging_mod._broadcaster = None
-    yield
-    _logging_mod._managed_handler_ids = []
-    _logging_mod._initial_setup_done = False
-    _logging_mod._broadcaster = old_broadcaster
+    try:
+        yield
+    finally:
+        _logging_mod._managed_handler_ids = []
+        _logging_mod._initial_setup_done = False
+        _logging_mod._broadcaster = old_broadcaster
+        # Restore loguru's pre-test handler set so test-scoped StringIO
+        # sinks can't outlive the test that created them.
+        _loguru_logger.remove()
+        for handler in snapshot.values():
+            try:
+                _loguru_logger.add(
+                    handler._sink,  # noqa: SLF001
+                    level=handler.levelno,
+                )
+            except Exception:
+                # Best-effort restore; some handlers (Rich console) carry
+                # state that doesn't round-trip cleanly. The next call to
+                # setup_logging() in production code will re-establish
+                # the production sinks anyway.
+                pass
 
 
 class TestLoggingConfig:
     """Test logging configuration."""
 
-    @patch("plex_generate_previews.logging_config.os.makedirs")
-    @patch("plex_generate_previews.logging_config.logger")
+    @patch("media_preview_generator.logging_config.os.makedirs")
+    @patch("media_preview_generator.logging_config.logger")
     def test_setup_logging_default(self, mock_logger, mock_makedirs):
-        """Test setup logging with default level."""
+        """Default level: stderr handler at INFO + JSONL app.log handler."""
         setup_logging()
 
-        # Should configure logger
-        mock_logger.remove.assert_called()
-        mock_logger.add.assert_called()
+        mock_logger.remove.assert_called_once()
+        # Expect stderr + app.log handlers (2 add calls minimum).
+        assert mock_logger.add.call_count == 2
+        stderr_call = mock_logger.add.call_args_list[0]
+        assert stderr_call.kwargs.get("level") == "INFO"
 
-    @patch("plex_generate_previews.logging_config.os.makedirs")
-    @patch("plex_generate_previews.logging_config.logger")
+    @patch("media_preview_generator.logging_config.os.makedirs")
+    @patch("media_preview_generator.logging_config.logger")
     def test_setup_logging_debug(self, mock_logger, mock_makedirs):
-        """Test setup logging with DEBUG level."""
+        """DEBUG level propagates to the stderr handler config."""
         setup_logging("DEBUG")
 
         mock_logger.remove.assert_called_once()
-        mock_logger.add.assert_called()
+        assert mock_logger.add.call_count == 2
+        stderr_call = mock_logger.add.call_args_list[0]
+        assert stderr_call.kwargs.get("level") == "DEBUG"
+        # The app.log handler must keep rotation/retention even at DEBUG.
+        app_log_call = mock_logger.add.call_args_list[1]
+        assert app_log_call.kwargs.get("rotation") == "10 MB"
+        assert app_log_call.kwargs.get("retention") == 5
 
-    @patch("plex_generate_previews.logging_config.os.makedirs")
-    @patch("plex_generate_previews.logging_config.logger")
+    @patch("media_preview_generator.logging_config.os.makedirs")
+    @patch("media_preview_generator.logging_config.logger")
     def test_setup_logging_with_console(self, mock_logger, mock_makedirs):
-        """Test setup logging with console parameter."""
+        """Passing a Rich console should bind the stderr handler to it.
+
+        Strengthened: prove the sink actually routes to ``console.print``
+        instead of just trusting that the level + handler-count checks
+        imply correct wiring. Production wraps the console in a
+        ``lambda msg: console.print(msg, end="")`` (logging_config.py:181) —
+        invoke the bound sink and verify console.print was called.
+        """
         mock_console = MagicMock()
 
         setup_logging("INFO", console=mock_console)
 
         mock_logger.remove.assert_called_once()
-        mock_logger.add.assert_called()
+        assert mock_logger.add.call_count == 2
+        stderr_call = mock_logger.add.call_args_list[0]
+        assert stderr_call.kwargs.get("level") == "INFO"
 
-    @patch("plex_generate_previews.logging_config.os.makedirs")
-    @patch("plex_generate_previews.logging_config.logger")
+        # The sink must be a callable that forwards to console.print —
+        # invoke it and assert the console was actually called. A regression
+        # that bound the sink to sys.stderr (ignoring the console arg)
+        # would fail here.
+        sink = stderr_call.args[0]
+        assert callable(sink), f"first add() arg must be a callable sink, got {type(sink).__name__}"
+        sink("test log message\n")
+        mock_console.print.assert_called_once_with("test log message\n", end="")
+
+    @patch("media_preview_generator.logging_config.os.makedirs")
+    @patch("media_preview_generator.logging_config.logger")
     def test_setup_logging_adds_app_log_handler(self, mock_logger, mock_makedirs):
         """Test that setup_logging adds the consolidated JSONL app.log handler."""
         setup_logging()
@@ -79,8 +138,8 @@ class TestLoggingConfig:
         assert app_log_call.kwargs.get("retention") == 5
         assert "{extra[_jsonl]}" in (app_log_call.kwargs.get("format") or "")
 
-    @patch("plex_generate_previews.logging_config.os.makedirs")
-    @patch("plex_generate_previews.logging_config.logger")
+    @patch("media_preview_generator.logging_config.os.makedirs")
+    @patch("media_preview_generator.logging_config.logger")
     def test_setup_logging_custom_rotation_retention(self, mock_logger, mock_makedirs):
         """Test setup_logging with custom rotation and retention values."""
         setup_logging(rotation="5 MB", retention=4)
@@ -91,8 +150,8 @@ class TestLoggingConfig:
         assert app_log_call.kwargs.get("rotation") == "5 MB"
         assert app_log_call.kwargs.get("retention") == 4
 
-    @patch("plex_generate_previews.logging_config.os.makedirs", side_effect=PermissionError)
-    @patch("plex_generate_previews.logging_config.logger")
+    @patch("media_preview_generator.logging_config.os.makedirs", side_effect=PermissionError)
+    @patch("media_preview_generator.logging_config.logger")
     def test_setup_logging_handles_permission_error(self, mock_logger, mock_makedirs):
         """Test that setup_logging handles permission errors for log directory."""
         setup_logging()
@@ -126,8 +185,8 @@ class TestLoggingConfig:
 class TestJSONLogging:
     """Test LOG_FORMAT=json structured logging output."""
 
-    @patch("plex_generate_previews.logging_config.os.makedirs")
-    @patch("plex_generate_previews.logging_config.logger")
+    @patch("media_preview_generator.logging_config.os.makedirs")
+    @patch("media_preview_generator.logging_config.logger")
     def test_json_format_adds_json_sink(self, mock_logger, mock_makedirs):
         """When log_format='json', _json_sink should be registered."""
         setup_logging(log_format="json")
@@ -137,8 +196,8 @@ class TestJSONLogging:
         first_add = mock_logger.add.call_args_list[0]
         assert first_add.args[0] is _json_sink
 
-    @patch("plex_generate_previews.logging_config.os.makedirs")
-    @patch("plex_generate_previews.logging_config.logger")
+    @patch("media_preview_generator.logging_config.os.makedirs")
+    @patch("media_preview_generator.logging_config.logger")
     def test_json_format_via_env_var(self, mock_logger, mock_makedirs):
         """LOG_FORMAT env var should be respected when log_format is None."""
         with patch.dict(os.environ, {"LOG_FORMAT": "json"}):
@@ -146,16 +205,16 @@ class TestJSONLogging:
         first_add = mock_logger.add.call_args_list[0]
         assert first_add.args[0] is _json_sink
 
-    @patch("plex_generate_previews.logging_config.os.makedirs")
-    @patch("plex_generate_previews.logging_config.logger")
+    @patch("media_preview_generator.logging_config.os.makedirs")
+    @patch("media_preview_generator.logging_config.logger")
     def test_pretty_format_ignores_json_sink(self, mock_logger, mock_makedirs):
         """Explicit log_format='pretty' should NOT use _json_sink."""
         setup_logging(log_format="pretty")
         first_add = mock_logger.add.call_args_list[0]
         assert first_add.args[0] is not _json_sink
 
-    @patch("plex_generate_previews.logging_config.os.makedirs")
-    @patch("plex_generate_previews.logging_config.logger")
+    @patch("media_preview_generator.logging_config.os.makedirs")
+    @patch("media_preview_generator.logging_config.logger")
     def test_console_ignored_when_json(self, mock_logger, mock_makedirs):
         """Providing a console alongside json format should still use JSON."""
         mock_console = MagicMock()
@@ -170,7 +229,7 @@ class TestJSONLogging:
         captured = StringIO()
         logger.remove()
 
-        with patch("plex_generate_previews.logging_config.sys.stderr", captured):
+        with patch("media_preview_generator.logging_config.sys.stderr", captured):
             with patch.dict(os.environ, {"CONFIG_DIR": str(tmp_path)}):
                 setup_logging(log_format="json")
                 logger.info("hello structured world")
@@ -203,7 +262,7 @@ class TestJSONLogging:
         captured = StringIO()
         logger.remove()
 
-        with patch("plex_generate_previews.logging_config.sys.stderr", captured):
+        with patch("media_preview_generator.logging_config.sys.stderr", captured):
             with patch.dict(os.environ, {"CONFIG_DIR": str(tmp_path)}):
                 setup_logging(log_format="json")
                 try:
@@ -236,7 +295,7 @@ class TestSocketIOLogBroadcaster:
 
     def test_get_set_broadcaster(self):
         """get/set_log_broadcaster round-trips correctly."""
-        from plex_generate_previews.logging_config import (
+        from media_preview_generator.logging_config import (
             SocketIOLogBroadcaster,
             get_log_broadcaster,
             set_log_broadcaster,
@@ -252,7 +311,7 @@ class TestSocketIOLogBroadcaster:
 
     def test_sink_emits_to_correct_room(self):
         """sink() should call socketio.emit with room=level_name."""
-        from plex_generate_previews.logging_config import SocketIOLogBroadcaster
+        from media_preview_generator.logging_config import SocketIOLogBroadcaster
 
         mock_sio = MagicMock()
         broadcaster = SocketIOLogBroadcaster(mock_sio)
@@ -262,7 +321,7 @@ class TestSocketIOLogBroadcaster:
             "level": MagicMock(name="WARNING"),
             "time": MagicMock(),
             "message": "test warning",
-            "name": "plex_generate_previews.worker",
+            "name": "media_preview_generator.worker",
             "function": "run",
             "line": 42,
         }
@@ -284,7 +343,7 @@ class TestSocketIOLogBroadcaster:
 
     def test_sink_filters_out_trace_level(self):
         """sink() should silently drop TRACE-level records."""
-        from plex_generate_previews.logging_config import SocketIOLogBroadcaster
+        from media_preview_generator.logging_config import SocketIOLogBroadcaster
 
         mock_sio = MagicMock()
         broadcaster = SocketIOLogBroadcaster(mock_sio)
@@ -305,7 +364,7 @@ class TestSocketIOLogBroadcaster:
 
     def test_sink_swallows_emit_errors(self):
         """sink() must not raise when socketio.emit fails."""
-        from plex_generate_previews.logging_config import SocketIOLogBroadcaster
+        from media_preview_generator.logging_config import SocketIOLogBroadcaster
 
         mock_sio = MagicMock()
         mock_sio.emit.side_effect = RuntimeError("boom")
@@ -325,11 +384,11 @@ class TestSocketIOLogBroadcaster:
 
         broadcaster.sink(record)  # should not raise
 
-    @patch("plex_generate_previews.logging_config.os.makedirs")
-    @patch("plex_generate_previews.logging_config.logger")
+    @patch("media_preview_generator.logging_config.os.makedirs")
+    @patch("media_preview_generator.logging_config.logger")
     def test_setup_logging_attaches_broadcaster(self, mock_logger, mock_makedirs):
         """When a broadcaster is registered, setup_logging adds it as a handler."""
-        from plex_generate_previews.logging_config import (
+        from media_preview_generator.logging_config import (
             SocketIOLogBroadcaster,
             set_log_broadcaster,
         )
@@ -359,7 +418,7 @@ class TestJsonlRecordPatcher:
             "time": MagicMock(),
             "level": MagicMock(),
             "message": "hello world",
-            "name": "plex_generate_previews.worker",
+            "name": "media_preview_generator.worker",
             "function": "run",
             "line": 42,
             "extra": {},

@@ -2,7 +2,7 @@
 
 > [Back to Docs](README.md)
 
-Get Plex preview thumbnails generating in minutes.
+Get preview thumbnails generating in minutes — for **Plex, Emby, Jellyfin**, or any combination of them.
 
 > [!IMPORTANT]
 > This page is the source of truth for installation and first-time setup.
@@ -13,7 +13,7 @@ Get Plex preview thumbnails generating in minutes.
 
 - [Prerequisites](#prerequisites)
 - [Quick Start (Docker)](#quick-start-docker)
-- [Recommended Plex Settings](#recommended-plex-settings)
+- [Recommended media-server settings](#recommended-media-server-settings)
 - [Volume Mounts](#volume-mounts)
 - [Authentication Token](#authentication-token)
 - [Docker Compose](#docker-compose)
@@ -34,9 +34,13 @@ Get Plex preview thumbnails generating in minutes.
 
 ## Prerequisites
 
-1. Plex Media Server running and accessible
-2. A Plex account (for OAuth sign-in)
-3. Docker installed on your server
+1. **At least one media server** reachable from this container — any of:
+   - **Plex Media Server** — sign in with your Plex account in the Setup Wizard, or paste a server URL + token if you'd rather skip the sign-in
+   - **Emby Server** — server URL + API key
+   - **Jellyfin Server** — use **Quick Connect** in the Setup Wizard (a friendlier sign-in code, no token to copy), or paste a server URL + API key
+2. Docker installed on your server
+
+You can configure several servers — even a mix of vendors — and a single FFmpeg pass will publish to every server that owns the file.
 
 ---
 
@@ -46,7 +50,7 @@ Get Plex preview thumbnails generating in minutes.
 
 ```bash
 docker run -d \
-  --name plex-generate-previews \
+  --name media-preview-generator \
   --restart unless-stopped \
   -p 8080:8080 \
   --device /dev/dri:/dev/dri \
@@ -56,13 +60,13 @@ docker run -d \
   -v /path/to/plex/config:/plex:rw \
   -v /path/to/app/config:/config:rw \
   -v /etc/localtime:/etc/localtime:ro \
-  stevezzau/plex_generate_vid_previews:latest
+  stevezzau/media_preview_generator:latest
 ```
 
 Replace `/path/to/media`, `/path/to/plex/config`, and `/path/to/app/config` with your actual paths.
 
 > [!NOTE]
-> No environment variables are required for first-time setup. Plex connection, libraries, GPU/CPU threads, and path mappings are all configured in the Setup Wizard and **Settings**. Environment variables are optional overrides (see [Reference](reference.md)).
+> No environment variables are required for first-time setup. Server connections (Plex / Emby / Jellyfin), libraries, GPU/CPU threads, and path mappings are all configured in the Setup Wizard and **Settings**. Environment variables are optional overrides (see [Reference](reference.md)).
 
 > [!TIP]
 > **Timezone:** The `/etc/localtime` mount ensures log timestamps and scheduled jobs use your local time. If your host doesn't have this file (e.g. some NAS devices), use `-e TZ=America/New_York` instead (replace with your [timezone](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)).
@@ -75,15 +79,40 @@ Find your token using the [Authentication Token](#authentication-token) section 
 
 1. Open `http://YOUR_SERVER_IP:8080`
 2. Enter the authentication token from the logs
-3. Follow the wizard: **Sign in with Plex** → **Select Server** → **Configure Paths** → **Options** → **Security**
+3. Follow the wizard:
+   - **Step 1 — Pick your first server**: Plex, Emby, or Jellyfin. The vendor card expands to its friendliest sign-in flow:
+     - **Plex** → **Sign in with Plex** OAuth (or paste a URL + token). If your Plex account has access to multiple servers, the wizard lists them all — tick one to configure in detail, or tick several to batch-add with shared defaults.
+     - **Emby** → enter the server URL + username/password (or API key).
+     - **Jellyfin** → enter the server URL + **Quick Connect** code (shown inside Jellyfin's web UI — no password leaves your browser), or paste a URL + API key.
+   - **Step 2 — Libraries** *(Plex single-server flow)*: pick which Plex libraries to enable. Emby and Jellyfin flows skip this step; libraries are managed later from the Servers page alongside their per-server path mappings.
+   - **Step 3 — Path Configuration** *(Plex single-server flow)*: confirm the Plex application data folder (where Plex stores its preview bundles — usually mounted as `/plex` on this container) and any media path mappings.
+   - **Step 4 — Processing Options**: GPU/CPU workers, FFmpeg threads, thumbnail interval, quality — these are global (shared across every configured server).
+   - **Step 5 — Security**: view or replace your access token (optional).
+
+You can add more servers — any vendor, any number of each — at any time from **Servers** in the top nav. A file present on multiple servers is generated once and published to each in its native format.
 
 ---
 
-## Recommended Plex Settings
+## Recommended media-server settings
 
-In **Plex Settings → Library**, set **"Generate video preview thumbnails"** to **Never**. This tool replaces Plex's built-in generation with GPU-accelerated processing. If Plex's option is left on, Plex may use CPU to generate thumbnails for new media, which can conflict with or duplicate this app's work.
+This tool generates **video preview thumbnails only** — the small frames you
+see when you drag the scrub bar. Plex stores them as **BIF bundles**, Emby
+reads a **BIF sidecar** next to the media file, and Jellyfin reads a folder of
+JPG tile sheets called **trickplay** next to the media file. The app writes
+the right format for each. It does **not** generate chapter thumbnails,
+intro/credit detection, or other media analysis.
 
-This tool generates **video preview thumbnails only** — the small frames Plex shows when you drag the scrub bar (stored as BIF files). It does not generate chapter thumbnails, intro/credit detection, or other Plex media analysis.
+**Turn off built-in preview generation on each server you configure** so this
+tool isn't competing with a redundant CPU job:
+
+- **Plex** — **Settings → Library → Generate video preview thumbnails → Never**.
+- **Emby** — no action needed (Emby has no built-in trickplay generation).
+- **Jellyfin** — keep **"Trickplay image extraction"** *enabled* on each
+  library (Jellyfin only reads this app's published tiles when that flag is
+  on), but turn off **"Extract trickplay images during library scan"** so
+  Jellyfin doesn't re-generate on top of your files. The Previews Readiness
+  card (Servers → Edit → Setup Health) flags all of these and can toggle
+  them for you.
 
 > [!TIP]
 > **After setup, you probably want one or both of:**
@@ -94,11 +123,18 @@ This tool generates **video preview thumbnails only** — the small frames Plex 
 
 ## Volume Mounts
 
-| Container Path | Purpose | Mode |
-|----------------|---------|------|
-| `/media` | Your media files | `ro` (read-only) |
-| `/plex` | Plex application data (where BIF files are stored) | `rw` |
-| `/config` | App settings, schedules, job history | `rw` |
+| Container Path | Purpose | Mode | Required when… |
+|----------------|---------|------|----------------|
+| `/media` | Your media files (path seen by Emby/Jellyfin's write step) | `ro` (read-only) | **Emby or Jellyfin is configured** — trickplay tiles and Emby BIF sidecars are written next to the media file, so the container needs the media folder visible. Read-only is fine. |
+| `/plex` | Plex application data (where Plex stores BIF bundles) | `rw` | **Plex is configured** — BIFs land inside Plex's config at `Media/localhost/<hash>/.../index-sd.bif`. Omit this mount entirely if you don't configure any Plex server. |
+| `/config` | This app's settings, schedules, and job history | `rw` | Always |
+
+> [!NOTE]
+> **Jellyfin and Emby don't need Plex's config mount.** Trickplay and Emby
+> sidecar BIFs are written next to each media file under `/media`, and the
+> scan-nudge is sent over HTTP. So a Jellyfin-only or Emby-only setup needs
+> `/media` + `/config` and nothing else. A mixed setup needs whichever
+> mount(s) each configured server requires.
 
 ---
 
@@ -107,7 +143,7 @@ This tool generates **video preview thumbnails only** — the small frames Plex 
 Use this section whenever documentation asks for your authentication token.
 
 ```bash
-docker logs plex-generate-previews | grep "Token:"
+docker logs media-preview-generator | grep "Token:"
 ```
 
 You can also set a fixed token for predictable logins:
@@ -131,7 +167,7 @@ See [docker-compose.example.yml](../docker-compose.example.yml) for ready-to-use
 Copy the file, uncomment the section for your hardware, and adjust volume paths.
 
 > [!WARNING]
-> **Don't set `init: true`.** This container runs s6-overlay as its own init; `init: true` conflicts with it and prevents the container from starting.
+> **Don't set `init: true`.** This container manages its own processes internally; `init: true` conflicts with that and prevents the container from starting.
 
 ---
 
@@ -162,7 +198,7 @@ docker run -d \
   --device /dev/dri:/dev/dri \
   -e PUID=1000 \
   -e PGID=1000 \
-  stevezzau/plex_generate_vid_previews:latest
+  stevezzau/media_preview_generator:latest
 ```
 
 Verify the device exists:
@@ -203,19 +239,21 @@ docker run -d \
   --gpus all \
   -e NVIDIA_VISIBLE_DEVICES=all \
   -e NVIDIA_DRIVER_CAPABILITIES=all \
-  stevezzau/plex_generate_vid_previews:latest
+  stevezzau/media_preview_generator:latest
 ```
 
-> **Why `NVIDIA_DRIVER_CAPABILITIES=all`?** The `graphics` capability (included in `all`) is required for the NVIDIA Container Toolkit to inject the NVIDIA Vulkan driver into the container. Dolby Vision Profile 5 thumbnails use libplacebo Vulkan tone-mapping, so without `graphics` they fall back to software rendering and may show a green overlay. The older `compute,video,utility` trio is enough for NVDEC/NVENC but **not** enough for DV Profile 5 thumbnails.
+> [!TIP]
+> **Why `NVIDIA_DRIVER_CAPABILITIES=all`?** Dolby Vision videos need the NVIDIA Vulkan driver to render colours correctly; the `all` value is what makes that driver available inside the container. Without it, Dolby Vision thumbnails may show with a green tint. (The older `compute,video,utility` setting is fine for everything except Dolby Vision.)
 
-> **Multi-GPU?** Hosts with two or more NVIDIA cards are detected automatically via `nvidia-smi` — each card appears as a separate row in **Settings → GPUs** with its own enable toggle, worker count, and FFmpeg thread setting. Work is dispatched per-GPU using FFmpeg's `-hwaccel_device` flag, so the load actually spreads across cards.
+> [!TIP]
+> **Multi-GPU?** Hosts with two or more NVIDIA cards are detected automatically — each card appears as a separate row in **Settings → GPUs** with its own enable toggle, worker count, and FFmpeg thread setting. Work spreads across cards.
 
 Docker Compose:
 
 ```yaml
 services:
   plex-previews:
-    image: stevezzau/plex_generate_vid_previews:latest
+    image: stevezzau/media_preview_generator:latest
     deploy:
       resources:
         reservations:
@@ -232,7 +270,7 @@ docker run -d \
   --device /dev/dri:/dev/dri \
   -e PUID=1000 \
   -e PGID=1000 \
-  stevezzau/plex_generate_vid_previews:latest
+  stevezzau/media_preview_generator:latest
 ```
 
 AMD requires proper VAAPI drivers on the host system. GPU device groups
@@ -256,6 +294,8 @@ Apple Silicon and Intel Macs use VideoToolbox for GPU-accelerated decoding. This
 
 ### Worker Configuration
 
+A **worker** is a parallel slot that processes one file at a time — more workers means more files processed simultaneously, but higher CPU/GPU load.
+
 In **Settings** → **Processing Options**, the GPU panel lists all detected GPUs. Enable or disable each GPU independently and set **workers** and **FFmpeg threads** per GPU. For CPU-only mode, disable every GPU (or set workers to 0) and set **CPU Workers** to your desired value (e.g. `8`).
 
 ### Performance Tuning
@@ -275,7 +315,7 @@ Configure per-GPU workers and FFmpeg threads in **Settings** → **Processing Op
 
 Two install paths: the Community Applications template (easiest) or a manual `docker run` command (more control).
 
-**Easiest:** search for `plex-generate-previews` in **Community Applications** and install the template.
+**Easiest:** search for `media-preview-generator` in **Community Applications** and install the template.
 
 **Quick start (either path):**
 
@@ -285,13 +325,13 @@ Two install paths: the Community Applications template (easiest) or a manual `do
 4. Complete the Setup Wizard — sign in with Plex, configure settings.
 
 > [!TIP]
-> The setup wizard guides you through Plex OAuth authentication. No need to manually find your Plex token.
+> The setup wizard guides you through Plex OAuth, Emby URL + API key, or Jellyfin Quick Connect — no need to copy tokens by hand for any of the supported vendors.
 
 ### Manual Docker Run — Intel iGPU (Most Common)
 
 ```bash
 docker run -d \
-  --name plex-generate-previews \
+  --name media-preview-generator \
   --restart unless-stopped \
   -p 8080:8080 \
   -l net.unraid.docker.webui="http://[IP]:[PORT:8080]/" \
@@ -301,9 +341,9 @@ docker run -d \
   -e PGID=100 \
   -v /mnt/user/data/plex:/data/plex:ro \
   -v "/mnt/cache/appdata/plex/Library/Application Support/Plex Media Server":/plex:rw \
-  -v /mnt/user/appdata/plex-generate-previews:/config:rw \
+  -v /mnt/user/appdata/media-preview-generator:/config:rw \
   -v /etc/localtime:/etc/localtime:ro \
-  stevezzau/plex_generate_vid_previews:latest
+  stevezzau/media_preview_generator:latest
 ```
 
 | Setting | Value | Description |
@@ -321,7 +361,7 @@ If you use a custom Docker network with fixed IPs (common on Unraid):
 
 ```bash
 docker run -d \
-  --name plex-generate-previews \
+  --name media-preview-generator \
   --restart unless-stopped \
   --network=br0 \
   --ip=192.168.1.50 \
@@ -331,9 +371,9 @@ docker run -d \
   -e PGID=100 \
   -v /mnt/user/data/plex:/data/plex:ro \
   -v "/mnt/cache/appdata/plex/Library/Application Support/Plex Media Server":/plex:rw \
-  -v /mnt/user/appdata/plex-generate-previews:/config:rw \
+  -v /mnt/user/appdata/media-preview-generator:/config:rw \
   -v /etc/localtime:/etc/localtime:ro \
-  stevezzau/plex_generate_vid_previews:latest
+  stevezzau/media_preview_generator:latest
 ```
 
 > [!NOTE]
@@ -345,7 +385,7 @@ Requires: Nvidia-Driver plugin from Community Applications.
 
 ```bash
 docker run -d \
-  --name plex-generate-previews \
+  --name media-preview-generator \
   --restart unless-stopped \
   --runtime=nvidia \
   -p 8080:8080 \
@@ -356,9 +396,9 @@ docker run -d \
   -e PGID=100 \
   -v /mnt/user/data/plex:/data/plex:ro \
   -v "/mnt/cache/appdata/plex/Library/Application Support/Plex Media Server":/plex:rw \
-  -v /mnt/user/appdata/plex-generate-previews:/config:rw \
+  -v /mnt/user/appdata/media-preview-generator:/config:rw \
   -v /etc/localtime:/etc/localtime:ro \
-  stevezzau/plex_generate_vid_previews:latest
+  stevezzau/media_preview_generator:latest
 ```
 
 ### Important Unraid Notes
@@ -370,7 +410,7 @@ docker run -d \
 | `PUID` | `99` | `nobody` user |
 | `PGID` | `100` | `users` group |
 
-**Network Considerations** — When completing the Setup Wizard, select your Plex server from the dropdown. If using a local server, make sure the container can reach it (not `localhost` from Unraid's perspective).
+**Network Considerations** — When completing the Setup Wizard, make sure each media server you pick is reachable from the container (not `localhost` from Unraid's perspective). Plex appears as a dropdown after OAuth sign-in; Emby and Jellyfin are connected by URL.
 
 **Check Intel GPU Exists:**
 
@@ -420,35 +460,48 @@ For users following [TRaSH Guides](https://trash-guides.info/):
 
 3. **Set Permissions:**
    ```bash
-   chmod -R 777 /mnt/cache/appdata/plex/Library/Application\ Support/Plex\ Media\ Server/Media/
+   # Make the Plex Media folder writable by the Unraid 'users' group (PGID=100)
+   # so this app's container (running as PUID=99 / PGID=100) can write previews into it.
+   chown -R 99:100 /mnt/cache/appdata/plex/Library/Application\ Support/Plex\ Media\ Server/Media/
+   chmod -R 775   /mnt/cache/appdata/plex/Library/Application\ Support/Plex\ Media\ Server/Media/
    ```
+   (Older guides recommended `chmod 777` — that works but grants world-writable access; `chown` + `775` is the safer equivalent.)
 
 ---
 
 ## Networking
 
 > [!IMPORTANT]
-> **Use the host's IP address for Plex, not `localhost`.** The container can't reach `localhost` on your Docker host. If you set a Plex URL manually (env var or Settings), use something like `http://192.168.1.100:32400`. The Setup Wizard handles this for you when you pick your server from the list.
+> **Use a routable IP address for your media servers, not `localhost`.** The
+> container can't reach `localhost` on your Docker host. If you set a server
+> URL manually, use something like `http://192.168.1.100:32400` (Plex),
+> `http://192.168.1.100:8096` (Emby/Jellyfin), etc. The Setup Wizard picks
+> routable URLs for you when it can.
 
 ### Quick Decision Tree
 
 ```
-Where is your Plex server?
+Where is the media server?
 │
-├── Same Docker host?
-│   ├── Plex uses host network → Use --network host
-│   ├── Plex uses bridge (default) → Use same network or Plex IP:port
-│   └── Plex uses custom (br1, macvlan) → Use same custom network
+├── Same Docker host as this app?
+│   ├── Server uses host network      → Use --network host
+│   ├── Server uses bridge (default)  → Use same network or server IP:port
+│   └── Server uses custom (br1, macvlan) → Use same custom network
 │
 └── Different machine?
-    └── Use bridge network with Plex's IP address
+    └── Use bridge network with the server's IP address
 ```
+
+The same logic applies whether the target is Plex (port 32400), Emby (port
+8096), or Jellyfin (port 8096). If you run more than one server, check each
+is reachable from the container independently — the Servers page shows a red
+connection pill for any server the app can't reach.
 
 ### Custom Network Example (Unraid)
 
 ```bash
 docker run -d \
-  --name plex-generate-previews \
+  --name media-preview-generator \
   --restart unless-stopped \
   --network=br1 \
   --ip=192.168.1.51 \
@@ -459,9 +512,9 @@ docker run -d \
   -e PGID=100 \
   -v /mnt/user/data/plex:/data/plex:ro \
   -v "/mnt/cache/appdata/plex/Library/Application Support/Plex Media Server":/plex:rw \
-  -v /mnt/user/appdata/plex-generate-previews:/config:rw \
+  -v /mnt/user/appdata/media-preview-generator:/config:rw \
   -v /etc/localtime:/etc/localtime:ro \
-  stevezzau/plex_generate_vid_previews:latest
+  stevezzau/media_preview_generator:latest
 ```
 
 > [!NOTE]
@@ -474,16 +527,16 @@ docker run -d \
 ### View Logs
 
 ```bash
-docker logs plex-generate-previews          # All logs
-docker logs -f plex-generate-previews       # Follow logs
+docker logs media-preview-generator          # All logs
+docker logs -f media-preview-generator       # Follow logs
 ```
 
 ### Update
 
 ```bash
-docker pull stevezzau/plex_generate_vid_previews:latest
-docker stop plex-generate-previews
-docker rm plex-generate-previews
+docker pull stevezzau/media_preview_generator:latest
+docker stop media-preview-generator
+docker rm media-preview-generator
 # Re-run your docker run command
 ```
 
@@ -493,13 +546,15 @@ Your `/config/settings.json` persists between upgrades, so Plex auth, GPU config
 
 | Tag | Source | Use for |
 |---|---|---|
-| `:latest` | Latest release (e.g. `3.7.2`) | **Recommended.** Stable. |
-| `:3.7.2` (version) | A specific release | Pinning to a known-good version |
+| `:latest` | Latest GitHub release | **Recommended.** Stable. |
+| `:X.Y.Z` (version) | A specific release (e.g. `:3.7.5`) | Pinning to a known-good version |
 | `:dev` | Every push to `dev` | Bleeding edge — may break |
 
-The web UI's version banner behaves accordingly: `:latest` / `:3.7.2`
-compare against the latest GitHub release; `:dev` compares the baked
-commit SHA against the `dev` branch HEAD on GitHub.
+See the [releases page](https://github.com/stevezau/media_preview_generator/releases) for version history and per-release notes.
+
+The web UI's version banner behaves accordingly: `:latest` / pinned versions
+compare against the latest GitHub release; `:dev` compares the baked commit
+SHA against the `dev` branch HEAD on GitHub.
 
 ---
 

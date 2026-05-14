@@ -1,13 +1,13 @@
 """Unit tests for the retry-cascade classifier helpers.
 
-Covers :mod:`plex_generate_previews.processing.retry_cascade` — the
+Covers :mod:`media_preview_generator.processing.retry_cascade` — the
 pure predicate layer pulled out of ``generate_images`` so retry reason
 classification is unit-testable without spinning up FFmpeg.
 """
 
 import pytest
 
-from plex_generate_previews.processing.retry_cascade import (
+from media_preview_generator.processing.retry_cascade import (
     RetryTier,
     classify_cpu_fallback_reason,
     classify_dv_safe_retry_reason,

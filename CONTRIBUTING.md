@@ -1,6 +1,6 @@
 # Contributing & Development
 
-Thank you for contributing to Plex Generate Previews!
+Thank you for contributing to Media Preview Generator!
 
 The supported way to run the app in production is **Docker** and the **web UI**. The setup below is for developing and testing the codebase (run the web app locally).
 
@@ -8,7 +8,7 @@ The supported way to run the app in production is **Docker** and the **web UI**.
 
 ## Code of Conduct
 
-Be respectful and inclusive. We're all here to make Plex better.
+Be respectful and inclusive. We're all here to make media server software better — for Plex, Emby, and Jellyfin users alike.
 
 ---
 
@@ -16,7 +16,7 @@ Be respectful and inclusive. We're all here to make Plex better.
 
 ### Reporting Bugs
 
-1. Check [existing issues](https://github.com/stevezau/plex_generate_vid_previews/issues) first
+1. Check [existing issues](https://github.com/stevezau/media_preview_generator/issues) first
 2. Create a new issue with:
    - Clear description of the problem
    - Steps to reproduce
@@ -26,7 +26,7 @@ Be respectful and inclusive. We're all here to make Plex better.
 
 ### Suggesting Features
 
-1. Check [existing issues](https://github.com/stevezau/plex_generate_vid_previews/issues) for similar requests
+1. Check [existing issues](https://github.com/stevezau/media_preview_generator/issues) for similar requests
 2. Create an issue with label `enhancement`
 3. Describe the use case and proposed solution
 
@@ -45,8 +45,8 @@ Be respectful and inclusive. We're all here to make Plex better.
 
 ```bash
 # Clone and setup
-git clone https://github.com/stevezau/plex_generate_vid_previews.git
-cd plex_generate_vid_previews
+git clone https://github.com/stevezau/media_preview_generator.git
+cd media_preview_generator
 python -m venv venv
 source venv/bin/activate  # Linux/macOS (use .\venv\Scripts\activate on Windows)
 pip install -e ".[dev,test]"
@@ -64,10 +64,10 @@ gunicorn \
   --bind 0.0.0.0:8080 \
   --worker-class gthread \
   --workers 1 \
-  "plex_generate_previews.web.wsgi:app"
+  "media_preview_generator.web.wsgi:app"
 
 # Web UI with dev server (Flask reload)
-python -m plex_generate_previews.web.app
+python -m media_preview_generator.web.app
 ```
 
 ---
@@ -79,7 +79,7 @@ python -m plex_generate_previews.web.app
 - **Formatter/Linter**: Use `ruff format` and `ruff check`
 - **Type hints**: Required on function signatures
 - **Docstrings**: Google style with Args, Returns, Raises
-- **Logging**: Use `loguru`, not stdlib `logging`
+- **Logging**: Use [`loguru`](https://loguru.readthedocs.io/) (a simpler, structured-friendly logging library), not stdlib `logging`
 
 ```bash
 # Check and fix
@@ -115,7 +115,7 @@ test: Add tests for SettingsManager
 
 ```bash
 pytest                                          # All tests
-pytest --cov=plex_generate_previews             # With coverage
+pytest --cov=media_preview_generator             # With coverage
 pytest tests/test_config.py -v                  # Specific file
 pytest -m "not gpu"                             # Skip GPU tests
 pytest tests/ --ignore=tests/e2e -x             # Quick tests only
@@ -133,46 +133,74 @@ def test_config_loads_from_env(monkeypatch, mock_config):
     assert config.plex_url == 'http://test:32400'
 ```
 
-### Load Testing
-
-A Locust scenario for stress-testing the web API lives in `tests/load/`:
-
-```bash
-# Interactive mode — open http://localhost:8089 to configure and start
-locust -f tests/load/locustfile.py
-
-# Headless mode
-locust -f tests/load/locustfile.py --headless -u 50 -r 10 -t 60s
-```
-
-Locust is a dev dependency — install with `pip install -e ".[dev]"`.
-
----
-
 ## Project Structure
 
 ```
-plex_generate_previews/
+media_preview_generator/
 ├── config/               # Config dataclass, paths, validation
 ├── gpu/                  # GPU discovery + FFmpeg capability probing
 ├── jobs/                 # Orchestrator, dispatcher, worker pool
-├── processing/           # FFmpeg runner, HDR detection, retry cascade
-├── plex_client.py        # Plex API client
+├── processing/           # Multi-server dispatcher, FFmpeg runner, HDR
+│   ├── multi_server.py     # Routes one canonical path to every owning server (single FFmpeg pass per file)
+│   ├── frame_cache.py      # Cross-server frame reuse cache
+│   ├── retry_queue.py      # Slow-backoff retry for not-yet-indexed items
+│   ├── plex.py / emby.py / jellyfin.py  # Per-vendor library enumeration (read-only)
+│   └── generator.py / ffmpeg_runner.py  # FFmpeg invocation
+├── servers/              # Per-vendor server clients (live API access — auth, refresh, libraries)
+│   ├── plex.py / emby.py / jellyfin.py  # MediaServer interface implementations
+│   ├── ownership.py        # Path → owning servers/libraries
+│   └── registry.py         # ServerRegistry (loads media_servers[] from settings)
+├── output/               # Per-vendor preview format publishers
+│   ├── plex_bundle.py      # Plex bundle BIF
+│   ├── emby_sidecar.py     # Emby -WIDTH-INTERVAL.bif sidecar
+│   ├── jellyfin_trickplay.py  # Jellyfin tile sheets + manifest
+│   └── journal.py          # .meta sidecar — fingerprints last publish
+├── plex_client.py        # Legacy Plex API client (still used by Plex enum)
 ├── bif_reader.py         # BIF parsing (used by the viewer)
-├── upgrade.py            # Settings migrations / schema upgrades
-├── utils.py              # Path sanitization, Docker detection
+├── upgrade.py            # Settings migrations / schema upgrades (v1 → v11)
+├── utils.py              # Path sanitization, Docker detection, atomic save
 ├── logging_config.py     # Loguru + Rich console setup
 ├── version_check.py      # GitHub release version check
 └── web/
     ├── wsgi.py              # Gunicorn entry point
     ├── app.py               # App factory, SocketIO init
     ├── auth.py              # Token authentication
-    ├── jobs.py              # Job state + SocketIO events
+    ├── jobs.py              # Job state + SQLite persistence + SocketIO
     ├── settings_manager.py  # Persistent settings (settings.json)
     ├── scheduler.py         # APScheduler cron/interval jobs
-    ├── webhooks.py          # Radarr/Sonarr/Tdarr/Plex webhook handlers
-    └── routes/              # Modular HTTP + REST API routes
+    ├── webhooks.py          # Radarr/Sonarr/Plex/custom webhook handlers
+    ├── webhook_router.py    # Universal /api/webhooks/incoming dispatcher
+    ├── plex_webhook_registration.py  # plex.tv webhook register/unregister
+    ├── recent_added_scanner.py  # Periodic recently-added scan helper
+    ├── notifications.py     # In-app notification surface
+    └── routes/              # Modular HTTP + REST API blueprints
+        ├── api_settings.py       # Settings GET/POST + path validators + setup wizard state
+        ├── api_servers.py        # media_servers CRUD + per-vendor probes + readiness/health-check + plugin install
+        ├── api_server_auth.py    # Emby/Jellyfin password + Jellyfin Quick Connect
+        ├── api_jobs.py           # Job CRUD + worker scaling + global pause
+        ├── api_schedules.py      # Schedule CRUD + quiet-hours policy
+        ├── api_system.py         # /system/status, browse, version, notifications, whats-new, log history
+        ├── api_libraries.py      # Aggregated library list across all configured servers
+        ├── api_plex.py           # Plex OAuth PIN flow
+        ├── api_plex_webhook.py   # Plex Direct webhook register/unregister/test
+        ├── api_bif.py            # BIF + Jellyfin trickplay viewer
+        ├── api_vulkan.py         # Vulkan ICD probing diagnostics
+        ├── job_runner.py         # Background job execution thread
+        ├── pages.py              # HTML page routes
+        └── socketio_handlers.py  # Socket.IO connect/disconnect
 ```
+
+---
+
+## Architecture
+
+A few internal invariants worth knowing when modifying the web tier:
+
+- **Single Gunicorn worker.** Job state, schedules, and the in-memory frame cache all live in-process. Running two or more Gunicorn workers would split that state and break things (one worker's job would be invisible to the other). The `gthread` worker class with a high thread count handles concurrency within that single process.
+- **WebSocket transport** is Flask-SocketIO with the `threading` async mode, which is what lets a single Gunicorn worker serve both REST and WebSocket from the same process without an event-loop framework like eventlet.
+- **Long-running jobs** (a full library scan can take hours) survive the default reverse-proxy timeouts because the dashboard polls progress over WebSocket — there's no long-lived HTTP request to time out.
+
+If you need shared state across multiple processes (e.g. for horizontal scaling), you'd swap the in-memory job store for SQLite + Redis Pub/Sub for SocketIO. We don't currently need that.
 
 ---
 
@@ -211,7 +239,7 @@ docker run --rm -p 8080:8080 -v $(pwd)/config:/config plex-previews:dev
 
 # Multi-architecture build
 docker buildx build --platform linux/amd64,linux/arm64 \
-  -t stevezzau/plex_generate_vid_previews:dev --push .
+  -t stevezzau/media_preview_generator:dev --push .
 ```
 
 ---
@@ -239,8 +267,8 @@ Required repository secrets (**Settings → Secrets and variables → Actions**)
 ## Debugging
 
 ```bash
-LOG_LEVEL=DEBUG python -m plex_generate_previews.web.app  # Debug logging
-docker exec -it plex-generate-previews /bin/bash   # Inspect container
+LOG_LEVEL=DEBUG python -m media_preview_generator.web.app  # Debug logging
+docker exec -it media-preview-generator /bin/bash   # Inspect container
 ```
 
 Check detected GPUs in the web UI (**Settings** or **Setup**).
@@ -268,11 +296,11 @@ Check detected GPUs in the web UI (**Settings** or **Setup**).
 
 ## Release Process
 
-1. Update version in `plex_generate_previews/_version.py`
-2. Update `CHANGELOG.md`
-3. Create PR and merge to main
-4. Tag release: `git tag vX.Y.Z && git push --tags`
-5. GitHub Actions builds and pushes Docker image
+1. Version comes from the git tag via `setuptools-scm` — no manual file edit.
+2. Create PR and merge to `main`.
+3. Tag release: `git tag X.Y.Z && git push --tags`.
+4. GitHub Actions builds and pushes the Docker image.
+5. Write release notes on the [GitHub Releases](https://github.com/stevezau/media_preview_generator/releases) page for the new tag (this replaces the old in-repo `CHANGELOG.md`).
 
 ---
 

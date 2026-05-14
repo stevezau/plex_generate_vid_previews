@@ -1,0 +1,637 @@
+// =========================================================================
+// Schedules display — teaser card on the dashboard + full list on /schedules
+//
+// All read-side rendering for scheduled jobs. Sibling to schedule_modal.js
+// which handles the create/edit modal. Previously lived inline in app.js
+// (lines 1890-2136).
+//
+// Functions exported on window:
+//   - describeSchedule(triggerType, triggerValue) — pure formatter that
+//     turns a schedule's trigger spec into a human-readable string
+//     ("Every 2 hours" / "Daily at 02:00 (Mon-Fri)" / "Cron: 0 3 * * *").
+//   - updateScheduleTeaser() — renders the dashboard "Next Scheduled Run"
+//     card (the small teaser at the top of the Jobs page).
+//   - updateScheduleList() — renders the full table on /schedules.
+//   - _formatRelativeToNow(dt) / _formatAbsoluteShort(dt) — internal date
+//     helpers; private but kept on window so tests + future callers can
+//     reuse them.
+//
+// External dependencies (resolved at call time via window globals defined
+// in app.js): schedules, libraries, escapeHtml, showEditScheduleModal
+// (from schedule_modal.js), toggleSchedule, runScheduleNow, deleteSchedule.
+// Loaded AFTER schedule_modal.js in base.html so those refs resolve.
+// =========================================================================
+
+const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+
+function describeSchedule(triggerType, triggerValue) {
+    if (triggerType === 'interval') {
+        const mins = parseInt(triggerValue, 10);
+        if (mins >= 60 && mins % 60 === 0) {
+            const hrs = mins / 60;
+            return hrs === 1 ? 'Every hour' : `Every ${hrs} hours`;
+        }
+        return mins === 1 ? 'Every minute' : `Every ${mins} minutes`;
+    }
+
+    if (triggerType !== 'cron' || !triggerValue) return triggerValue || '-';
+
+    const parts = triggerValue.split(/\s+/);
+    if (parts.length !== 5) return triggerValue;
+
+    const [minute, hour, dom, month, dow] = parts;
+    const isSimple = /^\d+$/.test(minute) && /^\d+$/.test(hour)
+        && dom === '*' && month === '*' && /^[\d,]+$/.test(dow);
+
+    if (isSimple) {
+        const timeStr = `${hour.padStart(2, '0')}:${minute.padStart(2, '0')}`;
+        // Convert APScheduler day (0=Mon) to Unix cron day (0=Sun) for DAY_NAMES lookup
+        const dayNums = dow.split(',').map(d => (Number(d) + 1) % 7);
+        const allDays = dayNums.length === 7;
+        const weekdays = dayNums.length === 5
+            && [1,2,3,4,5].every(d => dayNums.includes(d));
+        const weekends = dayNums.length === 2
+            && [0,6].every(d => dayNums.includes(d));
+
+        let dayLabel;
+        if (allDays) dayLabel = 'Daily';
+        else if (weekdays) dayLabel = 'Weekdays';
+        else if (weekends) dayLabel = 'Weekends';
+        else dayLabel = dayNums.map(d => DAY_NAMES[d] || d).join(', ');
+
+        return `${timeStr} ${dayLabel}`;
+    }
+
+    return triggerValue;
+}
+
+// Compact schedule summary rendered inside the Job Statistics card on the
+// Dashboard.  Shows next upcoming run + a small configured/enabled count.
+// The Automation page (Schedules tab) is the authoritative place for CRUD —
+// this is just an at-a-glance pointer.
+function updateScheduleTeaser() {
+    const body = document.getElementById('scheduleTeaserBody');
+    if (!body) return;
+
+    if (!schedules || schedules.length === 0) {
+        body.innerHTML =
+            '<div class="d-flex align-items-center gap-2 text-muted small">' +
+            '<i class="bi bi-calendar-x"></i>' +
+            '<span>No schedules configured.</span>' +
+            '<a href="/automation#schedules" class="ms-auto">Create one →</a>' +
+            '</div>';
+        return;
+    }
+
+    const total = schedules.length;
+    const enabled = schedules.filter(s => s.enabled !== false);
+    const enabledCount = enabled.length;
+    const disabledCount = total - enabledCount;
+    const upcoming = enabled
+        .filter(s => s.next_run)
+        .sort((a, b) => new Date(a.next_run) - new Date(b.next_run));
+    const nextOne = upcoming[0] || null;
+
+    const countWord = total === 1 ? 'schedule' : 'schedules';
+    let summary = total + ' ' + countWord;
+    if (total > 0 && enabledCount === total) {
+        summary += ' · all enabled';
+    } else if (enabledCount === 0) {
+        summary += ' · all disabled';
+    } else if (disabledCount === 1) {
+        summary += ' · 1 disabled';
+    } else {
+        summary += ' · ' + disabledCount + ' disabled';
+    }
+
+    let topLine;
+    if (nextOne) {
+        const dt = new Date(nextOne.next_run);
+        const rel = _formatRelativeToNow(dt);
+        const absolute = _formatAbsoluteShort(dt);
+        const tooltip = dt.toLocaleString();
+        topLine =
+            '<div class="d-flex align-items-baseline gap-2" title="' + escapeHtml(tooltip) + '">' +
+            '<i class="bi bi-clock-history text-muted"></i>' +
+            '<div class="text-truncate">' +
+            '<span class="text-muted">Next:</span> ' +
+            '<strong>' + escapeHtml(nextOne.name) + '</strong>' +
+            '<span class="text-muted"> — ' + escapeHtml(rel) + '</span>' +
+            '<span class="text-muted small ms-1">(' + escapeHtml(absolute) + ')</span>' +
+            '</div>' +
+            '</div>';
+    } else {
+        topLine =
+            '<div class="d-flex align-items-center gap-2 text-muted">' +
+            '<i class="bi bi-clock-history"></i>' +
+            '<span>No upcoming runs</span>' +
+            '</div>';
+    }
+
+    body.innerHTML =
+        topLine +
+        '<div class="small text-muted mt-1">' + escapeHtml(summary) + '</div>';
+}
+
+// Natural-language "time until" for the schedule teaser.  Kept separate from
+// the generic formatDate helper so we can tune the copy for the dashboard
+// without affecting other screens.
+function _formatRelativeToNow(dt) {
+    const diffMs = dt.getTime() - Date.now();
+    const absMs = Math.abs(diffMs);
+    const past = diffMs < 0;
+
+    if (absMs < 45 * 1000) return past ? 'just now' : 'any moment now';
+
+    const mins = Math.round(absMs / 60000);
+    if (mins < 60) {
+        const unit = mins === 1 ? 'minute' : 'minutes';
+        return past ? mins + ' ' + unit + ' ago' : 'in ' + mins + ' ' + unit;
+    }
+
+    const hours = Math.round(mins / 60);
+    if (hours < 24) {
+        const unit = hours === 1 ? 'hour' : 'hours';
+        return past ? 'about ' + hours + ' ' + unit + ' ago' : 'in about ' + hours + ' ' + unit;
+    }
+
+    // 24h+ — prefer day-anchored wording ("tomorrow", "Saturday", "in 2 weeks")
+    if (past) {
+        const days = Math.round(hours / 24);
+        if (days === 1) return 'yesterday';
+        if (days < 7) return days + ' days ago';
+        if (days < 14) return '1 week ago';
+        if (days < 30) return Math.round(days / 7) + ' weeks ago';
+        return days + ' days ago';
+    }
+
+    const now = new Date();
+    const nowMid = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const dtMid = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate()).getTime();
+    const dayDiff = Math.round((dtMid - nowMid) / 86400000);
+
+    if (dayDiff === 1) return 'tomorrow';
+    if (dayDiff >= 2 && dayDiff <= 6) {
+        const weekday = dt.toLocaleDateString(undefined, { weekday: 'long' });
+        return 'on ' + weekday;
+    }
+    if (dayDiff === 7) return 'in 1 week';
+    if (dayDiff < 14) return 'in ' + dayDiff + ' days';
+    if (dayDiff < 30) return 'in ' + Math.round(dayDiff / 7) + ' weeks';
+    return 'in ' + dayDiff + ' days';
+}
+
+// Short absolute timestamp for the schedule teaser hint line.  Shows just
+// the time for runs today, weekday+time within a week, and date+time for
+// anything farther out.  Locale-respecting.
+function _formatAbsoluteShort(dt) {
+    const now = new Date();
+    const nowMid = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const dtMid = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate()).getTime();
+    const dayDiff = Math.round((dtMid - nowMid) / 86400000);
+
+    const timeStr = dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    if (dayDiff === 0) return timeStr;
+    if (dayDiff >= 1 && dayDiff <= 6) {
+        const weekday = dt.toLocaleDateString(undefined, { weekday: 'short' });
+        return weekday + ' ' + timeStr;
+    }
+    return dt.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' ' + timeStr;
+}
+
+// D21 — quiet-hours config cache, populated by /api/quiet-hours.
+// Used by updateScheduleList() to render an overlap warning on rows
+// whose fire time falls inside the paused window, and by the schedule
+// modal to flag a save that would land in the window.
+window._quietHoursConfig = window._quietHoursConfig || null;
+
+// D21 — parse "HH:MM" → [hour, minute] or null on bad input.
+function _parseHHMM(value) {
+    const v = String(value || '').trim();
+    if (!v) return null;
+    const m = /^(\d{1,2}):(\d{1,2})$/.exec(v);
+    if (!m) return null;
+    const h = parseInt(m[1], 10);
+    const min = parseInt(m[2], 10);
+    if (!(h >= 0 && h < 24 && min >= 0 && min < 60)) return null;
+    return [h, min];
+}
+
+// D21 — true when ``minute`` (minutes-since-midnight) is inside the
+// quiet-hours paused window. Handles cross-midnight (start > end).
+function _isInQuietWindow(minute, startMin, endMin) {
+    if (startMin === endMin) return false;
+    if (startMin < endMin) return minute >= startMin && minute < endMin;
+    return minute >= startMin || minute < endMin;
+}
+
+// D21 — for a schedule, return the time-of-day [hour, minute] it
+// fires at IF it has a single fixed daily fire time (specific-time
+// or simple "MIN HOUR * * *" cron). Returns null for interval or
+// complex cron — we don't warn for those because some fires WILL
+// land outside quiet hours and the user gets the partial behaviour
+// they probably want.
+function _scheduleFireTime(schedule) {
+    if (!schedule || schedule.trigger_type !== 'cron' || !schedule.trigger_value) return null;
+    const parts = String(schedule.trigger_value).split(/\s+/);
+    if (parts.length !== 5) return null;
+    if (!/^\d+$/.test(parts[0]) || !/^\d+$/.test(parts[1])) return null;
+    const minute = parseInt(parts[0], 10);
+    const hour = parseInt(parts[1], 10);
+    if (!(hour >= 0 && hour < 24 && minute >= 0 && minute < 60)) return null;
+    return [hour, minute];
+}
+
+// D26 — return a human-friendly tooltip string when ``schedule`` would
+// fire inside ANY enabled quiet-hours window (day-of-week aware). Returns
+// "" when no overlap. Reads from window._quietHoursConfig (multi-window
+// shape: {enabled, windows: [{start, end, days}]}).
+//
+// Note: this is a TIME-of-day overlap check only. It doesn't try to
+// match the schedule's own day-of-week against the window's days because
+// the orchestrator's gate runs at fire time and reads "is any window
+// active right now" — so a Mon-only schedule firing on a day a Mon-only
+// window is also active will be skipped, but firing on a Tue when no
+// window covers Tue runs fine. The conservative warning here flags any
+// window that overlaps the fire time on any day.
+function _scheduleQuietHoursOverlap(schedule) {
+    const qh = window._quietHoursConfig;
+    if (!qh || !qh.enabled) return '';
+    const windows = Array.isArray(qh.windows) ? qh.windows : [];
+    if (windows.length === 0) return '';
+    const fire = _scheduleFireTime(schedule);
+    if (!fire) return '';
+    const fireMin = fire[0] * 60 + fire[1];
+    for (const w of windows) {
+        const startHM = _parseHHMM(w.start);
+        const endHM = _parseHHMM(w.end);
+        if (!startHM || !endHM) continue;
+        if (startHM[0] === endHM[0] && startHM[1] === endHM[1]) continue;
+        const startMin = startHM[0] * 60 + startHM[1];
+        const endMin = endHM[0] * 60 + endHM[1];
+        if (!_isInQuietWindow(fireMin, startMin, endMin)) continue;
+        const dayLabel = (Array.isArray(w.days) && w.days.length && w.days.length < 7)
+            ? ' on ' + w.days.map(d => d.charAt(0).toUpperCase() + d.slice(1)).join('/')
+            : '';
+        return 'This schedule fires at ' + String(fire[0]).padStart(2, '0') + ':' + String(fire[1]).padStart(2, '0')
+            + ' which is inside a Quiet Hours window (' + w.start + '–' + w.end + dayLabel + ') — fires that hit it will be skipped.';
+    }
+    return '';
+}
+window._scheduleQuietHoursOverlap = _scheduleQuietHoursOverlap;
+
+// Render a recovery banner above the schedules table when the backend
+// failed to load schedules.json. Pre-fix the user saw an empty list
+// with no indication their schedules existed but were unreadable
+// (typical cause: file owned root:root after host-side `chown` /
+// upgrade; container runs as abc:abc per linuxserver.io PUID/PGID).
+//
+// The banner offers a one-click recovery from the newest .bak file, plus
+// a fallback explanation of the manual `chown` recovery path.
+function _renderScheduleLoadBanner() {
+    const tbody = document.getElementById('scheduleList');
+    if (!tbody) return;
+    const card = tbody.closest('.card') || tbody.closest('section') || tbody.parentElement;
+    if (!card) return;
+
+    let banner = document.getElementById('scheduleLoadBanner');
+    const status = (window._schedulesLoadStatus || {}).status;
+    if (!status || status === 'ok') {
+        if (banner) banner.remove();
+        return;
+    }
+
+    const detail = window._schedulesLoadStatus || {};
+    const titleByStatus = {
+        permission_denied: 'Could not read saved schedules — file permissions',
+        corrupt_json: 'Could not read saved schedules — file is corrupt',
+        load_failed: 'Could not read saved schedules',
+        no_backup: 'Could not load schedules and no backup is available',
+    };
+    const title = titleByStatus[status] || 'Could not load schedules';
+    const hint = detail.recovery_hint || 'See container logs for details.';
+    const hasBackup = !!detail.backup_path;
+
+    const recoveryButton = hasBackup
+        ? `<button type="button" class="btn btn-sm btn-warning ms-2" onclick="recoverSchedulesFromBackup()">
+              <i class="bi bi-arrow-counterclockwise me-1"></i>Recover from backup
+           </button>`
+        : '';
+
+    const html = `
+        <div id="scheduleLoadBanner" class="alert alert-warning d-flex flex-column gap-2 mb-3" role="alert">
+            <div class="d-flex align-items-start gap-2">
+                <i class="bi bi-exclamation-triangle-fill mt-1"></i>
+                <div class="flex-grow-1">
+                    <strong>${escapeHtml(title)}</strong>
+                    <div class="small mt-1">${escapeHtml(hint)}</div>
+                </div>
+                ${recoveryButton}
+            </div>
+        </div>`;
+
+    if (banner) {
+        banner.outerHTML = html;
+    } else {
+        // Insert above the table's containing card body so it sits at the
+        // top of the schedules section.
+        const cardBody = tbody.closest('.card-body') || card;
+        cardBody.insertAdjacentHTML('afterbegin', html);
+    }
+}
+
+// Trigger backend restore from the newest schedules.json[.<stamp>].bak file.
+// Used by the recovery banner above. On success, refreshes the list.
+async function recoverSchedulesFromBackup() {
+    if (!confirm('Restore schedules from the newest backup file? Existing schedules.json will be overwritten with the backup contents.')) {
+        return;
+    }
+    let result;
+    try {
+        result = await apiPost('/api/schedules/recover_from_backup', {});
+    } catch (err) {
+        // apiPost throws on non-2xx; surface the body on the toast if available.
+        const msg = (err && err.body && err.body.error) || err.message || 'Recovery request failed';
+        showToast('Recovery failed', msg, 'danger');
+        return;
+    }
+    if (result && result.status === 'ok') {
+        const count = result.restored_count || 0;
+        showToast('Schedules restored', `Restored ${count} schedule(s) from ${result.backup_path}.`, 'success');
+        if (result.chown && result.chown.ok === false) {
+            // Restore wrote successfully but chown failed (typical in
+            // unprivileged containers). Surface the hint so the user knows
+            // to fix ownership on the host before the next restart.
+            showToast('Heads up', result.chown.hint || 'Could not chown the restored file.', 'warning');
+        }
+        await loadSchedules();
+    } else {
+        const msg = (result && (result.error || result.recovery_hint)) || 'Recovery failed for an unknown reason.';
+        showToast('Recovery failed', msg, 'danger');
+    }
+}
+window.recoverSchedulesFromBackup = recoverSchedulesFromBackup;
+
+function updateScheduleList() {
+    // Always update the teaser card if it exists (Dashboard).
+    updateScheduleTeaser();
+
+    // Full schedule table only lives on the Schedules page.  When the
+    // tbody isn't in the DOM, there's nothing else to render.
+    const tbody = document.getElementById('scheduleList');
+    if (!tbody) return;
+
+    _renderScheduleLoadBanner();
+
+    if (schedules.length === 0) {
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="7" class="text-center text-muted py-4">
+                    No schedules configured
+                </td>
+            </tr>
+        `;
+        return;
+    }
+
+    let html = '';
+
+    for (const schedule of schedules) {
+        const statusBadge = schedule.enabled ?
+            '<span class="badge bg-success">Enabled</span>' :
+            '<span class="badge bg-secondary">Disabled</span>';
+
+        const cronDisplay = describeSchedule(schedule.trigger_type, schedule.trigger_value);
+
+        const nextRun = schedule.next_run ? formatDate(schedule.next_run) : '-';
+
+        const schedPri = schedule.priority || 2;
+        const schedPriLabel = PRIORITY_LABELS[schedPri] || 'Normal';
+        const schedPriBadge = PRIORITY_BADGE_CLASS[schedPri] || 'bg-primary';
+
+        // Recently-added schedules get a subtle primary badge next to
+        // the name so users can tell them apart from full-library scans.
+        const cfg = schedule.config || {};
+        const isRecentlyAdded = cfg.job_type === 'recently_added';
+        const typeBadge = isRecentlyAdded
+            ? ' <span class="badge bg-primary bg-opacity-25 text-primary" title="Scans items added in the last ' + (cfg.lookback_hours || 1) + 'h"><i class="bi bi-arrow-repeat me-1"></i>Recently Added</span>'
+            : '';
+
+        // D20 — show the optional stop-time inline next to the cron
+        // summary so users can see at a glance which schedules pause
+        // at a specific time of day.
+        const stopBadge = schedule.stop_time
+            ? ' <span class="badge bg-info text-dark" title="Pauses any running job from this schedule daily; resumes on next start">stops at ' + escapeHtml(schedule.stop_time) + '</span>'
+            : '';
+
+        // D21 — overlap warning. The processing_paused gate in
+        // scheduler.execute_scheduled_job will silently skip this
+        // schedule's fires during quiet hours; surface the conflict so
+        // users don't think the schedule is broken.
+        const overlapTip = _scheduleQuietHoursOverlap(schedule);
+        const overlapBadge = overlapTip
+            ? ' <i class="bi bi-exclamation-triangle text-warning" title="' + escapeHtml(overlapTip) + '" data-bs-toggle="tooltip"></i>'
+            : '';
+
+        html += `
+            <tr>
+                <td>${escapeHtml(schedule.name)}${typeBadge}${overlapBadge}</td>
+                <td>${escapeHtml(schedule.library_name) || 'All Libraries'}${_serverBadge(schedule)}</td>
+                <td><code>${escapeHtml(cronDisplay)}</code>${stopBadge}</td>
+                <td><span class="badge ${schedPriBadge} priority-badge">${schedPriLabel}</span></td>
+                <td>${nextRun}</td>
+                <td>${statusBadge}</td>
+                <td class="text-nowrap">
+                    <div class="btn-group btn-group-sm icon-btn-group" role="group">
+                        <button class="btn btn-outline-secondary" onclick="runScheduleNow('${escapeHtml(schedule.id)}')" title="Run now" aria-label="Run now">
+                            <i class="bi bi-play-fill"></i>
+                        </button>
+                        <button class="btn btn-outline-secondary" onclick="showEditScheduleModal('${escapeHtml(schedule.id)}')" title="Edit" aria-label="Edit schedule">
+                            <i class="bi bi-pencil"></i>
+                        </button>
+                        <button class="btn btn-outline-secondary" onclick="toggleSchedule('${escapeHtml(schedule.id)}', ${!schedule.enabled})"
+                                title="${schedule.enabled ? 'Disable' : 'Enable'}" aria-label="${schedule.enabled ? 'Disable schedule' : 'Enable schedule'}">
+                            <i class="bi bi-${schedule.enabled ? 'pause' : 'play'}"></i>
+                        </button>
+                        <button class="btn btn-outline-danger" onclick="deleteSchedule('${escapeHtml(schedule.id)}')" title="Delete" aria-label="Delete schedule">
+                            <i class="bi bi-trash"></i>
+                        </button>
+                    </div>
+                </td>
+            </tr>
+        `;
+    }
+
+    tbody.innerHTML = html;
+}
+
+
+// ---------------------------------------------------------------------------
+// D21 + D26 — Quiet Hours card load / save / sync (multi-window)
+// ---------------------------------------------------------------------------
+
+const _QH_DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+
+async function loadQuietHours() {
+    if (!document.getElementById('quietHoursSaveBtn')) return; // not on this page
+    try {
+        const data = await apiGet('/api/quiet-hours');
+        window._quietHoursConfig = data || null;
+    } catch (e) {
+        window._quietHoursConfig = null;
+        console.error('Failed to load quiet hours config:', e);
+        return;
+    }
+    _renderQuietHoursCard();
+    if (typeof updateScheduleList === 'function') updateScheduleList();
+}
+window.loadQuietHours = loadQuietHours;
+
+function _renderQuietHoursCard() {
+    const qh = window._quietHoursConfig || {};
+    const enabledEl = document.getElementById('quietHoursEnabled');
+    const wrap = document.getElementById('quietHoursWindows');
+    if (!enabledEl || !wrap) return;
+    enabledEl.checked = !!qh.enabled;
+    wrap.innerHTML = '';
+    const windows = Array.isArray(qh.windows) && qh.windows.length
+        ? qh.windows
+        : [{ start: '08:00', end: '01:00', days: _QH_DAYS.slice() }];
+    for (const w of windows) {
+        wrap.appendChild(_buildQuietHoursWindowRow(w));
+    }
+    _refreshQuietHoursBadge();
+}
+
+function _buildQuietHoursWindowRow(w) {
+    const tpl = document.getElementById('quietHoursWindowTemplate');
+    const node = tpl.content.firstElementChild.cloneNode(true);
+    const start = node.querySelector('.qh-window-start');
+    const end = node.querySelector('.qh-window-end');
+    if (w && w.start) start.value = w.start;
+    if (w && w.end) end.value = w.end;
+    const days = (w && Array.isArray(w.days) && w.days.length) ? w.days : _QH_DAYS.slice();
+    // Wire each day toggle. btn-check requires unique `id`+`for` so we
+    // generate them per row to keep multiple windows independent.
+    const checks = node.querySelectorAll('.qh-day');
+    const labels = node.querySelectorAll('.qh-day-label');
+    const uid = 'qh-' + Math.random().toString(36).slice(2, 9);
+    checks.forEach((cb, i) => {
+        const id = uid + '-' + cb.value;
+        cb.id = id;
+        labels[i].setAttribute('for', id);
+        cb.checked = days.indexOf(cb.value) !== -1;
+    });
+    node.querySelector('.qh-window-remove').addEventListener('click', () => {
+        node.parentElement.removeChild(node);
+    });
+    return node;
+}
+
+function _readQuietHoursWindowsFromDom() {
+    const wrap = document.getElementById('quietHoursWindows');
+    if (!wrap) return [];
+    const out = [];
+    wrap.querySelectorAll('.qh-window').forEach((row) => {
+        const start = row.querySelector('.qh-window-start').value;
+        const end = row.querySelector('.qh-window-end').value;
+        const days = [];
+        row.querySelectorAll('.qh-day').forEach((cb) => {
+            if (cb.checked) days.push(cb.value);
+        });
+        out.push({ start, end, days });
+    });
+    return out;
+}
+
+function _refreshQuietHoursBadge() {
+    const badge = document.getElementById('quietHoursStateBadge');
+    if (!badge) return;
+    const qh = window._quietHoursConfig || {};
+    const windows = Array.isArray(qh.windows) ? qh.windows : [];
+    if (!qh.enabled || windows.length === 0) {
+        badge.textContent = 'off';
+        badge.className = 'badge bg-secondary';
+        badge.title = qh.enabled
+            ? 'Quiet hours are enabled but no windows are configured'
+            : 'Quiet hours are disabled';
+        return;
+    }
+    const pausedNow = !!(qh.currently_in_quiet_window
+        || (typeof processingPaused !== 'undefined' && processingPaused));
+    if (pausedNow) {
+        badge.textContent = 'paused now';
+        badge.className = 'badge bg-warning text-dark';
+        badge.title = 'A quiet-hours window is currently active — processing paused';
+    } else {
+        badge.textContent = 'on (' + windows.length + ' window' + (windows.length === 1 ? '' : 's') + ')';
+        badge.className = 'badge bg-info text-dark';
+        badge.title = 'Quiet hours scheduled — currently outside every paused window';
+    }
+}
+window._refreshQuietHoursBadge = _refreshQuietHoursBadge;
+
+async function saveQuietHours() {
+    const enabled = document.getElementById('quietHoursEnabled').checked;
+    const windows = _readQuietHoursWindowsFromDom();
+    for (let i = 0; i < windows.length; i++) {
+        const w = windows[i];
+        if (!_parseHHMM(w.start) || !_parseHHMM(w.end)) {
+            if (typeof showToast === 'function') {
+                showToast('Invalid time', 'Window #' + (i + 1) + ' has an invalid time. Use HH:MM (00:00–23:59).', 'danger');
+            }
+            return;
+        }
+        if (enabled && w.start === w.end) {
+            if (typeof showToast === 'function') {
+                showToast('Quiet hours', 'Window #' + (i + 1) + ': Pause and Resume can\'t be the same time.', 'warning');
+            }
+            return;
+        }
+        if (enabled && w.days.length === 0) {
+            if (typeof showToast === 'function') {
+                showToast('Quiet hours', 'Window #' + (i + 1) + ': pick at least one day of the week.', 'warning');
+            }
+            return;
+        }
+    }
+    if (enabled && windows.length === 0) {
+        if (typeof showToast === 'function') showToast('Quiet hours', 'Add at least one window or disable quiet hours.', 'warning');
+        return;
+    }
+    const btn = document.getElementById('quietHoursSaveBtn');
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving…';
+    }
+    try {
+        await apiPost('/api/quiet-hours', { enabled, windows });
+        await loadQuietHours();
+        if (typeof showToast === 'function') showToast('Quiet hours', 'Saved', 'success');
+    } catch (e) {
+        if (typeof showToast === 'function') showToast('Save failed', (e && e.message) || 'Unknown error', 'danger');
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-check me-1"></i>Save';
+        }
+    }
+}
+window.saveQuietHours = saveQuietHours;
+
+function _addQuietHoursWindowRow() {
+    const wrap = document.getElementById('quietHoursWindows');
+    if (!wrap) return;
+    wrap.appendChild(_buildQuietHoursWindowRow({ start: '22:00', end: '06:00', days: _QH_DAYS.slice() }));
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    const btn = document.getElementById('quietHoursSaveBtn');
+    if (btn) {
+        btn.addEventListener('click', saveQuietHours);
+        loadQuietHours();
+    }
+    const addBtn = document.getElementById('quietHoursAddWindowBtn');
+    if (addBtn) addBtn.addEventListener('click', _addQuietHoursWindowRow);
+});

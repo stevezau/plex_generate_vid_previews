@@ -11,8 +11,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from plex_generate_previews.web.app import create_app
-from plex_generate_previews.web.settings_manager import reset_settings_manager
+from media_preview_generator.web.app import create_app
+from media_preview_generator.web.settings_manager import reset_settings_manager
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -23,19 +23,19 @@ from plex_generate_previews.web.settings_manager import reset_settings_manager
 def _reset_singletons():
     """Reset web singletons between tests."""
     reset_settings_manager()
-    import plex_generate_previews.web.jobs as jobs_mod
+    import media_preview_generator.web.jobs as jobs_mod
 
     with jobs_mod._job_lock:
         jobs_mod._job_manager = None
-    import plex_generate_previews.web.scheduler as sched_mod
+    import media_preview_generator.web.scheduler as sched_mod
 
     with sched_mod._schedule_lock:
         sched_mod._schedule_manager = None
-    from plex_generate_previews.web.routes import clear_gpu_cache
+    from media_preview_generator.web.routes import clear_gpu_cache
 
     clear_gpu_cache()
     # Reset webhook module state
-    import plex_generate_previews.web.webhooks as wh
+    import media_preview_generator.web.webhooks as wh
 
     wh._webhook_history.clear()
     with wh._pending_lock:
@@ -109,9 +109,27 @@ def _auth_headers(token: str = "test-token-12345678") -> dict:
     return {"X-Auth-Token": token, "Content-Type": "application/json"}
 
 
+def test_clean_title_from_basename():
+    """_clean_title_from_basename collapses raw filenames to a Sonarr-style title."""
+    from media_preview_generator.web.webhooks import _clean_title_from_basename as f
+
+    # Episode with year + dash separators (most common Sonarr layout)
+    assert f("Margarita (2024) - S02E01 - TBA [AMZN WEBDL-1080p][EAC3 5.1][ES][h264].mkv") == "Margarita S02E01"
+    assert f("The Show - S01E10 - Pilot.mkv") == "The Show S01E10"
+    # Scene-style dot-separated names
+    assert f("Some.Show.S04E07.WEBRip.x264-GROUP.mkv") == "Some.Show S04E07"
+    # Movies (year present, no SxxEyy)
+    assert f("The Matrix (1999) [imdb-tt0133093].mkv") == "The Matrix (1999)"
+    assert f("Inception (2010).mkv") == "Inception (2010)"
+    # Plain / unparseable filenames degrade gracefully
+    assert f("plain_filename.mkv") == "plain_filename"
+    assert f("NoExtension") == "NoExtension"
+    assert f("") == ""
+
+
 def test_format_sonarr_episode_title():
     """_format_sonarr_episode_title adds SxxExx from episodes to series title."""
-    from plex_generate_previews.web.webhooks import _format_sonarr_episode_title
+    from media_preview_generator.web.webhooks import _format_sonarr_episode_title
 
     assert _format_sonarr_episode_title("Show Name", []) == "Show Name"
     assert _format_sonarr_episode_title("Show Name", None) == "Show Name"
@@ -140,7 +158,7 @@ def test_format_sonarr_episode_title():
 # ---------------------------------------------------------------------------
 
 
-@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+@patch("media_preview_generator.web.webhooks._schedule_webhook_job")
 def test_radarr_webhook_download_event(mock_schedule, client):
     """POST valid Radarr Download payload → 202 and schedules job with file path."""
     payload = {
@@ -156,7 +174,7 @@ def test_radarr_webhook_download_event(mock_schedule, client):
     mock_schedule.assert_called_once_with("radarr", "Inception", "/movies/Inception (2010)/Inception.mkv")
 
 
-@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+@patch("media_preview_generator.web.webhooks._schedule_webhook_job")
 def test_sonarr_webhook_download_event(mock_schedule, client):
     """POST valid Sonarr Download payload → 202 and schedules job with file path."""
     payload = {
@@ -172,7 +190,7 @@ def test_sonarr_webhook_download_event(mock_schedule, client):
     mock_schedule.assert_called_once_with("sonarr", "Breaking Bad", "/tv/Breaking Bad/Season 01/S01E01.mkv")
 
 
-@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+@patch("media_preview_generator.web.webhooks._schedule_webhook_job")
 def test_sonarr_webhook_download_with_episode_info_includes_season_episode_in_title(mock_schedule, client):
     """Sonarr payload with episodes[] → title includes SxxExx in webhook and history."""
     payload = {
@@ -227,7 +245,7 @@ def test_custom_webhook_test_event(client):
     assert "configured successfully" in data["message"]
 
 
-@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+@patch("media_preview_generator.web.webhooks._schedule_webhook_job")
 def test_custom_webhook_single_file_path(mock_schedule, client):
     """POST with file_path string → 202 and schedules one job."""
     payload = {"file_path": "/media/movies/Movie (2024)/Movie.mkv"}
@@ -241,9 +259,14 @@ def test_custom_webhook_single_file_path(mock_schedule, client):
     )
 
 
-@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+@patch("media_preview_generator.web.webhooks._schedule_webhook_job")
 def test_custom_webhook_multiple_file_paths(mock_schedule, client):
-    """POST with file_paths array → 202 and schedules each path."""
+    """POST with file_paths array → 202 and schedules each path.
+
+    Audit fix — was just `call_count == 2`. A regression that scheduled the
+    same path twice (instead of two distinct paths) would silently pass.
+    Pin the SET of path-args matches the input set.
+    """
     payload = {
         "file_paths": [
             "/tv/Show/S01E01.mkv",
@@ -256,9 +279,18 @@ def test_custom_webhook_multiple_file_paths(mock_schedule, client):
     assert data["success"] is True
     assert "2 files" in data["message"]
     assert mock_schedule.call_count == 2
+    # _schedule_webhook_job(source, title, path) — pin SET of distinct paths.
+    paths_sent = {call.args[2] for call in mock_schedule.call_args_list}
+    expected_paths = {os.path.normpath(p) for p in payload["file_paths"]}
+    assert paths_sent == expected_paths, (
+        f"Expected dispatched paths {expected_paths!r}; got {paths_sent!r} "
+        f"(would catch a regression that scheduled the same path twice)"
+    )
+    sources_sent = {call.args[0] for call in mock_schedule.call_args_list}
+    assert sources_sent == {"custom"}, f"All calls must be source='custom'; got {sources_sent!r}"
 
 
-@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+@patch("media_preview_generator.web.webhooks._schedule_webhook_job")
 def test_custom_webhook_with_title(mock_schedule, client):
     """POST with optional title uses it as display label."""
     payload = {
@@ -270,9 +302,15 @@ def test_custom_webhook_with_title(mock_schedule, client):
     mock_schedule.assert_called_once_with("custom", "My Show S01E01", os.path.normpath("/tv/Show/S01E01.mkv"))
 
 
-@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+@patch("media_preview_generator.web.webhooks._schedule_webhook_job")
 def test_custom_webhook_deduplicates_paths(mock_schedule, client):
-    """POST with duplicate paths in file_path + file_paths → schedules only unique paths."""
+    """POST with duplicate paths in file_path + file_paths → schedules only unique paths.
+
+    Audit fix — was just `call_count == 2`. A regression that broke dedup in
+    the opposite direction (e.g. dropped one distinct path and double-scheduled
+    the other → [A, A] or [B, B]) would still pass count-only. Pin the exact
+    surviving 2 distinct args.
+    """
     payload = {
         "file_path": "/movies/A.mkv",
         "file_paths": ["/movies/A.mkv", "/movies/B.mkv"],
@@ -280,6 +318,10 @@ def test_custom_webhook_deduplicates_paths(mock_schedule, client):
     resp = client.post("/api/webhooks/custom", json=payload, headers=_auth_headers())
     assert resp.status_code == 202
     assert mock_schedule.call_count == 2
+    paths_sent = {call.args[2] for call in mock_schedule.call_args_list}
+    assert paths_sent == {os.path.normpath("/movies/A.mkv"), os.path.normpath("/movies/B.mkv")}, (
+        f"Dedup must keep exactly /movies/A.mkv AND /movies/B.mkv (one of each); got {paths_sent!r}"
+    )
 
 
 def test_custom_webhook_missing_paths_returns_400(client):
@@ -310,10 +352,10 @@ def test_custom_webhook_empty_file_paths_array_returns_400(client):
     assert resp.status_code == 400
 
 
-@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+@patch("media_preview_generator.web.webhooks._schedule_webhook_job")
 def test_custom_webhook_disabled(mock_schedule, client, app):
     """When webhook_enabled is False → 200 with disabled message."""
-    from plex_generate_previews.web.settings_manager import get_settings_manager
+    from media_preview_generator.web.settings_manager import get_settings_manager
 
     with app.app_context():
         sm = get_settings_manager()
@@ -347,7 +389,12 @@ def test_custom_webhook_appears_in_history(authed_client):
     assert resp.status_code == 200
     events = resp.get_json()["events"]
     custom_events = [e for e in events if e["source"] == "custom"]
-    assert len(custom_events) >= 1
+    # Pin to exactly one — `>= 1` would let a double-record regression
+    # (e.g. handler accidentally calling _add_history_entry twice) pass
+    # silently.
+    assert len(custom_events) == 1, (
+        f"expected exactly one custom history row, got {len(custom_events)}: {custom_events!r}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -377,7 +424,7 @@ def test_webhook_invalid_token(client):
 
 def test_webhook_secret_auth(client, app):
     """Configure webhook_secret and authenticate with it (X-Auth-Token)."""
-    from plex_generate_previews.web.settings_manager import get_settings_manager
+    from media_preview_generator.web.settings_manager import get_settings_manager
 
     with app.app_context():
         sm = get_settings_manager()
@@ -395,7 +442,7 @@ def test_webhook_secret_auth(client, app):
 
 def test_webhook_bearer_token_auth(client, app):
     """Webhook accepts Authorization: Bearer with webhook_secret."""
-    from plex_generate_previews.web.settings_manager import get_settings_manager
+    from media_preview_generator.web.settings_manager import get_settings_manager
 
     with app.app_context():
         sm = get_settings_manager()
@@ -435,10 +482,10 @@ def test_webhook_basic_auth_password_as_token(client):
 # ---------------------------------------------------------------------------
 
 
-@patch("plex_generate_previews.web.webhooks._schedule_webhook_job")
+@patch("media_preview_generator.web.webhooks._schedule_webhook_job")
 def test_webhook_disabled(mock_schedule, client, app):
     """When webhook_enabled is False → 200 with disabled message."""
-    from plex_generate_previews.web.settings_manager import get_settings_manager
+    from media_preview_generator.web.settings_manager import get_settings_manager
 
     with app.app_context():
         sm = get_settings_manager()
@@ -466,7 +513,7 @@ def test_webhook_malformed_payload(client):
     assert resp.status_code == 400
 
 
-@patch("plex_generate_previews.web.webhooks.logger.warning")
+@patch("media_preview_generator.web.webhooks.logger.warning")
 def test_webhook_malformed_payload_logs_warning(mock_warning, client):
     """Malformed webhook JSON should be rejected and logged."""
     resp = client.post(
@@ -476,7 +523,15 @@ def test_webhook_malformed_payload_logs_warning(mock_warning, client):
         headers=_auth_headers(),
     )
     assert resp.status_code == 400
+    # Assert the warning actually fired AND the message identifies the
+    # endpoint so an operator scanning logs can correlate. A bare
+    # ``assert_called_once()`` would still pass if the warning text were
+    # silently changed to something useless like "" — that's bug-blind.
     mock_warning.assert_called_once()
+    msg = " ".join(str(a) for a in mock_warning.call_args.args)
+    assert "sonarr" in msg.lower() or "webhook" in msg.lower(), (
+        f"Warning fired but message doesn't identify the endpoint: {msg!r}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -485,7 +540,12 @@ def test_webhook_malformed_payload_logs_warning(mock_warning, client):
 
 
 def test_webhook_history_endpoint(authed_client):
-    """GET /api/webhooks/history returns events list."""
+    """GET /api/webhooks/history returns events list.
+
+    Audit fix — was loose `>= 1`. A regression that double-recorded a single
+    test event would still pass. Tighten to `== 1` (matches the
+    test_custom_webhook_appears_in_history audit fix at L357).
+    """
     # Trigger a test event first to populate history
     authed_client.post(
         "/api/webhooks/radarr",
@@ -497,7 +557,7 @@ def test_webhook_history_endpoint(authed_client):
     assert resp.status_code == 200
     data = resp.get_json()
     assert "events" in data
-    assert len(data["events"]) >= 1
+    assert len(data["events"]) == 1, f"Expected exactly 1 history event for one POST; got {len(data['events'])}"
     assert data["events"][0]["source"] == "radarr"
 
 
@@ -522,7 +582,7 @@ def test_webhook_clear_history(authed_client):
 # ---------------------------------------------------------------------------
 
 
-@patch("plex_generate_previews.web.webhooks.threading.Timer")
+@patch("media_preview_generator.web.webhooks.threading.Timer")
 def test_webhook_debounce(mock_timer_cls, client):
     """Two rapid webhooks for same source should cancel the first timer."""
     mock_timer = MagicMock()
@@ -558,13 +618,27 @@ def test_radarr_download_missing_file_path_is_ignored(client):
     assert "no file path" in data["message"].lower()
 
 
-@patch("plex_generate_previews.web.webhooks.logger.warning")
+@patch("media_preview_generator.web.webhooks.logger.warning")
 def test_radarr_download_missing_file_path_logs_warning(mock_warning, client):
-    """Missing Radarr file path should emit a warning log."""
+    """Missing Radarr file path should emit a warning log.
+
+    The previous form of this assertion was an OR over two phrasings of
+    the same warning ("missing file path" / "didn't carry a file path").
+    That made the test pass regardless of which phrasing actually
+    survived — silently allowing the wording to drift apart from
+    operator runbooks. Lock the production wording to the canonical
+    phrase and add a same-test sentinel so a regression that changes
+    the message is loud, not silent.
+    """
     payload = {"eventType": "Download", "movie": {"title": "No Path Movie"}}
     resp = client.post("/api/webhooks/radarr", json=payload, headers=_auth_headers())
     assert resp.status_code == 200
-    assert any("missing file path" in str(call) for call in mock_warning.call_args_list)
+    all_msgs = " | ".join(str(call) for call in mock_warning.call_args_list)
+    assert "didn't carry a file path" in all_msgs, (
+        f"Expected canonical warning 'didn't carry a file path' in radarr logs, got: {all_msgs!r}"
+    )
+    # Source identifier must appear too so log filters by source still work.
+    assert "radarr" in all_msgs.lower(), f"Warning must identify source as 'radarr', got: {all_msgs!r}"
 
 
 def test_sonarr_download_missing_file_path_is_ignored(client):
@@ -605,12 +679,12 @@ def test_sonarr_download_malformed_episode_file_payload_is_ignored(client):
     assert "no file path" in data["message"].lower()
 
 
-@patch("plex_generate_previews.web.webhooks.get_job_manager")
-@patch("plex_generate_previews.web.webhooks.threading.Timer")
-@patch("plex_generate_previews.web.routes._start_job_async")
+@patch("media_preview_generator.web.webhooks.get_job_manager")
+@patch("media_preview_generator.web.webhooks.threading.Timer")
+@patch("media_preview_generator.web.routes._start_job_async")
 def test_execute_webhook_job_batches_paths(mock_start_job, mock_timer_cls, mock_job_mgr):
     """Debounced execution should pass batched webhook paths in one job."""
-    from plex_generate_previews.web import webhooks as wh
+    from media_preview_generator.web import webhooks as wh
 
     mock_timer = MagicMock()
     mock_timer.daemon = True
@@ -634,15 +708,15 @@ def test_execute_webhook_job_batches_paths(mock_start_job, mock_timer_cls, mock_
     ]
 
 
-@patch("plex_generate_previews.web.webhooks.get_settings_manager")
-@patch("plex_generate_previews.web.webhooks.get_job_manager")
-@patch("plex_generate_previews.web.webhooks.threading.Timer")
-@patch("plex_generate_previews.web.routes._start_job_async")
+@patch("media_preview_generator.web.webhooks.get_settings_manager")
+@patch("media_preview_generator.web.webhooks.get_job_manager")
+@patch("media_preview_generator.web.webhooks.threading.Timer")
+@patch("media_preview_generator.web.routes._start_job_async")
 def test_execute_webhook_job_single_file_uses_title_for_library_display(
     mock_start_job, mock_timer_cls, mock_job_mgr, mock_settings_mgr
 ):
     """Single-file webhook job uses display title (e.g. Show S01E05) in library_name for dashboard."""
-    from plex_generate_previews.web import webhooks as wh
+    from media_preview_generator.web import webhooks as wh
 
     mock_timer = MagicMock()
     mock_timer.daemon = True
@@ -665,13 +739,16 @@ def test_execute_webhook_job_single_file_uses_title_for_library_display(
 
     mock_job_mgr.return_value.create_job.assert_called_once()
     call_kw = mock_job_mgr.return_value.create_job.call_args[1]
-    assert call_kw["library_name"] == "Sonarr: Murder at the Post Office S01E05"
+    # The "Sonarr: " / "Radarr: " prefix was removed once the Jobs row
+    # picked up a source chip carrying the trigger label (D2 follow-up).
+    # Library name is now just the title.
+    assert call_kw["library_name"] == "Murder at the Post Office S01E05"
 
 
-@patch("plex_generate_previews.web.webhooks.get_settings_manager")
-@patch("plex_generate_previews.web.webhooks.get_job_manager")
-@patch("plex_generate_previews.web.webhooks.threading.Timer")
-@patch("plex_generate_previews.web.routes._start_job_async")
+@patch("media_preview_generator.web.webhooks.get_settings_manager")
+@patch("media_preview_generator.web.webhooks.get_job_manager")
+@patch("media_preview_generator.web.webhooks.threading.Timer")
+@patch("media_preview_generator.web.routes._start_job_async")
 def test_execute_webhook_job_uses_selected_libraries(
     mock_start_job,
     mock_timer_cls,
@@ -679,7 +756,7 @@ def test_execute_webhook_job_uses_selected_libraries(
     mock_settings_mgr,
 ):
     """Webhook jobs should pass selected library IDs from settings."""
-    from plex_generate_previews.web import webhooks as wh
+    from media_preview_generator.web import webhooks as wh
 
     mock_timer = MagicMock()
     mock_timer.daemon = True
@@ -700,13 +777,13 @@ def test_execute_webhook_job_uses_selected_libraries(
     assert config_overrides["selected_libraries"] == ["1", "2"]
 
 
-@patch("plex_generate_previews.web.webhooks.get_settings_manager")
-@patch("plex_generate_previews.web.webhooks.get_job_manager")
-@patch("plex_generate_previews.web.webhooks.threading.Timer")
-@patch("plex_generate_previews.web.routes._start_job_async")
+@patch("media_preview_generator.web.webhooks.get_settings_manager")
+@patch("media_preview_generator.web.webhooks.get_job_manager")
+@patch("media_preview_generator.web.webhooks.threading.Timer")
+@patch("media_preview_generator.web.routes._start_job_async")
 def test_execute_webhook_job_includes_retry_settings(mock_start_job, mock_timer_cls, mock_job_mgr, mock_settings_mgr):
     """Webhook job config_overrides include webhook_retry_count and webhook_retry_delay from settings."""
-    from plex_generate_previews.web import webhooks as wh
+    from media_preview_generator.web import webhooks as wh
 
     mock_timer = MagicMock()
     mock_timer.daemon = True
@@ -732,12 +809,12 @@ def test_execute_webhook_job_includes_retry_settings(mock_start_job, mock_timer_
     assert config_overrides["webhook_retry_delay"] == 120
 
 
-@patch("plex_generate_previews.web.webhooks.get_job_manager")
-@patch("plex_generate_previews.web.webhooks.threading.Timer")
-@patch("plex_generate_previews.web.routes._start_job_async")
+@patch("media_preview_generator.web.webhooks.get_job_manager")
+@patch("media_preview_generator.web.webhooks.threading.Timer")
+@patch("media_preview_generator.web.routes._start_job_async")
 def test_webhook_payload_path_in_job_config_for_mapping(mock_start_job, mock_timer_cls, mock_job_mgr, client):
     """Path extracted from Radarr payload is passed in job config for mapping-aware resolution."""
-    from plex_generate_previews.web import webhooks as wh
+    from media_preview_generator.web import webhooks as wh
 
     # Timer: do not start so we can run _execute_webhook_job ourselves after POST
     mock_timer = MagicMock()
@@ -771,15 +848,15 @@ def test_webhook_payload_path_in_job_config_for_mapping(mock_start_job, mock_tim
     )
 
 
-@patch("plex_generate_previews.web.webhooks.get_settings_manager")
-@patch("plex_generate_previews.web.webhooks.get_job_manager")
-@patch("plex_generate_previews.web.webhooks.threading.Timer")
-@patch("plex_generate_previews.web.routes._start_job_async")
+@patch("media_preview_generator.web.webhooks.get_settings_manager")
+@patch("media_preview_generator.web.webhooks.get_job_manager")
+@patch("media_preview_generator.web.webhooks.threading.Timer")
+@patch("media_preview_generator.web.routes._start_job_async")
 def test_triggered_history_entry_includes_batch_metadata(
     mock_start_job, mock_timer_cls, mock_job_mgr, mock_settings_mgr, authed_client
 ):
     """Triggered webhook batch adds history entry with job_id, path_count, and files_preview."""
-    from plex_generate_previews.web import webhooks as wh
+    from media_preview_generator.web import webhooks as wh
 
     mock_timer = MagicMock()
     mock_timer.daemon = True
@@ -788,6 +865,10 @@ def test_triggered_history_entry_includes_batch_metadata(
     mock_job = MagicMock()
     mock_job.id = "batch-job-123"
     mock_job_mgr.return_value.create_job.return_value = mock_job
+    # Job-at-batch-open: ``_schedule_webhook_job`` creates the Job, then
+    # ``_execute_webhook_job`` looks it up via ``get_job`` instead of
+    # creating a new one. Configure the lookup to return the same mock.
+    mock_job_mgr.return_value.get_job.return_value = mock_job
 
     mock_settings = MagicMock()
     mock_settings.get.side_effect = lambda key, default=None: [] if key == "selected_libraries" else default
@@ -814,24 +895,26 @@ def test_triggered_history_entry_includes_batch_metadata(
 # ---------------------------------------------------------------------------
 
 
-@patch("plex_generate_previews.web.webhooks.get_settings_manager")
-@patch("plex_generate_previews.web.webhooks.threading.Timer")
+@patch("media_preview_generator.web.webhooks.get_settings_manager")
+@patch("media_preview_generator.web.webhooks.threading.Timer")
 def test_schedule_webhook_job_dedupes_within_ttl(mock_timer_cls, mock_settings_mgr, app):
     """A second call with the same (source, path) during the TTL window
     should be dropped without starting a new timer, and should log a
     'deduped' history entry."""
     from datetime import datetime, timezone
 
-    from plex_generate_previews.web import webhooks as wh
+    from media_preview_generator.web import webhooks as wh
 
     mock_timer_cls.return_value = MagicMock(daemon=True)
     mock_settings_mgr.return_value = MagicMock(get=lambda key, default=None: 60 if key == "webhook_delay" else default)
 
-    # Prime the dedup cache with a recent dispatch for this exact (source, path).
+    # Prime the dedup cache with a recent dispatch for this exact
+    # (source, server_id, path) — server_id is "" when the webhook isn't
+    # scoped to one configured server.
     normalized_path = os.path.normpath("/tv/Show/S01E01.mkv").replace("\\", "/")
     now_ts = datetime.now(timezone.utc).timestamp()
     with wh._pending_lock:
-        wh._recent_dispatches[("sonarr", normalized_path)] = now_ts
+        wh._recent_dispatches[("sonarr", "", normalized_path)] = now_ts
 
     result = wh._schedule_webhook_job("sonarr", "Show", "/tv/Show/S01E01.mkv")
 
@@ -844,14 +927,14 @@ def test_schedule_webhook_job_dedupes_within_ttl(mock_timer_cls, mock_settings_m
     assert any(e.get("source") == "sonarr" and e.get("status") == "deduped" for e in wh._webhook_history)
 
 
-@patch("plex_generate_previews.web.webhooks.get_settings_manager")
-@patch("plex_generate_previews.web.webhooks.threading.Timer")
+@patch("media_preview_generator.web.webhooks.get_settings_manager")
+@patch("media_preview_generator.web.webhooks.threading.Timer")
 def test_schedule_webhook_job_allows_dispatch_after_ttl(mock_timer_cls, mock_settings_mgr, app):
     """Entries older than _RECENT_DISPATCH_TTL_SECONDS should be pruned
     and no longer block new dispatches."""
     from datetime import datetime, timezone
 
-    from plex_generate_previews.web import webhooks as wh
+    from media_preview_generator.web import webhooks as wh
 
     mock_timer_cls.return_value = MagicMock(daemon=True)
     mock_settings_mgr.return_value = MagicMock(get=lambda key, default=None: 60 if key == "webhook_delay" else default)
@@ -859,23 +942,30 @@ def test_schedule_webhook_job_allows_dispatch_after_ttl(mock_timer_cls, mock_set
     normalized_path = os.path.normpath("/tv/Show/S01E01.mkv").replace("\\", "/")
     stale_ts = datetime.now(timezone.utc).timestamp() - wh._RECENT_DISPATCH_TTL_SECONDS - 5
     with wh._pending_lock:
-        wh._recent_dispatches[("sonarr", normalized_path)] = stale_ts
+        wh._recent_dispatches[("sonarr", "", normalized_path)] = stale_ts
 
     result = wh._schedule_webhook_job("sonarr", "Show", "/tv/Show/S01E01.mkv")
 
     assert result is True
     mock_timer_cls.assert_called_once()
-    # Stale entry should have been pruned from the cache
-    assert ("sonarr", normalized_path) not in wh._recent_dispatches
+    # Stale entry was pruned (and replaced with a fresh one). Audit
+    # batch 2 — _schedule_webhook_job now records the dedup entry
+    # immediately on schedule, mirroring create_vendor_webhook_job;
+    # before, the entry was only written by _execute_webhook_job after
+    # the debounce expired. The key now stays present, but with a
+    # fresh timestamp instead of the seeded stale one.
+    fresh_ts = wh._recent_dispatches.get(("sonarr", "", normalized_path))
+    assert fresh_ts is not None
+    assert fresh_ts > stale_ts
 
 
-@patch("plex_generate_previews.web.webhooks.get_settings_manager")
-@patch("plex_generate_previews.web.webhooks.threading.Timer")
+@patch("media_preview_generator.web.webhooks.get_settings_manager")
+@patch("media_preview_generator.web.webhooks.threading.Timer")
 def test_schedule_webhook_job_dedup_is_per_source(mock_timer_cls, mock_settings_mgr, app):
     """A recent dispatch for ('plex', path) must not block ('sonarr', path)."""
     from datetime import datetime, timezone
 
-    from plex_generate_previews.web import webhooks as wh
+    from media_preview_generator.web import webhooks as wh
 
     mock_timer_cls.return_value = MagicMock(daemon=True)
     mock_settings_mgr.return_value = MagicMock(get=lambda key, default=None: 60 if key == "webhook_delay" else default)
@@ -883,7 +973,7 @@ def test_schedule_webhook_job_dedup_is_per_source(mock_timer_cls, mock_settings_
     normalized_path = os.path.normpath("/tv/Show/S01E01.mkv").replace("\\", "/")
     now_ts = datetime.now(timezone.utc).timestamp()
     with wh._pending_lock:
-        wh._recent_dispatches[("plex", normalized_path)] = now_ts
+        wh._recent_dispatches[("plex", "", normalized_path)] = now_ts
 
     result = wh._schedule_webhook_job("sonarr", "Show", "/tv/Show/S01E01.mkv")
 
@@ -891,16 +981,16 @@ def test_schedule_webhook_job_dedup_is_per_source(mock_timer_cls, mock_settings_
     mock_timer_cls.assert_called_once()
 
 
-@patch("plex_generate_previews.web.webhooks.get_settings_manager")
-@patch("plex_generate_previews.web.webhooks.get_job_manager")
-@patch("plex_generate_previews.web.webhooks.threading.Timer")
-@patch("plex_generate_previews.web.routes._start_job_async")
+@patch("media_preview_generator.web.webhooks.get_settings_manager")
+@patch("media_preview_generator.web.webhooks.get_job_manager")
+@patch("media_preview_generator.web.webhooks.threading.Timer")
+@patch("media_preview_generator.web.routes._start_job_async")
 def test_execute_webhook_job_records_dispatch_before_start(
     mock_start_job, mock_timer_cls, mock_job_mgr, mock_settings_mgr, app
 ):
     """After _execute_webhook_job runs, every path in the batch should be
     recorded in _recent_dispatches so subsequent duplicates are dropped."""
-    from plex_generate_previews.web import webhooks as wh
+    from media_preview_generator.web import webhooks as wh
 
     mock_timer_cls.return_value = MagicMock(daemon=True)
     mock_job = MagicMock()
@@ -917,21 +1007,66 @@ def test_execute_webhook_job_records_dispatch_before_start(
 
     normalized_e1 = os.path.normpath("/tv/Show/S01E01.mkv").replace("\\", "/")
     normalized_e2 = os.path.normpath("/tv/Show/S01E02.mkv").replace("\\", "/")
-    assert ("sonarr", normalized_e1) in wh._recent_dispatches
-    assert ("sonarr", normalized_e2) in wh._recent_dispatches
+    assert ("sonarr", "", normalized_e1) in wh._recent_dispatches
+    assert ("sonarr", "", normalized_e2) in wh._recent_dispatches
     mock_start_job.assert_called_once()
 
 
-@patch("plex_generate_previews.web.webhooks.get_settings_manager")
-@patch("plex_generate_previews.web.webhooks.get_job_manager")
-@patch("plex_generate_previews.web.webhooks.threading.Timer")
-@patch("plex_generate_previews.web.routes._start_job_async")
+@patch("media_preview_generator.web.webhooks.get_settings_manager")
+@patch("media_preview_generator.web.webhooks.threading.Timer")
+def test_schedule_webhook_job_per_server_dedup_is_independent(mock_timer_cls, mock_settings_mgr, app):
+    """A dispatch scoped to one server must not block the same path on another server."""
+    from datetime import datetime, timezone
+
+    from media_preview_generator.web import webhooks as wh
+
+    mock_timer_cls.return_value = MagicMock(daemon=True)
+    mock_settings_mgr.return_value = MagicMock(get=lambda key, default=None: 60 if key == "webhook_delay" else default)
+
+    normalized_path = os.path.normpath("/tv/Show/S01E01.mkv").replace("\\", "/")
+    now_ts = datetime.now(timezone.utc).timestamp()
+    with wh._pending_lock:
+        # Plex server "p1" already dispatched this path recently...
+        wh._recent_dispatches[("sonarr", "p1", normalized_path)] = now_ts
+
+    # ...the same path coming in for Emby server "e1" should NOT be deduped.
+    result = wh._schedule_webhook_job("sonarr", "Show", "/tv/Show/S01E01.mkv", server_id="e1")
+
+    assert result is True  # not deduped
+    mock_timer_cls.assert_called_once()
+
+
+@patch("media_preview_generator.web.webhooks.get_settings_manager")
+@patch("media_preview_generator.web.webhooks.threading.Timer")
+def test_schedule_webhook_job_per_server_keeps_separate_batches(mock_timer_cls, mock_settings_mgr, app):
+    """Two server-scoped webhooks for the same source land in separate batches."""
+    from media_preview_generator.web import webhooks as wh
+
+    mock_timer_cls.return_value = MagicMock(daemon=True)
+    mock_settings_mgr.return_value = MagicMock(get=lambda key, default=None: 60 if key == "webhook_delay" else default)
+
+    wh._schedule_webhook_job("sonarr", "Show", "/tv/Show/S01E01.mkv", server_id="p1")
+    wh._schedule_webhook_job("sonarr", "Show", "/tv/Show/S01E01.mkv", server_id="e1")
+
+    p1_key = wh._debounce_key("sonarr", "p1")
+    e1_key = wh._debounce_key("sonarr", "e1")
+    assert p1_key in wh._pending_batches
+    assert e1_key in wh._pending_batches
+    assert p1_key != e1_key
+    assert wh._pending_batches[p1_key]["server_id"] == "p1"
+    assert wh._pending_batches[e1_key]["server_id"] == "e1"
+
+
+@patch("media_preview_generator.web.webhooks.get_settings_manager")
+@patch("media_preview_generator.web.webhooks.get_job_manager")
+@patch("media_preview_generator.web.webhooks.threading.Timer")
+@patch("media_preview_generator.web.routes._start_job_async")
 def test_duplicate_after_dispatch_is_dropped_end_to_end(
     mock_start_job, mock_timer_cls, mock_job_mgr, mock_settings_mgr, app
 ):
     """End-to-end: fire a batch, then a second 'retry' webhook for the same
     path. The second call must be dropped (no new timer, no second job)."""
-    from plex_generate_previews.web import webhooks as wh
+    from media_preview_generator.web import webhooks as wh
 
     mock_timer_cls.return_value = MagicMock(daemon=True)
     mock_job = MagicMock()
@@ -971,3 +1106,680 @@ def test_webhooks_page_redirects_to_automation(authed_client):
     resp = authed_client.get("/webhooks", follow_redirects=False)
     assert resp.status_code == 302
     assert resp.headers["Location"].endswith("/automation#webhooks")
+
+
+# ---------------------------------------------------------------------------
+# create_vendor_webhook_job — direct unit tests for the vendor → Job bridge.
+# Covers regenerate flag propagation, hint shape, dedup, and the override
+# kwargs that flow into _start_job_async.
+# ---------------------------------------------------------------------------
+
+
+@patch("media_preview_generator.web.routes._start_job_async")
+def test_create_vendor_webhook_job_regenerate_propagates_force_generate(mock_start, app):
+    """``regenerate=True`` must surface as ``force_generate=True`` in the
+    overrides handed to the job runner — that's what flips
+    ``Config.regenerate_thumbnails`` which the worker reads when calling
+    ``process_canonical_path(regenerate=...)``. Audit fix #13: the chain
+    is ``regenerate → force_generate → regenerate_thumbnails → process_canonical_path``.
+    """
+    import media_preview_generator.web.webhooks as wh
+
+    with app.app_context():
+        job_id = wh.create_vendor_webhook_job(
+            source="plex",
+            canonical_path="/data/movies/Foo.mkv",
+            item_id_by_server={"plex-1": "12345"},
+            regenerate=True,
+        )
+
+    assert job_id, "job should have been created"
+    assert mock_start.call_count == 1
+    overrides = mock_start.call_args.args[1]
+    # regenerate is the field under test
+    assert overrides.get("force_generate") is True, (
+        "regenerate=True must produce force_generate=True override (Config.regenerate_thumbnails)"
+    )
+    # ALSO assert path + hint shape made it through — a regression that
+    # propagated force_generate but dropped the path/hint would otherwise pass.
+    assert overrides.get("webhook_paths") == ["/data/movies/Foo.mkv"]
+    assert overrides.get("webhook_item_id_hints") == {"/data/movies/Foo.mkv": {"plex-1": "12345"}}
+
+
+@patch("media_preview_generator.web.routes._start_job_async")
+def test_create_vendor_webhook_job_carries_hints_keyed_by_path(mock_start, app):
+    """Hints must travel as ``{path: {server_id: item_id}}`` so the
+    orchestrator's hint short-circuit can match per-path entries when a
+    job carries multiple webhook_paths."""
+    import media_preview_generator.web.webhooks as wh
+
+    with app.app_context():
+        wh.create_vendor_webhook_job(
+            source="plex",
+            canonical_path="/data/x.mkv",
+            item_id_by_server={"plex-1": "k1"},
+        )
+
+    overrides = mock_start.call_args.args[1]
+    hints = overrides.get("webhook_item_id_hints")
+    assert hints == {"/data/x.mkv": {"plex-1": "k1"}}
+
+
+@patch("media_preview_generator.web.routes._start_job_async")
+def test_create_vendor_webhook_job_dedupes_within_ttl(mock_start, app):
+    """Same ``(source, server_id, path)`` within TTL → second call returns
+    ``None`` and creates no job. Plex repeats ``library.new`` after
+    metadata refresh — without dedup we'd spawn 2-4 Jobs per file."""
+    import media_preview_generator.web.webhooks as wh
+
+    with app.app_context():
+        first = wh.create_vendor_webhook_job(
+            source="plex",
+            canonical_path="/data/x.mkv",
+            item_id_by_server={"plex-1": "k1"},
+            server_id="plex-1",
+        )
+        second = wh.create_vendor_webhook_job(
+            source="plex",
+            canonical_path="/data/x.mkv",
+            item_id_by_server={"plex-1": "k1"},
+            server_id="plex-1",
+        )
+
+    assert first is not None
+    assert second is None, "second call must dedup against the first"
+    assert mock_start.call_count == 1, "only the first call creates a job"
+
+
+@patch("media_preview_generator.web.routes._start_job_async")
+def test_create_vendor_webhook_job_does_NOT_dedup_across_sources(mock_start, app):
+    """Plex's ``library.new`` and Sonarr's import webhook for the same
+    file are different events — they MUST produce separate Jobs.
+
+    Also asserts SOURCE IDENTITY in each call so a regression that
+    silently re-tagged sources (e.g. both stamped as ``plex``) wouldn't
+    pass just because the call_count happens to be 2.
+    """
+    import media_preview_generator.web.webhooks as wh
+
+    with app.app_context():
+        plex_job = wh.create_vendor_webhook_job(
+            source="plex",
+            canonical_path="/data/x.mkv",
+            item_id_by_server={"plex-1": "k1"},
+            server_id="plex-1",
+        )
+        sonarr_job = wh.create_vendor_webhook_job(
+            source="sonarr",
+            canonical_path="/data/x.mkv",
+            server_id=None,
+        )
+
+    assert plex_job is not None
+    assert sonarr_job is not None
+    assert plex_job != sonarr_job, "two different sources must produce two different job IDs"
+    assert mock_start.call_count == 2
+
+    # Inspect each call's overrides for source identity. The job's source
+    # tag flows via ``job_manager.create_job(config={"source": ...})`` —
+    # which is captured in the Job DB row, not the overrides — so we
+    # assert via job_manager state.
+    from media_preview_generator.web.jobs import get_job_manager
+
+    jm = get_job_manager()
+    plex_row = jm.get_job(plex_job)
+    sonarr_row = jm.get_job(sonarr_job)
+    assert plex_row.config.get("source") == "plex", f"Plex job mis-tagged: source={plex_row.config.get('source')!r}"
+    assert sonarr_row.config.get("source") == "sonarr", (
+        f"Sonarr job mis-tagged: source={sonarr_row.config.get('source')!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# TEST_AUDIT P0.7 — title fallback ACTUALLY WIRED IN
+#
+# The unit test ``test_clean_title_from_basename`` (above) only proves the
+# helper is correct in isolation. The bug class P0.7 protects against is:
+# helper exists, but ``create_vendor_webhook_job`` doesn't actually call
+# it. A regression at the call site (e.g. dropping the ``or`` fallback,
+# passing the raw basename instead, or hard-coding "Webhook job") would
+# leave Plex/Emby/Jellyfin Job rows showing the raw filename next to
+# Sonarr/Radarr siblings that render as "Show S01E05" — exactly the
+# inconsistency that prompted the helper.
+#
+# These tests pin the wiring at create_vendor_webhook_job → Job.library_name.
+# ---------------------------------------------------------------------------
+
+
+@patch("media_preview_generator.web.routes._start_job_async")
+def test_create_vendor_webhook_job_uses_clean_title_when_title_omitted(mock_start, app):
+    """When the caller doesn't supply a title (the typical Plex/Emby/Jellyfin
+    incoming-webhook code path), the Job row's ``library_name`` MUST be
+    derived via ``_clean_title_from_basename`` from the canonical path.
+
+    Without this wiring the user sees raw filenames in Job Queue while
+    Sonarr/Radarr Jobs alongside show clean titles. Pin the assertion so
+    a refactor that drops the ``or _clean_title_from_basename(...)`` clause
+    at webhooks.py:389 is caught loudly.
+    """
+    import media_preview_generator.web.webhooks as wh
+    from media_preview_generator.web.jobs import get_job_manager
+
+    with app.app_context():
+        job_id = wh.create_vendor_webhook_job(
+            source="plex",
+            canonical_path="/data/movies/Margarita (2024) - S02E01 - TBA [AMZN].mkv",
+            item_id_by_server={"plex-1": "12345"},
+        )
+        assert job_id is not None
+        job = get_job_manager().get_job(job_id)
+
+    # The same input the unit test uses for _clean_title_from_basename
+    # (line 117). If the helper is wired in, the Job row gets the cleaned
+    # title; if a regression drops the call, library_name would be the
+    # raw basename or empty.
+    assert job is not None
+    assert job.library_name == "Margarita S02E01", (
+        f"library_name should be the helper-cleaned title, not the raw basename. "
+        f"got {job.library_name!r}; helper would have produced 'Margarita S02E01'. "
+        f"Likely: webhooks.py:389 dropped the `or _clean_title_from_basename(...)` clause."
+    )
+
+
+@patch("media_preview_generator.web.routes._start_job_async")
+def test_create_vendor_webhook_job_uses_clean_title_for_movie_basename(mock_start, app):
+    """Movie filename → "Title (Year)" format. Mirror test for the
+    non-episode branch of _clean_title_from_basename so a regression
+    that fixed only the SxxEyy path can't slip through silently.
+    """
+    import media_preview_generator.web.webhooks as wh
+    from media_preview_generator.web.jobs import get_job_manager
+
+    with app.app_context():
+        job_id = wh.create_vendor_webhook_job(
+            source="plex",
+            canonical_path="/data/movies/Inception (2010) [imdb-tt1375666].mkv",
+            item_id_by_server={"plex-1": "1"},
+        )
+        job = get_job_manager().get_job(job_id)
+
+    assert job.library_name == "Inception (2010)", (
+        f"movie basename should produce 'Title (Year)'; got {job.library_name!r}"
+    )
+
+
+@patch("media_preview_generator.web.routes._start_job_async")
+def test_create_vendor_webhook_job_uses_explicit_title_when_provided(mock_start, app):
+    """When the caller DOES pass a title (e.g. Plex webhook had a clean
+    Metadata payload), it takes precedence over the basename helper. The
+    fallback is only for callers that have no title to give.
+    """
+    import media_preview_generator.web.webhooks as wh
+    from media_preview_generator.web.jobs import get_job_manager
+
+    with app.app_context():
+        job_id = wh.create_vendor_webhook_job(
+            source="plex",
+            canonical_path="/data/movies/raw_filename.mkv",
+            title="Pretty Movie Title from Plex Metadata",
+            item_id_by_server={"plex-1": "1"},
+        )
+        job = get_job_manager().get_job(job_id)
+
+    assert job.library_name == "Pretty Movie Title from Plex Metadata", (
+        f"explicit title must win over basename fallback; got {job.library_name!r}"
+    )
+
+
+@patch("media_preview_generator.web.routes._start_job_async")
+def test_create_vendor_webhook_job_clean_title_used_when_title_is_empty_string(mock_start, app):
+    """Empty string title (NOT None) should still trigger the basename
+    fallback — line 389 uses ``(title or "").strip() or _clean_title_from_basename(...)``
+    so both falsy paths are covered.
+
+    Catches a regression that special-cased only ``title is None`` but
+    accidentally passed the empty string through to library_name.
+    """
+    import media_preview_generator.web.webhooks as wh
+    from media_preview_generator.web.jobs import get_job_manager
+
+    with app.app_context():
+        job_id = wh.create_vendor_webhook_job(
+            source="plex",
+            canonical_path="/data/tv/The Show - S01E10 - Pilot.mkv",
+            title="",  # empty string, not None
+            item_id_by_server={"plex-1": "1"},
+        )
+        job = get_job_manager().get_job(job_id)
+
+    assert job.library_name == "The Show S01E10", (
+        f"empty-string title must fall through to basename helper; got {job.library_name!r}"
+    )
+
+
+@patch("media_preview_generator.web.routes._start_job_async")
+def test_create_vendor_webhook_job_handles_unicode_path(mock_start, app):
+    """Audit L4 — unicode in canonical_path must round-trip cleanly through
+    the dedup key + Job creation + override serialisation."""
+    import media_preview_generator.web.webhooks as wh
+
+    unicode_path = "/data/Margarita (2024) [imdb-tt33145195]/Season 02/Margarita - S02E01 — Año Nuevo.mkv"
+    with app.app_context():
+        job_id = wh.create_vendor_webhook_job(
+            source="plex",
+            canonical_path=unicode_path,
+            item_id_by_server={"plex-1": "12345"},
+        )
+
+    assert job_id, "unicode path must produce a job"
+    overrides = mock_start.call_args.args[1]
+    assert overrides["webhook_paths"] == [unicode_path]
+    assert overrides["webhook_item_id_hints"] == {unicode_path: {"plex-1": "12345"}}
+
+
+@patch("media_preview_generator.web.routes._start_job_async")
+def test_create_vendor_webhook_job_empty_hint_dict_treated_as_no_hint(mock_start, app):
+    """Audit L4 — empty ``item_id_by_server={}`` must NOT add a hints
+    override (the orchestrator's hint short-circuit treats absence as
+    "no hint" and falls through to library-prefix matching). An empty
+    dict in the override would falsy-test as no-op anyway, but the
+    explicit absence keeps the Job config clean."""
+    import media_preview_generator.web.webhooks as wh
+
+    with app.app_context():
+        wh.create_vendor_webhook_job(
+            source="plex",
+            canonical_path="/data/x.mkv",
+            item_id_by_server={},
+        )
+
+    overrides = mock_start.call_args.args[1]
+    assert "webhook_item_id_hints" not in overrides, "empty hint dict must not produce a hints override"
+
+
+@patch("media_preview_generator.web.routes._start_job_async")
+def test_create_vendor_webhook_job_filters_falsy_hint_keys(mock_start, app):
+    """Audit L4 — hint dict with empty server_id or item_id values must
+    be filtered out so the orchestrator's hint short-circuit doesn't
+    receive garbage entries."""
+    import media_preview_generator.web.webhooks as wh
+
+    with app.app_context():
+        wh.create_vendor_webhook_job(
+            source="plex",
+            canonical_path="/data/x.mkv",
+            item_id_by_server={"": "k1", "plex-1": "", "valid-sid": "valid-id"},
+        )
+
+    overrides = mock_start.call_args.args[1]
+    hints = overrides.get("webhook_item_id_hints")
+    assert hints == {"/data/x.mkv": {"valid-sid": "valid-id"}}, (
+        "falsy keys/values must be filtered, valid pair retained"
+    )
+
+
+@patch("media_preview_generator.web.routes._start_job_async")
+def test_create_vendor_webhook_job_server_id_filter_pins_publishers(mock_start, app):
+    """``/api/webhooks/server/<id>`` callers pass ``server_id_filter`` —
+    that becomes ``overrides["server_id"]`` which job_runner translates
+    into ``Config.server_id_filter`` so the dispatcher pins publishers."""
+    import media_preview_generator.web.webhooks as wh
+
+    # Use DIFFERENT values for ``server_id`` (the source/originator hint) and
+    # ``server_id_filter`` (the publisher pin) so we can prove which kwarg
+    # actually ends up in ``overrides["server_id"]``. Production code at
+    # webhooks.py:422-423 confirms it must be ``server_id_filter`` —
+    # collapsing the two like the previous test did made it impossible to
+    # detect a regression where the wrong kwarg drove the publisher pin.
+    with app.app_context():
+        wh.create_vendor_webhook_job(
+            source="jellyfin",
+            canonical_path="/data/y.mkv",
+            item_id_by_server={"jelly-1": "j1"},
+            server_id="other-server",
+            server_id_filter="jelly-1",
+        )
+
+    overrides = mock_start.call_args.args[1]
+    assert overrides.get("server_id") == "jelly-1", (
+        "overrides['server_id'] must come from the server_id_filter kwarg, "
+        f"not the source server_id; got {overrides.get('server_id')!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Hindsight backfills — categories B/C from the 90-day audit
+# ---------------------------------------------------------------------------
+
+
+class TestExtractSonarrFilePathPayloadMatrix:
+    """``_extract_sonarr_file_path`` payload-shape matrix — covers the
+    full set of vendor payload shapes that map to a single helper.
+
+    Hindsight for commit ``7a721a6`` (Sportarr flat ``filePath`` payload):
+    pre-fix tests only used the nested ``episodeFile.path`` shape, so
+    Sportarr deliveries silently dropped on the floor.  HINDSIGHT_90_DAYS
+    flagged this row as Category C (zero coverage).  Now exercises every
+    branch of the helper:
+
+    1. ``episodeFile.path``                           — standard Sonarr
+    2. ``series.path`` + ``episodeFile.relativePath`` — Sonarr fallback
+    3. ``filePath`` (root level)                      — Sportarr flat
+    4. all of the above missing                       — empty string
+    5. precedence: standard wins over flat            — guards the order
+    """
+
+    def test_standard_episode_file_path(self):
+        from media_preview_generator.web.webhooks import _extract_sonarr_file_path
+
+        payload = {"episodeFile": {"path": "/tv/Show/S01E01.mkv"}}
+        assert _extract_sonarr_file_path(payload) == "/tv/Show/S01E01.mkv"
+
+    def test_series_path_plus_relative_path(self):
+        from media_preview_generator.web.webhooks import _extract_sonarr_file_path
+
+        payload = {
+            "series": {"path": "/tv/Show"},
+            "episodeFile": {"relativePath": "Season 01/S01E01.mkv"},
+        }
+        # _combine_path normalises and forward-slashes the result.
+        assert _extract_sonarr_file_path(payload) == "/tv/Show/Season 01/S01E01.mkv"
+
+    def test_sportarr_flat_file_path(self):
+        """Sportarr flat ``filePath`` — the cell that 7a721a6 added."""
+        from media_preview_generator.web.webhooks import _extract_sonarr_file_path
+
+        payload = {"filePath": "/sports/Match.mkv", "eventTitle": "Match Day"}
+        assert _extract_sonarr_file_path(payload) == "/sports/Match.mkv", (
+            "Sportarr flat filePath must be extracted; pre-7a721a6 this "
+            "returned '' and the webhook silently dropped the delivery."
+        )
+
+    def test_empty_payload_returns_empty_string(self):
+        from media_preview_generator.web.webhooks import _extract_sonarr_file_path
+
+        assert _extract_sonarr_file_path({}) == ""
+
+    def test_standard_wins_over_flat_when_both_present(self):
+        """Precedence guard: a payload that carries both
+        ``episodeFile.path`` AND ``filePath`` must take the nested
+        path (the standard Sonarr shape) — otherwise a Sonarr deployment
+        that someday adds the Sportarr key would silently switch shapes.
+        """
+        from media_preview_generator.web.webhooks import _extract_sonarr_file_path
+
+        payload = {
+            "episodeFile": {"path": "/tv/Real/S01E01.mkv"},
+            "filePath": "/sports/Match.mkv",
+        }
+        assert _extract_sonarr_file_path(payload) == "/tv/Real/S01E01.mkv"
+
+
+class TestWebhookContentTypeForceParse:
+    """Hindsight for commit ``357c442`` (parse webhook JSON regardless
+    of Content-Type).
+
+    Custom webhook senders frequently POST JSON with an incorrect
+    Content-Type (``text/plain``, ``application/x-www-form-urlencoded``,
+    or none at all).  The fix flipped ``request.get_json(force=True,
+    silent=True)`` so Flask parses the body anyway.
+
+    Pre-fix this returned ``None`` and the endpoint replied 400.  Test
+    cells: Radarr endpoint + custom endpoint, with each Content-Type
+    that real-world senders use.
+    """
+
+    @patch("media_preview_generator.web.webhooks._schedule_webhook_job")
+    def test_radarr_with_wrong_content_type_still_parses_json(self, mock_schedule, client):
+        """Radarr POST with Content-Type=text/plain — body is valid JSON.
+
+        force=True bypasses Content-Type check; without it Flask would
+        return ``None`` from get_json() and the endpoint 400s.
+        """
+        body = json.dumps(
+            {
+                "eventType": "Download",
+                "movie": {"title": "Plain Text JSON"},
+                "movieFile": {"path": "/movies/PT/PT.mkv"},
+            }
+        )
+        resp = client.post(
+            "/api/webhooks/radarr",
+            data=body,
+            headers={
+                "X-Auth-Token": "test-token-12345678",
+                # Deliberately wrong — real Tdarr/Sportarr deployments
+                # have shipped this exact misconfiguration.
+                "Content-Type": "text/plain",
+            },
+        )
+        assert resp.status_code == 202, (
+            f"Expected 202 with force=True parsing the JSON despite "
+            f"text/plain Content-Type; got {resp.status_code}: {resp.get_data(as_text=True)}"
+        )
+        assert mock_schedule.call_count == 1
+        # Pin the actual extracted file path — proves the body really
+        # was parsed and routed, not just that the endpoint returned 202
+        # for some unrelated reason. _schedule_webhook_job is called
+        # with positional (source, title, file_path).
+        assert mock_schedule.call_args.args[2] == "/movies/PT/PT.mkv"
+
+    @patch("media_preview_generator.web.webhooks._schedule_webhook_job")
+    def test_custom_with_form_urlencoded_content_type(self, mock_schedule, client):
+        """Custom POST with form-urlencoded Content-Type — body is JSON."""
+        body = json.dumps({"file_path": "/media/Movie.mkv"})
+        resp = client.post(
+            "/api/webhooks/custom",
+            data=body,
+            headers={
+                "X-Auth-Token": "test-token-12345678",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+        )
+        assert resp.status_code == 202
+        assert mock_schedule.call_count == 1
+
+
+class TestWebhookAuthHeaderPrecedence:
+    """Hindsight for commit ``51075c9`` (CORS + harden webhook auth).
+
+    HINDSIGHT_90_DAYS recommendation #1 in section 3: send a request
+    with BOTH a valid ``X-Auth-Token`` and an invalid
+    ``Authorization: Bearer xxx`` header — the request must succeed
+    because ``_authenticate_webhook`` collects ALL candidate tokens and
+    accepts as soon as one matches.
+
+    Pre-fix the Authorization header took precedence; if it carried a
+    junk Tdarr session JWT the valid X-Auth-Token would be ignored and
+    the legitimate webhook 401'd.
+    """
+
+    def test_valid_x_auth_token_accepted_when_invalid_bearer_also_present(self, client, app):
+        """Both headers present, X-Auth-Token valid, Bearer junk → 200.
+
+        This is the load-bearing matrix cell. A regression that swapped
+        the auth back to "Bearer wins, X-Auth-Token only as fallback"
+        would 401 this request because the junk Bearer token would be
+        the only candidate tested.
+        """
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        with app.app_context():
+            sm = get_settings_manager()
+            sm.set("webhook_secret", "the-real-secret")
+
+        resp = client.post(
+            "/api/webhooks/radarr",
+            json={"eventType": "Test"},
+            headers={
+                "X-Auth-Token": "the-real-secret",  # valid
+                "Authorization": "Bearer browser-leaked-jwt-xxxxxxx",  # junk
+                "Content-Type": "application/json",
+            },
+        )
+        assert resp.status_code == 200, (
+            f"X-Auth-Token must win over a junk Authorization Bearer "
+            f"shadow header; got {resp.status_code}: {resp.get_data(as_text=True)}"
+        )
+        assert resp.get_json()["success"] is True
+
+    def test_valid_bearer_accepted_when_invalid_x_auth_token_also_present(self, client, app):
+        """Both headers present, Bearer valid, X-Auth-Token junk → 200.
+
+        The inverse cell — the auth contract is "any candidate matches",
+        not strict precedence either direction. Without this cell, a
+        regression that ignored the Authorization header in favour of
+        X-Auth-Token-only would silently break Bearer-style senders.
+        """
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        with app.app_context():
+            sm = get_settings_manager()
+            sm.set("webhook_secret", "the-real-secret")
+
+        resp = client.post(
+            "/api/webhooks/radarr",
+            json={"eventType": "Test"},
+            headers={
+                "X-Auth-Token": "stale-old-secret",  # junk
+                "Authorization": "Bearer the-real-secret",  # valid
+                "Content-Type": "application/json",
+            },
+        )
+        assert resp.status_code == 200, (
+            f"A valid Bearer must be accepted when X-Auth-Token is junk; got {resp.status_code}"
+        )
+
+    def test_both_headers_invalid_returns_401(self, client, app):
+        """Negative cell: both junk → 401.
+
+        Without this, the matrix would accept "any header present at
+        all" — a real bug some auth refactors have shipped.
+        """
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        with app.app_context():
+            sm = get_settings_manager()
+            sm.set("webhook_secret", "the-real-secret")
+
+        resp = client.post(
+            "/api/webhooks/radarr",
+            json={"eventType": "Test"},
+            headers={
+                "X-Auth-Token": "junk-1",
+                "Authorization": "Bearer junk-2",
+                "Content-Type": "application/json",
+            },
+        )
+        assert resp.status_code == 401
+
+
+class TestWebhookHistoryDiskRoundTrip:
+    """Hindsight for commits ``197df73`` / ``d481eb6`` (persist webhook
+    history to disk).
+
+    The two consecutive identical commit titles "improve webhook failure
+    logging and persist history to disk" are the strongest possible
+    signal that the first round shipped without a regression test.
+    HINDSIGHT_90_DAYS Cat C — zero coverage.
+
+    Round-trip contract:
+    1. ``_add_history_entry`` writes a file at
+       ``$CONFIG_DIR/webhook_history.json``
+    2. ``_load_history_from_disk`` reads that file and rehydrates
+       the in-memory deque in append order
+    3. The cap (_HISTORY_MAX = 100) is enforced on load
+    """
+
+    def test_add_entry_writes_file_and_load_rehydrates_deque(self, tmp_path, monkeypatch):
+        import importlib
+
+        import media_preview_generator.web.webhooks as wh
+
+        # Point the persistence at a fresh tmp config dir for isolation.
+        monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+        importlib.reload(wh)
+
+        wh._webhook_history.clear()
+        wh._add_history_entry("radarr", "Download", "Movie A", "queued")
+        wh._add_history_entry("sonarr", "Download", "Show S01E01", "queued")
+
+        history_file = tmp_path / "webhook_history.json"
+        assert history_file.exists(), "_add_history_entry must persist to disk"
+
+        on_disk = json.loads(history_file.read_text())
+        assert isinstance(on_disk, list)
+        assert len(on_disk) == 2
+        assert [e["source"] for e in on_disk] == ["radarr", "sonarr"]
+        assert [e["title"] for e in on_disk] == ["Movie A", "Show S01E01"]
+        assert [e["status"] for e in on_disk] == ["queued", "queued"]
+        # ISO-8601 UTC timestamp recorded on each entry — guards against
+        # a regression that drops the timestamp field, breaking the UI.
+        for entry in on_disk:
+            assert "T" in entry["timestamp"] and entry["timestamp"].endswith("+00:00")
+
+        # Now blow away the in-memory deque and rehydrate from disk.
+        wh._webhook_history.clear()
+        assert len(wh._webhook_history) == 0
+        wh._load_history_from_disk()
+
+        rehydrated = list(wh._webhook_history)
+        assert len(rehydrated) == 2
+        assert [e["source"] for e in rehydrated] == ["radarr", "sonarr"], (
+            "Load-from-disk must preserve append order so the UI shows "
+            "events in the order they arrived (oldest first in deque, "
+            "newest last)."
+        )
+
+    def test_load_enforces_history_max_cap(self, tmp_path, monkeypatch):
+        """A persisted file with > _HISTORY_MAX entries must be tail-
+        truncated on load. Otherwise an ever-growing webhook_history.json
+        would slowly leak memory until the deque was overwritten.
+        """
+        import importlib
+
+        import media_preview_generator.web.webhooks as wh
+
+        monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+        importlib.reload(wh)
+
+        oversized = [
+            {
+                "timestamp": "2026-01-01T00:00:00+00:00",
+                "source": "radarr",
+                "event_type": "Download",
+                "title": f"Movie {i}",
+                "status": "queued",
+            }
+            for i in range(wh._HISTORY_MAX + 50)  # 50 over the cap
+        ]
+        (tmp_path / "webhook_history.json").write_text(json.dumps(oversized))
+
+        wh._webhook_history.clear()
+        wh._load_history_from_disk()
+
+        assert len(wh._webhook_history) == wh._HISTORY_MAX, (
+            f"Load must cap the deque at {wh._HISTORY_MAX}; got {len(wh._webhook_history)}"
+        )
+        # Tail-truncation: the LAST _HISTORY_MAX entries must be kept,
+        # not the first. Catches a regression that does ``entries[:cap]``
+        # and silently loses recent events on every restart.
+        kept = list(wh._webhook_history)
+        assert kept[0]["title"] == f"Movie {50}", (
+            "After truncation, the oldest kept entry must be index 50 (skipping the first 50 over the cap)."
+        )
+        assert kept[-1]["title"] == f"Movie {wh._HISTORY_MAX + 49}"
+
+    def test_load_silently_no_ops_when_file_missing(self, tmp_path, monkeypatch):
+        """Fresh install: no webhook_history.json exists → load must
+        not raise and the deque must remain empty."""
+        import importlib
+
+        import media_preview_generator.web.webhooks as wh
+
+        monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+        importlib.reload(wh)
+
+        wh._webhook_history.clear()
+        wh._load_history_from_disk()  # must not raise
+        assert len(wh._webhook_history) == 0

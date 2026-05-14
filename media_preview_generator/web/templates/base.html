@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Media Preview Generator{% endblock %}</title>
+
+    <!-- Apply saved theme before CSS loads to avoid a flash of the wrong
+         theme on page navigation.  Reads localStorage.theme ("dark" |
+         "light") and sets <html data-bs-theme> accordingly.  Dark is the
+         default for users who haven't chosen yet. -->
+    <script>
+        (function () {
+            try {
+                var saved = localStorage.getItem('theme');
+                if (saved === 'light' || saved === 'dark') {
+                    document.documentElement.setAttribute('data-bs-theme', saved);
+                }
+            } catch (e) { /* localStorage blocked — stay on the default */ }
+        })();
+    </script>
+
+    <!-- Favicon -->
+    <link rel="icon" type="image/png" href="{{ url_for('static', filename='images/icon.png') }}">
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/icon.svg') }}">
+    <link rel="apple-touch-icon" href="{{ url_for('static', filename='images/icon.png') }}">
+
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-T3c6CoIi6uLrA9TneNEoa7RxnatzjcDSCmG1MXxSR1GAsXEV/Dwwykc2MPK8M2HN" crossorigin="anonymous">
+    <!-- Bootstrap Icons -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet" integrity="sha256-u2/YzYU5TLNn6KxY5HKS8taOsoj6Evq2jmVDCl3fzkg=" crossorigin="anonymous">
+    <!-- Custom CSS -->
+    <link href="{{ url_for('static', filename='css/style.css') }}" rel="stylesheet">
+
+    <!-- CSRF Token for AJAX -->
+    <meta name="csrf-token" content="{{ csrf_token() }}">
+
+    {% block head %}{% endblock %}
+</head>
+<body>
+    {% if request.endpoint != 'main.login' %}
+    <!-- Navigation -->
+    <nav class="navbar navbar-expand-lg border-bottom sticky-top">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="{{ url_for('main.index') }}">
+                <i class="bi bi-film me-2"></i>Media Preview Generator
+            </a>
+            <!-- The standard ``.navbar-toggler-icon`` SVG is just three
+                 horizontal bars; the close affordance got muddled when
+                 it was just a rotated hamburger. Use Bootstrap Icons —
+                 ``list`` for the closed (hamburger) state. The
+                 corresponding "close" glyph lives inside the offcanvas
+                 header (where it has more room and reads as a proper
+                 dismiss-X). -->
+            <button class="navbar-toggler" type="button" data-bs-toggle="offcanvas" data-bs-target="#navbarNav"
+                    aria-controls="navbarNav" aria-expanded="false" aria-label="Open navigation menu">
+                <i class="bi bi-list navbar-toggler-glyph" aria-hidden="true"></i>
+            </button>
+            <!-- ``offcanvas offcanvas-end offcanvas-lg`` makes this menu
+                 slide in from the right (like a native iOS drawer) on
+                 viewports below ``lg``, while staying as a regular
+                 inline navbar at ``lg`` and up. Bootstrap 5.2+ handles
+                 the responsive switch for us. -->
+            <div class="offcanvas offcanvas-end offcanvas-lg" tabindex="-1" id="navbarNav"
+                 aria-labelledby="navbarOffcanvasLabel">
+                <div class="offcanvas-header border-bottom">
+                    <h5 class="offcanvas-title" id="navbarOffcanvasLabel">
+                        <i class="bi bi-film me-2 text-warning"></i>Menu
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="Close menu"></button>
+                </div>
+                <div class="offcanvas-body">
+                <ul class="navbar-nav me-auto">
+                    <li class="nav-item">
+                        <a class="nav-link {% if request.endpoint == 'main.index' %}active{% endif %}" href="{{ url_for('main.index') }}">
+                            <i class="bi bi-speedometer2 me-1"></i>Dashboard
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link {% if request.endpoint == 'main.servers_page' %}active{% endif %}" href="{{ url_for('main.servers_page') }}">
+                            <i class="bi bi-hdd-stack me-1"></i>Servers
+                        </a>
+                    </li>
+                    <li class="nav-item dropdown">
+                        <a class="nav-link dropdown-toggle {% if request.endpoint == 'main.automation_page' %}active{% endif %}" href="{{ url_for('main.automation_page') }}" id="navAutomationDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+                            <i class="bi bi-magic me-1"></i>Automation
+                        </a>
+                        <!-- Curated jump-points only — Automation itself is a single page with
+                             tabs; this dropdown lets users land on a specific tab without an
+                             extra click. Previously listed "All automation" (same as clicking
+                             the parent link) and "Activity Log" (an in-page section, not a
+                             destination); both removed for clarity. The ``data-anchor`` attrs
+                             power the hash-aware ``active`` highlighter at the bottom of this
+                             file. -->
+                        <ul class="dropdown-menu" aria-labelledby="navAutomationDropdown">
+                            <li>
+                                <a class="dropdown-item" data-anchor="section-webhooks-overview"
+                                   href="{{ url_for('main.automation_page') }}#section-webhooks-overview">
+                                    <i class="bi bi-lightning-charge me-2"></i>Triggers
+                                </a>
+                            </li>
+                            <li>
+                                <a class="dropdown-item" data-anchor="section-schedules-list"
+                                   href="{{ url_for('main.automation_page') }}#section-schedules-list">
+                                    <i class="bi bi-calendar-event me-2"></i>Schedules
+                                </a>
+                            </li>
+                            <li>
+                                <a class="dropdown-item" data-anchor="section-schedules-quiet-hours"
+                                   href="{{ url_for('main.automation_page') }}#section-schedules-quiet-hours">
+                                    <i class="bi bi-moon-stars me-2"></i>Quiet Hours
+                                </a>
+                            </li>
+                        </ul>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link {% if request.endpoint == 'main.settings' %}active{% endif %}" href="{{ url_for('main.settings') }}">
+                            <i class="bi bi-gear me-1"></i>Settings
+                        </a>
+                    </li>
+                    <!-- Tools dropdown — diagnostic surfaces grouped together so the primary
+                         nav stays focused on configuration. Previously Logs and Preview
+                         Inspector were each a top-level nav entry; users navigating to "where
+                         do I configure X" had to mentally skip over them. The "Run setup again"
+                         entry exposes /setup so users can re-onboard after swapping servers
+                         (the route always worked; nothing in the UI previously linked to it
+                         after first-run). -->
+                    <li class="nav-item dropdown">
+                        {# <button> not <a href="#"> — the latter races with
+                           iOS-Safari's synthesized click and momentarily
+                           sets location.hash = "" on tap, which fires the
+                           hashchange listener below and clears any deep-link
+                           highlight on the Automation dropdown. Same pattern
+                           as the Help and Notification toggles further down. #}
+                        <button type="button"
+                                class="nav-link btn btn-link dropdown-toggle d-flex align-items-center {% if request.endpoint in ('main.logs_page','main.bif_viewer') %}active{% endif %}"
+                                id="navToolsDropdown"
+                                data-bs-toggle="dropdown" aria-expanded="false">
+                            <i class="bi bi-wrench-adjustable me-1"></i>Tools
+                        </button>
+                        <ul class="dropdown-menu" aria-labelledby="navToolsDropdown">
+                            <li>
+                                <a class="dropdown-item {% if request.endpoint == 'main.logs_page' %}active{% endif %}" href="{{ url_for('main.logs_page') }}">
+                                    <i class="bi bi-terminal me-2"></i>Logs
+                                </a>
+                            </li>
+                            <li>
+                                <a class="dropdown-item {% if request.endpoint == 'main.bif_viewer' %}active{% endif %}" href="{{ url_for('main.bif_viewer') }}">
+                                    <i class="bi bi-film me-2"></i>Preview Inspector
+                                </a>
+                            </li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li>
+                                {# ?rerun=1 — the setup_wizard route normally
+                                   redirects authenticated post-setup users
+                                   to the dashboard. The flag opts the user
+                                   into re-entering the wizard explicitly. #}
+                                <a class="dropdown-item" href="{{ url_for('main.setup_wizard', rerun=1) }}">
+                                    <i class="bi bi-magic me-2"></i>Run setup again
+                                </a>
+                            </li>
+                        </ul>
+                    </li>
+                </ul>
+                <ul class="navbar-nav navbar-nav-utility">
+                    <!-- Mobile-only divider — separates primary nav (Dashboard /
+                         Servers / …) from utility actions (Notifications / Help /
+                         Theme / Logout). Without this the user sees one long
+                         column of unlabelled icons after the primary links and
+                         can't tell which is what. Hidden on desktop where the
+                         right-aligned cluster naturally separates them. -->
+                    <li class="nav-item d-lg-none">
+                        <hr class="dropdown-divider my-2">
+                    </li>
+                    <li class="nav-item dropdown notification-bell-wrapper">
+                        <button type="button"
+                                class="nav-link btn btn-link position-relative d-flex align-items-center"
+                                id="notificationBellBtn"
+                                data-bs-toggle="dropdown"
+                                data-bs-auto-close="outside"
+                                aria-expanded="false"
+                                aria-label="System notifications"
+                                title="System notifications">
+                            <i class="bi bi-bell-fill" id="notificationBellIcon"></i>
+                            <!-- Mobile-collapsed label: when the navbar is
+                                 stacked under the hamburger, an icon-only
+                                 button reads as a mystery glyph. Render the
+                                 label inline below `lg` so it matches the rest
+                                 of the menu. Desktop hides it (icon + tooltip
+                                 is enough where horizontal space is tight). -->
+                            <span class="d-lg-none ms-2">Notifications</span>
+                            <span class="position-absolute translate-middle badge rounded-pill bg-danger d-none"
+                                  id="notificationBellBadge"
+                                  style="top: 35%; left: 70%; font-size: 0.65rem;">
+                                0
+                                <span class="visually-hidden">unread notifications</span>
+                            </span>
+                        </button>
+                        <div class="dropdown-menu dropdown-menu-end notification-dropdown p-0"
+                             aria-labelledby="notificationBellBtn">
+                            <div class="d-flex justify-content-between align-items-center px-3 py-2 border-bottom">
+                                <strong>Notifications</strong>
+                                <button type="button"
+                                        class="btn btn-sm btn-link p-0 text-decoration-none"
+                                        id="notificationResetBtn"
+                                        title="Restore dismissed notifications">
+                                    Reset
+                                </button>
+                            </div>
+                            <div id="notificationList" class="notification-list">
+                                <div class="text-center" id="notificationEmpty">
+                                    <i class="bi bi-bell-slash d-block mb-2" style="font-size: 1.6rem; opacity: 0.55;"></i>
+                                    <div class="small">You're all caught up.</div>
+                                </div>
+                            </div>
+                        </div>
+                    </li>
+                    <li class="nav-item dropdown">
+                        <button type="button"
+                                class="nav-link btn btn-link d-flex align-items-center"
+                                id="helpMenuBtn"
+                                data-bs-toggle="dropdown"
+                                aria-expanded="false"
+                                aria-label="Help and report an issue"
+                                title="Help / Report an issue">
+                            <i class="bi bi-question-circle"></i>
+                            <span class="d-lg-none ms-2">Help &amp; feedback</span>
+                        </button>
+                        <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="helpMenuBtn">
+                            <li>
+                                <a class="dropdown-item d-flex align-items-center"
+                                   href="https://github.com/stevezau/media_preview_generator/issues/new/choose"
+                                   target="_blank" rel="noopener noreferrer">
+                                    <i class="bi bi-bug me-2"></i>Report an issue
+                                    <i class="bi bi-box-arrow-up-right ms-auto small text-muted" aria-label="Opens in a new tab"></i>
+                                </a>
+                            </li>
+                            <li>
+                                <a class="dropdown-item d-flex align-items-center"
+                                   href="https://github.com/stevezau/media_preview_generator/discussions"
+                                   target="_blank" rel="noopener noreferrer">
+                                    <i class="bi bi-chat-dots me-2"></i>Ask a question
+                                    <i class="bi bi-box-arrow-up-right ms-auto small text-muted" aria-label="Opens in a new tab"></i>
+                                </a>
+                            </li>
+                            <li>
+                                <a class="dropdown-item d-flex align-items-center"
+                                   href="https://github.com/stevezau/media_preview_generator#readme"
+                                   target="_blank" rel="noopener noreferrer">
+                                    <i class="bi bi-book me-2"></i>Documentation
+                                    <i class="bi bi-box-arrow-up-right ms-auto small text-muted" aria-label="Opens in a new tab"></i>
+                                </a>
+                            </li>
+                            <li>
+                                <a class="dropdown-item d-flex align-items-center"
+                                   href="https://github.com/stevezau/media_preview_generator/blob/main/docs/multi-server.md"
+                                   target="_blank" rel="noopener noreferrer">
+                                    <i class="bi bi-hdd-stack me-2"></i>Multi-server guide
+                                    <i class="bi bi-box-arrow-up-right ms-auto small text-muted" aria-label="Opens in a new tab"></i>
+                                </a>
+                            </li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li>
+                                <a class="dropdown-item d-flex align-items-center"
+                                   href="https://github.com/stevezau/media_preview_generator"
+                                   target="_blank" rel="noopener noreferrer">
+                                    <i class="bi bi-github me-2"></i>GitHub repository
+                                    <i class="bi bi-box-arrow-up-right ms-auto small text-muted" aria-label="Opens in a new tab"></i>
+                                </a>
+                            </li>
+                        </ul>
+                    </li>
+                    <li class="nav-item">
+                        <button type="button" class="nav-link btn btn-link d-flex align-items-center" id="themeToggleBtn"
+                                aria-label="Toggle dark/light theme" title="Toggle dark/light theme">
+                            <i class="bi bi-moon-stars-fill" id="themeToggleIcon"></i>
+                            <span class="d-lg-none ms-2" id="themeToggleLabel">Switch to light theme</span>
+                        </button>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="{{ url_for('main.logout') }}">
+                            <i class="bi bi-box-arrow-right me-1"></i>Logout
+                        </a>
+                    </li>
+                </ul>
+                </div>{# /.offcanvas-body #}
+            </div>{# /#navbarNav #}
+        </div>
+    </nav>
+    {% endif %}
+
+    <!-- Main Content -->
+    <main class="{% if request.endpoint != 'main.login' %}container-fluid py-4{% endif %}">
+        {% block content %}{% endblock %}
+    </main>
+
+    <!-- Generic confirmation modal (shared via window.appConfirm helper).
+         Replaces native browser confirm() so destructive actions (cancel
+         job, delete server, clear completed jobs, restore backup, etc.)
+         all share one consistent in-app dialog instead of an OS popup
+         that varies per browser, ignores app theming, and can't surface
+         icon/colour cues for severity. -->
+    <div class="modal fade" id="appConfirmModal" tabindex="-1" aria-labelledby="appConfirmModalTitle" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title d-flex align-items-center gap-2" id="appConfirmModalTitle">
+                        <i class="bi bi-question-circle" id="appConfirmModalIcon"></i>
+                        <span id="appConfirmModalTitleText">Confirm</span>
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body" id="appConfirmModalBody"></div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal" id="appConfirmModalCancelBtn">Cancel</button>
+                    <button type="button" class="btn btn-danger" id="appConfirmModalOkBtn">Confirm</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Shared <template> bodies for ⓘ info-icons that appear on
+         multiple pages (Server URL, webhook paths, auth method).
+         Referenced by data-explain-template="<id>" on info-icon
+         buttons; #globalInfoModal below reads their innerHTML on open. -->
+    {% include "_shared_info_templates.html" %}
+
+    <!-- Unified ⓘ info-icon explanation modal. Every `.info-icon` button
+         across the app opens this same modal on click when a rich
+         explanation is available. Hover shows the Bootstrap tooltip
+         (short one-liner); click opens the rich modal (paragraphs /
+         lists / code blocks). Single source of truth — prevents the
+         mixed tooltip / popover / ad-hoc-modal soup that crept in as
+         the app grew. See `_openGlobalInfoModal` in app.js. -->
+    <div class="modal fade" id="globalInfoModal" tabindex="-1" aria-labelledby="globalInfoTitle" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title d-flex align-items-center gap-2">
+                        <i class="bi bi-info-circle-fill text-primary"></i>
+                        <span id="globalInfoTitle">About this setting</span>
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <!-- Rich HTML set by JS: paragraphs, lists, code blocks.
+                         Server-controlled (no user input) so innerHTML is
+                         safe. See app.js _openGlobalInfoModal. -->
+                    <div id="globalInfoBody"></div>
+                </div>
+                <div class="modal-footer justify-content-between">
+                    <a id="globalInfoDocsLink" href="#" target="_blank" rel="noopener"
+                       class="btn btn-outline-primary d-none">
+                        <i class="bi bi-book me-1"></i>Open full documentation
+                    </a>
+                    <button type="button" class="btn btn-secondary ms-auto" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Container -->
+    <div class="toast-container position-fixed bottom-0 end-0 p-3">
+        <div id="toastNotification" class="toast" role="alert" aria-live="assertive" aria-atomic="true">
+            <div class="toast-header">
+                <i class="bi bi-info-circle me-2" id="toastIcon"></i>
+                <strong class="me-auto" id="toastTitle">Notification</strong>
+                <button type="button" class="btn-close" data-bs-dismiss="toast" aria-label="Close"></button>
+            </div>
+            <div class="toast-body" id="toastBody"></div>
+        </div>
+    </div>
+
+    <!-- What's New Modal -->
+    <div class="modal fade" id="whatsNewModal" tabindex="-1" aria-labelledby="whatsNewModalTitle" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="whatsNewModalTitle">
+                        <i class="bi bi-megaphone me-2"></i>What's New
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body" id="whatsNewBody">
+                    <div class="text-center py-3">
+                        <div class="spinner-border spinner-border-sm" role="status"></div>
+                        <span class="ms-2">Loading changelog...</span>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-primary" data-bs-dismiss="modal">
+                        <i class="bi bi-check-lg me-1"></i>Got it
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bootstrap 5 JS Bundle -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js" integrity="sha384-C6RzsynM9kWDrMNeT87bh95OGNyZPhcTNXj1NW7RuBCsyN/o0jlpcV8Qyq46cDfL" crossorigin="anonymous"></script>
+    <!-- Socket.IO -->
+    <script src="https://cdn.jsdelivr.net/npm/socket.io-client@4.7.2/dist/socket.io.min.js" integrity="sha256-g99KvH7slB8dKa4lToC6wLuC05j74ujuTqKn78jnBPE=" crossorigin="anonymous"></script>
+    <!-- Custom JS -->
+    <!-- app.js MUST load first: notifications.js and job_modal.js depend on
+         its global escapeHtml / sanitizeNotificationHtml / showToast /
+         copyVulkanDiagnosticBundle / apiGet / copyToClipboard / jobs /
+         _renderPublishersBlock definitions. -->
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/notifications.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/job_modal.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/schedule_modal.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/schedules.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/autosave.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/folder_picker.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/stepper.js') }}"></script>
+
+    <!-- Mobile navbar auto-close — when a user taps a real navigation
+         link inside the offcanvas drawer, dismiss the drawer so the
+         page navigation feels instant (otherwise the drawer would
+         stay slid in over the destination page until they tapped X).
+         Excludes dropdown toggles (which need to keep the drawer open
+         to expand the accordion) and no-op anchors. -->
+    <script>
+        (function () {
+            var offcanvasEl = document.getElementById('navbarNav');
+            if (!offcanvasEl || !window.bootstrap || !window.bootstrap.Offcanvas) return;
+            offcanvasEl.addEventListener('click', function (event) {
+                var link = event.target.closest('a.nav-link, a.dropdown-item');
+                if (!link) return;
+                if (link.matches('[data-bs-toggle="dropdown"]')) return;
+                var href = link.getAttribute('href') || '';
+                if (href === '' || href === '#') return;
+                // Only dismiss on viewports below the navbar-expand-lg
+                // breakpoint (992px). At lg+ the offcanvas isn't really
+                // an offcanvas — it renders inline as a regular navbar
+                // and there's nothing to hide.
+                if (window.innerWidth >= 992) return;
+                var instance = window.bootstrap.Offcanvas.getInstance(offcanvasEl)
+                    || new window.bootstrap.Offcanvas(offcanvasEl);
+                instance.hide();
+            });
+        })();
+    </script>
+
+    <!-- Hash-aware Automation sub-section highlighter. When the URL is
+         /automation#section-schedules-list (or similar), light up the
+         matching dropdown item so the user can see which sub-section is
+         current. Matches via the ``data-anchor`` attributes set on each
+         dropdown <a>. Without this the Automation parent lights up but
+         the dropdown items themselves give no feedback. -->
+    <script>
+        // Wrapped in DOMContentLoaded so the dropdown lookup survives if
+        // this block ever moves into <head>. It runs after the navbar in
+        // <body> today, but future-proofing is cheap.
+        document.addEventListener('DOMContentLoaded', function () {
+            var dropdown = document.querySelector('ul[aria-labelledby="navAutomationDropdown"]');
+            if (!dropdown) return;
+            function syncActiveAnchor() {
+                var hash = (window.location.hash || '').replace(/^#/, '');
+                dropdown.querySelectorAll('a.dropdown-item[data-anchor]').forEach(function (a) {
+                    a.classList.toggle('active', !!hash && a.getAttribute('data-anchor') === hash);
+                });
+            }
+            syncActiveAnchor();
+            window.addEventListener('hashchange', syncActiveAnchor);
+        });
+    </script>
+
+    <!-- Theme toggle — flips data-bs-theme on <html> and persists to
+         localStorage.  The pre-paint script in <head> reads the saved
+         value on load to avoid a flash of the wrong theme. -->
+    <script>
+        (function () {
+            var btn = document.getElementById('themeToggleBtn');
+            var icon = document.getElementById('themeToggleIcon');
+            if (!btn || !icon) return;
+
+            var label = document.getElementById('themeToggleLabel');
+            function syncIcon() {
+                var current = document.documentElement.getAttribute('data-bs-theme') || 'dark';
+                icon.className = current === 'dark' ? 'bi bi-moon-stars-fill' : 'bi bi-sun-fill';
+                // Tooltip stays verbose ("Switch to …") because tooltips
+                // appear on hover and need to be self-explanatory. The
+                // mobile-collapsed label just names the destination
+                // theme — the icon implies the verb ("switch to").
+                btn.setAttribute('title',
+                    current === 'dark' ? 'Switch to light theme' : 'Switch to dark theme');
+                if (label) label.textContent = current === 'dark' ? 'Switch to light theme' : 'Switch to dark theme';
+            }
+
+            syncIcon();
+
+            btn.addEventListener('click', function () {
+                var current = document.documentElement.getAttribute('data-bs-theme') || 'dark';
+                var next = current === 'dark' ? 'light' : 'dark';
+                document.documentElement.setAttribute('data-bs-theme', next);
+                try { localStorage.setItem('theme', next); } catch (e) { /* best-effort */ }
+                syncIcon();
+            });
+        })();
+    </script>
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>

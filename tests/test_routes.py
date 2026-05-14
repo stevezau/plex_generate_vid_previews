@@ -9,13 +9,14 @@ Uses Flask's test client with an in-memory config dir.
 import json
 import os
 import threading
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from plex_generate_previews.config import normalize_path_mappings
-from plex_generate_previews.web.app import create_app
-from plex_generate_previews.web.settings_manager import reset_settings_manager
+from media_preview_generator.config import normalize_path_mappings
+from media_preview_generator.web.app import create_app
+from media_preview_generator.web.settings_manager import reset_settings_manager
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -27,17 +28,17 @@ def _reset_singletons():
     """Reset web singletons between tests to avoid cross-contamination."""
     reset_settings_manager()
     # Also reset the jobs singleton
-    import plex_generate_previews.web.jobs as jobs_mod
+    import media_preview_generator.web.jobs as jobs_mod
 
     with jobs_mod._job_lock:
         jobs_mod._job_manager = None
     # Reset schedule singleton
-    import plex_generate_previews.web.scheduler as sched_mod
+    import media_preview_generator.web.scheduler as sched_mod
 
     with sched_mod._schedule_lock:
         sched_mod._schedule_manager = None
     # Clear GPU detection and library caches
-    from plex_generate_previews.web.routes import clear_gpu_cache, clear_library_cache
+    from media_preview_generator.web.routes import clear_gpu_cache, clear_library_cache
 
     clear_gpu_cache()
     clear_library_cache()
@@ -57,7 +58,7 @@ def _reset_singletons():
 
 
 @pytest.fixture()
-def app(tmp_path):
+def app(tmp_path, monkeypatch):
     """Create a Flask test app with a temporary config directory."""
     config_dir = str(tmp_path / "config")
     os.makedirs(config_dir, exist_ok=True)
@@ -66,6 +67,16 @@ def app(tmp_path):
     auth_file = os.path.join(config_dir, "auth.json")
     with open(auth_file, "w") as f:
         json.dump({"token": "test-token-12345678"}, f)
+
+    # auth.AUTH_FILE is computed once at module-import time from
+    # CONFIG_DIR. By the time this fixture runs the module is already
+    # imported, so the env var alone doesn't redirect writes — we have
+    # to patch the constant + get_config_dir helper directly. Without
+    # this, save_auth_config tries to write to /config/auth.json and
+    # CI fails with PermissionError.
+    monkeypatch.setattr("media_preview_generator.web.auth.AUTH_FILE", auth_file)
+    monkeypatch.setattr("media_preview_generator.web.auth.CONFIG_DIR", config_dir)
+    monkeypatch.setattr("media_preview_generator.web.auth.get_config_dir", lambda: config_dir)
 
     # Mark setup as complete so before_request doesn't redirect to /setup
     settings_file = os.path.join(config_dir, "settings.json")
@@ -117,21 +128,110 @@ class TestPageRoutes:
 
     def test_index_redirects_to_login_when_unauthenticated(self, client):
         resp = client.get("/", follow_redirects=False)
-        assert resp.status_code in (302, 308)
+        # @login_required uses Flask's default redirect (302). A 308 here would
+        # mean the route became a permanent redirect, which is a UX regression.
+        assert resp.status_code == 302
         assert "/login" in resp.headers.get("Location", "")
 
     def test_login_page_renders(self, client):
         resp = client.get("/login")
         assert resp.status_code == 200
-        assert b"token" in resp.data.lower() or b"login" in resp.data.lower()
+        # Pin stable form markers — disjunctive substring match on the
+        # word "login"/"token" was so loose any error page passed.
+        body = resp.data
+        assert b'name="token"' in body, "login form must include the token input"
+        assert b'type="password"' in body, "token input must be type=password"
+        assert b'method="POST"' in body, "login form must POST"
 
     def test_settings_requires_auth(self, client):
         resp = client.get("/settings", follow_redirects=False)
-        assert resp.status_code in (302, 308)
+        assert resp.status_code == 302
+        assert "/login" in resp.headers.get("Location", "")
 
     def test_settings_accessible_when_authenticated(self, authed_client):
         resp = authed_client.get("/settings")
         assert resp.status_code == 200
+        # Pin stable settings-page markers — substring "setting" is too
+        # permissive (any error page mentioning the word "setting"
+        # passes). The sidebar nav anchors are the load-bearing structure
+        # the page is built around.
+        body = resp.data
+        assert b'id="settings-sidebar"' in body, "settings page must include the sidebar nav"
+        assert b'id="section-processing"' in body, "settings page must include the Processing section"
+
+    def test_servers_page_accepts_add_query_param(self, authed_client):
+        """Setup wizard step 1's vendor picker redirects to
+        /servers?add=<vendor> when the user picks Emby/Jellyfin. The page
+        itself must render normally — the actual modal-open is JS-side
+        (we only verify the route doesn't choke on the param).
+
+        Pin a stable page marker so a regression that 200s with an empty
+        body / wrong template (and the modal-open JS therefore fails
+        silently) is still caught.
+        """
+        for vendor in ("plex", "emby", "jellyfin", "invalid", ""):
+            resp = authed_client.get(f"/servers?add={vendor}")
+            assert resp.status_code == 200, f"vendor={vendor!r} returned {resp.status_code}"
+            # The Add Server modal MUST be present in every render — the
+            # whole point of the ?add= deep link is that JS opens it on load.
+            assert b'id="addServerModal"' in resp.data, f"vendor={vendor!r} body missing modal"
+            assert b'id="serverList"' in resp.data, f"vendor={vendor!r} body missing serverList container"
+
+    def test_gpu_config_panel_js_served(self, client):
+        """The shared per-GPU panel JS is loaded by both /setup and /settings.
+        If the file is missing or renamed, the wizard's step 4 silently
+        breaks (renderGpuConfigPanel undefined). Catch that with a
+        smoke check that the static asset is reachable."""
+        resp = client.get("/static/js/gpu_config_panel.js")
+        assert resp.status_code == 200
+        assert b"renderGpuConfigPanel" in resp.data
+        assert b"collectGpuConfig" in resp.data
+
+    def test_stepper_js_served(self, client):
+        """The shared stepper widget is loaded by base.html for every page.
+        If renamed/removed, every numeric input loses its −/+ buttons."""
+        resp = client.get("/static/js/stepper.js")
+        assert resp.status_code == 200
+        assert b"attachStepper" in resp.data
+        assert b"attachSteppersTo" in resp.data
+
+    def test_setup_page_loads_shared_panel_scripts(self, client):
+        """The wizard relies on three external JS modules (folder picker,
+        gpu config panel, servers helpers). A missing <script> tag is a
+        silent regression — verify all three are referenced from /setup.
+        Uses the unauthed `client` fixture because authed_client marks
+        setup_complete and /setup then redirects."""
+        resp = client.get("/setup")
+        assert resp.status_code == 200
+        body = resp.data
+        assert b"folder_picker.js" in body
+        assert b"gpu_config_panel.js" in body
+        assert b"servers.js" in body
+
+    def test_setup_page_inlines_connection_form_partial(self, client):
+        """The Emby/Jellyfin connection form is rendered inline inside the
+        wizard card (not in a modal popup). Assert the expected markers
+        are present and the modal partial is *not* — that combination is
+        what makes the wizard feel like one continuous flow."""
+        resp = client.get("/setup")
+        assert resp.status_code == 200
+        body = resp.data
+        # Inline panel + connection-form fields from the shared partial
+        assert b"ejConnectPanel" in body
+        assert b'id="serverUrl"' in body
+        assert b'id="auth-method-section"' in body
+        # The Add Server modal must NOT be on /setup anymore — it was
+        # the popup the user disliked. /servers still has it.
+        assert b'id="addServerModal"' not in body
+
+    def test_servers_page_still_has_modal(self, authed_client):
+        """Sanity: the modal popup stays on /servers (it's the surface
+        for adding servers post-setup). Catches an over-zealous removal."""
+        resp = authed_client.get("/servers")
+        assert resp.status_code == 200
+        assert b'id="addServerModal"' in resp.data
+        # The connection-form partial is shared with /setup.
+        assert b'id="serverUrl"' in resp.data
 
 
 # ---------------------------------------------------------------------------
@@ -145,39 +245,62 @@ class TestLoginLogout:
     def test_login_post_valid_token(self, client):
         resp = client.post("/login", data={"token": "test-token-12345678"}, follow_redirects=False)
         # Should redirect to dashboard
-        assert resp.status_code in (302, 308)
+        assert resp.status_code == 302
         assert "/login" not in resp.headers.get("Location", "")
+        # Session must be marked authenticated — bug class: redirect happens
+        # but session never updates and the next request bounces back to /login.
+        with client.session_transaction() as sess:
+            assert sess.get("authenticated") is True
 
     def test_login_post_invalid_token(self, client):
         resp = client.post("/login", data={"token": "wrong"})
         assert resp.status_code == 200
-        assert b"didn" in resp.data or b"invalid" in resp.data or b"Invalid" in resp.data
+        # Pin a stable Bootstrap alert marker — substring "didn"/"invalid"
+        # lets unrelated content pass. The error alert div is what the
+        # template only renders when ``error`` is set in the context.
+        body = resp.data
+        assert b'class="alert alert-danger' in body, "invalid-token POST must render the danger alert"
+        assert b'role="alert"' in body
 
     def test_already_authenticated_redirects_from_login(self, authed_client):
         resp = authed_client.get("/login", follow_redirects=False)
-        assert resp.status_code in (302, 308)
+        assert resp.status_code == 302
+        # Should redirect to dashboard (/), not loop back to /login.
+        assert "/login" not in resp.headers.get("Location", "")
 
     def test_logout_clears_session(self, authed_client):
         resp = authed_client.get("/logout", follow_redirects=False)
-        assert resp.status_code in (302, 308)
+        assert resp.status_code == 302
         # Subsequent request should require login
         resp2 = authed_client.get("/", follow_redirects=False)
-        assert resp2.status_code in (302, 308)
+        assert resp2.status_code == 302
         assert "/login" in resp2.headers.get("Location", "")
 
     def test_login_rate_limit_exceeded(self, client):
-        """After 5 POSTs to /login, 6th returns 429."""
-        for _ in range(5):
-            client.post("/login", data={"token": "wrong"})
+        """After 5 POSTs to /login, 6th returns 429.
+
+        Assert the matrix: each of the first 5 POSTs returns 200 (legitimate
+        invalid-token render), and only the 6th flips to 429. Without this
+        ordering check a regression that bumped the limit to 50 would still
+        pass the previous test (it only checked that the 6th was 429).
+        """
+        for i in range(5):
+            r = client.post("/login", data={"token": "wrong"})
+            assert r.status_code == 200, f"attempt {i + 1} should still be allowed, got {r.status_code}"
         resp = client.post("/login", data={"token": "wrong"})
-        assert resp.status_code == 429
+        assert resp.status_code == 429, "6th attempt must be rate-limited"
 
     def test_api_login_rate_limit_exceeded(self, client):
-        """After 10 POSTs to /api/auth/login, 11th returns 429."""
-        for _ in range(10):
-            client.post("/api/auth/login", json={"token": "wrong"})
+        """After 10 POSTs to /api/auth/login, 11th returns 429.
+
+        Assert the matrix: each of the first 10 POSTs returns 401
+        (legitimate invalid-token), only the 11th returns 429.
+        """
+        for i in range(10):
+            r = client.post("/api/auth/login", json={"token": "wrong"})
+            assert r.status_code == 401, f"attempt {i + 1} should be 401 (invalid token), got {r.status_code}"
         resp = client.post("/api/auth/login", json={"token": "wrong"})
-        assert resp.status_code == 429
+        assert resp.status_code == 429, "11th attempt must be rate-limited"
 
 
 # ---------------------------------------------------------------------------
@@ -212,6 +335,12 @@ class TestAuthAPI:
         resp = authed_client.post("/api/auth/logout")
         assert resp.status_code == 200
         assert resp.get_json()["success"] is True
+        # Verify the session was actually cleared — bare success=True
+        # was bug-blind to a no-op endpoint that always returns success.
+        status = authed_client.get("/api/auth/status")
+        assert status.get_json()["authenticated"] is False, (
+            "logout must invalidate the session — subsequent /api/auth/status still reports authenticated=True"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -240,12 +369,26 @@ class TestTokenEndpoints:
         resp = client.post("/api/token/regenerate")
         assert resp.status_code == 401
 
-    def test_regenerate_token_returns_masked(self, client):
-        resp = client.post("/api/token/regenerate", headers=_api_headers())
+    def test_regenerate_token_returns_masked(self, client, monkeypatch):
+        # The fixture pins WEB_AUTH_TOKEN in env, which causes regenerate_token()
+        # to short-circuit and return the env token unchanged. Bypass the env-control
+        # gate so the endpoint actually mints a new token on disk and we can verify
+        # the change.
+        monkeypatch.delenv("WEB_AUTH_TOKEN", raising=False)
+        from media_preview_generator.web.auth import load_auth_config
+
+        original_token = load_auth_config()["token"]
+
+        resp = client.post("/api/token/regenerate", headers={"Authorization": f"Bearer {original_token}"})
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["success"] is True
         assert data["token"].startswith("****")
+        # Verify the persisted token actually changed — without this assertion
+        # a no-op endpoint would still pass the masked-prefix check.
+        new_token = load_auth_config()["token"]
+        assert new_token != original_token
+        assert data["token"].endswith(new_token[-4:])
 
     def test_regenerate_token_invalidates_session(self, client):
         """After token regeneration, session is cleared; request with old session gets 401."""
@@ -258,9 +401,166 @@ class TestTokenEndpoints:
         resp = client.get("/api/setup/token-info", headers=_api_headers())
         assert resp.status_code == 200
         data = resp.get_json()
-        assert "token" in data
         assert data["token"].startswith("****")
-        assert "source" in data
+        # The fixture sets WEB_AUTH_TOKEN, so source is "environment".
+        # Pin the enumerated value, not just key-presence — a regression
+        # returning source="leaked" would have passed.
+        assert data["source"] == "environment", data
+        assert data["env_controlled"] is True
+        # Token length must reflect the real token, not the masked one.
+        assert data["token_length"] == len("test-token-12345678")
+
+    def test_set_custom_token_requires_auth(self, client):
+        # No auth header → 401 regardless of env-var state.
+        resp = client.post("/api/token/set", json={"token": "newtoken123", "confirm_token": "newtoken123"})
+        assert resp.status_code == 401
+
+    def test_set_custom_token_persists_to_disk(self, client, monkeypatch):
+        # The fixture pins WEB_AUTH_TOKEN in env, which would normally make the
+        # endpoint 409. Bypass only the env-control gate so the new token lands
+        # on disk; we don't assert that the new token grants access (the env
+        # var still wins until container restart, which is the documented
+        # behaviour).
+        monkeypatch.setattr(
+            "media_preview_generator.web.auth.is_token_env_controlled",
+            lambda: False,
+        )
+        resp = client.post(
+            "/api/token/set",
+            headers=_api_headers(),
+            json={"token": "supersecret-12345", "confirm_token": "supersecret-12345"},
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["success"] is True
+        assert body["token"].startswith("****")
+        from media_preview_generator.web.auth import load_auth_config
+
+        assert load_auth_config()["token"] == "supersecret-12345"
+
+    def test_set_custom_token_rejects_mismatch(self, client, monkeypatch):
+        # Keep WEB_AUTH_TOKEN in env (auth still works) but lie about
+        # env-control so the endpoint reaches its real validation paths.
+        monkeypatch.setattr(
+            "media_preview_generator.web.auth.is_token_env_controlled",
+            lambda: False,
+        )
+        resp = client.post(
+            "/api/token/set",
+            headers=_api_headers(),
+            json={"token": "abc12345", "confirm_token": "different-token"},
+        )
+        assert resp.status_code == 400
+        assert "match" in resp.get_json()["error"].lower()
+
+    def test_set_custom_token_rejects_too_short(self, client, monkeypatch):
+        # Keep WEB_AUTH_TOKEN in env (auth still works) but lie about
+        # env-control so the endpoint reaches its real validation paths.
+        monkeypatch.setattr(
+            "media_preview_generator.web.auth.is_token_env_controlled",
+            lambda: False,
+        )
+        resp = client.post(
+            "/api/token/set",
+            headers=_api_headers(),
+            json={"token": "short", "confirm_token": "short"},
+        )
+        assert resp.status_code == 400
+        # Pin the validation reason — bare 400 was bug-blind to the "match"
+        # path firing instead of the "too short" path.
+        body = resp.get_json()
+        assert "8 characters" in body["error"], body
+
+    def test_setup_skip_marks_complete(self, client):
+        """Phase H8: /api/setup/skip lets Emby/Jellyfin users bypass the
+        Plex-first wizard and land on the dashboard."""
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        # Ensure setup isn't already complete (the fixture marks it complete
+        # but we want to assert the endpoint *re-asserts* it).
+        sm.set("setup_complete", False)
+        resp = client.post("/api/setup/skip", headers=_api_headers())
+        assert resp.status_code == 200
+        assert resp.get_json()["success"] is True
+        assert sm.is_setup_complete() is True
+
+    def test_setup_skip_works_when_already_authenticated(self, authed_client):
+        """The check_setup before_request hook used to redirect authed users
+        away from /api/setup/skip → /setup, so the POST never reached the
+        route and setup_complete never flipped. Regression: the skip endpoint
+        is now in the exempt_endpoints list so authed pivots from the
+        wizard's vendor picker (Emby/Jellyfin path) actually fire."""
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        sm.set("setup_complete", False)
+        # Use authed_client so check_setup's "is_authenticated" branch is
+        # taken — the bug only fires for authed users.
+        resp = authed_client.post("/api/setup/skip")
+        # Must be 200 (not 302 redirect to /setup).
+        assert resp.status_code == 200, (
+            f"expected 200, got {resp.status_code} (Location={resp.headers.get('Location')!r}) — "
+            "before_request probably bounced the POST back to /setup"
+        )
+        assert resp.get_json()["success"] is True
+        assert sm.is_setup_complete() is True
+
+    def test_set_custom_token_rejects_when_env_controlled(self, client):
+        # The fixture already has WEB_AUTH_TOKEN set, so any /api/token/set
+        # call should 409 with the env-var message.
+        resp = client.post(
+            "/api/token/set",
+            headers=_api_headers(),
+            json={"token": "newtoken123", "confirm_token": "newtoken123"},
+        )
+        assert resp.status_code == 409
+        assert "WEB_AUTH_TOKEN" in resp.get_json()["error"]
+
+    @pytest.mark.parametrize(
+        "method,path,payload",
+        [
+            ("POST", "/api/servers/auth/jellyfin/password", {"url": "http://x", "username": "u"}),
+            ("POST", "/api/servers/auth/emby/password", {"url": "http://x", "username": "u"}),
+            ("POST", "/api/servers/auth/jellyfin/quick-connect/initiate", {"url": "http://x"}),
+            (
+                "POST",
+                "/api/servers/test-connection",
+                {"type": "jellyfin", "url": "http://x", "auth": {"method": "api_key", "api_key": "k"}},
+            ),
+            ("GET", "/api/servers", None),
+        ],
+    )
+    def test_wizard_server_endpoints_not_redirected_during_setup(self, authed_client, method, path, payload):
+        """Add Server wizard endpoints must reach the route during setup
+        instead of being 302'd back to /setup by the check_setup
+        middleware.
+
+        Without the exempt-endpoints entries the JS-side fetch follows
+        the 302, gets the HTML setup page (HTTP 200), fails to JSON-parse
+        and surfaces a misleading "Authentication failed (HTTP 200)" /
+        "Connection failed" message instead of the actual backend reason.
+        """
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        sm.set("setup_complete", False)
+        kwargs = {"json": payload} if payload is not None else {}
+        resp = authed_client.open(path, method=method, **kwargs)
+        # Anything other than a redirect to /setup is fine — the route
+        # may legitimately 4xx for missing fields, or 200 with ok=False
+        # for upstream failures. The bug is *only* the 302 bounce.
+        assert resp.status_code != 302, (
+            f"{method} {path} got 302 to {resp.headers.get('Location')!r} — "
+            "endpoint is missing from check_setup's exempt_endpoints list"
+        )
+        # And catch the other failure mode — a generic 500 means the
+        # endpoint is exempt but crashing. Pin the legitimate set so a
+        # regression that 500s every wizard endpoint fails loudly here.
+        assert resp.status_code in {200, 400, 401, 502}, (
+            f"{method} {path} returned unexpected {resp.status_code} — "
+            "wizard endpoints must reach the route and return a real status code"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -287,16 +587,257 @@ class TestJobsAPI:
 
     def test_create_job(self, client):
         """Test creating a job (mocking _start_job_async to avoid real processing)."""
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             resp = client.post("/api/jobs", headers=_api_headers(), json={"library_name": "Movies"})
         assert resp.status_code == 201
         data = resp.get_json()
         assert data["status"] == "pending"
-        assert "id" in data
+        # Pin id is a non-empty string — bare key-presence was bug-blind
+        # to a regression returning id=None or id="".
+        assert isinstance(data["id"], str) and data["id"], data
+        assert data["library_name"] == "Movies"
+
+    def test_create_job_library_ids_propagate_to_overrides(self, client):
+        """Phase H6 Fix-4: library_ids array → selected_library_ids in overrides
+        (replaces the legacy comma-joined library_id hack)."""
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async") as mock_start:
+            resp = client.post(
+                "/api/jobs",
+                headers=_api_headers(),
+                json={
+                    "library_ids": ["1", "5", "9"],
+                    "library_name": "3 Libraries",
+                    "config": {},
+                },
+            )
+        assert resp.status_code == 201
+        # Job stored library_id=None for multi-library jobs (display field).
+        assert resp.get_json()["library_id"] is None
+        # Dispatcher gets the full ID list via selected_library_ids.
+        overrides = mock_start.call_args[0][1]
+        assert overrides["selected_library_ids"] == ["1", "5", "9"]
+
+    def test_create_job_single_library_id_keeps_back_compat(self, client):
+        """Single library_ids element keeps Job.library_id populated for the
+        existing Jobs UI rendering."""
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
+            resp = client.post(
+                "/api/jobs",
+                headers=_api_headers(),
+                json={"library_ids": ["42"], "library_name": "Movies"},
+            )
+        assert resp.status_code == 201
+        assert resp.get_json()["library_id"] == "42"
+
+    def test_create_job_infers_server_from_single_library_id(self, client):
+        """D2 — when caller picks one library but no server, infer from library."""
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        get_settings_manager().update(
+            {
+                "media_servers": [
+                    {
+                        "id": "plex-default",
+                        "name": "My Plex",
+                        "type": "plex",
+                        "enabled": True,
+                        "libraries": [{"id": "42", "name": "Movies", "enabled": True}],
+                    }
+                ]
+            }
+        )
+        try:
+            with patch("media_preview_generator.web.routes.api_jobs._start_job_async") as mock_start:
+                resp = client.post(
+                    "/api/jobs",
+                    headers=_api_headers(),
+                    json={"library_ids": ["42"], "library_name": "Movies"},
+                )
+            assert resp.status_code == 201
+            body = resp.get_json()
+            assert body["server_id"] == "plex-default"
+            assert body["server_name"] == "My Plex"
+            assert body["server_type"] == "plex"
+            # Inferred server_id also propagates into the dispatcher overrides
+            # so the dispatcher pins to that server (no fan-out leak).
+            overrides = mock_start.call_args[0][1]
+            assert overrides.get("server_id") == "plex-default"
+        finally:
+            get_settings_manager().update({"media_servers": []})
+
+    def test_create_job_infers_server_when_all_libraries_from_same_server(self, client):
+        """Multi-library jobs where every library belongs to one server
+        must still get pinned to that server.
+
+        Regression from job c9253a85: user picked three Plex libraries
+        (Movies + Sports + TV Shows, all on the same Plex) expecting
+        "only scan Plex", but because len(library_ids) > 1 the
+        inference was short-circuited, server_id stayed empty, and the
+        multi-server fan-out published BIFs to Emby + Jellyfin too. The
+        pin must fire whenever the library selection resolves to a
+        single server — single-library is just the trivial case.
+        """
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        get_settings_manager().update(
+            {
+                "media_servers": [
+                    {
+                        "id": "plex-default",
+                        "name": "My Plex",
+                        "type": "plex",
+                        "enabled": True,
+                        "libraries": [
+                            {"id": "1", "name": "Movies", "enabled": True},
+                            {"id": "2", "name": "TV", "enabled": True},
+                            {"id": "12", "name": "Sports", "enabled": True},
+                        ],
+                    },
+                    # Second server with DIFFERENT library IDs so a bug
+                    # that accidentally picks "first server in list"
+                    # would still pass the single-server test. This
+                    # server MUST NOT be picked for the Plex-only selection.
+                    {
+                        "id": "emby-other",
+                        "name": "Emby Other",
+                        "type": "emby",
+                        "enabled": True,
+                        "libraries": [{"id": "e1", "name": "Movies", "enabled": True}],
+                    },
+                ]
+            }
+        )
+        try:
+            with patch("media_preview_generator.web.routes.api_jobs._start_job_async") as mock_start:
+                resp = client.post(
+                    "/api/jobs",
+                    headers=_api_headers(),
+                    json={"library_ids": ["1", "2", "12"], "library_name": "3 Libraries"},
+                )
+            assert resp.status_code == 201
+            body = resp.get_json()
+            assert body["server_id"] == "plex-default", (
+                f"All 3 library_ids belong to plex-default; Job.server_id must be pinned to it. "
+                f"Got server_id={body['server_id']!r}."
+            )
+            assert body["server_type"] == "plex"
+            overrides = mock_start.call_args[0][1]
+            assert overrides.get("server_id") == "plex-default", (
+                f"Inferred server_id must propagate into dispatcher overrides so "
+                f"the publish fan-out is scoped to plex-default only — without this, "
+                f"Emby and Jellyfin still receive bundles for every path they own "
+                f"(the user-visible symptom on job c9253a85). "
+                f"Got overrides={overrides!r}."
+            )
+        finally:
+            get_settings_manager().update({"media_servers": []})
+
+    def test_create_job_stays_unpinned_when_libraries_span_servers(self, client):
+        """Mixed-server selection legitimately needs peer-equal fan-out."""
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        get_settings_manager().update(
+            {
+                "media_servers": [
+                    {
+                        "id": "plex-default",
+                        "name": "My Plex",
+                        "type": "plex",
+                        "enabled": True,
+                        "libraries": [{"id": "1", "name": "Movies", "enabled": True}],
+                    },
+                    {
+                        "id": "emby-other",
+                        "name": "My Emby",
+                        "type": "emby",
+                        "enabled": True,
+                        "libraries": [{"id": "e1", "name": "TV", "enabled": True}],
+                    },
+                ]
+            }
+        )
+        try:
+            with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
+                resp = client.post(
+                    "/api/jobs",
+                    headers=_api_headers(),
+                    json={"library_ids": ["1", "e1"], "library_name": "Cross-server"},
+                )
+            assert resp.status_code == 201
+            body = resp.get_json()
+            assert body["server_id"] is None, (
+                f"Libraries spanning multiple servers must stay unpinned so the "
+                f"dispatcher can legitimately fan across both. Got server_id={body['server_id']!r}."
+            )
+            assert body["server_type"] is None
+            assert body["server_name"] is None
+        finally:
+            get_settings_manager().update({"media_servers": []})
+
+    def test_create_job_explicit_server_id_overrides_inference(self, client):
+        """When the caller passes server_id explicitly, never re-infer it."""
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        get_settings_manager().update(
+            {
+                "media_servers": [
+                    {
+                        "id": "plex-A",
+                        "name": "Plex A",
+                        "type": "plex",
+                        "enabled": True,
+                        "libraries": [{"id": "100", "name": "Movies", "enabled": True}],
+                    },
+                    {
+                        "id": "plex-B",
+                        "name": "Plex B",
+                        "type": "plex",
+                        "enabled": True,
+                        "libraries": [{"id": "200", "name": "Movies", "enabled": True}],
+                    },
+                ]
+            }
+        )
+        try:
+            with patch("media_preview_generator.web.routes.api_jobs._start_job_async") as mock_start:
+                # Library 100 belongs to Plex-A but caller pinned to Plex-B
+                resp = client.post(
+                    "/api/jobs",
+                    headers=_api_headers(),
+                    json={
+                        "library_ids": ["100"],
+                        "library_name": "Movies",
+                        "server_id": "plex-B",
+                    },
+                )
+            assert resp.status_code == 201
+            body = resp.get_json()
+            assert body["server_id"] == "plex-B", "Explicit server_id from caller must win over the library inference."
+            # Audit fix — also pin the dispatcher-bound override kwargs.
+            # The stored Job.server_id is one half of the contract; the
+            # OTHER half is the override fed to _start_job_async (which
+            # the dispatcher reads to pin the run to a specific server).
+            # A regression that resolved the Job correctly but leaked
+            # the inferred id into the dispatcher overrides would have
+            # passed the previous server_id-only check.
+            overrides = mock_start.call_args[0][1]
+            assert overrides.get("server_id") == "plex-B", overrides
+        finally:
+            get_settings_manager().update({"media_servers": []})
 
     def test_create_job_ignores_credential_overrides(self, client):
-        """Job creation accepts request with credential-like keys but allow-list prevents applying them."""
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async") as mock_start:
+        """Job creation must STRIP credential-like keys, not just accept the request.
+
+        Originally this test only asserted the request returned 201 and that
+        ``_start_job_async`` was called once — neither of which proves the
+        allow-list actually filtered the credential keys. A regression where
+        ``plex_token`` / ``plex_url`` flowed straight into the worker's
+        Config (replacing the user's real credentials with attacker-supplied
+        ones) would have passed silently. Audit fix — assert the SUT
+        contract: credentials MUST NOT appear in the overrides dict that
+        ``_start_job_async`` receives.
+        """
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async") as mock_start:
             resp = client.post(
                 "/api/jobs",
                 headers=_api_headers(),
@@ -305,15 +846,25 @@ class TestJobsAPI:
                     "config": {
                         "plex_token": "evil-token",
                         "plex_url": "http://evil.com",
+                        "plex_config_folder": "/tmp/evil",
                     },
                 },
             )
         assert resp.status_code == 201
         mock_start.assert_called_once()
-        assert mock_start.call_args[0][0]  # job_id present
+        # _start_job_async(job_id, overrides) — both positional. Inspect the
+        # second arg for credential leakage.
+        call_args = mock_start.call_args
+        overrides = call_args[0][1] if len(call_args[0]) > 1 else call_args.kwargs.get("config_overrides", {})
+        assert call_args[0][0], "job_id should be present"
+        for forbidden_key in ("plex_token", "plex_url", "plex_config_folder"):
+            assert forbidden_key not in overrides, (
+                f"Credential key {forbidden_key!r} leaked into job overrides — "
+                f"the route's allow-list must strip it. overrides={overrides!r}"
+            )
 
     def test_get_specific_job(self, client):
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={"library_name": "TV"})
         job_id = create_resp.get_json()["id"]
         resp = client.get(f"/api/jobs/{job_id}", headers=_api_headers())
@@ -325,7 +876,7 @@ class TestJobsAPI:
         assert resp.status_code == 404
 
     def test_cancel_job(self, client):
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
         resp = client.post(f"/api/jobs/{job_id}/cancel", headers=_api_headers())
@@ -335,11 +886,11 @@ class TestJobsAPI:
         assert any("Cancellation requested by user" in line for line in logs)
 
     def test_complete_job_does_not_override_cancelled_status(self, client):
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
 
-        from plex_generate_previews.web.jobs import get_job_manager
+        from media_preview_generator.web.jobs import get_job_manager
 
         jm = get_job_manager()
         jm.start_job(job_id)
@@ -352,7 +903,7 @@ class TestJobsAPI:
         assert resp.get_json()["status"] == "cancelled"
 
     def test_delete_job(self, client):
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
         # Cancel first so it can be deleted (only non-running jobs)
@@ -366,13 +917,26 @@ class TestJobsAPI:
         assert resp.status_code == 404
 
     def test_clear_jobs(self, client):
+        # Seed three terminal jobs (cancelled), then clear and verify the
+        # exact count came back — key-presence alone would let a regression
+        # returning {"cleared": -1} or 0 pass silently.
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
+            ids = [client.post("/api/jobs", headers=_api_headers(), json={}).get_json()["id"] for _ in range(3)]
+        for jid in ids:
+            client.post(f"/api/jobs/{jid}/cancel", headers=_api_headers())
+
         resp = client.post("/api/jobs/clear", headers=_api_headers())
         assert resp.status_code == 200
-        assert "cleared" in resp.get_json()
+        body = resp.get_json()
+        assert body["success"] is True
+        assert body["cleared"] == 3, body
+        # And the jobs are actually gone now.
+        list_resp = client.get("/api/jobs", headers=_api_headers())
+        assert list_resp.get_json()["total"] == 0
 
     def test_clear_jobs_with_status_filter(self, client):
         """Test clearing only specific statuses."""
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             r1 = client.post("/api/jobs", headers=_api_headers(), json={})
             r2 = client.post("/api/jobs", headers=_api_headers(), json={})
             r3 = client.post("/api/jobs", headers=_api_headers(), json={})
@@ -393,14 +957,38 @@ class TestJobsAPI:
         assert resp.get_json()["cleared"] == 3
 
     def test_clear_jobs_empty_statuses_clears_all_terminal(self, client):
-        """Empty body clears all terminal (completed/failed/cancelled) jobs."""
+        """Empty body clears all terminal (completed/failed/cancelled) jobs.
+
+        Seed jobs in completed + failed + cancelled + a running one;
+        verify the three terminal jobs are cleared and the running one
+        survives. Without the survivors check the test is identical to
+        an endpoint that just truncates _jobs unconditionally.
+        """
+        from media_preview_generator.web.jobs import get_job_manager
+
+        jm = get_job_manager()
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
+            ids = [client.post("/api/jobs", headers=_api_headers(), json={}).get_json()["id"] for _ in range(4)]
+        completed_id, failed_id, cancelled_id, running_id = ids
+        jm.start_job(completed_id)
+        jm.complete_job(completed_id)
+        jm.start_job(failed_id)
+        jm.complete_job(failed_id, error="boom")
+        jm.start_job(cancelled_id)
+        jm.cancel_job(cancelled_id)
+        jm.start_job(running_id)  # left RUNNING
+
         resp = client.post("/api/jobs/clear", headers=_api_headers(), json={})
         assert resp.status_code == 200
-        assert "cleared" in resp.get_json()
+        body = resp.get_json()
+        assert body["cleared"] == 3, body
+        # The running job survived; only the three terminal ones were removed.
+        remaining = {j["id"] for j in client.get("/api/jobs", headers=_api_headers()).get_json()["jobs"]}
+        assert remaining == {running_id}, remaining
 
     def test_get_jobs_pagination(self, client):
         """Pagination returns correct slices and metadata."""
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             for _ in range(5):
                 client.post("/api/jobs", headers=_api_headers(), json={})
 
@@ -415,7 +1003,7 @@ class TestJobsAPI:
 
     def test_get_jobs_pagination_last_page(self, client):
         """Last page may have fewer items than per_page."""
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             for _ in range(5):
                 client.post("/api/jobs", headers=_api_headers(), json={})
 
@@ -434,7 +1022,7 @@ class TestJobsAPI:
 
     def test_get_jobs_unpaginated(self, client):
         """page=0 returns all jobs without pagination."""
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             for _ in range(3):
                 client.post("/api/jobs", headers=_api_headers(), json={})
 
@@ -447,10 +1035,10 @@ class TestJobsAPI:
 
     def test_get_jobs_sort_order(self, client):
         """Jobs are sorted: running first, pending oldest-first, terminal newest-first."""
-        from plex_generate_previews.web.jobs import get_job_manager
+        from media_preview_generator.web.jobs import get_job_manager
 
         jm = get_job_manager()
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             r1 = client.post("/api/jobs", headers=_api_headers(), json={})
             r2 = client.post("/api/jobs", headers=_api_headers(), json={})
             r3 = client.post("/api/jobs", headers=_api_headers(), json={})
@@ -468,20 +1056,211 @@ class TestJobsAPI:
         assert statuses[2] == "completed"
 
     def test_get_job_stats(self, client):
+        # Empty seed state — every counter must be 0, not None / missing.
+        # The dashboard renders these directly; a regression where
+        # ``get_stats()`` returned ``{"total": None}`` previously passed
+        # because the test only checked key presence.
         resp = client.get("/api/jobs/stats", headers=_api_headers())
         assert resp.status_code == 200
         data = resp.get_json()
-        assert "total" in data
+        assert data["total"] == 0
+        assert data["pending"] == 0
+        assert data["running"] == 0
+        assert data["completed"] == 0
+        assert data["failed"] == 0
+        assert data["cancelled"] == 0
+
+        # Seed one of each terminal state and re-check the per-status counters.
+        from media_preview_generator.web.jobs import get_job_manager
+
+        jm = get_job_manager()
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
+            ids = [client.post("/api/jobs", headers=_api_headers(), json={}).get_json()["id"] for _ in range(3)]
+        completed_id, failed_id, cancelled_id = ids
+        jm.start_job(completed_id)
+        jm.complete_job(completed_id)
+        jm.start_job(failed_id)
+        jm.complete_job(failed_id, error="boom")
+        jm.start_job(cancelled_id)
+        jm.cancel_job(cancelled_id)
+
+        data2 = client.get("/api/jobs/stats", headers=_api_headers()).get_json()
+        assert data2["total"] == 3
+        assert data2["completed"] == 1
+        assert data2["failed"] == 1
+        assert data2["cancelled"] == 1
+        assert data2["running"] == 0
+        assert data2["pending"] == 0
 
     def test_get_worker_statuses(self, client):
+        # Idle path: with no running job + no dispatcher pool, the route
+        # synthesises idle workers from the configured gpu_config + cpu_threads
+        # (see api_jobs._build_idle_workers_from_config).
+        # Pin per-entry shape so an empty list (or wrong-shape entries) fails
+        # — key-presence + isinstance(list) was bug-blind to both.
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        # Force a known CPU thread count so we can pin the idle worker count.
+        sm.set("cpu_threads", 3)
+        sm.set("gpu_config", [])
+
         resp = client.get("/api/jobs/workers", headers=_api_headers())
         assert resp.status_code == 200
         data = resp.get_json()
-        assert "workers" in data
         assert isinstance(data["workers"], list)
+        # 3 CPU workers + 0 GPUs = 3 entries.
+        assert len(data["workers"]) == 3, data
+        # Every entry must carry the FULL idle-worker contract — same key
+        # set the dispatcher's _build_worker_statuses() emits for idle rows.
+        # Without parity, a regression that drops a field from one path but
+        # not the other would silently flip the UI between rendering modes
+        # when the dispatcher takes over (e.g. missing ffmpeg_started =
+        # workers stuck in "Working…" branch as in the dev regression).
+        idle_contract_keys = {
+            "worker_id",
+            "worker_type",
+            "worker_name",
+            "status",
+            "current_title",
+            "library_name",
+            "progress_percent",
+            "speed",
+            "remaining_time",
+            "fallback_active",
+            "fallback_reason",
+            "ffmpeg_started",
+            "current_phase",
+        }
+        for entry in data["workers"]:
+            assert isinstance(entry, dict), entry
+            missing = idle_contract_keys - entry.keys()
+            assert not missing, (
+                f"synth idle worker dropped {missing!r} — diverges from the dispatcher's "
+                f"idle row shape and lets a regression slip through. entry={entry!r}"
+            )
+            assert isinstance(entry["worker_id"], int), entry
+            assert entry["worker_type"] in {"GPU", "CPU"}, entry
+            assert isinstance(entry["worker_name"], str) and entry["worker_name"], entry
+            assert entry["status"] == "idle", entry
+            assert entry["current_title"] == "", entry
+            assert entry["progress_percent"] == 0, entry
+            assert entry["speed"] == "0.0x", entry
+            # Idle-state defaults the UI relies on.
+            assert entry["ffmpeg_started"] is False, entry
+            assert entry["current_phase"] == "", entry
+
+    def test_workers_endpoint_returns_synth_idle_during_enumeration_phase(self, client):
+        """Job b5651c8a follow-up — the Workers panel went BLANK for
+        30-60+ seconds at the start of a Jellyfin Shows scan (118k
+        items). Workers reappeared the moment the user cancelled.
+
+        Root cause: the multi-server dispatcher only builds slots AND
+        emits the initial worker snapshot AFTER enumeration finishes,
+        and enumeration of a huge library takes tens of seconds. The
+        previous gate (commit 49dcd7b) returned ``[]`` during that
+        window to avoid mixing the legacy 0-based fallback with the
+        multi-server 1-based scheme — but the user's mental model is
+        "workers are always visible; jobs just feed items into them."
+
+        Fix: when a job is running AND ``_worker_statuses`` is empty
+        (enumeration phase), return synthesised idle workers from
+        the saved config using the SAME 1-based ID scheme the
+        dispatcher will use. When the dispatcher's force-emit lands,
+        ``_worker_statuses`` populates with the same keys and the
+        cards transition in place — no DOM swap, no blank panel.
+
+        Contract pinned by this test:
+        * during enumeration, API returns non-empty workers list;
+        * those workers use 1-based IDs (matching the multi-server
+          dispatcher's ``_seq_state["slot"]`` scheme, so the eventual
+          real emit doesn't trigger a card-key change);
+        * shape parity with the legacy synth path (other test pins
+          this separately, but cross-reference here is helpful).
+        """
+        from media_preview_generator.web.jobs import Job, JobStatus, get_job_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        # Pin a known worker count so the assertion is deterministic.
+        sm = get_settings_manager()
+        sm.set("cpu_threads", 3)
+        sm.set("gpu_config", [])
+
+        jm = get_job_manager()
+        jm.clear_worker_statuses()
+
+        job = Job(id="job-enumerating", status=JobStatus.RUNNING, created_at="2026-05-14T00:00:00Z")
+        with jm._lock:
+            jm._jobs[job.id] = job
+            jm._running_job_ids.add(job.id)
+        try:
+            resp = client.get("/api/jobs/workers", headers=_api_headers())
+            workers = resp.get_json()["workers"]
+        finally:
+            with jm._lock:
+                jm._jobs.pop(job.id, None)
+                jm._running_job_ids.discard(job.id)
+
+        assert workers, (
+            "With a multi-server job in its enumeration phase (RUNNING + empty _worker_statuses), "
+            "the API must return synthesised idle workers so the dashboard panel doesn't go blank "
+            "for the 30-60+ seconds it takes Jellyfin to walk a 118k-item library. "
+            "Got empty list — the user sees 'No active workers' during enumeration, which "
+            "was the b5651c8a-aftermath regression."
+        )
+        assert len(workers) == 3, f"Expected 3 idle CPU workers (cpu_threads=3); got {len(workers)}"
+        ids = [w["worker_id"] for w in workers]
+        # 1-based IDs match the multi-server dispatcher's _seq_state
+        # scheme — when the real force-emit lands, same keys are
+        # updated and cards transition in place.
+        assert ids == [1, 2, 3], (
+            f"Synth idle workers during enumeration must use 1-based IDs to match the "
+            f"multi-server dispatcher's slot IDs (so the eventual real emit doesn't "
+            f"trigger a DOM-key swap). Got IDs: {ids!r}"
+        )
+        for w in workers:
+            assert w["status"] == "idle", f"workers during enumeration are idle until dispatch: {w!r}"
+
+    def test_synth_idle_workers_match_dispatcher_idle_shape(self, client):
+        """Parity guard: ``_build_idle_workers_from_config`` (used before
+        any pool exists) and ``JobDispatcher._build_worker_statuses``
+        (used once the pool is created) MUST produce the same key set
+        for an idle worker. Otherwise the row's key set silently changes
+        the moment the first job runs, and any UI field bound to a key
+        present in only one path flickers on/off across that boundary.
+        """
+        from media_preview_generator.jobs.dispatcher import JobDispatcher, reset_dispatcher
+        from media_preview_generator.jobs.worker import WorkerPool
+        from media_preview_generator.web.routes.api_jobs import _build_idle_workers_from_config
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        sm.set("cpu_threads", 1)
+        sm.set("gpu_config", [])
+
+        synth = _build_idle_workers_from_config()
+        assert synth, "Need at least one synthesised idle worker for parity check"
+        synth_keys = set(synth[0].keys())
+
+        reset_dispatcher()
+        pool = WorkerPool(cpu_workers=1, gpu_workers=0, selected_gpus=[])
+        dispatcher = JobDispatcher(pool)
+        try:
+            dispatch_idle = dispatcher._build_worker_statuses()
+            assert dispatch_idle, "dispatcher idle row missing"
+            dispatch_keys = set(dispatch_idle[0].keys())
+        finally:
+            dispatcher.shutdown()
+            reset_dispatcher()
+
+        assert synth_keys == dispatch_keys, (
+            f"idle row shape diverges between paths.\n"
+            f"  synth-only: {sorted(synth_keys - dispatch_keys)!r}\n"
+            f"  dispatcher-only: {sorted(dispatch_keys - synth_keys)!r}"
+        )
 
     def test_get_job_logs(self, client):
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
         resp = client.get(f"/api/jobs/{job_id}/logs", headers=_api_headers())
@@ -493,10 +1272,10 @@ class TestJobsAPI:
 
     def test_get_job_logs_returns_retention_flag_when_log_cleared(self, client, app):
         """When job exists but log file was removed by retention, API returns log_cleared_by_retention."""
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
-        from plex_generate_previews.web.jobs import get_job_manager
+        from media_preview_generator.web.jobs import get_job_manager
 
         jm = get_job_manager()
         jm.start_job(job_id)
@@ -511,11 +1290,17 @@ class TestJobsAPI:
 
     def test_pause_resume_job(self, client):
         """Per-job pause/resume routes delegate to global processing pause/resume."""
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        # Start unpaused so we can witness the toggle.
+        sm.processing_paused = False
+
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
 
-        from plex_generate_previews.web.jobs import get_job_manager
+        from media_preview_generator.web.jobs import get_job_manager
 
         jm = get_job_manager()
         jm.start_job(job_id)
@@ -523,18 +1308,37 @@ class TestJobsAPI:
         pause_resp = client.post(f"/api/jobs/{job_id}/pause", headers=_api_headers())
         assert pause_resp.status_code == 200
         assert pause_resp.get_json().get("paused") is True
+        # Verify the pause actually persisted to settings (the response payload
+        # alone could lie — the real bug surface is the settings-side state).
+        assert sm.processing_paused is True
 
         resume_resp = client.post(f"/api/jobs/{job_id}/resume", headers=_api_headers())
         assert resume_resp.status_code == 200
         assert resume_resp.get_json().get("paused") is False
+        assert sm.processing_paused is False
 
     def test_processing_state_get(self, client):
-        """GET /api/processing/state returns global pause state."""
+        """GET /api/processing/state returns global pause state.
+
+        Round-trips both branches — a regression that hard-coded the
+        return value (always True or always False) would have passed
+        the previous "key in body + isinstance bool" assertion.
+        """
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        sm.processing_paused = False
         resp = client.get("/api/processing/state", headers=_api_headers())
         assert resp.status_code == 200
-        data = resp.get_json()
-        assert "paused" in data
-        assert isinstance(data["paused"], bool)
+        assert resp.get_json()["paused"] is False
+
+        sm.processing_paused = True
+        try:
+            resp2 = client.get("/api/processing/state", headers=_api_headers())
+            assert resp2.status_code == 200
+            assert resp2.get_json()["paused"] is True
+        finally:
+            sm.processing_paused = False
 
     def test_processing_pause_resume(self, client):
         """POST /api/processing/pause and resume set and return global state."""
@@ -556,7 +1360,7 @@ class TestJobsAPI:
         """When global processing is paused, new job remains pending (not started)."""
         import time
 
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         get_settings_manager().processing_paused = True
         try:
@@ -571,11 +1375,11 @@ class TestJobsAPI:
             get_settings_manager().processing_paused = False
 
     def test_scale_workers_add_remove(self, client):
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
 
-        from plex_generate_previews.web.jobs import get_job_manager
+        from media_preview_generator.web.jobs import get_job_manager
 
         jm = get_job_manager()
         jm.start_job(job_id)
@@ -611,11 +1415,11 @@ class TestJobsAPI:
 
     def test_scale_workers_remove_busy_workers_returns_scheduled_removal(self, client):
         """Remove endpoint returns scheduled_removal when workers are busy (deferred removal)."""
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
 
-        from plex_generate_previews.web.jobs import get_job_manager
+        from media_preview_generator.web.jobs import get_job_manager
 
         jm = get_job_manager()
         jm.start_job(job_id)
@@ -642,11 +1446,11 @@ class TestJobsAPI:
 
     def test_scale_workers_remove_returns_unavailable_when_fewer_workers_exist(self, client):
         """Remove endpoint returns unavailable when requesting more than existing workers."""
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
 
-        from plex_generate_previews.web.jobs import get_job_manager
+        from media_preview_generator.web.jobs import get_job_manager
 
         jm = get_job_manager()
         jm.start_job(job_id)
@@ -691,11 +1495,11 @@ class TestJobsAPI:
 
     def test_workers_add_global_success(self, client):
         """POST /api/workers/add delegates to running job pool."""
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
 
-        from plex_generate_previews.web.jobs import get_job_manager
+        from media_preview_generator.web.jobs import get_job_manager
 
         jm = get_job_manager()
         jm.start_job(job_id)
@@ -716,11 +1520,11 @@ class TestJobsAPI:
 
     def test_workers_remove_global_success(self, client):
         """POST /api/workers/remove delegates to running job pool."""
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
 
-        from plex_generate_previews.web.jobs import get_job_manager
+        from media_preview_generator.web.jobs import get_job_manager
 
         jm = get_job_manager()
         jm.start_job(job_id)
@@ -757,8 +1561,8 @@ class TestManualTriggerAPI:
         test_file = tmp_path / "movie.mkv"
         test_file.touch()
 
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async") as mock_start:
-            with patch("plex_generate_previews.web.routes.api_jobs.MEDIA_ROOT", str(tmp_path)):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async") as mock_start:
+            with patch("media_preview_generator.web.routes.api_jobs.MEDIA_ROOT", str(tmp_path)):
                 resp = client.post(
                     "/api/jobs/manual",
                     headers=_api_headers(),
@@ -770,7 +1574,36 @@ class TestManualTriggerAPI:
         assert "Manual:" in data.get("library_name", "")
         mock_start.assert_called_once()
         config_overrides = mock_start.call_args[0][1]
-        assert str(test_file) in config_overrides["webhook_paths"]
+        # Audit fix — also assert the override SHAPE the dispatcher
+        # depends on, not just that webhook_paths contains the file.
+        # A regression that flipped force_generate to True silently or
+        # injected unexpected library filters would have passed.
+        assert config_overrides["webhook_paths"] == [str(test_file)]
+        # force_generate defaults to False unless caller passes regenerate=True
+        assert config_overrides.get("force_generate", False) is False, (
+            "manual trigger must NOT silently force regeneration"
+        )
+
+    def test_manual_trigger_with_force_regenerate_propagates(self, client, tmp_path):
+        """Audit fix — matrix cell missing: manual trigger with
+        force_regenerate=True must surface as force_generate=True
+        in the dispatcher overrides."""
+        test_file = tmp_path / "movie.mkv"
+        test_file.touch()
+
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async") as mock_start:
+            with patch("media_preview_generator.web.routes.api_jobs.MEDIA_ROOT", str(tmp_path)):
+                resp = client.post(
+                    "/api/jobs/manual",
+                    headers=_api_headers(),
+                    json={"file_paths": [str(test_file)], "force_regenerate": True},
+                )
+        assert resp.status_code == 201
+        mock_start.assert_called_once()
+        config_overrides = mock_start.call_args[0][1]
+        assert config_overrides.get("force_generate") is True, (
+            f"force_regenerate=True must propagate as force_generate=True; got {config_overrides!r}"
+        )
 
     def test_manual_trigger_no_paths(self, client):
         """Empty file_paths returns 400."""
@@ -783,21 +1616,24 @@ class TestManualTriggerAPI:
         assert "required" in resp.get_json()["error"].lower()
 
     def test_manual_trigger_missing_body(self, client):
-        """Missing JSON body returns 400."""
+        """Missing JSON body returns 400 with a meaningful error."""
         resp = client.post(
             "/api/jobs/manual",
             headers=_api_headers(),
             json={},
         )
         assert resp.status_code == 400
+        # Pin the validation reason — bare 400 collides with any other
+        # 400-emitting branch (auth, server inference, etc.).
+        assert "file_paths is required" in resp.get_json()["error"]
 
     def test_manual_trigger_path_outside_media_root(self, client, tmp_path):
         """Path traversal outside MEDIA_ROOT returns 400."""
         media_root = tmp_path / "media"
         media_root.mkdir()
 
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
-            with patch("plex_generate_previews.web.routes.api_jobs.MEDIA_ROOT", str(media_root)):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
+            with patch("media_preview_generator.web.routes.api_jobs.MEDIA_ROOT", str(media_root)):
                 resp = client.post(
                     "/api/jobs/manual",
                     headers=_api_headers(),
@@ -814,34 +1650,21 @@ class TestManualTriggerAPI:
         )
         assert resp.status_code == 401
 
-    def test_manual_trigger_force_regenerate(self, client, tmp_path):
-        """force_regenerate flag is passed through to config overrides."""
-        test_file = tmp_path / "movie.mkv"
-        test_file.touch()
-
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async") as mock_start:
-            with patch("plex_generate_previews.web.routes.api_jobs.MEDIA_ROOT", str(tmp_path)):
-                resp = client.post(
-                    "/api/jobs/manual",
-                    headers=_api_headers(),
-                    json={
-                        "file_paths": [str(test_file)],
-                        "force_regenerate": True,
-                    },
-                )
-        assert resp.status_code == 201
-        config_overrides = mock_start.call_args[0][1]
-        assert config_overrides["force_generate"] is True
-
     def test_manual_trigger_multiple_paths(self, client, tmp_path):
-        """Multiple file paths produce a job labeled with file count."""
+        """Multiple file paths produce a job labeled with file count, AND
+        the dispatcher overrides carry BOTH paths through.
+
+        Audit fix — previously only the label substring was checked, so a
+        regression that dropped the second file (and the dispatcher
+        therefore never processed it) would have passed silently.
+        """
         f1 = tmp_path / "a.mkv"
         f2 = tmp_path / "b.mkv"
         f1.touch()
         f2.touch()
 
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
-            with patch("plex_generate_previews.web.routes.api_jobs.MEDIA_ROOT", str(tmp_path)):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async") as mock_start:
+            with patch("media_preview_generator.web.routes.api_jobs.MEDIA_ROOT", str(tmp_path)):
                 resp = client.post(
                     "/api/jobs/manual",
                     headers=_api_headers(),
@@ -850,6 +1673,11 @@ class TestManualTriggerAPI:
         assert resp.status_code == 201
         data = resp.get_json()
         assert "2 files" in data.get("library_name", "")
+        # Pin the dispatcher overrides shape — both files must appear in
+        # webhook_paths in the order the caller supplied them.
+        mock_start.assert_called_once()
+        config_overrides = mock_start.call_args[0][1]
+        assert config_overrides["webhook_paths"] == [str(f1), str(f2)], config_overrides
 
 
 # ---------------------------------------------------------------------------
@@ -864,8 +1692,10 @@ class TestSettingsAPI:
         resp = client.get("/api/settings", headers=_api_headers())
         assert resp.status_code == 200
         data = resp.get_json()
-        assert "gpu_threads" in data
-        assert "cpu_threads" in data
+        # Pin the types that downstream UI math/widgets bind to —
+        # bare key-presence let a regression returning None / "" pass.
+        assert isinstance(data["gpu_threads"], int)
+        assert isinstance(data["cpu_threads"], int)
         assert data["plex_verify_ssl"] is True
 
     def test_get_settings_returns_path_mappings(self, client):
@@ -900,6 +1730,193 @@ class TestSettingsAPI:
         resp = client.get("/api/settings", headers=_api_headers())
         assert resp.status_code == 200
         assert resp.get_json().get("exclude_paths") == exclude_paths
+
+    def test_save_settings_writes_plex_fields_into_media_servers(self, client):
+        """Phase 1: per-server Plex fields go into media_servers[0], not legacy keys.
+
+        After this PR, the Settings POST and Setup Wizard route plex_url /
+        plex_token / plex_verify_ssl / plex_config_folder /
+        selected_libraries / path_mappings / exclude_paths into the first
+        Plex entry of ``media_servers``. The flat top-level keys should
+        NOT be persisted alongside (avoids dual state).
+        """
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        client.post(
+            "/api/settings",
+            headers=_api_headers(),
+            json={
+                "plex_url": "http://plex.example:32400",
+                "plex_token": "secret-token-123",
+                "plex_verify_ssl": False,
+                "plex_config_folder": "/srv/plex_data",
+                "selected_libraries": ["1", "2"],
+                "path_mappings": [{"plex_prefix": "/plex_data", "local_prefix": "/mnt/data", "webhook_prefixes": []}],
+            },
+        )
+
+        sm = get_settings_manager()
+        servers = sm.get("media_servers") or []
+        assert len(servers) == 1
+        plex = servers[0]
+        assert plex["type"] == "plex"
+        assert plex["url"] == "http://plex.example:32400"
+        assert plex["auth"]["token"] == "secret-token-123"
+        assert plex["verify_ssl"] is False
+        assert plex["output"]["plex_config_folder"] == "/srv/plex_data"
+        assert {lib["id"] for lib in plex["libraries"] if lib.get("enabled")} == {"1", "2"}
+        assert plex["path_mappings"] == [
+            {"plex_prefix": "/plex_data", "local_prefix": "/mnt/data", "webhook_prefixes": []}
+        ]
+        # Per-server fields must NOT be written as legacy top-level keys —
+        # otherwise we'd have dual state and migrations get confused.
+        raw = sm.get_all()
+        assert "plex_url" not in raw
+        assert "plex_token" not in raw
+        assert "plex_config_folder" not in raw
+        assert "selected_libraries" not in raw
+        assert "path_mappings" not in raw
+
+    def test_save_settings_preserves_existing_token_when_redacted(self, client):
+        """POSTing token='****' (the placeholder GET returns) keeps the existing token."""
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        # Set an initial token
+        client.post(
+            "/api/settings",
+            headers=_api_headers(),
+            json={"plex_url": "http://plex:32400", "plex_token": "real-token"},
+        )
+        # Re-save with the placeholder — token should NOT be wiped
+        client.post(
+            "/api/settings",
+            headers=_api_headers(),
+            json={"plex_token": "****", "plex_verify_ssl": True},
+        )
+        sm = get_settings_manager()
+        plex = (sm.get("media_servers") or [{}])[0]
+        assert plex["auth"]["token"] == "real-token"
+
+    def test_save_settings_preserves_webhook_secret_when_redacted(self, client):
+        """POSTing webhook_secret='****' (the placeholder GET returns) must not poison the secret.
+
+        Without this guard, a UI that reads settings and re-saves them
+        wholesale would silently overwrite the actual secret with the
+        masked sentinel — turning '****' into a valid auth token.
+        """
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        sm.set("webhook_secret", "real-secret-xyz")
+
+        # POST '****' (what GET returns when secret is set)
+        resp = client.post(
+            "/api/settings",
+            headers=_api_headers(),
+            json={"webhook_secret": "****"},
+        )
+        assert resp.status_code == 200
+        assert sm.get("webhook_secret") == "real-secret-xyz"
+
+        # POST empty string also a no-op
+        resp = client.post(
+            "/api/settings",
+            headers=_api_headers(),
+            json={"webhook_secret": ""},
+        )
+        assert resp.status_code == 200
+        assert sm.get("webhook_secret") == "real-secret-xyz"
+
+        # POST a real new value still rotates
+        resp = client.post(
+            "/api/settings",
+            headers=_api_headers(),
+            json={"webhook_secret": "rotated-secret"},
+        )
+        assert resp.status_code == 200
+        assert sm.get("webhook_secret") == "rotated-secret"
+
+    def test_get_settings_projects_from_media_servers(self, client):
+        """GET /api/settings returns plex_url derived from media_servers[0]."""
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        sm.update(
+            {
+                "media_servers": [
+                    {
+                        "id": "plex-default",
+                        "type": "plex",
+                        "name": "Plex",
+                        "enabled": True,
+                        "url": "http://from-media-servers:32400",
+                        "auth": {"token": "abc"},
+                        "verify_ssl": False,
+                        "libraries": [{"id": "5", "name": "Movies", "enabled": True}],
+                        "path_mappings": [],
+                        "exclude_paths": [],
+                        "output": {"plex_config_folder": "/x"},
+                    }
+                ],
+            }
+        )
+        resp = client.get("/api/settings", headers=_api_headers())
+        data = resp.get_json()
+        assert data["plex_url"] == "http://from-media-servers:32400"
+        assert data["plex_token"] == "****"
+        assert data["plex_verify_ssl"] is False
+        assert data["plex_config_folder"] == "/x"
+        assert data["selected_libraries"] == ["5"]
+
+    def test_get_settings_never_leaks_real_credentials_anywhere_in_response(self, client):
+        """GET /api/settings must never echo a real credential value in
+        any field of the response — masked sentinel only.
+
+        Defense-in-depth contract: prior tests check ``plex_token`` and
+        ``webhook_secret`` are masked individually. This test seeds the
+        store with sentinel values that should NEVER appear in the wire
+        response (e.g. ``"SECRET-TOKEN-DO-NOT-LEAK"``) and scans the
+        full JSON payload for them. A regression that adds a new
+        response field forwarding the raw token would be caught here
+        even if no individual-field assertion was written for it.
+        """
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        sentinels = {
+            "plex_token": "SECRET-PLEX-TOKEN-DO-NOT-LEAK",
+            "webhook_secret": "SECRET-WEBHOOK-DO-NOT-LEAK",
+        }
+        sm.update(
+            {
+                "media_servers": [
+                    {
+                        "id": "plex-default",
+                        "type": "plex",
+                        "name": "Plex",
+                        "enabled": True,
+                        "url": "http://plex:32400",
+                        "auth": {"token": sentinels["plex_token"]},
+                        "verify_ssl": True,
+                        "libraries": [],
+                        "path_mappings": [],
+                        "exclude_paths": [],
+                        "output": {"plex_config_folder": "/plex"},
+                    }
+                ],
+                "webhook_secret": sentinels["webhook_secret"],
+            }
+        )
+
+        resp = client.get("/api/settings", headers=_api_headers())
+        assert resp.status_code == 200
+        # Scan the raw bytes — robust against any nesting depth or
+        # field name. If a future field forwards the secret in any form
+        # (string, JSON-encoded, base64), the substring check still
+        # catches the plaintext leak.
+        body = resp.data
+        for label, secret in sentinels.items():
+            assert secret.encode() not in body, f"GET /api/settings leaked {label}: secret appeared in response body"
 
     def test_save_settings(self, client):
         # Pre-seed gpu_config so gpu_threads setter can distribute workers
@@ -939,6 +1956,10 @@ class TestSettingsAPI:
         assert data["plex_verify_ssl"] is False
 
     def test_save_settings_ignores_unknown_fields(self, client):
+        # The route must silently drop unrecognised keys (forward-compat
+        # against future UI fields) — but the previous test only asserted
+        # 200, which is bug-blind to a regression that PERSISTED the
+        # unknown field into settings.json (creating dual-state pollution).
         resp = client.post(
             "/api/settings",
             headers=_api_headers(),
@@ -949,6 +1970,14 @@ class TestSettingsAPI:
             },
         )
         assert resp.status_code == 200
+
+        # GET back and assert the unknown field never lands in the response.
+        get_resp = client.get("/api/settings", headers=_api_headers())
+        assert get_resp.status_code == 200
+        body = get_resp.get_json()
+        assert "unknown_field" not in body, f"unknown field leaked into settings: {body!r}"
+        # Sanity: the legitimate fields DID persist.
+        assert body["plex_verify_ssl"] is False
 
     def test_save_settings_warns_zero_cpu_and_zero_gpu(self, client):
         """Saving with both CPU and GPU workers at zero succeeds with a warning."""
@@ -983,6 +2012,9 @@ class TestSettingsAPI:
             json={"gpu_config": "not_a_list"},
         )
         assert resp.status_code == 400
+        # Pin the error reason — bare 400 collides with other settings
+        # validators that return 400 for unrelated reasons.
+        assert "gpu_config must be a list" in resp.get_json()["error"]
 
     def test_save_gpu_config_filters_invalid_entries(self, client):
         """gpu_config entries without device key are filtered out."""
@@ -1012,7 +2044,12 @@ class TestSettingsAPI:
         assert saved[0]["device"] == "cuda"
 
     def test_save_log_settings(self, client):
-        """Test that log_level, log_rotation_size, log_retention_count are persisted."""
+        """Test that log_level, log_rotation_size, log_retention_count are persisted.
+
+        Save-without-readback is the documented anti-pattern that hid the
+        D34 dispatcher bug for months — assert the GET round-trip matches
+        the POSTed values, not just that the POST returned ``success=True``.
+        """
         resp = client.post(
             "/api/settings",
             headers=_api_headers(),
@@ -1025,7 +2062,15 @@ class TestSettingsAPI:
         assert resp.status_code == 200
         assert resp.get_json()["success"] is True
 
-    @patch("plex_generate_previews.logging_config.setup_logging")
+        # Round-trip: GET back and verify each value persisted.
+        get_resp = client.get("/api/settings", headers=_api_headers())
+        assert get_resp.status_code == 200
+        body = get_resp.get_json()
+        assert body["log_level"] == "DEBUG"
+        assert body["log_rotation_size"] == "5 MB"
+        assert body["log_retention_count"] == 4
+
+    @patch("media_preview_generator.logging_config.setup_logging")
     def test_update_log_level(self, mock_setup_logging, client):
         """Test PUT /api/settings/log-level hot-reloads logging."""
         resp = client.put(
@@ -1047,6 +2092,10 @@ class TestSettingsAPI:
             json={"log_level": "INVALID"},
         )
         assert resp.status_code == 400
+        # Pin the validation reason — production returns the list of
+        # valid levels in the message; a regression that 400s for an
+        # unrelated reason (e.g. shape validation) would have passed.
+        assert "Invalid log level" in resp.get_json()["error"]
 
     def test_get_settings_returns_webhook_retry_defaults(self, client):
         """GET /api/settings returns default webhook_retry_count and webhook_retry_delay."""
@@ -1111,19 +2160,19 @@ class TestJobConfigPathMappings:
 
         with (
             patch(
-                "plex_generate_previews.jobs.orchestrator.run_processing",
+                "media_preview_generator.jobs.orchestrator.run_processing",
                 side_effect=capture_run_processing,
             ),
-            patch("plex_generate_previews.config.load_config", return_value=mock_config),
+            patch("media_preview_generator.config.load_config", return_value=mock_config),
             patch(
-                "plex_generate_previews.processing.orchestrator._verify_tmp_folder_health",
+                "media_preview_generator.processing.generator._verify_tmp_folder_health",
                 return_value=(True, []),
             ),
             patch(
-                "plex_generate_previews.utils.setup_working_directory",
+                "media_preview_generator.utils.setup_working_directory",
                 return_value=str(tmp_path / "work"),
             ),
-            patch("plex_generate_previews.gpu.detect.detect_all_gpus", return_value=[]),
+            patch("media_preview_generator.gpu.detect.detect_all_gpus", return_value=[]),
         ):
             resp = client.post("/api/jobs", headers=_api_headers(), json={})
             assert resp.status_code == 201
@@ -1132,125 +2181,76 @@ class TestJobConfigPathMappings:
         expected = normalize_path_mappings({"path_mappings": settings_path_mappings})
         assert captured_configs[0].path_mappings == expected
 
-    def test_start_job_config_overrides_path_mappings(self, client, tmp_path):
-        """config_overrides.path_mappings overrides settings path_mappings."""
-        override_mappings = [
+    def test_start_job_does_NOT_accept_path_mappings_override(self, client, tmp_path):
+        """``path_mappings`` is a Settings-level concept, not a per-job override.
+
+        Originally this test asserted that ``path_mappings`` posted via
+        ``/api/jobs`` overrode Settings' path_mappings. That permissive
+        surface is closed by the credential-stripping allow-list — see
+        ``test_create_job_ignores_credential_overrides``. ``path_mappings``
+        is now stripped along with credentials. Production callers that
+        legitimately need per-server mappings configure them in Settings
+        (Settings page → Path Mappings) which Config picks up through
+        ``load_config()``.
+        """
+        settings_mappings = [
             {
-                "plex_prefix": "/override",
-                "local_prefix": "/local_override",
+                "plex_prefix": "/from_settings",
+                "local_prefix": "/local",
                 "webhook_prefixes": [],
             }
         ]
         client.post(
             "/api/settings",
             headers=_api_headers(),
-            json={
-                "path_mappings": [
-                    {
-                        "plex_prefix": "/from_settings",
-                        "local_prefix": "/local",
-                        "webhook_prefixes": [],
-                    }
-                ]
-            },
+            json={"path_mappings": settings_mappings},
         )
 
-        captured_configs = []
-        done = threading.Event()
-
-        def capture_run_processing(config, *args, **kwargs):
-            captured_configs.append(config)
-            done.set()
-
-        mock_config = MagicMock()
-        mock_config.path_mappings = []
-        mock_config.tmp_folder = str(tmp_path)
-        mock_config.plex_url = "http://test"
-        mock_config.plex_token = "token"
-
-        with (
-            patch(
-                "plex_generate_previews.jobs.orchestrator.run_processing",
-                side_effect=capture_run_processing,
-            ),
-            patch("plex_generate_previews.config.load_config", return_value=mock_config),
-            patch(
-                "plex_generate_previews.processing.orchestrator._verify_tmp_folder_health",
-                return_value=(True, []),
-            ),
-            patch(
-                "plex_generate_previews.utils.setup_working_directory",
-                return_value=str(tmp_path / "work"),
-            ),
-            patch("plex_generate_previews.gpu.detect.detect_all_gpus", return_value=[]),
-        ):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async") as mock_start:
             resp = client.post(
                 "/api/jobs",
                 headers=_api_headers(),
-                json={"config": {"path_mappings": override_mappings}},
+                json={
+                    "library_name": "Movies",
+                    "config": {
+                        "path_mappings": [{"plex_prefix": "/evil", "local_prefix": "/exfil"}],
+                    },
+                },
             )
-            assert resp.status_code == 201
-            assert done.wait(timeout=2.0), "run_processing was not called"
-        assert len(captured_configs) == 1
-        assert captured_configs[0].path_mappings == override_mappings
-
-    def test_webhook_job_retains_path_mappings_and_webhook_paths(self, client, tmp_path):
-        """Webhook job with config_overrides has webhook_paths and path_mappings from settings."""
-        settings_path_mappings = [
-            {
-                "plex_prefix": "/data",
-                "local_prefix": "/mnt/data",
-                "webhook_prefixes": ["/data"],
-            }
-        ]
-        client.post(
-            "/api/settings",
-            headers=_api_headers(),
-            json={"path_mappings": settings_path_mappings},
+        assert resp.status_code == 201
+        mock_start.assert_called_once()
+        overrides = mock_start.call_args[0][1]
+        assert "path_mappings" not in overrides, (
+            f"path_mappings leaked through /api/jobs override surface — settings is the only source. overrides={overrides!r}"
         )
 
-        captured_configs = []
-        done = threading.Event()
+    def test_create_job_does_NOT_accept_webhook_paths_override(self, client):
+        """``webhook_paths`` is a webhook-only field, not a /api/jobs override.
 
-        def capture_run_processing(config, *args, **kwargs):
-            captured_configs.append(config)
-            done.set()
-
-        mock_config = MagicMock()
-        mock_config.path_mappings = []
-        mock_config.tmp_folder = str(tmp_path)
-        mock_config.plex_url = "http://test"
-        mock_config.plex_token = "token"
-        mock_config.webhook_paths = None
-
-        with (
-            patch(
-                "plex_generate_previews.jobs.orchestrator.run_processing",
-                side_effect=capture_run_processing,
-            ),
-            patch("plex_generate_previews.config.load_config", return_value=mock_config),
-            patch(
-                "plex_generate_previews.processing.orchestrator._verify_tmp_folder_health",
-                return_value=(True, []),
-            ),
-            patch(
-                "plex_generate_previews.utils.setup_working_directory",
-                return_value=str(tmp_path / "work"),
-            ),
-            patch("plex_generate_previews.gpu.detect.detect_all_gpus", return_value=[]),
-        ):
+        Production webhook jobs are created by ``create_vendor_webhook_job``
+        / ``_execute_webhook_job`` which call ``_start_job_async`` directly
+        with a pre-validated path list. Manual file-list jobs use
+        ``/api/jobs/manual`` (which validates paths against MEDIA_ROOT).
+        Neither flow goes through ``/api/jobs`` with a config-block
+        ``webhook_paths`` field — accepting it there bypasses path
+        validation and lets a caller trigger processing of arbitrary
+        files. Audit fix — assert it's stripped.
+        """
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async") as mock_start:
             resp = client.post(
                 "/api/jobs",
                 headers=_api_headers(),
-                json={"config": {"webhook_paths": ["/data/Movies/foo.mkv"]}},
+                json={
+                    "library_name": "Movies",
+                    "config": {"webhook_paths": ["/etc/passwd", "/data/secrets/key.pem"]},
+                },
             )
-            assert resp.status_code == 201
-            assert done.wait(timeout=2.0), "run_processing was not called"
-        assert len(captured_configs) == 1
-        cfg = captured_configs[0]
-        assert cfg.webhook_paths == ["/data/Movies/foo.mkv"]
-        expected_mappings = normalize_path_mappings({"path_mappings": settings_path_mappings})
-        assert cfg.path_mappings == expected_mappings
+        assert resp.status_code == 201
+        mock_start.assert_called_once()
+        overrides = mock_start.call_args[0][1]
+        assert "webhook_paths" not in overrides, (
+            f"webhook_paths leaked through /api/jobs — use /api/jobs/manual or webhook routes. overrides={overrides!r}"
+        )
 
     def test_start_job_library_ids_override_sets_plex_library_ids(self, client, tmp_path):
         """library_ids request field should filter by Plex section IDs."""
@@ -1271,19 +2271,19 @@ class TestJobConfigPathMappings:
 
         with (
             patch(
-                "plex_generate_previews.jobs.orchestrator.run_processing",
+                "media_preview_generator.jobs.orchestrator.run_processing",
                 side_effect=capture_run_processing,
             ),
-            patch("plex_generate_previews.config.load_config", return_value=mock_config),
+            patch("media_preview_generator.config.load_config", return_value=mock_config),
             patch(
-                "plex_generate_previews.processing.orchestrator._verify_tmp_folder_health",
+                "media_preview_generator.processing.generator._verify_tmp_folder_health",
                 return_value=(True, []),
             ),
             patch(
-                "plex_generate_previews.utils.setup_working_directory",
+                "media_preview_generator.utils.setup_working_directory",
                 return_value=str(tmp_path / "work"),
             ),
-            patch("plex_generate_previews.gpu.detect.detect_all_gpus", return_value=[]),
+            patch("media_preview_generator.gpu.detect.detect_all_gpus", return_value=[]),
         ):
             resp = client.post(
                 "/api/jobs",
@@ -1296,6 +2296,53 @@ class TestJobConfigPathMappings:
         cfg = captured_configs[0]
         assert cfg.plex_library_ids == ["1", "2"]
         assert cfg.plex_libraries == []
+
+    def test_run_processing_returning_none_marks_job_failed(self, client, tmp_path):
+        """When orchestrator returns None (e.g. ConnectionError to Plex), the
+        job must land as FAILED with an actionable error — not silently as
+        a green 'completed' that masks the upstream outage."""
+        done = threading.Event()
+
+        def boom(*args, **kwargs):
+            done.set()
+            return None  # mirrors run_processing's ConnectionError path
+
+        mock_config = MagicMock()
+        mock_config.path_mappings = []
+        mock_config.tmp_folder = str(tmp_path)
+        mock_config.plex_url = "http://test"
+        mock_config.plex_token = "token"
+        mock_config.working_tmp_folder = str(tmp_path / "work")
+
+        with (
+            patch(
+                "media_preview_generator.jobs.orchestrator.run_processing",
+                side_effect=boom,
+            ),
+            patch("media_preview_generator.config.load_config", return_value=mock_config),
+            patch(
+                "media_preview_generator.processing.generator._verify_tmp_folder_health",
+                return_value=(True, []),
+            ),
+            patch(
+                "media_preview_generator.utils.setup_working_directory",
+                return_value=str(tmp_path / "work"),
+            ),
+            patch("media_preview_generator.gpu.detect.detect_all_gpus", return_value=[]),
+        ):
+            resp = client.post("/api/jobs", headers=_api_headers(), json={})
+            assert resp.status_code == 201
+            job_id = resp.get_json()["id"]
+            assert done.wait(timeout=2.0), "run_processing was not called"
+            # Allow job_runner's post-call code to update job state.
+            for _ in range(20):
+                state = client.get(f"/api/jobs/{job_id}", headers=_api_headers()).get_json()
+                if state["status"] in ("failed", "completed"):
+                    break
+                time.sleep(0.05)
+
+        assert state["status"] == "failed", state
+        assert "aborted" in (state.get("error") or "").lower()
 
     def test_start_job_selected_libraries_ids_map_to_id_scope(self, client, tmp_path):
         """selected_libraries values that are IDs should populate plex_library_ids."""
@@ -1316,19 +2363,19 @@ class TestJobConfigPathMappings:
 
         with (
             patch(
-                "plex_generate_previews.jobs.orchestrator.run_processing",
+                "media_preview_generator.jobs.orchestrator.run_processing",
                 side_effect=capture_run_processing,
             ),
-            patch("plex_generate_previews.config.load_config", return_value=mock_config),
+            patch("media_preview_generator.config.load_config", return_value=mock_config),
             patch(
-                "plex_generate_previews.processing.orchestrator._verify_tmp_folder_health",
+                "media_preview_generator.processing.generator._verify_tmp_folder_health",
                 return_value=(True, []),
             ),
             patch(
-                "plex_generate_previews.utils.setup_working_directory",
+                "media_preview_generator.utils.setup_working_directory",
                 return_value=str(tmp_path / "work"),
             ),
-            patch("plex_generate_previews.gpu.detect.detect_all_gpus", return_value=[]),
+            patch("media_preview_generator.gpu.detect.detect_all_gpus", return_value=[]),
         ):
             resp = client.post(
                 "/api/jobs",
@@ -1352,18 +2399,39 @@ class TestSetupWizardAPI:
     """Test /api/setup/* endpoints."""
 
     def test_get_setup_status_no_auth(self, client):
-        """Setup status should be accessible without auth."""
+        """Setup status should be accessible without auth + carry typed values.
+
+        Audit fix — original asserted only key presence ("configured" in data,
+        "setup_complete" in data). A regression returning all-False or
+        all-True garbage would have passed. Assert TYPES + values match
+        the actual setup state.
+        """
         resp = client.get("/api/setup/status")
         assert resp.status_code == 200
         data = resp.get_json()
-        assert "configured" in data
-        assert "setup_complete" in data
+        # Both fields must be present and typed bool, not strings/ints/None.
+        assert isinstance(data.get("configured"), bool), (
+            f"configured must be a bool, got {type(data.get('configured')).__name__}"
+        )
+        assert isinstance(data.get("setup_complete"), bool), (
+            f"setup_complete must be a bool, got {type(data.get('setup_complete')).__name__}"
+        )
 
     def test_get_setup_state(self, client):
+        # Seed step=2 first so we can verify the GET surfaces the value
+        # — key-presence alone never proved the route reads from storage.
+        client.post(
+            "/api/setup/state",
+            headers=_api_headers(),
+            json={"step": 2, "data": {"plex_url": "http://seeded:32400"}},
+        )
         resp = client.get("/api/setup/state", headers=_api_headers())
         assert resp.status_code == 200
         data = resp.get_json()
-        assert "step" in data
+        assert data["step"] == 2
+        # Also pin the data shape — it must always be a dict, not None.
+        assert isinstance(data.get("data"), dict)
+        assert data["data"].get("plex_url") == "http://seeded:32400"
 
     def test_save_setup_state(self, client):
         resp = client.post(
@@ -1402,11 +2470,21 @@ class TestSetupWizardAPI:
         assert state.get("data", {}).get("path_mappings") == path_mappings
 
     def test_complete_setup(self, client):
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        # Fixture pre-marks setup complete; clear it so we can assert the
+        # endpoint actually flips it (not just returns success while the
+        # underlying state stays whatever it was).
+        sm.set("setup_complete", False)
+        assert sm.is_setup_complete() is False
+
         resp = client.post("/api/setup/complete", headers=_api_headers())
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["success"] is True
         assert data["redirect"] == "/"
+        assert sm.is_setup_complete() is True
 
     def test_set_setup_token_mismatch(self, client):
         resp = client.post(
@@ -1417,18 +2495,115 @@ class TestSetupWizardAPI:
         assert resp.status_code == 400
         assert "match" in resp.get_json()["error"].lower()
 
-    def test_set_setup_token_too_short(self, client):
+    def test_set_setup_token_too_short(self, client, monkeypatch):
+        # The fixture sets WEB_AUTH_TOKEN, so the env-control gate would
+        # otherwise short-circuit with a different error. Bypass it so
+        # we exercise the real length-validation branch.
+        monkeypatch.setattr(
+            "media_preview_generator.web.auth.is_token_env_controlled",
+            lambda: False,
+        )
         resp = client.post(
             "/api/setup/set-token",
             headers=_api_headers(),
             json={"token": "short", "confirm_token": "short"},
         )
         assert resp.status_code == 400
+        # Pin the reason — bare 400 collides with the mismatch / env paths.
+        assert "8 characters" in resp.get_json()["error"]
 
 
 # ---------------------------------------------------------------------------
 # Schedules API
 # ---------------------------------------------------------------------------
+
+
+class TestQuietHoursAPI:
+    """D21 + D26 — /api/quiet-hours GET + POST (multi-window)."""
+
+    def test_get_returns_default_when_unset(self, client):
+        resp = client.get("/api/quiet-hours", headers=_api_headers())
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["enabled"] is False
+        assert body["windows"] == []
+        # With no windows configured the dashboard badge MUST report False
+        # (key-presence let a regression returning True here pass — the
+        # badge would mis-render as "in quiet window" while no window was
+        # actually defined).
+        assert body["currently_in_quiet_window"] is False
+
+    def test_post_legacy_single_window_body_still_accepted(self, client):
+        # Backwards-compat: D21-era front-ends posting {start, end} at the
+        # top level get migrated server-side to a single all-week window.
+        resp = client.post(
+            "/api/quiet-hours",
+            headers=_api_headers(),
+            json={"enabled": True, "start": "08:00", "end": "01:00"},
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["enabled"] is True
+        assert len(body["windows"]) == 1
+        assert body["windows"][0]["start"] == "08:00"
+        assert body["windows"][0]["end"] == "01:00"
+        assert len(body["windows"][0]["days"]) == 7
+
+        get = client.get("/api/quiet-hours", headers=_api_headers()).get_json()
+        assert get["enabled"] is True
+        assert len(get["windows"]) == 1
+
+    def test_post_multi_window_persists_and_round_trips(self, client):
+        body = {
+            "enabled": True,
+            "windows": [
+                {"start": "08:00", "end": "17:00", "days": ["mon", "tue", "wed", "thu", "fri"]},
+                {"start": "22:00", "end": "06:00", "days": ["sat", "sun"]},
+            ],
+        }
+        resp = client.post("/api/quiet-hours", headers=_api_headers(), json=body)
+        assert resp.status_code == 200
+        out = resp.get_json()
+        assert len(out["windows"]) == 2
+        assert out["windows"][0]["days"] == ["mon", "tue", "wed", "thu", "fri"]
+        assert out["windows"][1]["days"] == ["sat", "sun"]
+
+        get = client.get("/api/quiet-hours", headers=_api_headers()).get_json()
+        assert len(get["windows"]) == 2
+        assert get["windows"][1]["start"] == "22:00"
+
+    def test_post_invalid_window_time_returns_400(self, client):
+        resp = client.post(
+            "/api/quiet-hours",
+            headers=_api_headers(),
+            json={"enabled": True, "windows": [{"start": "25:00", "end": "01:00"}]},
+        )
+        assert resp.status_code == 400
+        assert "Window #1" in resp.get_json().get("error", "")
+
+    def test_post_invalid_day_name_returns_400(self, client):
+        resp = client.post(
+            "/api/quiet-hours",
+            headers=_api_headers(),
+            json={
+                "enabled": True,
+                "windows": [{"start": "08:00", "end": "17:00", "days": ["mon", "moonday"]}],
+            },
+        )
+        assert resp.status_code == 400
+        assert "moonday" in resp.get_json().get("error", "")
+
+    def test_post_legacy_invalid_start_time_returns_400(self, client):
+        resp = client.post(
+            "/api/quiet-hours",
+            headers=_api_headers(),
+            json={"enabled": True, "start": "25:00", "end": "01:00"},
+        )
+        assert resp.status_code == 400
+        # Pin error substring — legacy single-window POSTs route through
+        # the same validator as the multi-window form, so the response
+        # uses the "Window #1: ..." prefix.
+        assert "Window #1" in resp.get_json().get("error", "")
 
 
 class TestSchedulesAPI:
@@ -1446,10 +2621,42 @@ class TestSchedulesAPI:
             json={"cron_expression": "0 */6 * * *"},
         )
         assert resp.status_code == 400
+        # Pin reason — bare 400 collides with the missing-trigger branch.
+        assert "Name is required" in resp.get_json()["error"]
 
     def test_create_schedule_missing_trigger(self, client):
         resp = client.post("/api/schedules", headers=_api_headers(), json={"name": "Test"})
         assert resp.status_code == 400
+        # Pin reason — both validators 400, so without this assert a
+        # regression that always fired the name validator would pass.
+        body = resp.get_json()
+        assert "cron_expression" in body["error"] or "interval_minutes" in body["error"]
+
+    def test_update_schedule_invalid_cron_returns_400(self, client):
+        """PUT /api/schedules/<id> with malformed cron must surface 400, not 500.
+
+        Regression: APScheduler's CronTrigger.from_crontab raises ValueError
+        on bad cron syntax, which previously bubbled to the framework's
+        generic 500. Schedule updates must mirror create_schedule's contract
+        so the UI can show an inline error instead of a stack trace.
+        """
+        # Create a valid schedule first
+        create_resp = client.post(
+            "/api/schedules",
+            headers=_api_headers(),
+            json={"name": "valid", "cron_expression": "0 3 * * *"},
+        )
+        assert create_resp.status_code == 201
+        schedule_id = create_resp.get_json()["id"]
+
+        # Update with malformed cron — must return 400, not 500
+        bad = client.put(
+            f"/api/schedules/{schedule_id}",
+            headers=_api_headers(),
+            json={"cron_expression": "not a cron"},
+        )
+        assert bad.status_code == 400
+        assert "error" in bad.get_json()
 
 
 # ---------------------------------------------------------------------------
@@ -1461,19 +2668,168 @@ class TestSystemAPI:
     """Test /api/system/* endpoints."""
 
     def test_get_system_status(self, client):
-        with patch("plex_generate_previews.gpu.detect.detect_all_gpus", return_value=[]):
+        with patch("media_preview_generator.gpu.detect.detect_all_gpus", return_value=[]):
             resp = client.get("/api/system/status", headers=_api_headers())
         assert resp.status_code == 200
         data = resp.get_json()
-        assert "gpus" in data
+        # Empty GPU list flows through unchanged; running_job + pending_jobs
+        # populated from the (empty) job manager so the dashboard renders 0/none.
+        assert data["gpus"] == []
+        assert data["gpu_stats"] == []
+        assert data["running_job"] is None
+        assert data["pending_jobs"] == 0
 
     def test_get_config(self, client):
-        with patch("plex_generate_previews.config.load_config", return_value=None):
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        sm.set("plex_url", "http://plex.example:32400")
+        sm.set("plex_token", "secret-tok")
+        sm.set("plex_config_folder", "/config/plex")
+        sm.set("plex_verify_ssl", False)
+
+        with patch("media_preview_generator.config.load_config", return_value=None):
             resp = client.get("/api/system/config", headers=_api_headers())
         assert resp.status_code == 200
         data = resp.get_json()
-        assert "gpu_threads" in data
-        assert "cpu_threads" in data
+        # Endpoint must echo settings + mask the token; key presence alone
+        # would let a regression that returns "" for everything pass silently.
+        assert data["plex_url"] == "http://plex.example:32400"
+        assert data["plex_token"] == "****"
+        assert data["plex_config_folder"] == "/config/plex"
+        assert data["plex_verify_ssl"] is False
+        assert isinstance(data["gpu_threads"], int)
+        assert isinstance(data["cpu_threads"], int)
+        assert "config_error" in data
+
+    def test_media_servers_status_empty_when_unconfigured(self, client):
+        from media_preview_generator.web.routes import api_system as _api_system
+
+        with _api_system._media_server_status_lock:
+            _api_system._media_server_status_cache["result"] = None
+            _api_system._media_server_status_cache["fetched_at"] = 0.0
+
+        with patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_get_sm:
+            sm = MagicMock()
+            sm.get.return_value = []
+            mock_get_sm.return_value = sm
+            resp = client.get("/api/system/media-servers", headers=_api_headers())
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["servers"] == []
+        assert body["cached"] is False
+        assert body["ttl"] == 30
+
+    def test_media_servers_status_summarises_each_entry(self, client):
+        from media_preview_generator.web.routes import api_system as _api_system
+
+        with _api_system._media_server_status_lock:
+            _api_system._media_server_status_cache["result"] = None
+            _api_system._media_server_status_cache["fetched_at"] = 0.0
+
+        entries = [
+            {
+                "id": "p1",
+                "name": "Home Plex",
+                "type": "plex",
+                "url": "http://plex:32400",
+                "enabled": True,
+                "auth": {"method": "token", "token": "abc"},
+            },
+            {
+                "id": "e1",
+                "name": "Living Room Emby",
+                "type": "emby",
+                "url": "http://emby:8096",
+                "enabled": False,
+                "auth": {"method": "api_key", "api_key": "k"},
+            },
+        ]
+
+        ok = MagicMock(ok=True, server_id="srv-uuid-1", error=None)
+        live = MagicMock()
+        live.test_connection.return_value = ok
+
+        with (
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_get_sm,
+            patch(
+                "media_preview_generator.web.routes.api_servers._instantiate_for_probe",
+                return_value=live,
+            ),
+        ):
+            sm = MagicMock()
+            sm.get.return_value = entries
+            mock_get_sm.return_value = sm
+            resp = client.get("/api/system/media-servers", headers=_api_headers())
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert len(body["servers"]) == 2
+        plex_row = next(s for s in body["servers"] if s["id"] == "p1")
+        emby_row = next(s for s in body["servers"] if s["id"] == "e1")
+        assert plex_row["status"] == "connected"
+        assert plex_row["server_id"] == "srv-uuid-1"
+        assert emby_row["status"] == "disabled"
+        # Disabled servers don't get probed.
+        live.test_connection.assert_called_once()
+
+    def test_media_servers_status_uses_30s_cache(self, client):
+        from media_preview_generator.web.routes import api_system as _api_system
+
+        with _api_system._media_server_status_lock:
+            _api_system._media_server_status_cache["result"] = [
+                {"id": "p1", "status": "connected", "name": "X", "type": "plex"}
+            ]
+            _api_system._media_server_status_cache["fetched_at"] = time.time()
+
+        try:
+            resp = client.get("/api/system/media-servers", headers=_api_headers())
+            body = resp.get_json()
+            assert body["cached"] is True
+            assert body["servers"][0]["id"] == "p1"
+        finally:
+            with _api_system._media_server_status_lock:
+                _api_system._media_server_status_cache["result"] = None
+                _api_system._media_server_status_cache["fetched_at"] = 0.0
+
+    def test_media_servers_status_classifies_401_as_unauthorised(self, client):
+        """ConnectionResult uses .message (not .error). The unauthorised
+        classification used to read result.error which doesn't exist on the
+        dataclass, so every auth failure was silently bucketed as
+        'unreachable' — masking misconfig in the dashboard badge."""
+        from media_preview_generator.servers import ConnectionResult
+        from media_preview_generator.web.routes import api_system as _api_system
+
+        with _api_system._media_server_status_lock:
+            _api_system._media_server_status_cache["result"] = None
+            _api_system._media_server_status_cache["fetched_at"] = 0.0
+
+        live = MagicMock()
+        live.test_connection.return_value = ConnectionResult(ok=False, message="HTTP 401 Unauthorized — token rejected")
+
+        with (
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_get_sm,
+            patch(
+                "media_preview_generator.web.routes.api_servers._instantiate_for_probe",
+                return_value=live,
+            ),
+        ):
+            sm = MagicMock()
+            sm.get.return_value = [
+                {
+                    "id": "e1",
+                    "name": "Emby",
+                    "type": "emby",
+                    "url": "http://emby:8096",
+                    "enabled": True,
+                    "auth": {"method": "api_key", "api_key": "bad"},
+                }
+            ]
+            mock_get_sm.return_value = sm
+            resp = client.get("/api/system/media-servers", headers=_api_headers())
+        body = resp.get_json()
+        row = body["servers"][0]
+        assert row["status"] == "unauthorised", row
+        assert "401" in row["error"]
 
 
 # ---------------------------------------------------------------------------
@@ -1493,6 +2849,10 @@ class TestPathValidation:
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["valid"] is False
+        # Pin error reason — bare valid=False would fail for ANY reason
+        # and the test would pass even if the route rejected for the
+        # wrong cause (e.g. a coincidental sandbox failure).
+        assert any("Plex Data Path is required" in e for e in data["errors"]), data["errors"]
 
     def test_validate_paths_null_bytes_rejected(self, client):
         resp = client.post(
@@ -1503,6 +2863,10 @@ class TestPathValidation:
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["valid"] is False
+        # Pin specific rejection reason — bare valid=False would let a
+        # regression that caught the null byte via a different (less
+        # secure) code path slip through.
+        assert any("Invalid Plex Data Path" in e for e in data["errors"]), data["errors"]
 
     def test_validate_paths_requires_auth_after_setup(self, client):
         """When setup is complete, validate_paths requires authentication."""
@@ -1517,7 +2881,7 @@ class TestPathValidation:
         """New-format path_mappings: invalid local_prefix returns validation error."""
         (tmp_path / "Media" / "localhost").mkdir(parents=True)
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT",
+            "media_preview_generator.web.routes.api_settings.PLEX_DATA_ROOT",
             str(tmp_path),
         )
         resp = client.post(
@@ -1537,14 +2901,23 @@ class TestPathValidation:
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["valid"] is False
-        # Path mapping row validation: either folder not found or outside allowed root
-        assert any("Folder not found" in e or "Path in this app" in e or "Row 1" in e for e in data["errors"])
+        # MEDIA_ROOT defaults to "/" so the path is "inside" the sandbox;
+        # the surfaced error is the existence check failing. Pin the
+        # exact production string instead of the previous 3-way
+        # disjunctive substring (which was bug-blind to a regression
+        # that 200'd with a meaningless error label).
+        joined = " ".join(data["errors"])
+        assert "Row 1" in joined, joined
+        assert "folder not found" in joined, joined
+        # The user-supplied path must be visible in the error so it's
+        # actionable in the UI.
+        assert "/nonexistent_xyz_path_123" in joined, joined
 
     def test_validate_paths_path_mappings_null_byte_in_local(self, client, tmp_path, monkeypatch):
         """path_mappings row with null byte in local_prefix returns invalid path error."""
         (tmp_path / "Media" / "localhost").mkdir(parents=True)
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT",
+            "media_preview_generator.web.routes.api_settings.PLEX_DATA_ROOT",
             str(tmp_path),
         )
         resp = client.post(
@@ -1570,7 +2943,7 @@ class TestPathValidation:
         """Legacy: only plex_videos_path_mapping set returns Local Media Path required."""
         (tmp_path / "Media" / "localhost").mkdir(parents=True)
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT",
+            "media_preview_generator.web.routes.api_settings.PLEX_DATA_ROOT",
             str(tmp_path),
         )
         resp = client.post(
@@ -1591,7 +2964,7 @@ class TestPathValidation:
         """Legacy: only plex_local_videos_path_mapping set returns Plex Media Path required."""
         (tmp_path / "Media" / "localhost").mkdir(parents=True)
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT",
+            "media_preview_generator.web.routes.api_settings.PLEX_DATA_ROOT",
             str(tmp_path),
         )
         resp = client.post(
@@ -1615,19 +2988,31 @@ class TestPathValidation:
 
 
 class TestAuthMethods:
-    """Test that both Bearer token and session auth work for API."""
+    """Test that both Bearer token and session auth work for API.
+
+    Each test asserts the endpoint returned a real JSON body (not just
+    "auth didn't reject"). A regression where auth silently passes but
+    the endpoint short-circuits with 200+empty would otherwise look
+    identical to a healthy response here.
+    """
 
     def test_bearer_auth(self, client):
         resp = client.get("/api/jobs", headers={"Authorization": "Bearer test-token-12345678"})
         assert resp.status_code == 200
+        body = resp.get_json()
+        assert isinstance(body, dict) and "jobs" in body, body
 
     def test_x_auth_token_header(self, client):
         resp = client.get("/api/jobs", headers={"X-Auth-Token": "test-token-12345678"})
         assert resp.status_code == 200
+        body = resp.get_json()
+        assert isinstance(body, dict) and "jobs" in body, body
 
     def test_session_auth(self, authed_client):
         resp = authed_client.get("/api/jobs")
         assert resp.status_code == 200
+        body = resp.get_json()
+        assert isinstance(body, dict) and "jobs" in body, body
 
 
 # ---------------------------------------------------------------------------
@@ -1658,7 +3043,14 @@ class TestSchedulesCRUD:
         assert resp.status_code == 201
         data = resp.get_json()
         assert data["name"] == "Nightly"
-        assert "id" in data
+        # Pin id is non-empty + the schedule actually appears in the list
+        # — bare key-presence on "id" was bug-blind to id=None or "".
+        assert isinstance(data["id"], str) and data["id"], data
+        sched_id = data["id"]
+        list_resp = client.get("/api/schedules", headers=_api_headers())
+        assert list_resp.status_code == 200
+        listed_ids = {s["id"] for s in list_resp.get_json()["schedules"]}
+        assert sched_id in listed_ids, list_resp.get_json()
 
     def test_create_schedule_interval(self, client):
         resp = client.post(
@@ -1667,6 +3059,22 @@ class TestSchedulesCRUD:
             json={"name": "Every 6h", "interval_minutes": 360},
         )
         assert resp.status_code == 201
+        # Pin response body — previously only status was checked, so a
+        # regression returning {} or persisting nothing would have passed.
+        body = resp.get_json()
+        assert body["name"] == "Every 6h"
+        assert body["id"]
+        sched_id = body["id"]
+        assert body["trigger_type"] == "interval"
+        assert body["trigger_value"] == "360"
+
+        # Confirm it really persisted by fetching it back.
+        get_resp = client.get(f"/api/schedules/{sched_id}", headers=_api_headers())
+        assert get_resp.status_code == 200
+        got = get_resp.get_json()
+        assert got["name"] == "Every 6h"
+        assert got["trigger_type"] == "interval"
+        assert got["trigger_value"] == "360"
 
     def test_get_specific_schedule(self, client):
         create_resp = client.post(
@@ -1759,9 +3167,37 @@ class TestSchedulesCRUD:
             json={"name": "RunMe", "cron_expression": "0 0 * * *"},
         )
         schedule_id = create_resp.get_json()["id"]
+        # Pre-state: schedule has never run yet.
+        before = client.get(f"/api/schedules/{schedule_id}", headers=_api_headers()).get_json()
+        assert before["last_run"] is None
+
+        # Patch the run_job_callback at the boundary so the route reaches
+        # ``execute_scheduled_job`` and we can verify it actually
+        # dispatched (rather than no-opping with success=True).
+        from media_preview_generator.web.scheduler import get_schedule_manager
+
+        sm = get_schedule_manager()
+        called: list[dict] = []
+
+        def fake_run_job(**kwargs):
+            called.append(kwargs)
+
+        sm.run_job_callback = fake_run_job
+
         resp = client.post(f"/api/schedules/{schedule_id}/run", headers=_api_headers())
         assert resp.status_code == 200
         assert resp.get_json()["success"] is True
+
+        # The route must have invoked the schedule's run_job_callback with
+        # the expected schedule_id propagated as parent_schedule_id —
+        # bare success=True was tautological because a no-op route
+        # would have looked identical to a working one.
+        assert len(called) == 1, called
+        assert called[0]["parent_schedule_id"] == schedule_id
+
+        # And schedule's last_run advanced.
+        after = client.get(f"/api/schedules/{schedule_id}", headers=_api_headers()).get_json()
+        assert after["last_run"] is not None, after
 
     def test_run_now_nonexistent(self, client):
         resp = client.post("/api/schedules/nonexistent/run", headers=_api_headers())
@@ -1777,37 +3213,73 @@ class TestReprocessJob:
     """Test /api/jobs/<id>/reprocess endpoint."""
 
     def test_reprocess_completed_job(self, client):
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
-            create_resp = client.post("/api/jobs", headers=_api_headers(), json={"library_name": "Movies"})
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
+            create_resp = client.post(
+                "/api/jobs",
+                headers=_api_headers(),
+                json={
+                    "library_name": "Movies",
+                    "config": {
+                        # Seed the retry-marker keys that production strips
+                        # on reprocess. If the SUT forgets to strip them
+                        # the new job re-uses retry state and behaves
+                        # differently from a fresh manual reprocess.
+                        "is_retry": True,
+                        "retry_attempt": 2,
+                        "max_retries": 3,
+                        "parent_job_id": "phantom-parent",
+                        "webhook_paths": ["/data/movie.mkv"],
+                    },
+                },
+            )
         job_id = create_resp.get_json()["id"]
 
-        from plex_generate_previews.web.jobs import get_job_manager
+        from media_preview_generator.web.jobs import get_job_manager
 
         jm = get_job_manager()
         jm.start_job(job_id)
         jm.complete_job(job_id)
 
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             resp = client.post(f"/api/jobs/{job_id}/reprocess", headers=_api_headers())
         assert resp.status_code == 201
-        assert resp.get_json()["id"] != job_id
+        body = resp.get_json()
+        new_id = body["id"]
+        assert new_id != job_id
+
+        # Audit fix — the whole point of the reprocess endpoint is the
+        # config-cloning + retry-key-stripping. Bare id != old_id was
+        # bug-blind to a regression that just emitted a fresh empty job.
+        assert body["library_name"] == "Movies", body
+        # Inspect the persisted new-job config — the retry-marker keys
+        # must be stripped so the new run starts fresh.
+        new_job = jm.get_job(new_id)
+        assert new_job is not None
+        for stripped_key in ("is_retry", "retry_attempt", "max_retries", "parent_job_id"):
+            assert stripped_key not in new_job.config, (
+                f"reprocess must strip {stripped_key!r}; left in {new_job.config!r}"
+            )
+        # And the non-retry config (webhook_paths) is preserved.
+        assert new_job.config.get("webhook_paths") == ["/data/movie.mkv"]
 
     def test_reprocess_nonexistent_job(self, client):
         resp = client.post("/api/jobs/nonexistent/reprocess", headers=_api_headers())
         assert resp.status_code == 404
 
     def test_reprocess_running_job_rejected(self, client):
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
 
-        from plex_generate_previews.web.jobs import get_job_manager
+        from media_preview_generator.web.jobs import get_job_manager
 
         jm = get_job_manager()
         jm.start_job(job_id)
 
         resp = client.post(f"/api/jobs/{job_id}/reprocess", headers=_api_headers())
         assert resp.status_code == 409
+        # Pin error reason — bare 409 collides with any other 409 path.
+        assert "running or pending" in resp.get_json()["error"]
 
 
 # ---------------------------------------------------------------------------
@@ -1819,11 +3291,11 @@ class TestWorkerScalingValidation:
     """Test worker scaling edge cases and validation."""
 
     def test_add_workers_zero_count_rejected(self, client):
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
 
-        from plex_generate_previews.web.jobs import get_job_manager
+        from media_preview_generator.web.jobs import get_job_manager
 
         jm = get_job_manager()
         jm.start_job(job_id)
@@ -1834,13 +3306,15 @@ class TestWorkerScalingValidation:
             json={"worker_type": "CPU", "count": 0},
         )
         assert resp.status_code == 400
+        # Pin reason — bare 400 collides with the worker_type / shape paths.
+        assert "count must be greater than 0" in resp.get_json()["error"]
 
     def test_add_workers_invalid_type_rejected(self, client):
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
 
-        from plex_generate_previews.web.jobs import get_job_manager
+        from media_preview_generator.web.jobs import get_job_manager
 
         jm = get_job_manager()
         jm.start_job(job_id)
@@ -1851,13 +3325,14 @@ class TestWorkerScalingValidation:
             json={"worker_type": "INVALID", "count": 1},
         )
         assert resp.status_code == 400
+        assert "Invalid worker_type" in resp.get_json()["error"]
 
     def test_add_workers_no_pool_returns_409(self, client):
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
 
-        from plex_generate_previews.web.jobs import get_job_manager
+        from media_preview_generator.web.jobs import get_job_manager
 
         jm = get_job_manager()
         jm.start_job(job_id)
@@ -1868,13 +3343,15 @@ class TestWorkerScalingValidation:
             json={"worker_type": "CPU", "count": 1},
         )
         assert resp.status_code == 409
+        # Pin reason — production says "Worker pool not available for this job".
+        assert "not available" in resp.get_json()["error"].lower()
 
     def test_remove_workers_zero_count_rejected(self, client):
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
 
-        from plex_generate_previews.web.jobs import get_job_manager
+        from media_preview_generator.web.jobs import get_job_manager
 
         jm = get_job_manager()
         jm.start_job(job_id)
@@ -1885,13 +3362,14 @@ class TestWorkerScalingValidation:
             json={"worker_type": "CPU", "count": 0},
         )
         assert resp.status_code == 400
+        assert "count must be greater than 0" in resp.get_json()["error"]
 
     def test_global_add_workers_invalid_type(self, client):
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
 
-        from plex_generate_previews.web.jobs import get_job_manager
+        from media_preview_generator.web.jobs import get_job_manager
 
         jm = get_job_manager()
         jm.start_job(job_id)
@@ -1904,13 +3382,14 @@ class TestWorkerScalingValidation:
             json={"worker_type": "BADTYPE", "count": 1},
         )
         assert resp.status_code == 400
+        assert "Invalid worker_type" in resp.get_json()["error"]
 
     def test_global_remove_workers_zero_count(self, client):
-        with patch("plex_generate_previews.web.routes.api_jobs._start_job_async"):
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
         job_id = create_resp.get_json()["id"]
 
-        from plex_generate_previews.web.jobs import get_job_manager
+        from media_preview_generator.web.jobs import get_job_manager
 
         jm = get_job_manager()
         jm.start_job(job_id)
@@ -1921,6 +3400,32 @@ class TestWorkerScalingValidation:
             json={"worker_type": "CPU", "count": 0},
         )
         assert resp.status_code == 400
+        assert "count must be greater than 0" in resp.get_json()["error"]
+
+    def test_add_workers_non_numeric_count_returns_400(self, client):
+        """Non-numeric count must be rejected with 400, not crash with 500.
+
+        Previously the route did `int(data.get("count", 1))` which raises
+        ValueError for any non-numeric string and bubbled up as a generic
+        500 — opaque error for a malformed UI POST.
+        """
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
+            create_resp = client.post("/api/jobs", headers=_api_headers(), json={})
+        job_id = create_resp.get_json()["id"]
+
+        from media_preview_generator.web.jobs import get_job_manager
+
+        jm = get_job_manager()
+        jm.start_job(job_id)
+        jm.set_active_worker_pool(job_id, MagicMock())
+
+        resp = client.post(
+            f"/api/jobs/{job_id}/workers/add",
+            headers=_api_headers(),
+            json={"worker_type": "CPU", "count": "abc"},
+        )
+        assert resp.status_code == 400, resp.get_data(as_text=True)
+        assert "integer" in resp.get_json()["error"].lower()
 
 
 # ---------------------------------------------------------------------------
@@ -1938,7 +3443,7 @@ class TestValidatePathsBranches:
         for h in "0123456789abcdef":
             (media_dir / h).mkdir()
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT",
+            "media_preview_generator.web.routes.api_settings.PLEX_DATA_ROOT",
             str(tmp_path),
         )
         resp = client.post(
@@ -1954,7 +3459,7 @@ class TestValidatePathsBranches:
     def test_validate_paths_missing_media_subfolder(self, client, tmp_path, monkeypatch):
         """Plex directory missing Media subfolder."""
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT",
+            "media_preview_generator.web.routes.api_settings.PLEX_DATA_ROOT",
             str(tmp_path),
         )
         resp = client.post(
@@ -1965,13 +3470,15 @@ class TestValidatePathsBranches:
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["valid"] is False
-        assert any("Media" in e for e in data["errors"])
+        # Pin the exact production string — substring "Media" was so loose
+        # that any unrelated error mentioning "Media" passed.
+        assert any('missing "Media" subfolder' in e for e in data["errors"]), data["errors"]
 
     def test_validate_paths_missing_localhost(self, client, tmp_path, monkeypatch):
         """Plex directory has Media but missing localhost subfolder."""
         (tmp_path / "Media").mkdir()
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT",
+            "media_preview_generator.web.routes.api_settings.PLEX_DATA_ROOT",
             str(tmp_path),
         )
         resp = client.post(
@@ -1982,7 +3489,8 @@ class TestValidatePathsBranches:
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["valid"] is False
-        assert any("localhost" in e for e in data["errors"])
+        # Pin the exact production string — same critique as above.
+        assert any('missing "Media/localhost" subfolder' in e for e in data["errors"]), data["errors"]
 
     def test_validate_paths_incomplete_structure_warns(self, client, tmp_path, monkeypatch):
         """Plex directory with few hash dirs warns."""
@@ -1990,7 +3498,7 @@ class TestValidatePathsBranches:
         media_dir.mkdir(parents=True)
         (media_dir / "a").mkdir()
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT",
+            "media_preview_generator.web.routes.api_settings.PLEX_DATA_ROOT",
             str(tmp_path),
         )
         resp = client.post(
@@ -2009,7 +3517,7 @@ class TestValidatePathsBranches:
         for h in "0123456789abcdef":
             (media_dir / h).mkdir()
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT",
+            "media_preview_generator.web.routes.api_settings.PLEX_DATA_ROOT",
             str(tmp_path),
         )
         resp = client.post(
@@ -2022,26 +3530,42 @@ class TestValidatePathsBranches:
         assert any("No path mapping" in i for i in data["info"])
 
     def test_validate_paths_traversal_rejected(self, client, tmp_path, monkeypatch):
-        """Path traversal attempt is rejected."""
+        """Path traversal attempt is rejected with a meaningful error.
+
+        Security-relevant — bare ``valid is False`` was bug-blind: would
+        pass even if the route silently echoed the attacker-supplied
+        traversal path back into the response. Pin both the rejection
+        reason AND that the raw traversal token is not echoed verbatim.
+        """
         (tmp_path / "Media" / "localhost").mkdir(parents=True)
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT",
+            "media_preview_generator.web.routes.api_settings.PLEX_DATA_ROOT",
             str(tmp_path),
         )
+        traversal_input = str(tmp_path / ".." / ".." / "etc")
         resp = client.post(
             "/api/setup/validate-paths",
             headers=_api_headers(),
-            json={"plex_config_folder": str(tmp_path / ".." / ".." / "etc")},
+            json={"plex_config_folder": traversal_input},
         )
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["valid"] is False
+        # The error must explain WHY (path is outside the allowed root) so
+        # users can fix it — and so a regression that flips to a different
+        # validation path (e.g. "Folder not found") is caught.
+        joined_errors = " ".join(data["errors"])
+        assert "must be within the configured root" in joined_errors, joined_errors
+        # Defence-in-depth: the raw "..//..//etc" token from the user
+        # input should NOT round-trip into the response body — that
+        # would let an attacker plant arbitrary text in a UI surface.
+        assert "/../../etc" not in joined_errors, joined_errors
 
     def test_validate_paths_legacy_null_byte_in_local_media(self, client, tmp_path, monkeypatch):
         """Legacy local_media_path with null byte is rejected via the path_mappings branch."""
         (tmp_path / "Media" / "localhost").mkdir(parents=True)
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT",
+            "media_preview_generator.web.routes.api_settings.PLEX_DATA_ROOT",
             str(tmp_path),
         )
         resp = client.post(
@@ -2061,7 +3585,7 @@ class TestValidatePathsBranches:
     def test_validate_paths_plex_data_path_null_byte_rejected(self, client, tmp_path, monkeypatch):
         """Null byte in plex_config_folder is rejected."""
         monkeypatch.setattr(
-            "plex_generate_previews.web.routes.api_settings.PLEX_DATA_ROOT",
+            "media_preview_generator.web.routes.api_settings.PLEX_DATA_ROOT",
             str(tmp_path),
         )
         resp = client.post(
@@ -2085,7 +3609,8 @@ class TestPageRoutesAdditional:
 
     def test_automation_page_requires_auth(self, client):
         resp = client.get("/automation", follow_redirects=False)
-        assert resp.status_code in (302, 308)
+        assert resp.status_code == 302
+        assert "/login" in resp.headers.get("Location", "")
 
     def test_automation_page_renders_with_both_panes(self, authed_client):
         resp = authed_client.get("/automation")
@@ -2126,15 +3651,26 @@ class TestPageRoutesAdditional:
 
     def test_logs_page_requires_auth(self, client):
         resp = client.get("/logs", follow_redirects=False)
-        assert resp.status_code in (302, 308)
+        assert resp.status_code == 302
+        assert "/login" in resp.headers.get("Location", "")
 
     def test_logs_page_accessible_when_authenticated(self, authed_client):
         resp = authed_client.get("/logs")
         assert resp.status_code == 200
+        # Pin a stable logs-template marker — bare 200 was bug-blind to a
+        # regression that rendered the wrong template (or an empty stub).
+        body = resp.data
+        assert b'id="logSearch"' in body, "logs page must include the live filter input"
+        assert b"log-level-btn" in body, "logs page must include the level toggle row"
 
     def test_setup_wizard_page_redirects_when_configured(self, authed_client):
+        # Authed + setup_complete (set by the `app` fixture) -> /setup must
+        # redirect to / (302). Accepting 200 lets a regression that drops
+        # the redirect slip past — that's exactly the bounce-loop bug
+        # users hit after relogin.
         resp = authed_client.get("/setup", follow_redirects=False)
-        assert resp.status_code in (200, 302, 308)
+        assert resp.status_code == 302
+        assert resp.headers.get("Location", "").endswith("/")
 
     def test_index_redirects_to_setup_when_not_configured(self, client, tmp_path):
         """When setup is incomplete, authenticated user is redirected to setup."""
@@ -2148,7 +3684,7 @@ class TestPageRoutesAdditional:
             os.environ,
             {"CONFIG_DIR": config_dir, "WEB_AUTH_TOKEN": "test-token-12345678"},
         ):
-            from plex_generate_previews.web.settings_manager import (
+            from media_preview_generator.web.settings_manager import (
                 reset_settings_manager,
             )
 
@@ -2160,7 +3696,11 @@ class TestPageRoutesAdditional:
                 sess["authenticated"] = True
 
             resp = test_client.get("/", follow_redirects=False)
-            assert resp.status_code in (200, 302, 308)
+            # Setup not complete + authed -> index should 302 to /setup. A
+            # 200 here would mean the dashboard rendered without setup, which
+            # is the regression we're guarding against.
+            assert resp.status_code == 302
+            assert "/setup" in resp.headers.get("Location", "")
             reset_settings_manager()
 
 
@@ -2186,13 +3726,17 @@ class TestLogHistoryAPI:
                 f.write(_json.dumps(e) + "\n")
 
     def test_log_history_requires_auth(self, client):
+        # @setup_or_auth_required returns 401 (Unauthorized) — not 403 — when
+        # setup is complete and no token is supplied. Pin to the actual code so
+        # we don't silently accept a regression flipping to 403 (Forbidden) which
+        # implies a different auth model (token present but insufficient).
         resp = client.get("/api/logs/history")
-        assert resp.status_code in (401, 403)
+        assert resp.status_code == 401
 
     def test_log_history_empty_when_no_file(self, app, authed_client, tmp_path):
         fake = str(tmp_path / "nonexistent" / "app.log")
         with patch(
-            "plex_generate_previews.web.routes.api_system.get_app_log_path",
+            "media_preview_generator.web.routes.api_system.get_app_log_path",
             return_value=fake,
         ):
             resp = authed_client.get("/api/logs/history", headers=_api_headers())
@@ -2232,7 +3776,7 @@ class TestLogHistoryAPI:
         self._write_log(fake, entries)
 
         with patch(
-            "plex_generate_previews.web.routes.api_system.get_app_log_path",
+            "media_preview_generator.web.routes.api_system.get_app_log_path",
             return_value=fake,
         ):
             resp = authed_client.get("/api/logs/history", headers=_api_headers())
@@ -2240,6 +3784,17 @@ class TestLogHistoryAPI:
         assert len(data["lines"]) == 3
         assert data["lines"][0]["msg"] == "first"
         assert data["lines"][2]["msg"] == "third"
+        # Audit fix — the dashboard renders the level/mod/func/line per
+        # entry. msg-only assertions were bug-blind to a regression that
+        # dropped the surrounding fields.
+        first = data["lines"][0]
+        assert first["level"] == "INFO"
+        assert first["mod"] == "a"
+        assert first["func"] == "f"
+        assert first["line"] == 1
+        # And spot-check the WARNING-level middle entry too.
+        assert data["lines"][1]["level"] == "WARNING"
+        assert data["lines"][1]["mod"] == "b"
 
     def test_log_history_level_filter(self, app, authed_client, tmp_path):
         fake = str(tmp_path / "logs" / "app.log")
@@ -2272,7 +3827,7 @@ class TestLogHistoryAPI:
         self._write_log(fake, entries)
 
         with patch(
-            "plex_generate_previews.web.routes.api_system.get_app_log_path",
+            "media_preview_generator.web.routes.api_system.get_app_log_path",
             return_value=fake,
         ):
             resp = authed_client.get("/api/logs/history?level=WARNING", headers=_api_headers())
@@ -2311,7 +3866,7 @@ class TestLogHistoryAPI:
         self._write_log(fake, entries)
 
         with patch(
-            "plex_generate_previews.web.routes.api_system.get_app_log_path",
+            "media_preview_generator.web.routes.api_system.get_app_log_path",
             return_value=fake,
         ):
             resp = authed_client.get(
@@ -2321,6 +3876,21 @@ class TestLogHistoryAPI:
         data = resp.get_json()
         assert len(data["lines"]) == 1
         assert data["lines"][0]["msg"] == "old"
+
+    def test_log_history_rejects_malformed_before_cursor(self, app, authed_client, tmp_path):
+        """A bogus `before` param used to silently filter every entry
+        because the lexical ts compare put real timestamps before junk
+        like "abc". Now returns 400 so the typo is visible to the user.
+        """
+        fake = str(tmp_path / "logs" / "app.log")
+        self._write_log(fake, [{"ts": "2026-03-22 09:10:18.100", "level": "INFO", "msg": "x"}])
+        with patch(
+            "media_preview_generator.web.routes.api_system.get_app_log_path",
+            return_value=fake,
+        ):
+            resp = authed_client.get("/api/logs/history?before=tomorrow", headers=_api_headers())
+        assert resp.status_code == 400
+        assert "before" in resp.get_json()["error"].lower()
 
     def test_log_history_limit(self, app, authed_client, tmp_path):
         fake = str(tmp_path / "logs" / "app.log")
@@ -2338,13 +3908,17 @@ class TestLogHistoryAPI:
         self._write_log(fake, entries)
 
         with patch(
-            "plex_generate_previews.web.routes.api_system.get_app_log_path",
+            "media_preview_generator.web.routes.api_system.get_app_log_path",
             return_value=fake,
         ):
             resp = authed_client.get("/api/logs/history?limit=5", headers=_api_headers())
         data = resp.get_json()
         assert len(data["lines"]) == 5
         assert data["lines"][-1]["msg"] == "line19"
+        # 20 entries on disk + limit=5 → has_more must be True so the UI
+        # offers an "older logs" button. Audit fix — without this assert
+        # a regression that always returned has_more=False would slip past.
+        assert data["has_more"] is True, data
 
 
 # ---------------------------------------------------------------------------
@@ -2355,35 +3929,82 @@ class TestLogHistoryAPI:
 class TestLibrariesAPI:
     """Test /api/libraries endpoint."""
 
-    @patch("plex_generate_previews.web.routes.api_system._fetch_libraries_via_http")
-    def test_get_libraries_with_settings(self, mock_fetch, client):
-        """Libraries are fetched via HTTP when plex_url/token are set in settings."""
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+    @patch("requests.get")
+    def test_get_libraries_with_settings(self, mock_get, client):
+        """Libraries are fetched via HTTP when plex_url/token are set in settings.
+
+        Mock at the HTTP boundary (requests.get), NOT at _fetch_libraries_via_http.
+        Mocking the helper itself was the D31-anti-pattern: it would let URL/header/
+        XML-parsing bugs inside the helper slip through unnoticed (exactly how the
+        D31 doubled-prefix bug shipped). With the boundary mock, we verify the
+        helper actually calls /library/sections with the correct URL+headers and
+        parses the XML correctly.
+        """
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.set("plex_url", "http://plex:32400")
         sm.set("plex_token", "test-token")
-        mock_fetch.return_value = [{"id": "1", "name": "Movies", "type": "movie", "count": 100}]
+
+        captured: list[tuple] = []
+
+        def fake_requests_get(url, **kwargs):
+            captured.append((url, kwargs))
+            response = MagicMock()
+            response.status_code = 200
+            # Real Plex /library/sections returns JSON when Accept is JSON; the
+            # helper parses MediaContainer.Directory entries.
+            response.json.return_value = {
+                "MediaContainer": {
+                    "Directory": [
+                        {
+                            "key": "1",
+                            "title": "Movies",
+                            "type": "movie",
+                            "agent": "tv.plex.agents.movie",
+                        }
+                    ]
+                }
+            }
+            response.raise_for_status = MagicMock()
+            return response
+
+        mock_get.side_effect = fake_requests_get
         resp = client.get("/api/libraries", headers=_api_headers())
+
         assert resp.status_code == 200
         data = resp.get_json()
         assert len(data["libraries"]) == 1
         assert data["libraries"][0]["name"] == "Movies"
+        # Verify the helper actually hit Plex at the right URL with the right token.
+        # A regression that hit the wrong endpoint, omitted the token, or doubled
+        # the URL prefix (D31-shape) would now fail loudly here.
+        assert any(url.endswith("/library/sections") for url, _ in captured), (
+            f"_fetch_libraries_via_http didn't query /library/sections; called: {[u for u, _ in captured]}"
+        )
+        token_seen = any(kwargs.get("headers", {}).get("X-Plex-Token") == "test-token" for _, kwargs in captured)
+        assert token_seen, f"_fetch_libraries_via_http didn't pass X-Plex-Token; calls: {captured!r}"
 
     def test_get_libraries_no_config(self, client):
-        """Libraries endpoint with no plex config falls back gracefully."""
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        """Libraries endpoint with no Plex AND no other media servers returns
+        empty (multi-server world: 'no config' = no media servers configured,
+        which is a clean empty list, not an error).
+        """
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.delete("plex_url")
         sm.delete("plex_token")
+        sm.set("media_servers", [])
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("PLEX_URL", None)
             os.environ.pop("PLEX_TOKEN", None)
-            with patch("plex_generate_previews.config.get_cached_config", return_value=None):
+            with patch("media_preview_generator.config.get_cached_config", return_value=None):
                 resp = client.get("/api/libraries", headers=_api_headers())
-        assert resp.status_code == 400
-        assert "libraries" in resp.get_json()
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert "libraries" in body
+        assert body["libraries"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -2396,7 +4017,7 @@ class TestPlexTestConnection:
 
     @patch("requests.get")
     def test_plex_test_success(self, mock_get, client):
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.set("plex_url", "http://plex:32400")
@@ -2420,7 +4041,7 @@ class TestPlexTestConnection:
         assert mock_get.call_args.kwargs["verify"] is False
 
     def test_plex_test_no_url_returns_400(self, client):
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.delete("plex_url")
@@ -2430,13 +4051,17 @@ class TestPlexTestConnection:
             os.environ.pop("PLEX_TOKEN", None)
             resp = client.post("/api/plex/test", headers=_api_headers(), json={})
         assert resp.status_code == 400
+        # Pin reason — bare 400 collides with any other 400 path.
+        body = resp.get_json()
+        assert body["success"] is False
+        assert "URL and token required" in body["error"]
 
     @patch("requests.get")
     def test_plex_test_connection_failure(self, mock_get, client):
         import requests as req_mod
 
         mock_get.side_effect = req_mod.exceptions.ConnectionError("refused")
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.set("plex_url", "http://plex:32400")
@@ -2457,7 +4082,7 @@ class TestPlexTestConnection:
         import requests as req_mod
 
         mock_get.side_effect = req_mod.exceptions.Timeout("timed out")
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.set("plex_url", "http://plex:32400")
@@ -2477,7 +4102,7 @@ class TestPlexTestConnection:
         import requests as req_mod
 
         mock_get.side_effect = req_mod.exceptions.SSLError("bad cert")
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.set("plex_url", "https://plex:32400")
@@ -2504,7 +4129,7 @@ class TestPlexTestConnection:
         mock_response.raise_for_status.side_effect = err
         mock_get.return_value = mock_response
 
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.set("plex_url", "http://plex:32400")
@@ -2531,7 +4156,7 @@ class TestPlexTestConnection:
         mock_response.raise_for_status.side_effect = err
         mock_get.return_value = mock_response
 
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.set("plex_url", "http://example.com")
@@ -2545,6 +4170,11 @@ class TestPlexTestConnection:
         body = resp.get_json()
         assert body["success"] is False
         assert "404" in body["error"]
+        # Production: "URL reachable but did not return Plex server identity (404). Check ..."
+        # Pin the "did not return Plex" guidance phrase the docstring promises;
+        # bare "404" substring would let a regression returning a generic
+        # HTTP error pass with no actionable hint.
+        assert "did not return Plex" in body["error"]
 
     @patch("requests.get")
     def test_plex_test_invalid_json_returns_not_plex_message(self, mock_get, client):
@@ -2553,7 +4183,7 @@ class TestPlexTestConnection:
         mock_response.json.side_effect = ValueError("not json")
         mock_get.return_value = mock_response
 
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.set("plex_url", "http://example.com")
@@ -2575,21 +4205,23 @@ class TestPlexTestConnection:
 # ---------------------------------------------------------------------------
 
 
-class TestPlexWebhookLoopbackGuard:
-    """Ensure the webhook self-test short-circuits for localhost URLs in Docker.
+class TestPlexWebhookTestEndpointRemoved:
+    """The ``/api/settings/plex_webhook/test`` endpoint was removed.
 
-    Inside a container, `localhost` is the container itself — so a scary
-    ConnectionRefused stack trace is the usual symptom when users leave the
-    auto-filled default URL unchanged. The guard produces actionable text
-    instead of attempting the doomed network call.
+    Same rationale as the Emby/Jellyfin equivalents: a loopback POST
+    only proved auth + route worked locally, not that Plex Media Server
+    could reach this app from its own network. The button shipped a
+    "Reachable" success message in scenarios where webhooks would
+    still fail in production, so it was misleading more than helpful.
+
+    The ``_loopback_in_docker_warning`` helper is still used by the
+    status endpoint to surface a "this is a loopback URL, Plex can't
+    reach it from outside the container" warning at probe time — that
+    coverage moves to ``TestPlexWebhookStatusLoopbackWarning`` below.
     """
 
-    @patch("plex_generate_previews.web.routes.api_settings.is_docker_environment")
-    @patch("requests.post")
-    def test_loopback_in_docker_short_circuits_with_guidance(self, mock_post, mock_is_docker, client):
-        mock_is_docker.return_value = True
-
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+    def test_test_endpoint_404s(self, client):
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.set("plex_token", "plex-token")
@@ -2598,91 +4230,12 @@ class TestPlexWebhookLoopbackGuard:
         resp = client.post(
             "/api/settings/plex_webhook/test",
             headers=_api_headers(),
-            json={"public_url": "http://localhost:9191/api/webhooks/plex"},
+            json={"public_url": "http://localhost:9191/api/webhooks/server/plex-default"},
         )
-        assert resp.status_code == 200
-        body = resp.get_json()
-        assert body["success"] is False
-        assert "localhost" in body["error"]
-        assert "Docker" in body["error"]
-        assert body["public_url"] == "http://localhost:9191/api/webhooks/plex"
-        # Guard must prevent any actual outbound request.
-        mock_post.assert_not_called()
-
-    @patch("plex_generate_previews.web.routes.api_settings.is_docker_environment")
-    @patch("requests.post")
-    def test_loopback_outside_docker_proceeds_with_network_call(self, mock_post, mock_is_docker, client):
-        mock_is_docker.return_value = False
-
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.text = "ok"
-        mock_post.return_value = mock_response
-
-        from plex_generate_previews.web.settings_manager import get_settings_manager
-
-        sm = get_settings_manager()
-        sm.set("plex_token", "plex-token")
-        sm.set("webhook_secret", "secret-value")
-
-        resp = client.post(
-            "/api/settings/plex_webhook/test",
-            headers=_api_headers(),
-            json={"public_url": "http://localhost:9191/api/webhooks/plex"},
+        assert resp.status_code == 404, (
+            "Plex Test reachability endpoint was removed because it only proved loopback worked. "
+            "Re-introducing it would re-introduce 'webhook test passes but real events fail' support."
         )
-        assert resp.status_code == 200
-        body = resp.get_json()
-        assert body["success"] is True
-        mock_post.assert_called_once()
-
-    @patch("plex_generate_previews.web.routes.api_settings.is_docker_environment")
-    @patch("requests.post")
-    def test_non_loopback_in_docker_proceeds(self, mock_post, mock_is_docker, client):
-        mock_is_docker.return_value = True
-
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.text = "ok"
-        mock_post.return_value = mock_response
-
-        from plex_generate_previews.web.settings_manager import get_settings_manager
-
-        sm = get_settings_manager()
-        sm.set("plex_token", "plex-token")
-        sm.set("webhook_secret", "secret-value")
-
-        resp = client.post(
-            "/api/settings/plex_webhook/test",
-            headers=_api_headers(),
-            json={"public_url": "http://192.168.1.50:9191/api/webhooks/plex"},
-        )
-        assert resp.status_code == 200
-        assert resp.get_json()["success"] is True
-        mock_post.assert_called_once()
-
-    @patch("plex_generate_previews.web.routes.api_settings.is_docker_environment")
-    def test_loopback_guard_covers_ipv4_and_ipv6(self, mock_is_docker, client):
-        mock_is_docker.return_value = True
-
-        from plex_generate_previews.web.settings_manager import get_settings_manager
-
-        sm = get_settings_manager()
-        sm.set("plex_token", "plex-token")
-        sm.set("webhook_secret", "secret-value")
-
-        for url in (
-            "http://127.0.0.1:9191/api/webhooks/plex",
-            "http://[::1]:9191/api/webhooks/plex",
-        ):
-            resp = client.post(
-                "/api/settings/plex_webhook/test",
-                headers=_api_headers(),
-                json={"public_url": url},
-            )
-            assert resp.status_code == 200
-            body = resp.get_json()
-            assert body["success"] is False, f"expected guard to trip for {url}"
-            assert "Docker" in body["error"]
 
 
 # ---------------------------------------------------------------------------
@@ -2693,20 +4246,42 @@ class TestPlexWebhookLoopbackGuard:
 class TestPlexLibrariesAPI:
     """Test /api/plex/libraries endpoint."""
 
-    @patch("plex_generate_previews.web.routes.api_system._fetch_libraries_via_http")
-    def test_get_plex_libraries(self, mock_fetch, client):
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+    @patch("requests.get")
+    def test_get_plex_libraries(self, mock_get, client):
+        # Mock at the HTTP boundary (requests.get) instead of the in-module
+        # _fetch_libraries_via_http helper. Mocking the helper lets a real bug
+        # in the helper slip past — the D31 webhook double-prefix regression
+        # is exactly what this rule guards against.
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.set("plex_url", "http://plex:32400")
         sm.set("plex_token", "test-token")
-        mock_fetch.return_value = [{"id": "1", "name": "Movies", "type": "movie"}]
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "MediaContainer": {
+                "Directory": [
+                    {"key": "1", "title": "Movies", "type": "movie"},
+                ]
+            }
+        }
+        mock_response.raise_for_status = MagicMock()
+        mock_get.return_value = mock_response
+
         resp = client.get("/api/plex/libraries", headers=_api_headers())
         assert resp.status_code == 200
-        assert len(resp.get_json()["libraries"]) == 1
+        libs = resp.get_json()["libraries"]
+        assert len(libs) == 1
+        assert libs[0]["name"] == "Movies"
+        assert libs[0]["type"] == "movie"
+        # Verify the route really called Plex with the expected URL/token.
+        call = mock_get.call_args
+        assert call.args[0].startswith("http://plex:32400")
+        assert call.kwargs["headers"]["X-Plex-Token"] == "test-token"
 
     def test_get_plex_libraries_no_creds(self, client):
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.delete("plex_url")
@@ -2716,6 +4291,34 @@ class TestPlexLibrariesAPI:
             os.environ.pop("PLEX_TOKEN", None)
             resp = client.get("/api/plex/libraries", headers=_api_headers())
         assert resp.status_code == 400
+        # Pin reason — bare 400 collides with shape errors / sandbox failures.
+        body = resp.get_json()
+        assert "Plex URL and token required" in body["error"]
+        assert body["libraries"] == []
+
+    @patch("requests.get")
+    def test_get_plex_libraries_ssl_error_returns_specific_message(self, mock_get, client):
+        """SSLError must surface as an SSL-specific message — it's a subclass
+        of ConnectionError, so without an explicit handler it gets reported
+        as a generic 'could not connect' error and the user has no clue
+        the cert is the problem (regression: Plex's self-signed cert on
+        direct-IP HTTPS URLs)."""
+        import requests
+
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        sm.set("plex_url", "https://192.168.1.10:32400")
+        sm.set("plex_token", "tok")
+        # Mock the HTTP boundary — requests.get raises, the in-module helper
+        # propagates, and the route's SSLError handler converts to 502.
+        mock_get.side_effect = requests.exceptions.SSLError("self signed certificate")
+
+        resp = client.get("/api/plex/libraries", headers=_api_headers())
+        assert resp.status_code == 502
+        body = resp.get_json()
+        assert "SSL" in body["error"]
+        assert "Verify SSL" in body["error"] or "verify" in body["error"].lower()
 
 
 # ---------------------------------------------------------------------------
@@ -2728,7 +4331,7 @@ class TestFetchLibrariesViaHTTP:
 
     @patch("requests.get")
     def test_fetch_libraries_filters_movie_and_show(self, mock_get):
-        from plex_generate_previews.web.routes import _fetch_libraries_via_http
+        from media_preview_generator.web.routes import _fetch_libraries_via_http
 
         mock_response = MagicMock()
         mock_response.json.return_value = {
@@ -2753,7 +4356,7 @@ class TestFetchLibrariesViaHTTP:
 
     @patch("requests.get")
     def test_fetch_libraries_can_disable_ssl_verification(self, mock_get):
-        from plex_generate_previews.web.routes import _fetch_libraries_via_http
+        from media_preview_generator.web.routes import _fetch_libraries_via_http
 
         mock_response = MagicMock()
         mock_response.json.return_value = {"MediaContainer": {"Directory": []}}
@@ -2772,25 +4375,25 @@ class TestParamToBool:
     """Test _param_to_bool uses the same truthy set as config.py."""
 
     def test_none_returns_default(self):
-        from plex_generate_previews.web.routes import _param_to_bool
+        from media_preview_generator.web.routes import _param_to_bool
 
         assert _param_to_bool(None, True) is True
         assert _param_to_bool(None, False) is False
 
     def test_bool_passthrough(self):
-        from plex_generate_previews.web.routes import _param_to_bool
+        from media_preview_generator.web.routes import _param_to_bool
 
         assert _param_to_bool(True, False) is True
         assert _param_to_bool(False, True) is False
 
     def test_truthy_strings(self):
-        from plex_generate_previews.web.routes import _param_to_bool
+        from media_preview_generator.web.routes import _param_to_bool
 
         for val in ("true", "1", "yes", "True", "YES", " true "):
             assert _param_to_bool(val, False) is True, f"Expected True for {val!r}"
 
     def test_falsy_strings(self):
-        from plex_generate_previews.web.routes import _param_to_bool
+        from media_preview_generator.web.routes import _param_to_bool
 
         for val in ("false", "0", "no", "off", "anything", ""):
             assert _param_to_bool(val, False) is False, f"Expected False for {val!r}"
@@ -2798,7 +4401,7 @@ class TestParamToBool:
     @patch("requests.get")
     def test_get_plex_libraries_passes_verify_ssl_override(self, mock_get, client):
         """verify_ssl query param flows through to requests.get."""
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.set("plex_url", "https://plex:32400")
@@ -2822,15 +4425,22 @@ class TestParamToBool:
 class TestLibraryCache:
     """Test Plex library caching behaviour."""
 
-    @patch("plex_generate_previews.web.routes.api_system._fetch_libraries_via_http")
-    def test_libraries_cached_on_second_call(self, mock_fetch, client):
+    @staticmethod
+    def _plex_directory_response():
+        resp = MagicMock()
+        resp.json.return_value = {"MediaContainer": {"Directory": [{"key": "1", "title": "Movies", "type": "movie"}]}}
+        resp.raise_for_status = MagicMock()
+        return resp
+
+    @patch("requests.get")
+    def test_libraries_cached_on_second_call(self, mock_get, client):
         """Second call to /api/libraries returns cached data without re-fetching."""
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.set("plex_url", "http://plex:32400")
         sm.set("plex_token", "test-token")
-        mock_fetch.return_value = [{"id": "1", "name": "Movies", "type": "movie"}]
+        mock_get.return_value = self._plex_directory_response()
 
         resp1 = client.get("/api/libraries", headers=_api_headers())
         resp2 = client.get("/api/libraries", headers=_api_headers())
@@ -2838,18 +4448,18 @@ class TestLibraryCache:
         assert resp1.status_code == 200
         assert resp2.status_code == 200
         assert resp2.get_json()["libraries"][0]["name"] == "Movies"
-        # Only one fetch — second call served from cache
-        assert mock_fetch.call_count == 1
+        # Only one HTTP fetch — second call served from cache.
+        assert mock_get.call_count == 1
 
-    @patch("plex_generate_previews.web.routes.api_system._fetch_libraries_via_http")
-    def test_cache_bypassed_with_explicit_url(self, mock_fetch, client):
+    @patch("requests.get")
+    def test_cache_bypassed_with_explicit_url(self, mock_get, client):
         """Explicit url/token query params bypass the library cache."""
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.set("plex_url", "http://plex:32400")
         sm.set("plex_token", "test-token")
-        mock_fetch.return_value = [{"id": "1", "name": "Movies", "type": "movie"}]
+        mock_get.side_effect = lambda *a, **kw: self._plex_directory_response()
 
         # First call populates cache
         client.get("/api/libraries", headers=_api_headers())
@@ -2858,20 +4468,31 @@ class TestLibraryCache:
             "/api/libraries?url=http://other:32400&token=tok",
             headers=_api_headers(),
         )
-        assert mock_fetch.call_count == 2
+        assert mock_get.call_count == 2
+        # Second call should have hit the override URL, not the cached one.
+        assert mock_get.call_args_list[1].args[0].startswith("http://other:32400")
 
-    @patch("plex_generate_previews.web.routes.api_system._fetch_libraries_via_http")
-    def test_cache_invalidated_on_plex_url_change(self, mock_fetch, client):
-        """Saving a new plex_url clears the library cache."""
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+    @patch("requests.get")
+    def test_cache_invalidated_on_plex_url_change(self, mock_get, client):
+        """Saving a new plex_url clears the library cache.
+
+        Uses the explicit ``?url=&token=`` path so we exercise the cached
+        Plex HTTP fetch (the no-args path now aggregates across all
+        configured servers — see api_system.py:1579 — so it doesn't go
+        through ``_fetch_libraries_via_http`` at all).
+        """
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.set("plex_url", "http://plex:32400")
         sm.set("plex_token", "test-token")
-        mock_fetch.return_value = [{"id": "1", "name": "Movies", "type": "movie"}]
+        mock_get.side_effect = lambda *a, **kw: self._plex_directory_response()
 
-        client.get("/api/libraries", headers=_api_headers())
-        assert mock_fetch.call_count == 1
+        client.get(
+            "/api/libraries?url=http://plex:32400&token=test-token",
+            headers=_api_headers(),
+        )
+        assert mock_get.call_count == 1
 
         # Changing plex_url should invalidate the cache
         client.post(
@@ -2879,8 +4500,12 @@ class TestLibraryCache:
             headers=_api_headers(),
             json={"plex_url": "http://new-plex:32400"},
         )
-        client.get("/api/libraries", headers=_api_headers())
-        assert mock_fetch.call_count == 2
+        client.get(
+            "/api/libraries?url=http://new-plex:32400&token=test-token",
+            headers=_api_headers(),
+        )
+        assert mock_get.call_count == 2
+        assert mock_get.call_args_list[1].args[0].startswith("http://new-plex:32400")
 
 
 # ---------------------------------------------------------------------------
@@ -2892,43 +4517,43 @@ class TestClassifyLibraryType:
     """Test classify_library_type() library-type derivation."""
 
     def test_movie_section_returns_movie(self):
-        from plex_generate_previews.web.routes.api_system import classify_library_type
+        from media_preview_generator.web.routes.api_libraries import classify_library_type
 
         assert classify_library_type("movie", "tv.plex.agents.movie") == "movie"
 
     def test_movie_with_none_agent_returns_other_videos(self):
-        from plex_generate_previews.web.routes.api_system import classify_library_type
+        from media_preview_generator.web.routes.api_libraries import classify_library_type
 
         assert classify_library_type("movie", "com.plexapp.agents.none") == "other_videos"
 
     def test_show_section_returns_show(self):
-        from plex_generate_previews.web.routes.api_system import classify_library_type
+        from media_preview_generator.web.routes.api_libraries import classify_library_type
 
         assert classify_library_type("show", "tv.plex.agents.series") == "show"
 
     def test_show_with_sportarr_agent_returns_sports(self):
-        from plex_generate_previews.web.routes.api_system import classify_library_type
+        from media_preview_generator.web.routes.api_libraries import classify_library_type
 
         assert classify_library_type("show", "dev.sportarr.agents.sports") == "sports"
 
     def test_show_with_sportscanner_agent_returns_sports(self):
-        from plex_generate_previews.web.routes.api_system import classify_library_type
+        from media_preview_generator.web.routes.api_libraries import classify_library_type
 
         assert classify_library_type("show", "com.plexapp.agents.sportscanner") == "sports"
 
     def test_show_sports_pattern_is_case_insensitive(self):
-        from plex_generate_previews.web.routes.api_system import classify_library_type
+        from media_preview_generator.web.routes.api_libraries import classify_library_type
 
         assert classify_library_type("show", "SportArr.Main") == "sports"
 
     def test_show_with_none_agent_falls_through_to_show(self):
-        from plex_generate_previews.web.routes.api_system import classify_library_type
+        from media_preview_generator.web.routes.api_libraries import classify_library_type
 
         # agent=None should not crash and should fall through to plain "show"
         assert classify_library_type("show", None) == "show"
 
     def test_unknown_section_type_passes_through(self):
-        from plex_generate_previews.web.routes.api_system import classify_library_type
+        from media_preview_generator.web.routes.api_libraries import classify_library_type
 
         assert classify_library_type("photo", "agent.photos") == "photo"
 
@@ -2944,7 +4569,7 @@ class TestGetVersionInfo:
     @pytest.fixture(autouse=True)
     def _reset_version_cache(self):
         """Reset module-level version cache around every test."""
-        from plex_generate_previews.web.routes import api_system as api_sys
+        from media_preview_generator.web.routes import api_system as api_sys
 
         api_sys._version_cache["result"] = None
         api_sys._version_cache["fetched_at"] = 0.0
@@ -2957,11 +4582,11 @@ class TestGetVersionInfo:
         monkeypatch.setenv("GIT_BRANCH", "unknown")
         monkeypatch.setenv("GIT_SHA", "unknown")
         monkeypatch.setattr(
-            "plex_generate_previews.version_check.get_latest_github_release",
+            "media_preview_generator.version_check.get_latest_github_release",
             lambda: "3.4.1",
         )
 
-        from plex_generate_previews.web.routes.api_system import _get_version_info
+        from media_preview_generator.web.routes.api_system import _get_version_info
 
         result = _get_version_info()
 
@@ -2975,11 +4600,11 @@ class TestGetVersionInfo:
         monkeypatch.setenv("GIT_BRANCH", "3.4.0")
         monkeypatch.setenv("GIT_SHA", "abc1234")
         monkeypatch.setattr(
-            "plex_generate_previews.version_check.get_latest_github_release",
+            "media_preview_generator.version_check.get_latest_github_release",
             lambda: "3.4.1",
         )
 
-        from plex_generate_previews.web.routes.api_system import _get_version_info
+        from media_preview_generator.web.routes.api_system import _get_version_info
 
         result = _get_version_info()
 
@@ -2993,27 +4618,32 @@ class TestGetVersionInfo:
         monkeypatch.setenv("GIT_BRANCH", "3.4.1")
         monkeypatch.setenv("GIT_SHA", "def5678")
         monkeypatch.setattr(
-            "plex_generate_previews.version_check.get_latest_github_release",
+            "media_preview_generator.version_check.get_latest_github_release",
             lambda: "3.4.1",
         )
 
-        from plex_generate_previews.web.routes.api_system import _get_version_info
+        from media_preview_generator.web.routes.api_system import _get_version_info
 
         result = _get_version_info()
 
         assert result["install_type"] == "docker"
         assert result["update_available"] is False
+        # Audit fix — pin current_version too so the matrix matches the
+        # sibling test_docker_release_with_update_available. A regression
+        # that returned wrong current_version (but happened to also flip
+        # update_available correctly) would have passed.
+        assert result["current_version"] == "3.4.1"
 
     def test_dev_docker_when_branch_is_not_a_version(self, monkeypatch):
         """Non-version GIT_BRANCH + GIT_SHA → dev_docker, update when head differs."""
         monkeypatch.setenv("GIT_BRANCH", "dev")
         monkeypatch.setenv("GIT_SHA", "abc1234")
         monkeypatch.setattr(
-            "plex_generate_previews.version_check.get_branch_head_sha",
+            "media_preview_generator.version_check.get_branch_head_sha",
             lambda _branch: "def5678901",
         )
 
-        from plex_generate_previews.web.routes.api_system import _get_version_info
+        from media_preview_generator.web.routes.api_system import _get_version_info
 
         result = _get_version_info()
 
@@ -3027,27 +4657,29 @@ class TestGetVersionInfo:
         monkeypatch.setenv("GIT_SHA", "abc1234")
         # head starts with git_sha → already at HEAD
         monkeypatch.setattr(
-            "plex_generate_previews.version_check.get_branch_head_sha",
+            "media_preview_generator.version_check.get_branch_head_sha",
             lambda _branch: "abc1234567890",
         )
 
-        from plex_generate_previews.web.routes.api_system import _get_version_info
+        from media_preview_generator.web.routes.api_system import _get_version_info
 
         result = _get_version_info()
 
         assert result["install_type"] == "dev_docker"
         assert result["update_available"] is False
+        # Audit fix — pin current_version (matrix complete with sibling test).
+        assert result["current_version"] == "dev@abc1234"
 
     def test_dev_docker_when_branch_is_main(self, monkeypatch):
         """GIT_BRANCH=main routes through dev_docker, same as other non-version branches."""
         monkeypatch.setenv("GIT_BRANCH", "main")
         monkeypatch.setenv("GIT_SHA", "4078c5d")
         monkeypatch.setattr(
-            "plex_generate_previews.version_check.get_branch_head_sha",
+            "media_preview_generator.version_check.get_branch_head_sha",
             lambda _branch: "ed07876fedcba",
         )
 
-        from plex_generate_previews.web.routes.api_system import _get_version_info
+        from media_preview_generator.web.routes.api_system import _get_version_info
 
         result = _get_version_info()
 
@@ -3061,7 +4693,7 @@ class TestGetVersionInfo:
         monkeypatch.setenv("GIT_BRANCH", "pr-123")
         monkeypatch.setenv("GIT_SHA", "abc1234")
         monkeypatch.setattr(
-            "plex_generate_previews.version_check.get_latest_github_release",
+            "media_preview_generator.version_check.get_latest_github_release",
             lambda: "3.7.2",
         )
 
@@ -3072,11 +4704,11 @@ class TestGetVersionInfo:
             return None
 
         monkeypatch.setattr(
-            "plex_generate_previews.version_check.get_branch_head_sha",
+            "media_preview_generator.version_check.get_branch_head_sha",
             _unexpected_branch_head,
         )
 
-        from plex_generate_previews.web.routes.api_system import _get_version_info
+        from media_preview_generator.web.routes.api_system import _get_version_info
 
         result = _get_version_info()
 
@@ -3091,19 +4723,19 @@ class TestGetVersionInfo:
         monkeypatch.delenv("GIT_BRANCH", raising=False)
         monkeypatch.delenv("GIT_SHA", raising=False)
         monkeypatch.setattr(
-            "plex_generate_previews.utils.is_docker_environment",
+            "media_preview_generator.utils.is_docker_environment",
             lambda: False,
         )
         monkeypatch.setattr(
-            "plex_generate_previews.version_check.get_current_version",
+            "media_preview_generator.version_check.get_current_version",
             lambda: "3.4.0",
         )
         monkeypatch.setattr(
-            "plex_generate_previews.version_check.get_latest_github_release",
+            "media_preview_generator.version_check.get_latest_github_release",
             lambda: "3.4.1",
         )
 
-        from plex_generate_previews.web.routes.api_system import _get_version_info
+        from media_preview_generator.web.routes.api_system import _get_version_info
 
         result = _get_version_info()
 
@@ -3123,11 +4755,11 @@ class TestGetVersionInfo:
             return "3.4.1"
 
         monkeypatch.setattr(
-            "plex_generate_previews.version_check.get_latest_github_release",
+            "media_preview_generator.version_check.get_latest_github_release",
             counting_release,
         )
 
-        from plex_generate_previews.web.routes.api_system import _get_version_info
+        from media_preview_generator.web.routes.api_system import _get_version_info
 
         first = _get_version_info()
         second = _get_version_info()
@@ -3145,7 +4777,7 @@ class TestGetPlexServersConnectionList:
     """Test /api/plex/servers resource filtering and connection normalization."""
 
     def _configure_token(self):
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.set("plex_token", "test-plex-token")
@@ -3306,7 +4938,7 @@ class TestGetPlexServersConnectionList:
         assert conn["ssl"] is True
 
     def test_missing_token_returns_401(self, client):
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.delete("plex_token")
@@ -3323,93 +4955,191 @@ class TestGetPlexServersConnectionList:
 
 
 class TestBifSearchPhases:
-    """Test /api/bif/search phase 1 (show expansion) and phase 2 (direct hits)."""
+    """Test /api/bif/search phase 1 (show expansion) and phase 2 (direct hits).
+
+    Mocks at the HTTP boundary (``requests.get``) — patching the
+    intra-module helpers ``_item_to_result`` / ``_fetch_show_episodes``
+    would let bugs in those helpers slip past the test (D31 class).
+    """
 
     def _configure_plex(self):
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.set("plex_url", "http://plex:32400")
         sm.set("plex_token", "test-plex-token")
         sm.set("plex_config_folder", "/config/plex")
 
-    def _hub_response(self, hubs):
+    @staticmethod
+    def _json_resp(payload):
         resp = MagicMock()
-        resp.json.return_value = {"MediaContainer": {"Hub": hubs}}
+        resp.json.return_value = payload
         resp.raise_for_status = MagicMock()
         return resp
 
-    @patch("plex_generate_previews.web.routes.api_bif._item_to_result")
-    @patch("plex_generate_previews.web.routes.api_bif._fetch_show_episodes")
+    @staticmethod
+    def _xml_tree_resp():
+        """Return an empty Plex XML tree response so _resolve_bif_for_item
+        completes without finding a BIF (which is what we want for search
+        result tests — they assert keys, not bif_path content)."""
+        resp = MagicMock()
+        resp.content = b"<MediaContainer></MediaContainer>"
+        resp.raise_for_status = MagicMock()
+        return resp
+
+    def _build_dispatcher(self, hubs, episodes_by_show_key=None):
+        """Return a side_effect that dispatches requests.get by URL.
+
+        - ``/hubs/search`` -> hub list
+        - ``/library/metadata/<id>/allLeaves`` -> episode list (per show)
+        - ``/library/metadata/<id>/tree`` -> empty XML (no BIF)
+        """
+        episodes_by_show_key = episodes_by_show_key or {}
+
+        def _dispatch(url, *args, **kwargs):
+            if "/hubs/search" in url:
+                return self._json_resp({"MediaContainer": {"Hub": hubs}})
+            if url.endswith("/allLeaves"):
+                # url is "<plex_url><show_key>/allLeaves"; strip the suffix.
+                show_key = url[len("http://plex:32400") : -len("/allLeaves")]
+                eps = episodes_by_show_key.get(show_key, [])
+                return self._json_resp({"MediaContainer": {"Metadata": eps}})
+            if url.endswith("/tree"):
+                return self._xml_tree_resp()
+            raise AssertionError(f"unexpected URL: {url}")
+
+        return _dispatch
+
     @patch("requests.get")
-    def test_season_filter_skips_phase_2_and_passes_filters_to_fetch(self, mock_get, mock_fetch_eps, mock_item, client):
-        """Query with ``S01E02`` expands the show hub but ignores episode/movie hubs."""
+    def test_season_filter_skips_phase_2_and_passes_filters_to_fetch(self, mock_get, client):
+        """Query with ``S01E02`` expands the show hub but ignores episode/movie hubs.
+
+        Filters are verified by feeding /allLeaves a 3-episode list spanning
+        two seasons and asserting only the matching one is returned in the
+        response — that's a real behaviour assertion, not "the helper got the
+        right kwargs".
+        """
         self._configure_plex()
-        mock_get.return_value = self._hub_response(
-            [
-                {"type": "show", "Metadata": [{"ratingKey": "100", "title": "Show"}]},
-                # This episode hub would match phase 2 if season_filter were None,
-                # but with a filter set it must be ignored.
-                {"type": "episode", "Metadata": [{"key": "/library/metadata/999"}]},
-            ]
-        )
-        mock_fetch_eps.return_value = [
-            {"key": "/library/metadata/200", "title": "Ep1"},
-            {"key": "/library/metadata/201", "title": "Ep2"},
+
+        all_eps = [
+            {
+                "key": "/library/metadata/200",
+                "title": "S1E1",
+                "parentIndex": 1,
+                "index": 1,
+                "type": "episode",
+                "grandparentTitle": "Show",
+            },
+            {
+                "key": "/library/metadata/201",
+                "title": "S1E2",
+                "parentIndex": 1,
+                "index": 2,
+                "type": "episode",
+                "grandparentTitle": "Show",
+            },
+            {
+                "key": "/library/metadata/202",
+                "title": "S2E1",
+                "parentIndex": 2,
+                "index": 1,
+                "type": "episode",
+                "grandparentTitle": "Show",
+            },
         ]
-        mock_item.side_effect = lambda item, *a, **kw: {"key": item.get("key", "")}
+        mock_get.side_effect = self._build_dispatcher(
+            hubs=[
+                {"type": "show", "Metadata": [{"ratingKey": "100", "title": "Show"}]},
+                # episode hub must be ignored because season_filter is set.
+                {
+                    "type": "episode",
+                    "Metadata": [
+                        {"key": "/library/metadata/999", "title": "Skipped", "type": "episode"},
+                    ],
+                },
+            ],
+            episodes_by_show_key={"/library/metadata/100": all_eps},
+        )
 
         resp = client.get("/api/bif/search?q=Show S01E02", headers=_api_headers())
 
         assert resp.status_code == 200
-        keys = [r["key"] for r in resp.get_json()["results"]]
-        assert "/library/metadata/200" in keys
-        assert "/library/metadata/999" not in keys
-        # Verify season/episode filters made it through to _fetch_show_episodes
-        call_kwargs = mock_fetch_eps.call_args.kwargs
-        assert call_kwargs["season_filter"] == 1
-        assert call_kwargs["episode_filter"] == 2
+        # Only the S01E02 episode survives the filter; phase-2 episode hub is skipped.
+        # Result dict has no "key" field, so identify by display title.
+        titles = [r["title"] for r in resp.get_json()["results"]]
+        assert titles == ["Show S01E02 - S1E2"]
+        # Confirm the route did call /allLeaves for the show key (i.e. phase 1 ran).
+        called_urls = [call.args[0] for call in mock_get.call_args_list]
+        assert any(u.endswith("/library/metadata/100/allLeaves") for u in called_urls)
+        # Confirm phase 2 did NOT call /tree for the skipped episode key.
+        assert not any("/library/metadata/999/tree" in u for u in called_urls), (
+            "phase-2 episode hub must be skipped when a season filter is active"
+        )
 
-    @patch("plex_generate_previews.web.routes.api_bif._item_to_result")
     @patch("requests.get")
-    def test_plain_query_includes_movie_and_episode_hubs(self, mock_get, mock_item, client):
+    def test_plain_query_includes_movie_and_episode_hubs(self, mock_get, client):
         self._configure_plex()
-        mock_get.return_value = self._hub_response(
-            [
-                {"type": "movie", "Metadata": [{"key": "/library/metadata/10"}]},
-                {"type": "episode", "Metadata": [{"key": "/library/metadata/11"}]},
+        mock_get.side_effect = self._build_dispatcher(
+            hubs=[
+                {
+                    "type": "movie",
+                    "Metadata": [{"key": "/library/metadata/10", "title": "MovieA", "type": "movie"}],
+                },
+                {
+                    "type": "episode",
+                    "Metadata": [
+                        {
+                            "key": "/library/metadata/11",
+                            "title": "EpA",
+                            "type": "episode",
+                            "grandparentTitle": "Show",
+                            "parentIndex": 1,
+                            "index": 3,
+                        }
+                    ],
+                },
             ]
         )
-        mock_item.side_effect = lambda item, *a, **kw: {"key": item.get("key", "")}
 
         resp = client.get("/api/bif/search?q=Inception", headers=_api_headers())
 
-        keys = [r["key"] for r in resp.get_json()["results"]]
-        assert "/library/metadata/10" in keys
-        assert "/library/metadata/11" in keys
+        results = resp.get_json()["results"]
+        titles = [r["title"] for r in results]
+        # Both phase-2 hubs flow through when there's no season filter.
+        assert "MovieA" in titles
+        assert "Show S01E03 - EpA" in titles
+        # Verify each item triggered a /tree resolution (the BIF lookup path).
+        called_urls = [call.args[0] for call in mock_get.call_args_list]
+        assert any(u.endswith("/library/metadata/10/tree") for u in called_urls)
+        assert any(u.endswith("/library/metadata/11/tree") for u in called_urls)
 
-    @patch("plex_generate_previews.web.routes.api_bif._item_to_result")
     @patch("requests.get")
-    def test_duplicate_keys_are_deduped(self, mock_get, mock_item, client):
+    def test_duplicate_keys_are_deduped(self, mock_get, client):
         self._configure_plex()
-        mock_get.return_value = self._hub_response(
-            [
+        mock_get.side_effect = self._build_dispatcher(
+            hubs=[
                 {
                     "type": "movie",
                     "Metadata": [
-                        {"key": "/library/metadata/1"},
-                        {"key": "/library/metadata/1"},  # duplicate
-                        {"key": "/library/metadata/2"},
+                        {"key": "/library/metadata/1", "title": "Alpha", "type": "movie"},
+                        {"key": "/library/metadata/1", "title": "Alpha", "type": "movie"},  # duplicate
+                        {"key": "/library/metadata/2", "title": "Beta", "type": "movie"},
                     ],
                 }
             ]
         )
-        mock_item.side_effect = lambda item, *a, **kw: {"key": item.get("key", "")}
 
         resp = client.get("/api/bif/search?q=Movie", headers=_api_headers())
 
         results = resp.get_json()["results"]
-        assert [r["key"] for r in results] == ["/library/metadata/1", "/library/metadata/2"]
+        # Dedup is keyed off the Plex item key — only two distinct results.
+        assert len(results) == 2
+        assert [r["title"] for r in results] == ["Alpha", "Beta"]
+        # Tree was called once per unique key, not three times.
+        called_urls = [call.args[0] for call in mock_get.call_args_list]
+        tree_calls = [u for u in called_urls if u.endswith("/tree")]
+        assert sum(1 for u in tree_calls if u.endswith("/metadata/1/tree")) == 1
+        assert sum(1 for u in tree_calls if u.endswith("/metadata/2/tree")) == 1
 
     def test_short_query_returns_400(self, client):
         resp = client.get("/api/bif/search?q=a", headers=_api_headers())
@@ -3417,7 +5147,7 @@ class TestBifSearchPhases:
         assert "2 characters" in resp.get_json()["error"]
 
     def test_missing_plex_config_returns_400(self, client):
-        from plex_generate_previews.web.settings_manager import get_settings_manager
+        from media_preview_generator.web.settings_manager import get_settings_manager
 
         sm = get_settings_manager()
         sm.delete("plex_url")
@@ -3427,6 +5157,10 @@ class TestBifSearchPhases:
             os.environ.pop("PLEX_TOKEN", None)
             resp = client.get("/api/bif/search?q=Inception", headers=_api_headers())
         assert resp.status_code == 400
+        # Pin reason — bare 400 collides with the short-query path.
+        body = resp.get_json()
+        assert "Plex not configured" in body["error"]
+        assert body["results"] == []
 
     @patch("requests.get")
     def test_plex_network_failure_returns_502(self, mock_get, client):
@@ -3438,3 +5172,620 @@ class TestBifSearchPhases:
         resp = client.get("/api/bif/search?q=Inception", headers=_api_headers())
 
         assert resp.status_code == 502
+        # Pin upstream-failure substring AND verify the Plex token from
+        # the seeded settings doesn't get echoed back into the response
+        # body (defence-in-depth: the route formats the exception into
+        # the error message and we want to be sure no auth secret leaks).
+        body = resp.get_json()
+        assert "Plex search failed" in body["error"]
+        assert body["results"] == []
+        raw = resp.data
+        assert b"test-plex-token" not in raw, "Plex token leaked in 502 response body"
+
+
+# ---------------------------------------------------------------------------
+# Phase I7 — Folder browser endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestFolderBrowse:
+    """Verify /api/system/browse safety + behaviour."""
+
+    def test_browse_lists_subdirectories(self, client, tmp_path):
+        # Use a private subdir so the test fixture's "config/" sibling
+        # (created by the autouse temp-config fixture) doesn't pollute results.
+        sandbox = tmp_path / "browse_sandbox"
+        sandbox.mkdir()
+        (sandbox / "movies").mkdir()
+        (sandbox / "tv").mkdir()
+        (sandbox / "readme.txt").write_text("ignored")
+
+        resp = client.get(
+            f"/api/system/browse?path={sandbox}",
+            headers=_api_headers(),
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        names = {e["name"] for e in body["entries"]}
+        assert names == {"movies", "tv"}  # files filtered out
+
+    def test_browse_hides_dot_dirs_by_default(self, client, tmp_path):
+        sandbox = tmp_path / "dot_sandbox"
+        sandbox.mkdir()
+        (sandbox / ".secret").mkdir()
+        (sandbox / "public").mkdir()
+
+        resp = client.get(
+            f"/api/system/browse?path={sandbox}",
+            headers=_api_headers(),
+        )
+        assert {e["name"] for e in resp.get_json()["entries"]} == {"public"}
+
+        resp = client.get(
+            f"/api/system/browse?path={sandbox}&show_hidden=1",
+            headers=_api_headers(),
+        )
+        assert {e["name"] for e in resp.get_json()["entries"]} == {".secret", "public"}
+
+    def test_browse_rejects_relative_paths(self, client):
+        resp = client.get("/api/system/browse?path=relative/dir", headers=_api_headers())
+        assert resp.status_code == 400
+        assert "absolute" in resp.get_json()["error"].lower()
+
+    def test_browse_rejects_denylisted_paths(self, client):
+        # /etc and /root added defence-in-depth — even with a valid
+        # auth token, the folder picker shouldn't surface credential or
+        # host-config dirs. /home is intentionally allowed (legitimate
+        # mount target on many setups).
+        for path in ("/proc", "/sys", "/dev", "/etc", "/root"):
+            resp = client.get(
+                f"/api/system/browse?path={path}",
+                headers=_api_headers(),
+            )
+            assert resp.status_code == 403, f"{path} returned {resp.status_code}"
+
+    def test_browse_404_on_missing_path(self, client):
+        resp = client.get(
+            "/api/system/browse?path=/nonexistent/path/zzz",
+            headers=_api_headers(),
+        )
+        assert resp.status_code == 404
+        # Pin reason — bare 404 collides with the denylist branch (403).
+        body = resp.get_json()
+        assert body["error"] == "Folder not found"
+        assert body["entries"] == []
+
+
+# ---------------------------------------------------------------------------
+# Phase I3 — validate-plex-config-folder endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestValidatePlexConfigFolder:
+    """Validate the new structural check used by Servers > Edit Plex."""
+
+    def test_valid_plex_structure_returns_shard_count(self, client, tmp_path, monkeypatch):
+        plex_root = tmp_path / "plex"
+        localhost = plex_root / "Media" / "localhost"
+        localhost.mkdir(parents=True)
+        for d in "0123456789abcdef":
+            (localhost / d).mkdir()
+
+        # PLEX_DATA_ROOT is captured into api_settings.py at import time;
+        # rebinding the module-level attr there is what actually changes the
+        # bound name the endpoint reads.
+        from media_preview_generator.web.routes import api_settings
+
+        monkeypatch.setattr(api_settings, "PLEX_DATA_ROOT", str(tmp_path))
+
+        resp = client.post(
+            "/api/settings/validate-plex-config-folder",
+            headers=_api_headers(),
+            json={"path": str(plex_root)},
+        )
+        body = resp.get_json()
+        assert body["exists"] is True
+        assert body["valid_plex_structure"] is True
+        assert body["shard_count"] == 16
+        assert "16/16" in body["detail"]
+
+    def test_missing_media_folder_reports_clear_error(self, client, tmp_path, monkeypatch):
+        not_plex = tmp_path / "random"
+        not_plex.mkdir()
+        from media_preview_generator.web.routes import api_settings
+
+        monkeypatch.setattr(api_settings, "PLEX_DATA_ROOT", str(tmp_path))
+
+        resp = client.post(
+            "/api/settings/validate-plex-config-folder",
+            headers=_api_headers(),
+            json={"path": str(not_plex)},
+        )
+        body = resp.get_json()
+        assert body["exists"] is True
+        assert body["valid_plex_structure"] is False
+        # Pin the exact production wording — substring "Media" was so
+        # permissive that any error mentioning the word "media" passed.
+        assert 'Missing "Media" subfolder' in body["error"], body["error"]
+        assert "does not look like a Plex config folder" in body["error"], body["error"]
+
+    def test_outside_root_existing_folder_suggests_docker_bind(self, client, tmp_path, monkeypatch):
+        """When the typed path is a real folder but outside PLEX_DATA_ROOT,
+        the error should explain the Docker mount instead of the previous
+        confusing 'Path is outside the allowed Plex data root' line."""
+        # PLEX_DATA_ROOT is somewhere ELSE; the typed path is a real
+        # directory but cannot satisfy the root constraint.
+        plex_root = tmp_path / "plex"
+        plex_root.mkdir()
+        outside = tmp_path / "config" / "plex"
+        outside.mkdir(parents=True)
+
+        from media_preview_generator.web.routes import api_settings
+
+        monkeypatch.setattr(api_settings, "PLEX_DATA_ROOT", str(plex_root))
+
+        resp = client.post(
+            "/api/settings/validate-plex-config-folder",
+            headers=_api_headers(),
+            json={"path": str(outside)},
+        )
+        body = resp.get_json()
+        # Folder *does* exist on disk (just not in the allowed root).
+        assert body["exists"] is True
+        assert body["valid_plex_structure"] is False
+        # The error must surface the actual root path AND a Docker -v
+        # example so the user knows how to fix it.
+        assert str(plex_root) in body["error"]
+        assert "-v" in body["error"]
+        assert "outside the allowed" not in body["error"]  # old confusing wording
+
+    def test_outside_root_nonexistent_folder_suggests_mount(self, client, tmp_path, monkeypatch):
+        """Same constraint, different starting point: the typed path
+        doesn't even exist on disk. Message should still tell the user
+        the path must be inside PLEX_DATA_ROOT and how to mount it."""
+        plex_root = tmp_path / "plex"
+        plex_root.mkdir()
+
+        from media_preview_generator.web.routes import api_settings
+
+        monkeypatch.setattr(api_settings, "PLEX_DATA_ROOT", str(plex_root))
+
+        resp = client.post(
+            "/api/settings/validate-plex-config-folder",
+            headers=_api_headers(),
+            json={"path": "/definitely/not/a/real/path"},
+        )
+        body = resp.get_json()
+        assert body["exists"] is False
+        assert body["valid_plex_structure"] is False
+        assert str(plex_root) in body["error"]
+        assert "-v" in body["error"]
+
+
+# ---------------------------------------------------------------------------
+# Phase I5 — Per-server Plex webhook endpoints
+# ---------------------------------------------------------------------------
+
+
+class TestPerServerPlexWebhook:
+    """The status / register / unregister endpoints route by server_id."""
+
+    def _seed_two_plex_servers(self):
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        sm.set(
+            "media_servers",
+            [
+                {
+                    "id": "plex-a",
+                    "type": "plex",
+                    "name": "Living Room",
+                    "enabled": True,
+                    "url": "http://a:32400",
+                    "auth": {"method": "token", "token": "TOKEN-A"},
+                    "output": {"adapter": "plex_bundle", "webhook_public_url": "https://a.example/api/webhooks/plex"},
+                },
+                {
+                    "id": "plex-b",
+                    "type": "plex",
+                    "name": "Bedroom",
+                    "enabled": True,
+                    "url": "http://b:32400",
+                    "auth": {"method": "token", "token": "TOKEN-B"},
+                    "output": {"adapter": "plex_bundle"},
+                },
+            ],
+        )
+
+    def test_status_uses_per_server_token(self, client, monkeypatch):
+        self._seed_two_plex_servers()
+        seen = {}
+
+        def fake_is_registered(token, url):
+            seen["token"] = token
+            seen["url"] = url
+            return True
+
+        from media_preview_generator.web import plex_webhook_registration as pwh
+
+        monkeypatch.setattr(pwh, "is_registered", fake_is_registered)
+
+        resp = client.get("/api/settings/plex_webhook/status?server_id=plex-a", headers=_api_headers())
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["server_id"] == "plex-a"
+        assert body["server_name"] == "Living Room"
+        assert body["registered_in_plex"] is True
+        assert seen["token"] == "TOKEN-A"
+        # The status probe runs against the recommended per-server URL
+        # (path rebuilt; host preserved from the stored override). When
+        # this probe succeeds we don't fall back to the legacy URL.
+        assert seen["url"] == "https://a.example/api/webhooks/server/plex-a"
+
+    def test_status_falls_back_to_legacy_url_for_registered_check(self, client, monkeypatch):
+        """Legacy ``/api/webhooks/incoming`` registrations still show as Registered.
+
+        The per-server URL is the *recommended* form going forward, but
+        users who registered before this change have ``/incoming`` on
+        plex.tv. We probe the recommended URL first (cheap) and fall
+        back to the stored URL if the first probe says "no" — that way
+        the badge stays accurate during the migration window.
+        """
+        self._seed_two_plex_servers()
+        probes = []
+
+        def fake_is_registered(token, url):
+            probes.append(url)
+            # First probe (recommended URL) fails; second (stored legacy) succeeds.
+            return url.endswith("/api/webhooks/plex")
+
+        from media_preview_generator.web import plex_webhook_registration as pwh
+
+        monkeypatch.setattr(pwh, "is_registered", fake_is_registered)
+
+        resp = client.get("/api/settings/plex_webhook/status?server_id=plex-a", headers=_api_headers())
+        assert resp.status_code == 200
+        assert resp.get_json()["registered_in_plex"] is True
+        assert probes == [
+            "https://a.example/api/webhooks/server/plex-a",
+            "https://a.example/api/webhooks/plex",
+        ], "must probe recommended URL first, then fall back to stored legacy URL"
+
+    def test_register_persists_url_onto_target_server(self, client, monkeypatch):
+        self._seed_two_plex_servers()
+        from media_preview_generator.web import plex_webhook_registration as pwh
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        seen = {}
+
+        def fake_register(token, url, auth_token=None, *, server_id=None):
+            seen["token"] = token
+            seen["url"] = url
+            seen["auth_token"] = auth_token
+            seen["server_id"] = server_id
+            return [url]
+
+        monkeypatch.setattr(pwh, "register", fake_register)
+
+        # The caller submits a legacy ``/api/webhooks/plex`` URL — the
+        # path gets rebuilt to the per-server form on the backend while
+        # the host (b.example) is preserved.
+        resp = client.post(
+            "/api/settings/plex_webhook/register",
+            headers=_api_headers(),
+            json={"server_id": "plex-b", "public_url": "https://b.example/api/webhooks/plex"},
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["success"] is True
+        assert body["server_id"] == "plex-b"
+        assert seen["token"] == "TOKEN-B"
+        # Path rebuilt to /api/webhooks/server/<id>; host preserved.
+        assert seen["url"] == "https://b.example/api/webhooks/server/plex-b"
+        # ``server_id`` kwarg dropped: the path encodes it. Passing it
+        # would put a redundant ``&server_id=`` on the URL plex.tv stores.
+        assert seen["server_id"] is None, (
+            "server_id kwarg must NOT be passed to pwh.register — the per-server URL "
+            "path already encodes it; query-param duplication is dead weight."
+        )
+
+        # Persisted URL matches what was registered on plex.tv (self-heal
+        # to the per-server form). plex-a's untouched stored URL is the
+        # legacy form because we only registered plex-b.
+        servers = get_settings_manager().get("media_servers")
+        plex_b = next(s for s in servers if s["id"] == "plex-b")
+        assert plex_b["output"]["webhook_public_url"] == "https://b.example/api/webhooks/server/plex-b"
+        plex_a = next(s for s in servers if s["id"] == "plex-a")
+        assert plex_a["output"]["webhook_public_url"] == "https://a.example/api/webhooks/plex"
+
+    def test_register_rebuilds_path_from_stored_url_when_input_empty(self, client, monkeypatch):
+        """Empty ``public_url`` in the request → rebuild from stored URL's host.
+
+        This is the self-heal path for existing installs: user opens
+        the modal, the input is empty (or auto-filled with the
+        recommended URL), they click Re-register. Backend must
+        construct the per-server URL using the stored host so users
+        with reverse proxies don't lose their custom DNS.
+        """
+        self._seed_two_plex_servers()
+        from media_preview_generator.web import plex_webhook_registration as pwh
+
+        seen = {}
+
+        def fake_register(token, url, auth_token=None, *, server_id=None):
+            seen["url"] = url
+            return [url]
+
+        monkeypatch.setattr(pwh, "register", fake_register)
+
+        # No public_url in the payload — backend must pull host from stored
+        # URL (which is the legacy ``/api/webhooks/plex`` form) and rebuild.
+        resp = client.post(
+            "/api/settings/plex_webhook/register",
+            headers=_api_headers(),
+            json={"server_id": "plex-a"},
+        )
+        assert resp.status_code == 200
+        assert seen["url"] == "https://a.example/api/webhooks/server/plex-a"
+
+    def test_register_falls_back_to_request_host_when_no_stored_url(self, client, monkeypatch):
+        """No stored URL + no input → use the request host as the source.
+
+        Covers freshly-added servers whose ``output.webhook_public_url``
+        hasn't been written yet (plex-b in this fixture).
+        """
+        self._seed_two_plex_servers()
+        from media_preview_generator.web import plex_webhook_registration as pwh
+
+        seen = {}
+
+        def fake_register(token, url, auth_token=None, *, server_id=None):
+            seen["url"] = url
+            return [url]
+
+        monkeypatch.setattr(pwh, "register", fake_register)
+
+        resp = client.post(
+            "/api/settings/plex_webhook/register",
+            headers=_api_headers(),
+            json={"server_id": "plex-b"},
+        )
+        assert resp.status_code == 200
+        # Flask test client request.host_url is "http://localhost/" by default.
+        assert seen["url"].endswith("/api/webhooks/server/plex-b"), f"expected per-server path; got {seen['url']!r}"
+
+    def test_register_rejects_unknown_server(self, client):
+        resp = client.post(
+            "/api/settings/plex_webhook/register",
+            headers=_api_headers(),
+            json={"server_id": "does-not-exist"},
+        )
+        assert resp.status_code == 404
+        assert resp.get_json()["reason"] == "server_not_found"
+
+    def test_register_rejects_non_plex_server(self, client):
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        get_settings_manager().set(
+            "media_servers",
+            [{"id": "emby-1", "type": "emby", "name": "Emby", "enabled": True, "url": "http://e", "auth": {}}],
+        )
+        resp = client.post(
+            "/api/settings/plex_webhook/register",
+            headers=_api_headers(),
+            json={"server_id": "emby-1"},
+        )
+        assert resp.status_code == 400
+        assert "Plex-only" in resp.get_json()["error"]
+
+
+class TestBackupRestore:
+    """J6 — /api/settings/backups + /restore handle multi-history backup snapshots."""
+
+    def test_lists_timestamped_backups_newest_first(self, client, monkeypatch, tmp_path):
+        """GET returns each managed file's full backup list, newest first."""
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        monkeypatch.setattr(sm, "config_dir", tmp_path)
+
+        live = tmp_path / "settings.json"
+        live.write_text('{"v": "live"}')
+        os.utime(live, (1000, 1000))
+
+        # Two timestamped backups + one legacy single .bak, all coexisting.
+        b1 = tmp_path / "settings.json.20260101-100000.bak"
+        b2 = tmp_path / "settings.json.20260201-100000.bak"
+        legacy = tmp_path / "settings.json.bak"
+        b1.write_text('{"v": "old"}')
+        b2.write_text('{"v": "newer"}')
+        legacy.write_text('{"v": "legacy"}')
+        os.utime(b1, (1500, 1500))
+        os.utime(b2, (3000, 3000))  # newest
+        os.utime(legacy, (500, 500))
+
+        resp = client.get("/api/settings/backups", headers=_api_headers())
+        assert resp.status_code == 200
+        rows = {r["name"]: r for r in resp.get_json()["files"]}
+        backups = rows["settings.json"]["backups"]
+        # Newest first: b2, b1, legacy
+        assert [b["filename"] for b in backups] == [
+            "settings.json.20260201-100000.bak",
+            "settings.json.20260101-100000.bak",
+            "settings.json.bak",
+        ]
+        assert backups[0]["legacy"] is False
+        assert backups[2]["legacy"] is True
+        # Most recent backup (b2 mtime=3000) is newer than live (mtime=1000).
+        assert rows["settings.json"]["bak_newer"] is True
+        assert rows["schedules.json"]["has_bak"] is False
+
+    def test_restore_named_backup_overwrites_live(self, client, monkeypatch, tmp_path):
+        """POST /restore copies the named backup over the live file and snapshots
+        the old live contents into a fresh timestamped backup."""
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        monkeypatch.setattr(sm, "config_dir", tmp_path)
+
+        live = tmp_path / "settings.json"
+        live.write_text('{"label": "current"}')
+        target_bak = tmp_path / "settings.json.20260101-100000.bak"
+        target_bak.write_text('{"label": "from-january"}')
+
+        resp = client.post(
+            "/api/settings/backups/restore",
+            headers=_api_headers(),
+            json={"file": "settings.json", "backup": "settings.json.20260101-100000.bak"},
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["success"] is True
+        # Live now holds the chosen backup's contents.
+        assert live.read_text() == '{"label": "from-january"}'
+        # The named backup is preserved (point-in-time stays restorable again).
+        assert target_bak.exists()
+        # A fresh snapshot of the prior live contents was taken before overwrite.
+        snapshots = [
+            p
+            for p in tmp_path.iterdir()
+            if p.name.startswith("settings.json.") and p.name.endswith(".bak") and p.name != target_bak.name
+        ]
+        assert any(p.read_text() == '{"label": "current"}' for p in snapshots)
+
+    def test_restore_defaults_to_newest_when_backup_param_omitted(self, client, monkeypatch, tmp_path):
+        """Backwards-compat: restore without `backup` picks the newest snapshot."""
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        monkeypatch.setattr(sm, "config_dir", tmp_path)
+
+        live = tmp_path / "settings.json"
+        live.write_text('{"v": "live"}')
+        b1 = tmp_path / "settings.json.20260101-100000.bak"
+        b2 = tmp_path / "settings.json.20260201-100000.bak"
+        b1.write_text('{"v": "older"}')
+        b2.write_text('{"v": "newer"}')
+        os.utime(b1, (1500, 1500))
+        os.utime(b2, (3000, 3000))
+
+        resp = client.post(
+            "/api/settings/backups/restore",
+            headers=_api_headers(),
+            json={"file": "settings.json"},
+        )
+        assert resp.status_code == 200
+        assert live.read_text() == '{"v": "newer"}'
+
+    def test_restore_rejects_unknown_file(self, client):
+        resp = client.post(
+            "/api/settings/backups/restore",
+            headers=_api_headers(),
+            json={"file": "/etc/passwd"},
+        )
+        assert resp.status_code == 400
+        # Security-relevant: pin reason — bare 400 collides with shape errors.
+        body = resp.get_json()
+        assert body["success"] is False
+        assert "Refusing to restore unknown file" in body["error"]
+
+    def test_restore_rejects_unknown_backup_name(self, client, monkeypatch, tmp_path):
+        """Can't be talked into copying an arbitrary file by passing its basename."""
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        monkeypatch.setattr(sm, "config_dir", tmp_path)
+
+        (tmp_path / "settings.json").write_text("{}")
+        # Need at least one real backup so the endpoint gets past the "no backups" 404.
+        (tmp_path / "settings.json.20260101-100000.bak").write_text("{}")
+
+        resp = client.post(
+            "/api/settings/backups/restore",
+            headers=_api_headers(),
+            json={"file": "settings.json", "backup": "passwd"},
+        )
+        assert resp.status_code == 404
+        # Pin reason — bare 404 collides with the no-backups branch.
+        body = resp.get_json()
+        assert body["success"] is False
+        assert "No backup named" in body["error"]
+
+    def test_restore_404_when_no_backups(self, client, monkeypatch, tmp_path):
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        monkeypatch.setattr(sm, "config_dir", tmp_path)
+        # Live file but no backups (timestamped or legacy).
+        (tmp_path / "settings.json").write_text("{}")
+        resp = client.post(
+            "/api/settings/backups/restore",
+            headers=_api_headers(),
+            json={"file": "settings.json"},
+        )
+        assert resp.status_code == 404
+        # Pin reason — bare 404 collides with the unknown-name branch above.
+        body = resp.get_json()
+        assert body["success"] is False
+        assert "No backups available" in body["error"]
+
+
+class TestSettingsManagerWebhookMigration:
+    """Settings load migrates legacy global Plex webhook keys onto the Plex server."""
+
+    def test_migration_moves_url_onto_plex_server(self, tmp_path):
+        import json as _json
+
+        from media_preview_generator.web.settings_manager import SettingsManager
+
+        cfg = tmp_path / "config"
+        cfg.mkdir()
+        (cfg / "settings.json").write_text(
+            _json.dumps(
+                {
+                    "plex_webhook_public_url": "http://legacy.example/api/webhooks/plex",
+                    "plex_webhook_enabled": True,
+                    "media_servers": [
+                        {
+                            "id": "plex-1",
+                            "type": "plex",
+                            "name": "Plex",
+                            "enabled": True,
+                            "url": "http://p:32400",
+                            "auth": {},
+                            "output": {"adapter": "plex_bundle"},
+                        }
+                    ],
+                }
+            )
+        )
+
+        sm = SettingsManager(config_dir=str(cfg))
+
+        # Legacy keys gone
+        assert sm.get("plex_webhook_public_url") is None
+        assert sm.get("plex_webhook_enabled") is None
+        # Migrated onto plex-1 output
+        plex = sm.get("media_servers")[0]
+        assert plex["output"]["webhook_public_url"] == "http://legacy.example/api/webhooks/plex"
+        assert plex["output"]["webhook_enabled"] is True
+
+    def test_migration_drops_keys_when_no_plex_server(self, tmp_path):
+        import json as _json
+
+        from media_preview_generator.web.settings_manager import SettingsManager
+
+        cfg = tmp_path / "config"
+        cfg.mkdir()
+        (cfg / "settings.json").write_text(
+            _json.dumps(
+                {
+                    "plex_webhook_public_url": "http://legacy/api/webhooks/plex",
+                    "media_servers": [],
+                }
+            )
+        )
+
+        sm = SettingsManager(config_dir=str(cfg))
+        assert sm.get("plex_webhook_public_url") is None
+        assert sm.get("media_servers") == []

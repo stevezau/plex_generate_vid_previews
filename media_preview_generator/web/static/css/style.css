@@ -1,0 +1,2330 @@
+/* Media Preview Generator — design tokens + custom styles
+ *
+ * Design tokens are deliberately lightweight: brand colour + a small
+ * scale of surface elevations / radii / shadows / focus styles. The
+ * rest of the visual language defers to Bootstrap 5.3 so we don't end
+ * up maintaining a parallel design system.
+ */
+
+:root {
+    /* Brand */
+    --plex-orange: #e5a00d;
+    --plex-orange-soft: rgba(229, 160, 13, 0.12);
+    --plex-gray: #1a1a2e;
+    --plex-dark: #0f0f1a;
+
+    /* Surface elevation — used for cards/modals/popovers when we need
+       more than Bootstrap's flat default. Two levels are enough; a third
+       starts to feel like skeuomorphism. */
+    --surface-1: rgba(255, 255, 255, 0.04);
+    --surface-2: rgba(255, 255, 255, 0.06);
+    --surface-border: rgba(255, 255, 255, 0.08);
+
+    /* Radii — match Bootstrap's --bs-border-radius-* but expose them
+       under shorter names so .css elsewhere doesn't have to know about
+       Bootstrap internals. */
+    --radius-sm: 0.375rem;
+    --radius:    0.5rem;
+    --radius-lg: 0.75rem;
+
+    /* Shadows — only used for modals + dropdowns; we deliberately avoid
+       elevating cards (would feel cluttered on the dense dashboard). */
+    --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.18), 0 1px 1px rgba(0, 0, 0, 0.12);
+    --shadow-2: 0 6px 16px rgba(0, 0, 0, 0.22), 0 2px 6px rgba(0, 0, 0, 0.15);
+
+    /* Focus ring — branded orange so it stands out on both dark and
+       light themes (Bootstrap's default primary blue washes out on the
+       dark Plex background and is invisible against dark form fields). */
+    --focus-ring: 0 0 0 0.2rem rgba(229, 160, 13, 0.45);
+}
+
+html[data-bs-theme="light"] {
+    /* ──────────────────────────────────────────────────────────────────
+     * Modern-clean light theme — Linear / Stripe / Vercel family.
+     *
+     * Design principles:
+     *   1. Cool slate surfaces, never warm. Warm beiges read "consumer
+     *      web 2010"; cool greys read "professional SaaS 2026".
+     *   2. Status badges use TINTED bg + DARK text (Bootstrap 5.3's
+     *      *-subtle pattern) instead of solid saturated bg + white text.
+     *      Solid white-on-saturated reads as a warning at every size;
+     *      tinted-on-tinted reads as data.
+     *   3. Brand orange is a SCALPEL — primary CTA + active nav only.
+     *      Never on cards, borders, or data accents.
+     *   4. Cards lift via 1px slate border + bg contrast, not shadow.
+     *      Shadows are reserved for genuine elevation (modals, popovers).
+     *   5. Tonal scale (slate-50 → 900) for every neutral.
+     * ────────────────────────────────────────────────────────────────── */
+
+    /* Surfaces — every level uses cool slate so the eye reads them as
+       one family. Body is darker than cards, but cards themselves are
+       a soft off-white (NOT pure #fff) so they read as "paper" rather
+       than "OLED display at full brightness". The contrast between
+       body and card stays just visible — modern SaaS look (Notion,
+       Linear) avoids both pure-white cards and pure-black text. */
+    --bs-body-bg: #e4e7eb;          /* slate-200-ish — darker so cards visibly lift */
+    --bs-secondary-bg: #fbfcfd;     /* soft off-white card surface */
+    --bs-tertiary-bg: #eceff3;      /* code blocks / raised regions — slightly cooler */
+
+    /* Text scale — never pure black; slate-900 reads more refined and
+       pairs with the slate surfaces. Three levels are enough. */
+    --bs-body-color: #1e293b;       /* slate-800 — primary text */
+    --bs-secondary-color: #64748b;  /* slate-500 — meta / labels */
+    --bs-tertiary-color: #94a3b8;   /* slate-400 — disabled / placeholders */
+    --bs-emphasis-color: #0f172a;   /* slate-900 — headings + emphasis */
+
+    /* Borders — visible enough to define card edges, quiet enough to
+       not compete with content. Two weights. */
+    --bs-border-color: #e2e8f0;             /* slate-200 — default */
+    --bs-border-color-translucent: rgba(15, 23, 42, 0.08);
+
+    /* Status palette — solid colours kept for the rare callsite that
+       wants a vivid accent (the GPU stepper's "+" button), but every
+       BADGE switches to subtle tinted bg + dark text via the .bg-*
+       overrides further down. The subtle pattern is the actual
+       sophistication move; this layer just keeps Bootstrap happy.
+
+       We use Tailwind 600-weights for the solid colours (not 500) so
+       on the rare solid usage they don't shout. */
+    --bs-primary: #475569;           /* slate-600 — neutral data accent */
+    --bs-primary-rgb: 71, 85, 105;
+    --bs-info: #0e7490;              /* cyan-700 */
+    --bs-info-rgb: 14, 116, 144;
+    --bs-success: #047857;           /* emerald-700 — slightly deeper */
+    --bs-success-rgb: 4, 120, 87;
+    --bs-warning: #b45309;           /* amber-700 */
+    --bs-warning-rgb: 180, 83, 9;
+    --bs-danger: #b91c1c;            /* red-700 */
+    --bs-danger-rgb: 185, 28, 28;
+
+    /* Subtle bg + emphasis text pairs — these are what badges + tinted
+       alerts use. Tailwind 100/800 pairings hit WCAG-AA at 12px+. */
+    --bs-primary-bg-subtle: #e2e8f0;     /* slate-200 */
+    --bs-primary-text-emphasis: #334155;  /* slate-700 */
+    --bs-secondary-bg-subtle: #f1f5f9;    /* slate-100 */
+    --bs-secondary-text-emphasis: #475569; /* slate-600 */
+    --bs-success-bg-subtle: #d1fae5;     /* emerald-100 */
+    --bs-success-text-emphasis: #065f46;  /* emerald-800 */
+    --bs-info-bg-subtle: #cffafe;        /* cyan-100 */
+    --bs-info-text-emphasis: #155e75;     /* cyan-800 */
+    --bs-warning-bg-subtle: #fef3c7;     /* amber-100 */
+    --bs-warning-text-emphasis: #92400e;  /* amber-800 */
+    --bs-danger-bg-subtle: #fee2e2;      /* red-100 */
+    --bs-danger-text-emphasis: #991b1b;   /* red-800 */
+
+    /* Surface tokens — used by .kpi-tile, .library-item etc. */
+    --surface-1: rgba(15, 23, 42, 0.03);
+    --surface-2: rgba(15, 23, 42, 0.05);
+    --surface-border: #e2e8f0;
+
+    /* Light-mode shadow tokens. Dark mode declares --shadow-1/-2 on :root
+       with rgba(0,0,0,0.22) — appropriate for a near-black canvas but too
+       heavy on a slate-200 page bg. Re-tune for the lighter canvas so
+       modals/toasts/cards lift cleanly without the "drop-shadow on white
+       paper" look. */
+    --shadow-1: 0 1px 2px rgba(15, 23, 42, 0.06), 0 1px 1px rgba(15, 23, 42, 0.04);
+    --shadow-2: 0 8px 24px rgba(15, 23, 42, 0.08), 0 2px 6px rgba(15, 23, 42, 0.05);
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Light mode badge overhaul — Bootstrap's `.bg-success` etc default
+ * to solid saturated bg with white text. That reads "alert! warning!"
+ * at every size. Modern dashboards (Linear, Stripe, Vercel) use
+ * tinted-bg + dark-text pills which read as DATA, not state alarms.
+ *
+ * We override .bg-* badges and alerts in light mode only — dark mode
+ * keeps the solid pills because they pop against the navy background.
+ * Alerts get the same treatment so info / success banners feel
+ * informative rather than urgent.
+ * ────────────────────────────────────────────────────────────────────── */
+html[data-bs-theme="light"] .badge.bg-primary,
+html[data-bs-theme="light"] .alert-primary {
+    background-color: var(--bs-primary-bg-subtle) !important;
+    color: var(--bs-primary-text-emphasis) !important;
+    border-color: transparent;
+}
+html[data-bs-theme="light"] .badge.bg-secondary,
+html[data-bs-theme="light"] .alert-secondary {
+    background-color: var(--bs-secondary-bg-subtle) !important;
+    color: var(--bs-secondary-text-emphasis) !important;
+    border-color: transparent;
+}
+html[data-bs-theme="light"] .badge.bg-success,
+html[data-bs-theme="light"] .alert-success {
+    background-color: var(--bs-success-bg-subtle) !important;
+    color: var(--bs-success-text-emphasis) !important;
+    border-color: transparent;
+}
+html[data-bs-theme="light"] .badge.bg-info,
+html[data-bs-theme="light"] .alert-info {
+    background-color: var(--bs-info-bg-subtle) !important;
+    color: var(--bs-info-text-emphasis) !important;
+    border-color: transparent;
+}
+html[data-bs-theme="light"] .badge.bg-warning,
+html[data-bs-theme="light"] .alert-warning {
+    background-color: var(--bs-warning-bg-subtle) !important;
+    color: var(--bs-warning-text-emphasis) !important;
+    border-color: transparent;
+}
+html[data-bs-theme="light"] .badge.bg-danger,
+html[data-bs-theme="light"] .alert-danger {
+    background-color: var(--bs-danger-bg-subtle) !important;
+    color: var(--bs-danger-text-emphasis) !important;
+    border-color: transparent;
+}
+
+/* `.text-dark` modifier (used by older callsites like `.bg-warning text-dark`)
+   becomes a no-op in light mode — the tinted bg + emphasis text already
+   gives us a dark-on-tint pill, so the .text-dark override would force
+   pure-black text and lose the emphasis-colour nuance. */
+html[data-bs-theme="light"] .badge.text-dark { color: inherit !important; }
+
+/* Progress bar fills — the table's "Workers" column shows a 100% bar
+ * coloured by status (.bg-success / .bg-warning). Inside .progress-bar
+ * we want the SOLID colour (Bootstrap blue → tinted is too washed for
+ * a fill), but the TEXT inside needs to stay dark for legibility on
+ * the lighter solid. Hand-tuned so the fill is visibly green/amber/red
+ * but the percentage label remains readable. */
+html[data-bs-theme="light"] .progress-bar.bg-success { background-color: #10b981 !important; color: #064e3b; }
+html[data-bs-theme="light"] .progress-bar.bg-warning { background-color: #f59e0b !important; color: #78350f; }
+html[data-bs-theme="light"] .progress-bar.bg-danger  { background-color: #ef4444 !important; color: #7f1d1d; }
+html[data-bs-theme="light"] .progress-bar.bg-secondary { background-color: #94a3b8 !important; color: #1e293b; }
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Focus rings — applied to every interactive element. Bootstrap's
+ * default focus indicator is so subtle on this dark theme that
+ * keyboard users can't tell where they are; this lifts it to a
+ * visible orange ring that matches the brand. Mouse clicks still get
+ * the browser's :focus-visible suppression so the ring only appears
+ * for keyboard navigation.
+ * ────────────────────────────────────────────────────────────────────── */
+.btn:focus-visible,
+.form-control:focus-visible,
+.form-select:focus-visible,
+.form-check-input:focus-visible,
+.dropdown-toggle:focus-visible,
+.nav-link:focus-visible,
+a:focus-visible {
+    box-shadow: var(--focus-ring) !important;
+    outline: none;
+}
+
+/* Page-level title block — used by every top-level page so the H1
+ * + supporting subtitle has uniform spacing. The original templates
+ * each rolled their own h1/h2 with different margins; this normalises
+ * to the same leading + trailing space. */
+.page-header {
+    margin-bottom: 1.75rem;
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 1rem;
+    flex-wrap: wrap;
+}
+
+.page-header h1,
+.page-header .page-title {
+    font-size: 1.75rem;
+    font-weight: 600;
+    margin: 0;
+    line-height: 1.2;
+}
+
+.page-header .page-subtitle {
+    color: var(--bs-secondary-color);
+    font-size: 0.95rem;
+    margin-top: 0.25rem;
+}
+
+.page-header .page-actions {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Layout — centre the main column at a comfortable reading width on
+ * very wide displays (1920+). Bootstrap container-fluid is full-bleed
+ * which makes the dashboard feel like a generic admin tool; capping
+ * the content rail at ~1500px gives the app a designed feel without
+ * shrinking on common laptop widths.
+ * ────────────────────────────────────────────────────────────────────── */
+@media (min-width: 1600px) {
+    body > main.container-fluid,
+    .app-shell {
+        max-width: 1500px;
+        margin-left: auto;
+        margin-right: auto;
+    }
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Brand accent strip — single 2px line under the nav using the brand
+ * gradient. Anchors the top of the page and gives every screen an
+ * unmistakable Plex-orange edge that the eye picks up immediately.
+ * Plus frosted-glass effect on the navbar background — a modern dark
+ * theme staple that reads as polish without being flashy.
+ * ────────────────────────────────────────────────────────────────────── */
+nav.navbar.sticky-top {
+    border-bottom: 1px solid var(--surface-border) !important;
+    position: relative;
+    backdrop-filter: saturate(180%) blur(14px);
+    -webkit-backdrop-filter: saturate(180%) blur(14px);
+}
+html[data-bs-theme="dark"] nav.navbar.sticky-top {
+    background-color: rgba(15, 15, 26, 0.78) !important;
+}
+html[data-bs-theme="light"] nav.navbar.sticky-top {
+    background-color: rgba(255, 255, 255, 0.78);
+}
+nav.navbar.sticky-top::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: -1px;
+    height: 2px;
+    pointer-events: none;
+}
+html[data-bs-theme="dark"] nav.navbar.sticky-top::after {
+    background: linear-gradient(
+        90deg,
+        rgba(229, 160, 13, 0) 0%,
+        rgba(229, 160, 13, 0.65) 18%,
+        rgba(229, 160, 13, 0.65) 82%,
+        rgba(229, 160, 13, 0) 100%
+    );
+}
+/* Light mode: drop the strip to a single 1px slate divider — the
+ * orange gradient on white was too candy-bright. Cleaner separation
+ * via a flat hairline reads as proper "header / body" hierarchy. */
+html[data-bs-theme="light"] nav.navbar.sticky-top::after {
+    height: 1px;
+    background: #e2e8f0;
+}
+
+/* Nav link hover: subtle highlight band, no jarring fill change. */
+.navbar .nav-link {
+    border-radius: var(--radius-sm);
+    padding-left: 0.7rem !important;
+    padding-right: 0.7rem !important;
+    transition: background-color 0.15s ease, color 0.15s ease;
+}
+html[data-bs-theme="dark"] .navbar .nav-link:hover {
+    background-color: rgba(255, 255, 255, 0.05);
+}
+html[data-bs-theme="light"] .navbar .nav-link:hover {
+    background-color: rgba(0, 0, 0, 0.05);
+}
+.navbar .nav-link.active {
+    color: var(--plex-orange) !important;
+    background-color: var(--plex-orange-soft);
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Panel — modern replacement for Bootstrap's flat .card. Larger
+ * radius, soft surface gradient, low-contrast border. Header has a
+ * subtle top padding bump and the card-title gets uppercase tracking
+ * so the visual hierarchy reads as "section / content" without
+ * needing dividing rules everywhere.
+ *
+ * NB: the existing markup uses `.card`, so we redefine `.card` rather
+ * than introducing a new class — the visual upgrade is uniform across
+ * every page without hunting down individual templates. The whole
+ * point of a design system is "change one place, propagate".
+ * ────────────────────────────────────────────────────────────────────── */
+html[data-bs-theme="dark"] .card {
+    background: linear-gradient(180deg, rgba(255,255,255,0.045) 0%, rgba(255,255,255,0.02) 100%);
+    border: 1px solid var(--surface-border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-1);
+    transition: border-color 0.18s ease, transform 0.18s ease, box-shadow 0.18s ease;
+}
+html[data-bs-theme="light"] .card {
+    /* Soft off-white (not pure #fff) — pure-white cards on a grey body
+       read as "OLED at full brightness" rather than "paper". The 2-3%
+       desaturation softens that without losing the elevation. */
+    background: #fbfcfd;
+    /* Visibly darker 1px slate border (slate-300 territory) so cards
+       actually lift against the deeper body bg. The previous #e2e6eb
+       was almost invisible against the prior body bg #eef0f3 — now
+       that body is darker AND the border is a touch heavier the cards
+       read as panels with edges, not floating washes. */
+    border: 1px solid #cbd5e1;
+    border-radius: var(--radius-lg);
+    box-shadow: none;
+    transition: border-color 0.18s ease, transform 0.18s ease, box-shadow 0.18s ease;
+}
+
+/* Subtle hover lift on cards that opt-in via .card-interactive (e.g.
+ * server cards, schedule cards). Avoid lifting every dashboard panel
+ * — that would have the whole page jiggle on cursor move. */
+html[data-bs-theme="dark"] .card-interactive:hover {
+    border-color: rgba(229, 160, 13, 0.35);
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-2);
+}
+/* Light-mode hover: NEUTRAL slate border lift — orange-on-white
+ * fights the calm palette and reads as a warning state. Dark mode
+ * keeps the brand orange because it pops against navy. */
+html[data-bs-theme="light"] .card-interactive:hover {
+    border-color: #94a3b8;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
+}
+
+html[data-bs-theme="dark"] .card-header,
+html[data-bs-theme="light"] .card-header {
+    background: transparent;
+    border-bottom: 1px solid var(--surface-border);
+    padding: 0.85rem 1.1rem;
+    font-size: 0.78rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--bs-secondary-color);
+}
+
+.card-header .bi {
+    color: var(--plex-orange);
+    font-size: 0.95rem;
+}
+
+.card-body { padding: 1.1rem; }
+.card-body.p-0 { padding: 0; } /* keep for tables */
+
+/* ──────────────────────────────────────────────────────────────────────
+ * KPI tiles — the dashboard's 6-cell stats grid (Pending / Running /
+ * Completed / Failed / Cancelled / Total) gets a per-tile background
+ * + small label-above-number layout that's easier to scan at a glance.
+ * Each tile is its own touch target; on mobile they stack 2-up.
+ * ────────────────────────────────────────────────────────────────────── */
+.kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0.5rem;
+}
+@media (max-width: 575.98px) { .kpi-grid { grid-template-columns: repeat(2, 1fr); } }
+
+.kpi-tile {
+    background: var(--surface-1);
+    border: 1px solid var(--surface-border);
+    border-radius: var(--radius);
+    padding: 0.7rem 0.8rem;
+    transition: background 0.15s ease, border-color 0.15s ease;
+}
+.kpi-tile:hover { background: var(--surface-2); }
+
+.kpi-tile .kpi-label {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--bs-secondary-color);
+    margin-bottom: 0.15rem;
+    font-weight: 600;
+}
+
+.kpi-tile .kpi-value {
+    font-size: 1.6rem;
+    font-weight: 700;
+    line-height: 1.05;
+    font-variant-numeric: tabular-nums;
+}
+
+/* Status colour accents on the value text only — keeps the tile
+   surface neutral so the colour reads as data, not chrome. */
+.kpi-tile.kpi-pending  .kpi-value { color: var(--bs-secondary-color); }
+.kpi-tile.kpi-running  .kpi-value { color: #4a9eff; }
+.kpi-tile.kpi-completed .kpi-value { color: #2ecc71; }
+.kpi-tile.kpi-failed   .kpi-value { color: #e74c3c; }
+.kpi-tile.kpi-cancelled .kpi-value { color: var(--plex-orange); }
+
+/* Light mode: the dark-theme palette above is tuned for white-on-navy.
+   Drop to the same muted Tailwind hues as --bs-success / --bs-danger
+   so the dashboard's data palette reads as one designed system, not
+   a mix of neon-bright leftovers. */
+html[data-bs-theme="light"] .kpi-tile.kpi-running  .kpi-value { color: #475569; }  /* slate-600 */
+html[data-bs-theme="light"] .kpi-tile.kpi-completed .kpi-value { color: #059669; }  /* emerald-600 */
+html[data-bs-theme="light"] .kpi-tile.kpi-failed   .kpi-value { color: #b91c1c; }  /* red-700 */
+html[data-bs-theme="light"] .kpi-tile.kpi-cancelled .kpi-value { color: #d97706; }  /* amber-600 */
+html[data-bs-theme="light"] .status-dot.status-running   { color: #475569; }
+html[data-bs-theme="light"] .status-dot.status-completed { color: #059669; }
+html[data-bs-theme="light"] .status-dot.status-failed    { color: #b91c1c; }
+html[data-bs-theme="light"] .status-dot.status-cancelled { color: #d97706; }
+html[data-bs-theme="light"] .status-dot.status-warning   { color: #d97706; }
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Status indicator dots — replaces full-fill status pills in dense
+ * tables. A coloured ●  before a neutral label reads cleaner than
+ * stacked pill badges and works at any column width.
+ * ────────────────────────────────────────────────────────────────────── */
+.status-dot {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    font-size: 0.82rem;
+    font-weight: 500;
+    color: var(--bs-body-color);
+    line-height: 1;
+}
+.status-dot::before {
+    content: "";
+    width: 0.55rem;
+    height: 0.55rem;
+    border-radius: 50%;
+    background-color: currentColor;
+    opacity: 0.85;
+    flex-shrink: 0;
+}
+.status-dot.status-pending   { color: #adb5bd; }
+.status-dot.status-running   { color: #4a9eff; }
+.status-dot.status-completed { color: #2ecc71; }
+.status-dot.status-failed    { color: #e74c3c; }
+.status-dot.status-cancelled { color: var(--plex-orange); }
+.status-dot.status-warning   { color: var(--plex-orange); }
+
+/* Pulse the running dot so a live job is unmistakable at a glance. */
+.status-dot.status-running::before {
+    animation: status-dot-pulse 1.6s ease-in-out infinite;
+}
+@keyframes status-dot-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(74, 158, 255, 0.4); }
+    50% { box-shadow: 0 0 0 4px rgba(74, 158, 255, 0); }
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Buttons — soft-fill ghost variant for secondary actions. Stops
+ * three or four loud "btn-outline-*" buttons from competing for
+ * attention with the actual primary CTA.
+ * ────────────────────────────────────────────────────────────────────── */
+.btn-ghost {
+    background-color: var(--surface-1);
+    border: 1px solid var(--surface-border);
+    color: var(--bs-body-color);
+    transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+.btn-ghost:hover {
+    background-color: var(--surface-2);
+    border-color: var(--surface-border);
+    color: var(--bs-body-color);
+}
+
+/* Smooth out the default Bootstrap btn transition feel — primary
+ * actions are the same, but icon-only secondary buttons get a more
+ * tactile feel.
+ */
+.btn { transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease; }
+
+/* Primary button uses the brand orange in BOTH themes so the CTA
+ * matches the orange logo + active nav tab. Without this, light mode
+ * shows Bootstrap's stock blue which clashes with the orange brand. */
+.btn-primary {
+    background-color: var(--plex-orange);
+    border-color: var(--plex-orange);
+    color: #161616;
+    font-weight: 600;
+}
+.btn-primary:hover,
+.btn-primary:focus,
+.btn-primary:active,
+.btn-primary:focus-visible {
+    background-color: #d18f0a;
+    border-color: #d18f0a;
+    color: #161616;
+}
+
+/* Outline-primary mirrors btn-primary — brand orange in both themes.
+ * Without this it stays Bootstrap blue, which clashes with the orange
+ * primary actions everywhere else (e.g., Manual Trigger button on
+ * the dashboard, Edit on server cards, Refresh libraries, etc). */
+.btn-outline-primary {
+    color: var(--plex-orange);
+    border-color: var(--plex-orange);
+}
+.btn-outline-primary:hover,
+.btn-outline-primary:focus,
+.btn-outline-primary:active,
+.btn-check:checked + .btn-outline-primary {
+    background-color: var(--plex-orange);
+    border-color: var(--plex-orange);
+    color: #161616;
+}
+
+/* `bg-primary` badges (worker count "2", "NVIDIA"/"INTEL" GPU type pill,
+ * dashboard "Processing" status pill) — on dark theme, paint with brand
+ * orange so they pop against navy. On light theme they inherit the
+ * muted slate (--bs-primary override) so the data badges stay calm
+ * instead of shouting alongside the orange CTAs. */
+html[data-bs-theme="dark"] .bg-primary {
+    background-color: var(--plex-orange) !important;
+    color: #161616 !important;
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Tables — borderless rows with subtle hover. The default Bootstrap
+ * table-bordered look adds visual noise to the dense Job Queue.
+ * ────────────────────────────────────────────────────────────────────── */
+.table { --bs-table-border-color: var(--surface-border); }
+.table > :not(caption) > * > * { border-bottom-width: 1px; }
+html[data-bs-theme="dark"] .table > tbody > tr:last-child > td { border-bottom-color: transparent; }
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Form controls — slightly taller default with cleaner placeholder
+ * contrast. The original dark-theme form-control inherits Bootstrap's
+ * tight 0.375rem padding which feels cramped in a long form.
+ * ────────────────────────────────────────────────────────────────────── */
+.form-control,
+.form-select {
+    border-radius: var(--radius-sm);
+    padding-top: 0.5rem;
+    padding-bottom: 0.5rem;
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Tabs (nav-pills + nav-tabs) — branded active state. Bootstrap's
+ * default uses primary blue which clashes with the new orange brand
+ * primary on dark theme. Fill becomes the brand orange soft tint and
+ * the active label picks up the brand colour.
+ * ────────────────────────────────────────────────────────────────────── */
+.nav-pills .nav-link {
+    color: var(--bs-body-color);
+    background-color: transparent;
+    border-radius: var(--radius-sm);
+    transition: background-color 0.15s ease, color 0.15s ease;
+}
+html[data-bs-theme="dark"] .nav-pills .nav-link:hover {
+    background-color: rgba(255, 255, 255, 0.04);
+}
+.nav-pills .nav-link.active,
+.nav-pills .show > .nav-link {
+    background-color: var(--plex-orange-soft) !important;
+    color: var(--plex-orange) !important;
+    font-weight: 600;
+}
+
+/* Bootstrap's standard nav-tabs (used in modals) — matched look. */
+.nav-tabs .nav-link.active {
+    color: var(--plex-orange);
+    border-bottom-color: var(--plex-orange);
+    background-color: transparent;
+}
+.nav-tabs .nav-link {
+    color: var(--bs-body-color);
+    border-top: none;
+    border-left: none;
+    border-right: none;
+    transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Modals — modern with larger radius + softer backdrop.
+ * ────────────────────────────────────────────────────────────────────── */
+.modal-content {
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-2);
+    overflow: hidden;
+}
+.modal-header {
+    padding: 1rem 1.5rem;
+    /* Slightly heavier title weight + tighter line-height so the modal
+       reads as "this is a focused task" rather than "another card". */
+}
+.modal-header .modal-title {
+    font-weight: 600;
+    font-size: 1.05rem;
+    letter-spacing: -0.005em;
+}
+.modal-body { padding: 1.25rem 1.5rem 0.5rem; }
+.modal-footer {
+    padding: 0.75rem 1.5rem 1rem;
+    /* No top border — the body's trailing whitespace + button styling
+       provide enough separation. The hard line read as a divider was
+       making compact modals feel "boxy". */
+    border-top: 0;
+    background: var(--surface-1, transparent);
+}
+
+/* Form-label inside modals: tracked uppercase makes long forms scan
+ * faster (each section header reads as a label, not body copy). */
+.modal-body .form-label {
+    font-weight: 500;
+    font-size: 0.85rem;
+    margin-bottom: 0.35rem;
+    color: var(--bs-body-color);
+}
+.modal-body .form-text {
+    font-size: 0.78rem;
+    margin-top: 0.3rem;
+    line-height: 1.35;
+}
+
+/* Tighter `.mb-3` spacing inside modals — Bootstrap's 1rem default is
+ * generous and makes 4-5 fields feel scrolling-required. 0.85rem still
+ * separates fields cleanly without the airy gap. */
+.modal-body .mb-3 {
+    margin-bottom: 0.85rem !important;
+}
+
+/* Demote the Cancel/dismiss button to a ghost so the primary action
+ * (Start Job, Save, etc.) gets the visual weight it deserves. Templates
+ * already use `btn-secondary` for dismiss; this CSS override avoids
+ * having to re-class every modal footer in every template. */
+.modal-footer .btn-secondary[data-bs-dismiss="modal"] {
+    background-color: transparent;
+    border-color: transparent;
+    color: var(--bs-secondary-color);
+    font-weight: 500;
+}
+.modal-footer .btn-secondary[data-bs-dismiss="modal"]:hover,
+.modal-footer .btn-secondary[data-bs-dismiss="modal"]:focus-visible {
+    background-color: var(--surface-2, rgba(255, 255, 255, 0.06));
+    border-color: transparent;
+    color: var(--bs-body-color);
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Toasts — bottom-right floating; tone down the loud border colour
+ * the default uses. Add the elevation shadow so they read as floating.
+ * ────────────────────────────────────────────────────────────────────── */
+.toast {
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-2);
+}
+
+body {
+    min-height: 100vh;
+}
+
+/* The navbar flips with the page theme. Dark mode keeps the deep Plex
+   background; light mode uses Bootstrap's tertiary body surface for a
+   clean header bar. Brand mark stays Plex-orange in both themes. */
+html[data-bs-theme="dark"] .navbar {
+    background-color: var(--plex-dark) !important;
+}
+
+html[data-bs-theme="light"] .navbar {
+    background-color: var(--bs-tertiary-bg);
+}
+
+.navbar-brand {
+    color: var(--plex-orange) !important;
+    font-weight: bold;
+}
+
+/* Top-right utility icons (notification bell + theme toggle) — give them a
+ * unified circular hover affordance so they read as first-class controls
+ * instead of bare text links. Matches the .icon-btn-group treatment used
+ * inside tables.
+ *
+ * Desktop-only — on mobile (≤ 991.98px) the same buttons collapse INTO
+ * the hamburger menu and take full-row treatment with text labels (see
+ * the ``.navbar-nav-utility`` block in the mobile media query below). The
+ * 38×38 circle is the wrong shape for an accordion row.
+ */
+@media (min-width: 992px) {
+    .navbar .nav-item > #notificationBellBtn,
+    .navbar .nav-item > #themeToggleBtn {
+        width: 38px;
+        height: 38px;
+        display: inline-flex !important;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+        border-radius: 50%;
+        color: var(--bs-body-color) !important;
+        transition: background-color 0.15s ease, color 0.15s ease;
+    }
+    .navbar .nav-item > #notificationBellBtn:hover,
+    .navbar .nav-item > #themeToggleBtn:hover,
+    .navbar .nav-item > #notificationBellBtn:focus-visible,
+    .navbar .nav-item > #themeToggleBtn:focus-visible {
+        background-color: var(--surface-2, rgba(255, 255, 255, 0.08));
+        color: var(--plex-orange) !important;
+    }
+    .navbar .nav-item > #notificationBellBtn .bi,
+    .navbar .nav-item > #themeToggleBtn .bi {
+        font-size: 1.05rem;
+    }
+}
+
+/* Notification bell dropdown in the top-right navbar. */
+.notification-bell-wrapper {
+    position: relative;
+}
+
+.notification-bell-wrapper .dropdown-menu.notification-dropdown {
+    width: 28rem;
+    max-width: 95vw;
+    max-height: 70vh;
+    overflow-y: auto;
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-2);
+    margin-top: 0.4rem;
+}
+
+/* Polished header — uppercase tracked label, brand-orange "Reset" link
+ * so it reads as a real action, not a faded utility. */
+.notification-bell-wrapper .dropdown-menu.notification-dropdown > .d-flex {
+    background: var(--surface-1, rgba(255, 255, 255, 0.04));
+}
+.notification-bell-wrapper .dropdown-menu.notification-dropdown strong {
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: var(--bs-secondary-color);
+}
+.notification-bell-wrapper #notificationResetBtn {
+    color: var(--plex-orange) !important;
+    font-weight: 500;
+    font-size: 0.8rem;
+}
+.notification-bell-wrapper #notificationResetBtn:hover {
+    color: var(--plex-orange) !important;
+    text-decoration: underline !important;
+}
+
+/* Empty state — lift the muted "No notifications." line so the dropdown
+ * doesn't feel barren when there's nothing to show. */
+.notification-bell-wrapper #notificationEmpty {
+    padding: 2.25rem 1rem !important;
+    color: var(--bs-secondary-color);
+}
+
+.notification-bell-wrapper .notification-entry {
+    transition: background-color 0.15s ease;
+}
+
+.notification-bell-wrapper .notification-entry:hover {
+    background-color: var(--bs-tertiary-bg);
+}
+
+.notification-bell-wrapper .notification-entry .notification-details code {
+    word-break: break-word;
+}
+
+/* The notification card's "What changed" disclosure uses a <summary> tag.
+   Inline style="cursor:pointer;" gets stripped by sanitizeNotificationHtml
+   (no `style` attribute on the allow-list), so wire the cursor hint via a
+   class that *does* survive sanitization. */
+.notification-bell-wrapper .notification-details summary {
+    cursor: pointer;
+}
+
+.notification-bell-wrapper .notification-list .notification-entry:last-child {
+    border-bottom: 0 !important;
+}
+
+/* Dark theme — custom overrides apply only when data-bs-theme=dark. Light
+   mode falls back to Bootstrap 5.3's built-in light theme, which handles
+   cards/modals/forms/tables natively. */
+html[data-bs-theme="dark"] body {
+    background-color: var(--plex-gray);
+}
+
+html[data-bs-theme="dark"] .card {
+    background-color: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+html[data-bs-theme="dark"] .card-header {
+    background-color: rgba(0, 0, 0, 0.2);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    font-weight: 500;
+}
+
+html[data-bs-theme="light"] .card-header {
+    font-weight: 500;
+}
+
+/* Legacy .stat-value / .stat-label — kept for the few places that
+ * still hand-roll a stat callout outside the .kpi-tile system. New
+ * code should use .kpi-tile + .kpi-value + .kpi-label. */
+.stat-value {
+    font-size: 1.6rem;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.05;
+}
+
+.stat-label {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--bs-secondary-color);
+    font-weight: 600;
+}
+
+/* Progress bars */
+.progress {
+    height: 1.5rem;
+}
+
+html[data-bs-theme="dark"] .progress {
+    background-color: rgba(255, 255, 255, 0.1);
+}
+
+.progress-bar {
+    transition: width 0.3s ease;
+}
+
+/* Tables */
+html[data-bs-theme="dark"] .table {
+    color: #e0e0e0;
+}
+
+html[data-bs-theme="dark"] .table-hover tbody tr:hover {
+    background-color: rgba(255, 255, 255, 0.05);
+}
+
+/* Buttons */
+.btn-warning {
+    background-color: var(--plex-orange);
+    border-color: var(--plex-orange);
+    color: #000;
+}
+
+.btn-warning:hover {
+    background-color: #c98b0b;
+    border-color: #c98b0b;
+    color: #000;
+}
+
+/* Job status badges */
+.badge-pending {
+    background-color: #6c757d;
+}
+
+.badge-running {
+    background-color: #0d6efd;
+}
+
+.badge-completed {
+    background-color: #198754;
+}
+
+.badge-failed {
+    background-color: #dc3545;
+}
+
+.badge-cancelled {
+    background-color: #ffc107;
+    color: #000;
+}
+
+/* Tooltip content: preserve newlines for multi-line outcome breakdowns */
+.tooltip-inner {
+    white-space: pre-line;
+    text-align: left;
+}
+
+/* GPU cards — blue-tinted accent that fits both themes */
+html[data-bs-theme="dark"] .gpu-card {
+    background: linear-gradient(135deg, rgba(13, 110, 253, 0.2), rgba(13, 110, 253, 0.05));
+    border: 1px solid rgba(13, 110, 253, 0.3);
+}
+
+html[data-bs-theme="light"] .gpu-card {
+    background: linear-gradient(135deg, rgba(13, 110, 253, 0.08), rgba(13, 110, 253, 0.03));
+    border: 1px solid rgba(13, 110, 253, 0.2);
+}
+
+/* Library list */
+.library-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.5rem;
+    border-radius: 0.25rem;
+    margin-bottom: 0.25rem;
+}
+
+html[data-bs-theme="dark"] .library-item {
+    background-color: rgba(255, 255, 255, 0.05);
+}
+
+html[data-bs-theme="dark"] .library-item:hover {
+    background-color: rgba(255, 255, 255, 0.1);
+}
+
+html[data-bs-theme="light"] .library-item {
+    background-color: rgba(0, 0, 0, 0.04);
+}
+
+html[data-bs-theme="light"] .library-item:hover {
+    background-color: rgba(0, 0, 0, 0.08);
+}
+
+.library-item .library-name {
+    font-weight: 500;
+}
+
+.library-item .library-count {
+    font-size: 0.75rem;
+    color: var(--bs-secondary-color, #adb5bd);
+}
+
+/* Toast notifications */
+html[data-bs-theme="dark"] .toast {
+    background-color: #1a1a2e;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* Modals */
+html[data-bs-theme="dark"] .modal-content {
+    background-color: #1a1a2e;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+html[data-bs-theme="dark"] .modal-header {
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+html[data-bs-theme="dark"] .modal-footer {
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* Form controls */
+html[data-bs-theme="dark"] .form-control,
+html[data-bs-theme="dark"] .form-select {
+    background-color: rgba(0, 0, 0, 0.3);
+    border-color: rgba(255, 255, 255, 0.2);
+    color: #e0e0e0;
+}
+
+html[data-bs-theme="dark"] .form-control:focus,
+html[data-bs-theme="dark"] .form-select:focus {
+    background-color: rgba(0, 0, 0, 0.4);
+    border-color: var(--plex-orange);
+    color: #e0e0e0;
+    box-shadow: 0 0 0 0.25rem rgba(229, 160, 13, 0.25);
+}
+
+html[data-bs-theme="dark"] .form-control::placeholder {
+    color: #6c757d;
+}
+
+html[data-bs-theme="light"] .form-control:focus,
+html[data-bs-theme="light"] .form-select:focus {
+    border-color: var(--plex-orange);
+    box-shadow: 0 0 0 0.25rem rgba(229, 160, 13, 0.25);
+}
+
+/* Alerts */
+.alert {
+    border: none;
+}
+
+/* Code blocks — brand-colored in both themes */
+code {
+    padding: 0.125rem 0.375rem;
+    border-radius: 0.25rem;
+    color: var(--plex-orange);
+}
+
+html[data-bs-theme="dark"] code {
+    background-color: rgba(0, 0, 0, 0.3);
+}
+
+html[data-bs-theme="light"] code {
+    /* Cool slate chip, not orange. Brand orange on a near-white bg
+       reads as a warning state and clashes with the slate palette;
+       slate-100 bg + slate-700 text matches the rest of the surface
+       family. Dark mode keeps the orange because it pops on navy. */
+    background-color: #e2e8f0;          /* slate-200 */
+    color: #334155;                     /* slate-700 */
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+html[data-bs-theme="dark"] ::-webkit-scrollbar-track {
+    background: rgba(0, 0, 0, 0.2);
+}
+
+html[data-bs-theme="dark"] ::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: 4px;
+}
+
+html[data-bs-theme="dark"] ::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.3);
+}
+
+html[data-bs-theme="light"] ::-webkit-scrollbar-track {
+    background: rgba(0, 0, 0, 0.05);
+}
+
+html[data-bs-theme="light"] ::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 4px;
+}
+
+html[data-bs-theme="light"] ::-webkit-scrollbar-thumb:hover {
+    background: rgba(0, 0, 0, 0.3);
+}
+
+/* Animations */
+@keyframes pulse {
+    0%, 100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.5;
+    }
+}
+
+.pulse {
+    animation: pulse 2s infinite;
+}
+
+/* Retry-waiting active-job card — subtle amber border + tinted bg
+   so the card visibly differs from a normally-running job at a glance,
+   without being so loud it competes with actually-failing jobs. */
+.active-job-card.retry-waiting {
+    border-color: rgba(255, 193, 7, 0.55) !important;
+    background-color: rgba(255, 193, 7, 0.06);
+}
+
+[data-bs-theme="dark"] .active-job-card.retry-waiting {
+    background-color: rgba(255, 193, 7, 0.08);
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Mobile navbar polish — when the hamburger collapses the navbar into a
+ * vertical stack, the right-side utility cluster (Notifications / Help /
+ * Theme / Logout) used to render as bare icons with no labels. Pre-fix
+ * the user opened the menu and saw 3 mystery glyphs in a row before
+ * Logout. The template now ships a ``d-lg-none`` text label inside each
+ * utility button; this CSS makes those rows align with the primary nav
+ * (Dashboard / Servers / …) so everything reads as one consistent menu.
+ *
+ * The Bootstrap dropdown menus inside the collapsed navbar (Automation,
+ * Tools, Help, Notifications) render flush to the left so they look
+ * like an inline accordion instead of a popover detached from the row.
+ * ────────────────────────────────────────────────────────────────────── */
+@media (max-width: 991.98px) {
+    /* The navbar uses ``backdrop-filter: saturate(1.8) blur(14px)``
+     * for the frosted-glass look on desktop, but ``backdrop-filter``
+     * establishes a fixed-positioning containing block — meaning any
+     * ``position: fixed`` child (like our offcanvas drawer) gets
+     * clipped to the navbar's 56px height instead of spanning the
+     * full viewport. Strip the filter on mobile so the offcanvas
+     * slides over the whole screen as it should. The visual loss is
+     * minimal because the drawer covers the navbar anyway. */
+    nav.navbar.sticky-top {
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
+    }
+
+    /* Hamburger toggle — opens the offcanvas drawer. Single ≡ glyph;
+     * the ✕ close button lives inside the drawer header (where it has
+     * room and reads as a proper dismiss). Tint the toggler in the
+     * brand colour as a subtle press-state cue.
+     *
+     * Padding sized so the rendered button is ≥44px tall (Apple HIG
+     * minimum touch target). Smaller and thumb taps land on the wrong
+     * area on a moving phone.
+     */
+    .navbar-toggler {
+        transition: background-color 0.15s ease, color 0.15s ease;
+        line-height: 1;
+        padding: 0.6rem 0.75rem;
+        min-height: 44px;
+        min-width: 44px;
+    }
+    .navbar-toggler .navbar-toggler-glyph {
+        font-size: 1.4rem;
+        display: inline-block;
+        line-height: 1;
+    }
+    .navbar-toggler:hover,
+    .navbar-toggler:focus-visible {
+        background-color: var(--surface-2, rgba(255, 255, 255, 0.08));
+        color: var(--plex-orange);
+    }
+
+    /* Bigger touch targets (~44px tall) — Apple HIG minimum. The
+     * default Bootstrap nav-link padding rendered ~36px which is
+     * tappable but cramped, especially with multi-row clusters. The
+     * mobile menu lives inside an offcanvas drawer (#navbarNav with
+     * .offcanvas class below lg), so all selectors target the
+     * offcanvas surface. */
+    #navbarNav.offcanvas .navbar-nav .nav-link {
+        padding-top: 0.7rem;
+        padding-bottom: 0.7rem;
+    }
+    #navbarNav.offcanvas .navbar-nav .nav-link .bi {
+        width: 1.2rem;
+        text-align: center;
+        flex-shrink: 0;
+    }
+    /* Stretch every utility button to fill the menu row so the inline
+     * label can lay out alongside the icon without wrapping. Without
+     * ``width: 100%`` Bootstrap's ``btn`` styling keeps the button at
+     * ``inline-block`` width — about 38px (just the icon) — and the
+     * label gets squeezed to one character per line. */
+    .navbar-nav-utility .nav-link {
+        display: flex !important;
+        align-items: center;
+        width: 100%;
+        padding: 0.7rem 0;
+        text-align: left;
+    }
+    .navbar-nav-utility .nav-link .bi {
+        width: 1.2rem;
+        text-align: center;
+        flex-shrink: 0;
+    }
+    /* Logout: visually demote so it doesn't compete with primary nav.
+     * Smaller font, lighter weight, muted by default — still highly
+     * tappable but reads as a footer / account-level action. */
+    .navbar-nav-utility .nav-item:last-child .nav-link {
+        font-size: 0.875rem;
+        opacity: 0.75;
+    }
+    .navbar-nav-utility .nav-item:last-child .nav-link:hover,
+    .navbar-nav-utility .nav-item:last-child .nav-link:focus-visible {
+        opacity: 1;
+        color: var(--bs-danger);
+    }
+    /* Notification badge sits AFTER the icon+label row on desktop (top-right
+     * of the bell). On mobile we move it inline with the label instead of
+     * floating absolutely so it sits next to "Notifications" cleanly. */
+    .navbar-nav-utility .notification-bell-wrapper #notificationBellBadge {
+        position: static !important;
+        transform: none !important;
+        margin-left: auto;
+    }
+    /* Dropdown menus inside the offcanvas drawer render full-width and
+     * borderless so they read as nested rows of the accordion, not as a
+     * floating popover. */
+    #navbarNav.offcanvas .dropdown-menu {
+        position: static;
+        float: none;
+        border: 0;
+        box-shadow: none;
+        background: transparent;
+        padding-left: 1.25rem;
+    }
+    #navbarNav.offcanvas .dropdown-menu .dropdown-item {
+        padding-left: 0.5rem;
+        padding-top: 0.55rem;
+        padding-bottom: 0.55rem;
+    }
+    /* Hide the inline ``<hr class="dropdown-divider">`` separators in
+     * accordion-mode dropdowns — desktop uses them to chunk visually-
+     * distinct groups (Schedules vs Webhooks vs catch-all) inside a
+     * floating popover, but on mobile they make a single accordion
+     * group look like three disjoint sections. The label text alone
+     * carries the grouping; the dividers add only visual noise. */
+    #navbarNav.offcanvas .dropdown-menu .dropdown-divider {
+        display: none;
+    }
+
+    /* Offcanvas drawer surface — slide in from the right with a comfy
+     * width that matches typical iOS app drawers (75-85% of viewport).
+     * Pre-fix the default Bootstrap offcanvas was ~400px which on a
+     * 390px iPhone equalled the entire screen. */
+    #navbarNav.offcanvas-end {
+        width: min(82vw, 360px);
+        background-color: var(--bs-body-bg);
+    }
+    /* Drawer header — title + close button. Already styled by Bootstrap;
+     * just make sure the close button is large enough to tap reliably. */
+    #navbarNav .offcanvas-header .btn-close {
+        padding: 0.85rem;
+    }
+    #navbarNav .offcanvas-body {
+        padding-top: 0.5rem;
+    }
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    .stat-value { font-size: 1.25rem; }
+    .kpi-tile .kpi-value { font-size: 1.4rem; }
+    .table-responsive { font-size: 0.875rem; }
+
+    /* Tighter card padding on phones so the cards don't waste a third
+       of the visible area on chrome. */
+    .card-body { padding: 0.85rem; }
+    .card-header { padding: 0.7rem 0.9rem; }
+
+    /* Page header collapses to a single column when the action group
+       wraps below the title. */
+    .page-header { gap: 0.75rem; }
+    .page-header h1, .page-header .page-title { font-size: 1.4rem; }
+    .page-header .page-subtitle { font-size: 0.875rem; }
+}
+
+/* Log viewer */
+.log-viewer {
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    white-space: pre-wrap;
+    scroll-behavior: smooth;
+    word-break: break-all;
+    /* Tighter line-height so consecutive ``[time] INFO -`` lines pack
+       more densely — pre-fix the 1.5 default left a visible blank gap
+       between every line that read as "log entries are far apart"
+       rather than "scannable stream". */
+    line-height: 1.35;
+}
+
+/* ``padding: 0`` on log-line so the new line-height controls density.
+   The 1 px y-padding previously here partially defeated the line-height
+   tightening above. */
+.log-line { display: block; padding: 0; }
+html[data-bs-theme="dark"] .log-line:hover { background-color: rgba(255, 255, 255, 0.05); }
+html[data-bs-theme="light"] .log-line:hover { background-color: rgba(0, 0, 0, 0.05); }
+.log-level-debug { color: #6c757d; }
+.log-level-info { color: #20c997; }
+.log-level-warning { color: #ffc107; }
+.log-level-error { color: #dc3545; }
+.log-level-critical { color: #dc3545; font-weight: bold; }
+/* Light mode: bright neon green/yellow on white is fatiguing. Drop
+ * to deeper hues so long log scans don't tire the eye. */
+html[data-bs-theme="light"] .log-level-info { color: #0e8060; }
+html[data-bs-theme="light"] .log-level-warning { color: #b88600; }
+html[data-bs-theme="light"] .log-level-error { color: #b02a37; }
+html[data-bs-theme="light"] .log-level-critical { color: #b02a37; }
+.log-highlight { background-color: rgba(229, 160, 13, 0.3); border-radius: 2px; }
+.log-line-hidden { display: none; }
+.log-nav-btn { padding: 0.15rem 0.35rem; line-height: 1; font-size: 0.8rem; backdrop-filter: blur(4px); }
+.log-nav-btn:hover { opacity: 1 !important; }
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Retry-chain Attempts pill row (Job Details modal)
+ * ────────────────────────────────────────────────────────────────────── */
+.attempts-bar {
+    /* Groups label + pills + chain-state chip into one tidy row.
+       Subtle bg + border reads as "context block" without the
+       alert-warning shoutiness the prior verbose banner had. */
+    background: var(--bs-tertiary-bg);
+    border: 1px solid var(--bs-border-color);
+    border-radius: 0.375rem;
+    padding: 0.5rem 0.75rem;
+}
+.attempts-state-chip {
+    /* Right-aligned chip in the attempts bar — countdown / running /
+       outcome. Sized to read as scannable context, not a primary CTA. */
+    font-size: 0.75rem;
+    padding: 0.35rem 0.55rem;
+    font-weight: 500;
+    align-self: center;
+    white-space: nowrap;
+}
+.attempts-pill {
+    /* Compact pill: just the attempt number + status glyph. Status colour
+       comes from Bootstrap's btn-outline-{success,danger,...} classes
+       which the JS swaps to solid btn-* on the active pill. */
+    min-width: 2.5rem;
+    padding: 0.25rem 0.55rem;
+    font-size: 0.8rem;
+    font-weight: 500;
+    line-height: 1.2;
+    transition: transform 0.08s ease-out, box-shadow 0.08s ease-out;
+}
+.attempts-pill:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+}
+.attempts-pill.active {
+    /* Solid (filled) when active so the current selection is unmistakable
+       even amongst many same-coloured "completed" pills. */
+    font-weight: 600;
+    box-shadow: 0 0 0 2px rgba(var(--bs-primary-rgb, 13, 110, 253), 0.25);
+}
+/* The "Original" pill — distinct width + a divider after it so the eye
+   reads "first run | then retries" instead of a flat sequence. */
+.attempts-pills > .attempts-pill[data-is-originating="1"] {
+    min-width: 5rem;
+}
+.attempts-pills > .attempts-pill[data-is-originating="1"]::after {
+    content: "";
+    border-left: 1px solid var(--bs-border-color);
+    margin-left: 0.5rem;
+    padding-left: 0;
+    height: 1.2em;
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Mobile-responsive job-modal layout (< 768 px)
+ * Survivor of the Tier 2.10 work after the simplification pass dropped
+ * the Overview tab + timeline + log-level filter blocks above.
+ * ────────────────────────────────────────────────────────────────────── */
+@media (max-width: 767.98px) {
+    /* The 5-column Files table doesn't fit a phone viewport without
+       horizontal scroll. Bootstrap's table-responsive idiom is fine
+       here — Details + Worker columns are secondary. */
+    #fileResultsTable {
+        min-width: 540px;
+    }
+    /* The 500 px-tall logs/files panes are too much vertical real
+       estate on a phone where the modal is full-screen. Drop to a
+       proportional cap. */
+    #logsContent,
+    #fileResultsTable + div {
+        max-height: 60vh !important;
+    }
+    /* Modal footer with the operator-action buttons (Retry now / Cancel
+       chain / Open BIF) + Copy / Download / Refresh / Close needs to
+       stack. The footer is flex-wrap already; reduce padding so
+       stacked buttons fit without pushing content off-screen. */
+    .modal-footer.flex-wrap > .btn,
+    .modal-footer.flex-wrap > a {
+        flex: 1 1 calc(50% - 0.5rem);
+        min-width: 0;
+    }
+    .modal-footer.flex-wrap > .btn-secondary[data-bs-dismiss="modal"] {
+        flex: 1 1 100%;  /* Close gets its own row at the bottom */
+    }
+    /* Pill row pills shrink slightly so 5+ pills still fit one row. */
+    .attempts-pill {
+        min-width: 2rem;
+        padding: 0.2rem 0.4rem;
+        font-size: 0.75rem;
+    }
+}
+
+/* Dropdown menus (dark theme only — light mode uses Bootstrap defaults) */
+html[data-bs-theme="dark"] .dropdown-menu {
+    background-color: #1a1a2e;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* Dropdown items — Bootstrap defaults the .active state to bright blue
+ * (#0d6efd) with white text, which spikes against the calm light theme
+ * and clashes with brand orange. Use the same orange-tint pattern as
+ * .nav-link.active for consistency: soft orange bg + brand orange text.
+ * Dark mode keeps the same pattern (same vars). */
+.dropdown-item.active,
+.dropdown-item:active {
+    background-color: var(--plex-orange-soft) !important;
+    color: var(--plex-orange) !important;
+    font-weight: 600;
+}
+.dropdown-item:hover,
+.dropdown-item:focus {
+    background-color: var(--surface-2);
+    color: var(--bs-body-color);
+}
+
+html[data-bs-theme="dark"] .dropdown-menu .form-check-label {
+    color: #e0e0e0;
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Icon button groups — used for table-row action clusters (View logs /
+ * Re-run / Delete on the Job Queue, Edit / Refresh / Delete on the
+ * Servers + Schedules pages). The default Bootstrap btn-sm is too tall
+ * for a dense row; we lock the height + width to a 32px square so the
+ * rows feel uniform. The btn-group also strips inter-button margin so
+ * each cluster sits as one cohesive control instead of three loose
+ * icons.
+ * ────────────────────────────────────────────────────────────────────── */
+.icon-btn-group .btn {
+    width: 2rem;
+    height: 2rem;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+}
+
+.icon-btn-group .btn .bi {
+    font-size: 0.95rem;
+    line-height: 1;
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Jobs table — compact row layout with breathing space at the
+ * uppercase column headers + a subtle hover. Header gets the same
+ * tracking treatment used on the Schedules teaser badge so the page
+ * has one consistent micro-typography rhythm.
+ * ────────────────────────────────────────────────────────────────────── */
+.jobs-table thead th {
+    border-top: 0;
+    letter-spacing: 0.04em;
+    font-weight: 600;
+    font-size: 0.72rem;
+    padding-top: 0.65rem;
+    padding-bottom: 0.65rem;
+    background-color: transparent;
+}
+
+.jobs-table tbody td {
+    padding-top: 0.55rem;
+    padding-bottom: 0.55rem;
+}
+
+/* Sticky-feel left padding on first/last columns so action icons don't
+   touch the card edge. */
+.jobs-table thead th:first-child,
+.jobs-table tbody td:first-child { padding-left: 1rem; }
+.jobs-table thead th:last-child,
+.jobs-table tbody td:last-child { padding-right: 1rem; }
+
+html[data-bs-theme="dark"] .jobs-table tbody tr:hover { background-color: rgba(255,255,255,0.04); }
+html[data-bs-theme="light"] .jobs-table tbody tr:hover { background-color: rgba(0,0,0,0.03); }
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Mobile job-queue layout: convert each table row into a stacked
+ * card-style block so the dashboard isn't a 600px-wide horizontal
+ * scroller on a phone. The table header collapses to ARIA-only and
+ * each cell renders as a labelled key/value strip. Detail row
+ * (publishers, file lists) expands inline below.
+ *
+ * Triggers below the .table-responsive scroll's normal threshold so
+ * tablets that comfortably fit the table keep the table view; phones
+ * (sm and down) get the stacked layout.
+ * ────────────────────────────────────────────────────────────────────── */
+@media (max-width: 575.98px) {
+    .jobs-table thead { display: none; }
+    .jobs-table,
+    .jobs-table tbody {
+        display: block;
+        width: 100%;
+    }
+    /* Each row becomes a card. CSS-grid gives us a deliberate two-row
+     * layout instead of 4-5 stacked flex rows:
+     *
+     *   ┌─────────────────────────┬──────────┐
+     *   │ TITLE  + Origin pill    │ chevron  │   row 1  (.title)
+     *   │ Status · Created        │ Actions  │   row 2  (.meta / .actions)
+     *   │ ███████ progress bar  100%         │   row 3  (.progress, full)
+     *   └─────────────────────────┴──────────┘
+     *
+     * The title cell already contains the origin pill + chevron on
+     * the desktop layout — we just let it span the full grid row on
+     * mobile. Status and Created are merged on a single horizontal row
+     * via inline-flex inside the status td (see below). Actions sits
+     * to the right of meta. Progress takes the full bottom row.
+     */
+    /* Mobile rows render as flat list items inside the parent JOB QUEUE
+     * card. Pre-fix each row had its OWN ``var(--surface-1)`` bg + 1px
+     * border + radius — stacked inside the parent card's identical
+     * surface, this produced the "card-in-card" + double-shading look
+     * the user flagged. We drop the per-row bg/border/radius and use a
+     * single thin divider between rows so the parent card defines the
+     * surface and rows read as flat list items. */
+    .jobs-table tbody tr {
+        display: grid;
+        grid-template-columns: auto 1fr auto;
+        grid-template-areas:
+            "title    title    title"
+            "status   created  actions"
+            "progress progress progress";
+        gap: 0.45rem 0.55rem;
+        align-items: center;
+        margin: 0;
+        background: transparent;
+        border: 0;
+        border-bottom: 1px solid var(--surface-border);
+        border-radius: 0;
+        padding: 0.85rem 0.25rem;
+        position: relative;
+    }
+    .jobs-table tbody tr:last-child {
+        border-bottom: 0;
+    }
+    .jobs-table tbody tr:hover {
+        background-color: transparent;
+    }
+    .jobs-table tbody tr > td {
+        display: block;
+        border: none !important;
+        padding: 0;
+        line-height: 1.3;
+    }
+
+    /* Cell → grid-area assignment by DOM position (hidden cells still
+     * occupy nth-child slots). Status (3) and Created (6) sit on the
+     * middle row in their own columns so they read as a single
+     * inline meta line. Actions cluster pins to the right. */
+    .jobs-table tbody tr > td:nth-child(2) {
+        grid-area: title;
+        font-weight: 500;
+        /* Long release-style titles like
+         * "Peacemaker (2022) - S01E02 - Best Friends for Never [HMAX
+         * MULTi WEBDL-2160p][DV HDR10][EAC3 5.1][FR+EN][h265]-BONOBO.mkv"
+         * used to break mid-word and steal 6+ rows of vertical space.
+         * Clamp to 2 lines + word-wrap so they ellipsize cleanly and
+         * the badge row (Sonarr / Retry N/M) gets breathing room. */
+        overflow: hidden;
+        overflow-wrap: anywhere;
+        word-break: normal;
+    }
+    .jobs-table tbody tr > td:nth-child(2) > .job-title-link,
+    .jobs-table tbody tr > td:nth-child(2) > a:first-child {
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+        line-height: 1.3;
+    }
+    .jobs-table tbody tr > td:nth-child(3) { grid-area: status; }
+    .jobs-table tbody tr > td:nth-child(5) { grid-area: progress; }
+    .jobs-table tbody tr > td:nth-child(7) {
+        grid-area: actions;
+        justify-self: end;
+        align-self: center;
+    }
+
+    /* Hide the progress bar on mobile for terminal job states — the
+     * coloured status dot ("● Completed", "● Cancelled", "● Failed")
+     * already conveys the outcome, so a 100% bar adds nothing but
+     * vertical noise. Keep it for running/pending where the live %
+     * is the point. */
+    .jobs-table tbody tr > td:nth-child(5):has(.progress[data-status="completed"]),
+    .jobs-table tbody tr > td:nth-child(5):has(.progress[data-status="cancelled"]),
+    .jobs-table tbody tr > td:nth-child(5):has(.progress[data-status="failed"]) {
+        display: none;
+    }
+
+    /* Force-show "Created" on mobile (it's d-none d-lg-table-cell on
+     * desktop) so users get the row metadata they were missing. */
+    .jobs-table tbody tr > td:nth-child(6) {
+        display: block !important;
+        grid-area: created;
+        font-size: 0.78rem;
+        color: var(--bs-secondary-color);
+    }
+
+    /* Detail (expanded files / publishers) row: full-width block
+     * spanning the whole grid. */
+    .jobs-table tbody tr.job-files-detail {
+        display: block;
+        margin-top: -0.4rem;
+        padding-top: 0.4rem;
+    }
+    .jobs-table tbody tr.job-files-detail > td {
+        display: block;
+        padding: 0;
+    }
+
+    /* Action cluster aligned to the right of the meta row. */
+    .jobs-table tbody tr > td.text-end {
+        text-align: right;
+    }
+
+    /* Progress bar fills the bottom row. */
+    .jobs-table tbody tr > td > .progress {
+        width: 100%;
+    }
+    /* Hide the table-responsive horizontal scroll affordance — there's
+       nothing left to scroll once rows stack. */
+    .jobs-table-card .table-responsive { overflow-x: visible; }
+
+    /* The flat-row layout above sits directly inside the parent card —
+     * tighten the parent .card-body's horizontal padding so the row's
+     * own padding doesn't double-pad the visible content area. */
+    .jobs-table-card .card-body {
+        padding-left: 0.6rem;
+        padding-right: 0.6rem;
+    }
+
+    /* Schedules table — same card-stack treatment as the jobs table.
+     * Cells in DOM order: Name(1), Library(2), Schedule(3), Priority(4),
+     * Next Run(5), Status(6), Actions(7).
+     *
+     *   ┌─────────────────────────────────────┐
+     *   │ NAME · Library  · [Status]          │  row 1  (.title row)
+     *   │ Schedule  ·  Next Run    [actions]  │  row 2  (.meta + .actions)
+     *   │ Priority pill                        │  row 3  (.priority — small)
+     *   └─────────────────────────────────────┘
+     */
+    .schedules-table thead { display: none; }
+    .schedules-table,
+    .schedules-table tbody { display: block; width: 100%; }
+    .schedules-table tbody tr {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        grid-template-areas:
+            "name     status"
+            "schedule actions"
+            "nextrun  priority";
+        gap: 0.4rem 0.6rem;
+        align-items: center;
+        margin-bottom: 0.6rem;
+        background: var(--surface-1);
+        border: 1px solid var(--surface-border);
+        border-radius: var(--radius);
+        padding: 0.7rem 0.85rem;
+    }
+    .schedules-table tbody tr > td {
+        display: block;
+        border: none !important;
+        padding: 0;
+    }
+    .schedules-table tbody tr > td:nth-child(1) { grid-area: name; font-weight: 500; }
+    .schedules-table tbody tr > td:nth-child(2) {
+        font-size: 0.78rem;
+        color: var(--bs-secondary-color);
+    }
+    .schedules-table tbody tr > td:nth-child(2)::before {
+        content: "Library: ";
+        opacity: 0.6;
+    }
+    .schedules-table tbody tr > td:nth-child(3) { grid-area: schedule; font-size: 0.85rem; }
+    .schedules-table tbody tr > td:nth-child(4) { grid-area: priority; justify-self: end; }
+    .schedules-table tbody tr > td:nth-child(5) {
+        grid-area: nextrun;
+        font-size: 0.78rem;
+        color: var(--bs-secondary-color);
+    }
+    .schedules-table tbody tr > td:nth-child(6) { grid-area: status; justify-self: end; }
+    .schedules-table tbody tr > td:nth-child(7) { grid-area: actions; justify-self: end; }
+
+    /* Trigger Activity Log table on /automation. Use display:inline on
+     * the meta cells (Time, Source, Server) so they flow as a single
+     * line below the Title; Title gets display:block on top, Status
+     * pill floats to the right of the title row. */
+    #historyTable thead { display: none; }
+    #historyTable,
+    #historyTable tbody { display: block; width: 100%; }
+    #historyTable tbody tr {
+        display: block;
+        margin-bottom: 0.55rem;
+        background: var(--surface-1);
+        border: 1px solid var(--surface-border);
+        border-radius: var(--radius);
+        padding: 0.6rem 0.8rem;
+        position: relative;
+    }
+    #historyTable tbody tr > td {
+        display: inline;
+        border: none !important;
+        padding: 0;
+        font-size: 0.78rem;
+        color: var(--bs-secondary-color);
+    }
+    /* Title: own row, prominent. */
+    #historyTable tbody tr > td:nth-child(4) {
+        display: block;
+        font-weight: 500;
+        font-size: 0.9rem;
+        color: var(--bs-body-color);
+        margin-bottom: 0.3rem;
+        padding-right: 5rem;  /* leave room for the absolutely-positioned status pill */
+    }
+    /* Status pill: pinned top-right. */
+    #historyTable tbody tr > td:nth-child(5) {
+        position: absolute;
+        top: 0.6rem;
+        right: 0.8rem;
+    }
+    /* Meta cells (Time, Source, Server) flow inline with " · " separators. */
+    #historyTable tbody tr > td:nth-child(2)::after,
+    #historyTable tbody tr > td:nth-child(3)::after {
+        content: " · ";
+        margin: 0 0.3rem;
+        opacity: 0.5;
+    }
+}
+
+/* Numeric inputs that pair a stepper-wrapped input with a unit addon
+ * (e.g. Settings → Logging → "Rotation Size [10] MB") wrap onto two
+ * lines on mobile because the inner stepper-input-group claims the
+ * full row, pushing the "MB" / "files" addon below. Keep the outer
+ * input-group on one row so the unit addon stays inline. */
+.input-group:has(> .input-group),
+.input-group:has(> .has-stepper) {
+    flex-wrap: nowrap;
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Workers panel — idle slot rows. The processing layout (title,
+ * progress bar, footer numbers) drops into a quieter palette so an
+ * 8-worker deployment doesn't look like a wall of fake metrics on a
+ * mostly-idle queue. Card height stays constant either way (the
+ * structure is identical — only colours change), which is the
+ * D34 anti-flash contract.
+ * ────────────────────────────────────────────────────────────────────── */
+.workers-panel-card { transition: border-color 0.15s ease; }
+
+html[data-bs-theme="dark"] .workers-panel-card[data-status="idle"] {
+    background-color: rgba(255,255,255,0.025);
+    border-color: rgba(255,255,255,0.06);
+}
+
+html[data-bs-theme="dark"] .workers-panel-card[data-status="processing"] {
+    border-color: rgba(13,110,253,0.35);
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+ * System & Workers card sections — replaces the old <hr>-separated
+ * blob with named sub-sections (Media Servers / Worker Pool / Version).
+ * Each .system-section gets a small uppercase title + comfortable
+ * vertical rhythm. The whole card reads as an outline rather than a
+ * scroll of disconnected widgets.
+ * ────────────────────────────────────────────────────────────────────── */
+.system-card-body { padding-bottom: 0.85rem; }
+.system-card-body .system-section { margin-bottom: 1.1rem; }
+.system-card-body .system-section:last-of-type { margin-bottom: 0.4rem; }
+
+.system-section-title {
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--bs-secondary-color);
+    margin-bottom: 0.55rem;
+}
+
+html[data-bs-theme="dark"] .system-version-row { border-color: rgba(255, 255, 255, 0.08); }
+html[data-bs-theme="light"] .system-version-row { border-color: rgba(0, 0, 0, 0.08); }
+.system-version-row { padding-top: 0.7rem !important; margin-top: 0.4rem; }
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Day-of-week picker (Quiet Hours) — checked days get the brand
+ * orange so the user sees at a glance which days the window applies
+ * to. Bootstrap's default btn-check + outline-secondary leaves
+ * checked days in the same washed-out grey as unchecked.
+ * ────────────────────────────────────────────────────────────────────── */
+.qh-window-days .btn-check:checked + .btn,
+.qh-window-days .btn-check:checked + .btn:focus {
+    background-color: var(--plex-orange) !important;
+    border-color: var(--plex-orange) !important;
+    color: #161616 !important;
+    font-weight: 600;
+}
+.qh-window-days .btn-check + .btn { color: var(--bs-body-color); }
+.qh-window-days .btn-check + .btn:hover { background-color: var(--surface-1); }
+
+/* Priority buttons & badges — fixed width so High/Normal/Low don't shift layout */
+.priority-btn,
+.priority-badge {
+    min-width: 76px;
+    text-align: center;
+}
+
+/* Make the dropdown toggle match badge sizing so rows don't shift height */
+.priority-btn {
+    padding: 0.25em 0.5em;
+    font-size: 0.75em;
+    font-weight: 700;
+    line-height: 1;
+    vertical-align: middle;
+}
+
+/* Color dot in priority dropdown items */
+.priority-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-right: 6px;
+    vertical-align: middle;
+}
+.priority-dot-high   { background-color: #dc3545; }
+.priority-dot-normal { background-color: #0d6efd; }
+.priority-dot-low    { background-color: #6c757d; }
+
+/* ──────────────────────────────────────────────────────────────
+ * Unified info-icon (ⓘ) affordance
+ * Every ⓘ across the app uses `.info-icon` so users see
+ * consistent hover/click behaviour wherever it appears:
+ *   - hover → Bootstrap tooltip with the short one-liner
+ *   - click → shared `#globalInfoModal` (when rich explanation exists)
+ * Styles below give the icon a subtle interactive feel (muted colour
+ * at rest, primary blue on hover/focus) plus the help cursor so
+ * users know it's not just decoration.
+ * ────────────────────────────────────────────────────────────── */
+.info-icon {
+    color: var(--bs-secondary-color, var(--bs-secondary));
+    background: none;
+    border: none;
+    padding: 0;
+    line-height: 1;
+    cursor: help;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.15rem;
+}
+.info-icon:hover,
+.info-icon:focus-visible {
+    color: var(--bs-primary);
+    outline: none;
+}
+.info-icon:focus-visible {
+    box-shadow: 0 0 0 0.15rem rgba(13, 110, 253, 0.25);
+    border-radius: 2px;
+}
+/* Affordance: ⓘ icons that open a modal get a chevron to signal
+ * "there's more" vs. bare ⓘs that only have a hover tooltip. */
+.info-icon-more::after {
+    content: '\F285'; /* bi-chevron-right */
+    font-family: 'bootstrap-icons';
+    font-size: 0.7em;
+    margin-left: 0.1em;
+    opacity: 0.6;
+}
+
+/* Setup Health redesign — bucketed checks (Must fix / Recommended /
+ * All good) plus side-by-side current/recommended diffs. The aim is
+ * "one glance answers: do I need to act, and what value should it be?"
+ * — pre-redesign every failing check rendered identically and the
+ * single "Currently <X>" line left users guessing whether <X> was good
+ * or bad. */
+.readiness-bucket > summary {
+    list-style: none;
+    background: var(--bs-tertiary-bg);
+    border: 1px solid var(--bs-border-color);
+    transition: background-color 120ms ease;
+}
+.readiness-bucket > summary::-webkit-details-marker { display: none; }
+.readiness-bucket > summary:hover { background: var(--bs-secondary-bg); }
+.readiness-bucket[open] > summary { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.readiness-bucket-body {
+    border: 1px solid var(--bs-border-color);
+    border-top: none;
+    border-bottom-left-radius: 0.375rem;
+    border-bottom-right-radius: 0.375rem;
+    padding-bottom: 0.5rem;
+}
+
+/* Side-by-side current vs recommended pill pair. Mismatch is tinted
+ * red on the left and green on the right — colour does the heavy
+ * lifting so the user doesn't have to read the values to spot a
+ * problem. */
+.readiness-values .readiness-current {
+    background: var(--bs-danger-bg-subtle);
+    color: var(--bs-danger-text-emphasis);
+    border: 1px solid var(--bs-danger-border-subtle);
+}
+.readiness-values .readiness-recommended {
+    background: var(--bs-success-bg-subtle);
+    color: var(--bs-success-text-emphasis);
+    border: 1px solid var(--bs-success-border-subtle);
+}
+.readiness-values .readiness-label {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    opacity: 0.75;
+}
+.readiness-values code {
+    background: transparent;
+    color: inherit;
+    font-weight: 600;
+}
+.readiness-arrow { font-weight: 700; }
+
+/* Inline server-name glyph (the indicator shown on /servers cards
+ * next to each server's title). Count badge sits to the right of the
+ * icon so users can tell "1 thing to check" from "5 things to check"
+ * without hovering for the tooltip. */
+.server-readiness-glyph .readiness-count-badge {
+    font-size: 0.65rem;
+    padding: 0.15rem 0.35rem;
+    line-height: 1;
+    margin-left: 0.25rem;
+    vertical-align: middle;
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Light-mode polish pass — 14 targeted overrides identified by the
+ * 2026-05-14 visual audit. Goal: close the perceptual gap between the
+ * polished dark theme and the light theme without rewriting the
+ * palette. Each rule is scoped to ``html[data-bs-theme="light"]`` so
+ * dark mode is untouched.
+ *
+ * Issues addressed (audit numbering preserved for cross-reference):
+ *   #2  .kpi-tile near-invisible on light cards
+ *   #3  .btn-ghost low-contrast surfaces
+ *   #4  Modal Cancel button white-on-white hover
+ *   #5  Top-right utility-icon hovers invisible
+ *   #6  status-dot pulse keeps neon-blue halo
+ *   #7  .attempts-pill hover shadow too heavy
+ *   #8  .attempts-pill active ring is a faint grey halo
+ *   #9  .attempts-bar inconsistent against cards vs modals
+ *   #10 .gpu-card Bootstrap-blue accent clashes with palette
+ *   #11 Legacy .badge-* family hardcoded saturated colors
+ *   #12 .priority-dot-* over-saturated
+ *   #13 .log-highlight too candy-bright
+ *   #14 .info-icon focus ring wrong blue, not brand orange
+ *   #15 .attempts-pill[data-is-originating] divider invisible
+ * Plus tightened .form-control / .form-select borders for stronger
+ * field edges on light cards.
+ * ────────────────────────────────────────────────────────────────────── */
+
+html[data-bs-theme="light"] .kpi-tile {
+    background: #f1f5f9;
+    border-color: #e2e8f0;
+}
+
+html[data-bs-theme="light"] .btn-ghost {
+    background: #f1f5f9;
+}
+html[data-bs-theme="light"] .btn-ghost:hover,
+html[data-bs-theme="light"] .btn-ghost:focus {
+    background: #e2e8f0;
+}
+
+html[data-bs-theme="light"] .modal-footer .btn-secondary[data-bs-dismiss="modal"]:hover {
+    background-color: #e2e8f0;
+}
+
+html[data-bs-theme="light"] .nav-item .btn-link:hover,
+html[data-bs-theme="light"] .nav-item .btn-link:focus,
+html[data-bs-theme="light"] .nav-item .nav-link:hover {
+    background-color: rgba(15, 23, 42, 0.06);
+    border-radius: 6px;
+}
+
+html[data-bs-theme="light"] .status-dot.status-running::before {
+    /* The dark-mode neon-blue pulse halo (rgba(74,158,255,…) in the
+     * status-dot-pulse keyframe) sits awkwardly on the slate-grey
+     * light-mode dot. Drop the animation in light — the dot's filled
+     * state is enough state indication on a light canvas. */
+    animation: none;
+}
+
+html[data-bs-theme="light"] .attempts-pill:hover {
+    box-shadow: 0 2px 6px rgba(15, 23, 42, 0.06);
+}
+
+html[data-bs-theme="light"] .attempts-pill.active {
+    /* Brand-orange focus ring matches every other "active selection"
+     * affordance in light mode (nav-active, dropdown-active). */
+    box-shadow: 0 0 0 2px rgba(229, 160, 13, 0.35);
+}
+
+html[data-bs-theme="light"] .attempts-bar {
+    background: #f1f5f9;
+    border-color: #cbd5e1;
+}
+
+html[data-bs-theme="light"] .attempts-pills > .attempts-pill[data-is-originating="1"]::after {
+    /* Originator/retry divider — needs slightly darker than the bar's
+     * border to be visible. */
+    border-left-color: #cbd5e1;
+}
+
+html[data-bs-theme="light"] .gpu-card {
+    /* The default .gpu-card light variant used Bootstrap-blue rgba()s
+     * that don't exist anywhere else in the palette. Re-skin to slate
+     * so the card reads as part of the system, not a third-party widget. */
+    background: linear-gradient(135deg, #f1f5f9, #fbfcfd);
+    border-color: #cbd5e1;
+}
+
+/* Legacy `.badge-*` family — predates the `.bg-*` Bootstrap overhaul
+ * and hardcoded saturated colors that bypass the tinted-bg pattern.
+ * Mirror the tinted treatment so light-mode badges are calm DATA, not
+ * "alert!" stripes. */
+html[data-bs-theme="light"] .badge-pending {
+    background-color: var(--bs-secondary-bg-subtle);
+    color: var(--bs-secondary-text-emphasis);
+}
+html[data-bs-theme="light"] .badge-running {
+    background-color: var(--bs-primary-bg-subtle);
+    color: var(--bs-primary-text-emphasis);
+}
+html[data-bs-theme="light"] .badge-completed {
+    background-color: var(--bs-success-bg-subtle);
+    color: var(--bs-success-text-emphasis);
+}
+html[data-bs-theme="light"] .badge-failed {
+    background-color: var(--bs-danger-bg-subtle);
+    color: var(--bs-danger-text-emphasis);
+}
+html[data-bs-theme="light"] .badge-cancelled {
+    background-color: var(--bs-warning-bg-subtle);
+    color: var(--bs-warning-text-emphasis);
+}
+
+/* Priority dots — drop saturation so they read as labels, not alarms. */
+html[data-bs-theme="light"] .priority-dot-high { background: #b91c1c; }
+html[data-bs-theme="light"] .priority-dot-normal { background: #475569; }
+html[data-bs-theme="light"] .priority-dot-low { background: #94a3b8; }
+
+/* Log search-result highlight. The 30%-opacity orange reads as candy
+ * over near-white logs; amber-100 matches the rest of the
+ * warning-subtle pattern. */
+html[data-bs-theme="light"] .log-highlight {
+    background: #fef3c7;
+    color: #92400e;
+}
+
+/* Info-icon focus ring must use the brand orange like every other
+ * focusable in the app, not Bootstrap-blue. */
+html[data-bs-theme="light"] .info-icon:focus-visible {
+    box-shadow: var(--focus-ring);
+}
+
+/* Form-control / form-select border tightening. Bootstrap's default
+ * light border (#dee2e6) is slightly too soft on slate-200 cards. */
+html[data-bs-theme="light"] .form-control,
+html[data-bs-theme="light"] .form-select {
+    border-color: #cbd5e1;
+}
+html[data-bs-theme="light"] .form-control:focus,
+html[data-bs-theme="light"] .form-select:focus {
+    border-color: #94a3b8;
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Senior-design polish pass round 2 — items found in the 2026-05-14
+ * full walk-through across all 8 pages × dark/light × desktop/mobile.
+ *
+ * Targets two cross-cutting palette inconsistencies that survived the
+ * round-1 polish because they ship from Bootstrap defaults:
+ *
+ *   * .form-switch checked-state defaults to a hardcoded blue SVG in
+ *     Bootstrap and ignored our --bs-primary slate override — the
+ *     "Enabled" toggles on /servers + /settings rendered a clashing
+ *     blue against the slate-on-orange light palette.
+ *   * .form-range thumb + track use --bs-primary (slate-600 in light),
+ *     leaving sliders looking grey rather than picking up the brand
+ *     accent the rest of the active treatment uses.
+ *
+ * Both retuned to brand orange in light mode. Dark mode untouched —
+ * the existing dark-mode treatment of these controls is fine against
+ * the navy canvas.
+ * ────────────────────────────────────────────────────────────────────── */
+
+html[data-bs-theme="light"] .form-check-input:checked {
+    background-color: var(--plex-orange);
+    border-color: var(--plex-orange);
+}
+html[data-bs-theme="light"] .form-check-input:checked:focus {
+    box-shadow: 0 0 0 0.25rem rgba(229, 160, 13, 0.25);
+}
+
+html[data-bs-theme="light"] .form-range::-webkit-slider-thumb {
+    background-color: var(--plex-orange);
+}
+html[data-bs-theme="light"] .form-range::-moz-range-thumb {
+    background-color: var(--plex-orange);
+}
+html[data-bs-theme="light"] .form-range::-webkit-slider-thumb:active {
+    background-color: #c98a0b;
+}
+html[data-bs-theme="light"] .form-range::-moz-range-thumb:active {
+    background-color: #c98a0b;
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Senior-design polish pass — round 3 long-tail.
+ * Final cleanup after the 28-screenshot audit. Each rule below was
+ * either confirmed real via Playwright measurement or visible in the
+ * captured screenshots. All scoped to avoid dark/light regressions.
+ * ────────────────────────────────────────────────────────────────────── */
+
+/* Mobile body inset — Bootstrap's container-fluid uses 12px padding
+ * on each side. Apple HIG / Material guidelines suggest 16-20px on
+ * phones for comfortable touch targets near edges. Bump to 16px at
+ * < 576px so content doesn't kiss the bezel. */
+@media (max-width: 575.98px) {
+    body > main.container-fluid {
+        padding-left: 16px;
+        padding-right: 16px;
+    }
+}
+
+/* KPI tile shadow in light mode. Round 1 polish bumped the bg to
+ * slate-100 + slate-200 border so tiles render; adding a soft drop
+ * shadow gives them genuine lift over the page bg (--bs-body-bg is
+ * slate-200 — same tone as the tile border, which makes the edges
+ * disappear without a shadow). */
+html[data-bs-theme="light"] .kpi-tile {
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+/* Pagination disabled state. Default Bootstrap disabled pagination
+ * shows the chevrons at near-full opacity in light mode — looks
+ * like enabled-but-unhovered. Bump to 0.4 so they read as disabled. */
+.page-item.disabled .page-link {
+    opacity: 0.4;
+}
+
+/* Log viewer floating jump-to-top / jump-to-bottom buttons. The
+ * arrows float bottom-right with no chrome — on light bg they were
+ * disembodied glyphs. Give them a circular surface so they read as
+ * controls. The container is forced dark in light mode now (see
+ * pages/logs.css light-mode terminal block) so we tune the floating
+ * controls against that dark surface. */
+.log-nav-btns .btn {
+    background-color: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.15);
+    color: #e2e8f0;
+    border-radius: 50%;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+.log-nav-btns .btn:hover {
+    background-color: rgba(255, 255, 255, 0.15);
+    color: #fff;
+}
+
+/* Servers cards — visual separator between primary actions (Edit /
+ * Refresh) and the destructive Delete button. Pre-fix the trash
+ * button floated right of the secondary buttons with no semantic
+ * gap, making accidental clicks more likely. */
+.server-card .btn-outline-danger,
+#serverList .btn-outline-danger {
+    margin-left: 0.5rem;
+    border-left-width: 1px;
+}
+
+/* Setup wizard step connector thickness. The 1px line between
+ * progress dots was barely visible against the page bg in light mode.
+ * Bump to 2px and use the border token so it picks up the slate
+ * value in light, slate-translucent in dark. */
+.setup-progress .step-connector {
+    height: 2px;
+    background-color: var(--bs-border-color);
+}
+.setup-progress .step-connector.completed {
+    background-color: var(--plex-orange);
+}
+
+/* Preview Inspector inactive tab — give it explicit secondary color
+ * and a visible affordance on hover so the dual-tab toggle reads as
+ * an actual toggle, not a single chip with a label next to it. */
+#bif-viewer-page .nav-pills .nav-link:not(.active),
+.bif-viewer-tabs .nav-link:not(.active) {
+    color: var(--bs-secondary-color);
+}
+.preview-inspector-header ~ .row .nav-pills .nav-link:not(.active):hover {
+    background-color: var(--bs-tertiary-bg);
+    color: var(--bs-body-color);
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Job queue table — bg-color inheritance fix. Bootstrap's .table sets
+ * --bs-table-bg: var(--bs-body-bg), and every cell paints that body bg.
+ * Inside the JOB QUEUE card (which is white-ish via --bs-secondary-bg),
+ * cells render slate-200 (body bg) instead of the card surface — every
+ * row reads as if it's sitting on a different background than the card
+ * it's inside. Force the table-bg variable to transparent so cells let
+ * the card bg show through. Affects desktop table view + the mobile
+ * card-stack derived from the same table. The user flagged this as
+ * banded title-row-vs-body-row appearance.
+ *
+ * Also: tighten the mobile card-stack row so the title-row /
+ * status-row / progress-row group reads as ONE card instead of three
+ * loose bands. Add slight vertical separator between consecutive job
+ * cards (previously a 1px border on the tr which painted under the
+ * inherited cell bg and disappeared).
+ * ────────────────────────────────────────────────────────────────────── */
+
+.jobs-table {
+    --bs-table-bg: transparent;
+    --bs-table-bg-type: transparent;
+}
+.jobs-table > tbody > tr,
+.jobs-table > tbody > tr > td {
+    background-color: transparent;
+}
+
+@media (max-width: 575.98px) {
+    /* Stronger card separation between consecutive job rows; the
+     * 1px hairline got lost over the inherited body-bg. */
+    .jobs-table tbody tr {
+        border-bottom: 1px solid var(--bs-border-color);
+        padding: 0.9rem 0.5rem;
+    }
+    /* Action-button group on the status row — give it a slight surface
+     * so the 2-3 small buttons read as a contained cluster, not as three
+     * floating chips sitting next to the status text. */
+    .jobs-table tbody tr > td:nth-child(7) .btn-group {
+        background-color: var(--bs-tertiary-bg);
+        border-radius: 0.375rem;
+        padding: 2px;
+    }
+    .jobs-table tbody tr > td:nth-child(7) .btn-group .btn {
+        border-color: transparent;
+        background-color: transparent;
+    }
+    .jobs-table tbody tr > td:nth-child(7) .btn-group .btn:hover {
+        background-color: var(--bs-secondary-bg);
+    }
+    /* Faint "Pending" status text — bump from text-muted to body-color
+     * so the operator can scan job state without leaning in. */
+    .jobs-table tbody tr .status-dot.status-pending {
+        color: var(--bs-body-color);
+    }
+}
+
+/* Path-mapping + exclude-path tables on mobile. At < 576px the three
+ * narrow input fields (Path on Server / Local path / Path in webhook)
+ * + remove button squeeze to ~70px each, making the input visibly
+ * truncated and the +/- buttons feel cramped. Force a minimum table
+ * width and let the parent scroll horizontally so the user can swipe
+ * to reveal each column at a comfortable width.
+ * Affects both Setup wizard Step 3 (#setupPathMappingsTable +
+ * #setupExcludePathsTable) and Server-edit modal Path-mappings +
+ * Exclude-paths tabs (#editPathMappingsTable + #editExcludePathsTable). */
+@media (max-width: 575.98px) {
+    #editPathMappingsTable,
+    #editExcludePathsTable,
+    #setupPathMappingsTable,
+    #setupExcludePathsTable {
+        min-width: 480px;
+    }
+    /* The Setup wizard's path-mapping container has no .table-responsive
+     * wrapper — fall back to overflow-x on the section card so the table
+     * can scroll independently of the page. */
+    #setupPathMappingsContainer,
+    #setupExcludePathsContainer {
+        overflow-x: auto;
+    }
+    /* Server-edit modal — the tab-pane already has padding; let the
+     * table scroll within it. */
+    #edit-tab-paths,
+    #edit-tab-excludes {
+        overflow-x: auto;
+    }
+}
+
+/* Two final fixes from the user's gap-closing review.
+ *
+ * 1. Job-row hover in light mode — table-hover regression. My earlier
+ *    --bs-table-bg: transparent override only neutralised the BASE bg.
+ *    Bootstrap's .table-hover sets --bs-table-bg-state to a different
+ *    var on hover, which paints cells with --bs-table-hover-bg
+ *    (= slate-200) over the white parent card — same banded look the
+ *    user flagged in s1/s2 returns on hover. Neutralise the hover
+ *    state too: transparent base + a subtle row-level tint so the
+ *    "this is the row I'm pointing at" feedback survives without
+ *    repainting cells with body-bg.
+ *
+ * 2. Job Details modal log viewer — same WCAG fix as the /logs page
+ *    needs applying to #logsContent inside #logsModal. The modal log
+ *    panel uses bg-body-tertiary which is slate-100 in light, and
+ *    the neon log colors (debug grey, info teal, warning amber,
+ *    error red) were tuned for a dark canvas. Force the same
+ *    slate-900 dark terminal in light mode for the modal's log
+ *    panel so the colors stay legible.
+ */
+
+.jobs-table {
+    --bs-table-hover-bg: transparent;
+    --bs-table-color-state: inherit;
+}
+.jobs-table > tbody > tr:hover {
+    background-color: rgba(15, 23, 42, 0.04);
+}
+html[data-bs-theme="dark"] .jobs-table > tbody > tr:hover {
+    background-color: rgba(255, 255, 255, 0.04);
+}
+.jobs-table > tbody > tr:hover > * {
+    background-color: transparent !important;
+}
+
+html[data-bs-theme="light"] #logsContent {
+    background-color: #0f172a !important;
+    color: #e2e8f0;
+}

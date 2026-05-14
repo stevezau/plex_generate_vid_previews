@@ -33,4 +33,4 @@ repos:
         # B404 import_subprocess / B603 subprocess_without_shell_equals_true /
         # B607 start_process_with_partial_path (we call FFmpeg by name on $PATH by design)
         # B608 hardcoded_sql_expressions (no SQL strings in this repo; avoid SQLAlchemy false-positives)
-        exclude: ^(tests/|plex_generate_previews/_version\.py$)
+        exclude: ^(tests/|media_preview_generator/_version\.py$)

@@ -1,0 +1,11 @@
+[
+    {
+        "guid": "c2cb9bf9-7c5d-4f1a-9a07-2d6f5e5b0001",
+        "name": "Media Preview Bridge",
+        "description": "Lets the Media Preview Generator tool register externally-published trickplay tiles with Jellyfin. POST /MediaPreviewBridge/Trickplay/{itemId} after writing tiles next to the media file — Jellyfin then serves them to the player without ever spawning ffmpeg.",
+        "owner": "stevezau",
+        "category": "Media Tools",
+        "imageUrl": "",
+        "versions": []
+    }
+]

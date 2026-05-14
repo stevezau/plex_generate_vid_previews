@@ -12,17 +12,42 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
-COPY pyproject.toml ./
-COPY plex_generate_previews/ ./plex_generate_previews/
-
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 
-# Build wheels for the app and all dependencies (pre-compiled, no gcc needed at install time)
+# ---------------------------------------------------------------------------
+# Layer A: pre-cache DEPENDENCY wheels via a stub package.
+#
+# This layer is keyed only on pyproject.toml. Without the split, every
+# Python source change at the next layer would invalidate the wheel cache
+# and force pip to rebuild ~50 dep wheels (Flask, plexapi, APScheduler,
+# gunicorn, transitive deps) from scratch — adding 30-60s per build job
+# (×4 parallel jobs in CI = ~30-60s wall-clock per push).
+#
+# The stub uses setuptools-scm's fallback_version so no git history is
+# needed for this layer; the real version gets stamped at Layer B below.
+# ---------------------------------------------------------------------------
+COPY pyproject.toml ./
+RUN mkdir -p media_preview_generator && \
+    touch media_preview_generator/__init__.py && \
+    SETUPTOOLS_SCM_PRETEND_VERSION_FOR_MEDIA_PREVIEW_GENERATOR=0.0.0 \
+      pip3 wheel --wheel-dir=/wheels --no-cache-dir . && \
+    # Drop the stub app wheel — Layer B builds the real one.
+    rm -f /wheels/media_preview_generator-*.whl && \
+    rm -rf media_preview_generator
+
+# ---------------------------------------------------------------------------
+# Layer B: build the APP wheel only, reusing the cached deps above.
+#
+# --no-deps tells pip to skip dep resolution (already pre-built).
+# Source-only changes invalidate just this layer (~5-10s of work),
+# keeping iteration speed high.
+# ---------------------------------------------------------------------------
+COPY media_preview_generator/ ./media_preview_generator/
 RUN if [ -n "$SETUPTOOLS_SCM_PRETEND_VERSION" ]; then \
-      SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PLEX_GENERATE_PREVIEWS=$SETUPTOOLS_SCM_PRETEND_VERSION \
-      pip3 wheel --wheel-dir=/wheels --no-cache-dir .; \
+      SETUPTOOLS_SCM_PRETEND_VERSION_FOR_MEDIA_PREVIEW_GENERATOR=$SETUPTOOLS_SCM_PRETEND_VERSION \
+      pip3 wheel --wheel-dir=/wheels --no-cache-dir --no-deps .; \
     else \
-      pip3 wheel --wheel-dir=/wheels --no-cache-dir .; \
+      pip3 wheel --wheel-dir=/wheels --no-cache-dir --no-deps .; \
     fi
 
 # =============================================================================
@@ -33,6 +58,15 @@ FROM linuxserver/ffmpeg:8.0.1-cli-ls56
 # Build metadata (optional; set via --build-arg in CI)
 ARG GIT_BRANCH=unknown
 ARG GIT_SHA=unknown
+ARG BUILD_DATE=unknown
+
+# Published image name baked in at build time. CI passes one of:
+#   - stevezzau/plex_generate_vid_previews  (deprecated mirror; banner fires)
+#   - stevezzau/media_preview_generator     (canonical name; no banner)
+#   - local                                  (dev / unset; no banner)
+# The runtime reads $DOCKER_IMAGE_NAME and surfaces an in-app deprecation
+# notification when it matches the deprecated name.
+ARG DOCKER_IMAGE_NAME=local
 
 # Runtime dependencies.  Split into two apt passes because we add two
 # third-party repos before pulling jellyfin-ffmpeg + newer Intel drivers.
@@ -122,15 +156,25 @@ WORKDIR /app
 
 # Expose build metadata to the app (non-secret)
 ENV GIT_BRANCH=${GIT_BRANCH} \
-    GIT_SHA=${GIT_SHA}
+    GIT_SHA=${GIT_SHA} \
+    BUILD_DATE=${BUILD_DATE} \
+    DOCKER_IMAGE_NAME=${DOCKER_IMAGE_NAME}
 
 # Copy application source (needed for Flask templates and static files)
 COPY pyproject.toml ./
-COPY plex_generate_previews/ ./plex_generate_previews/
+COPY media_preview_generator/ ./media_preview_generator/
 
 # Copy wrapper script
 COPY wrapper.sh /app/wrapper.sh
 RUN chmod +x /app/wrapper.sh
+
+# Persist build metadata as a JSON artifact too — startup logs read this
+# alongside the env vars so a tag-drift incident is grep-able from
+# `docker logs` ("Build: ..."). Falls back gracefully when build args
+# aren't supplied.
+RUN printf '{"branch": "%s", "sha": "%s", "built": "%s"}\n' \
+        "${GIT_BRANCH}" "${GIT_SHA}" "${BUILD_DATE}" \
+        > /app/build_info.json
 
 # Default PUID/PGID (override with environment variables)
 ENV PUID=1000 \

@@ -1,0 +1,562 @@
+"""Universal webhook router with vendor auto-detection.
+
+Single inbound URL — ``POST /api/webhooks/incoming`` — handles every
+source. The router classifies the payload by shape and (for vendor
+webhooks) by the server identifier embedded in every vendor's payload,
+then dispatches to :func:`process_canonical_path` for fan-out.
+
+Detection cascade:
+
+1. **Plex multipart**: form-encoded ``payload`` field with JSON inside.
+   Identified by ``Server.uuid``.
+2. **Jellyfin webhook plugin**: top-level ``NotificationType``.
+   Identified by ``ServerId``.
+3. **Emby Webhooks plugin**: top-level ``Event`` with a ``Server`` block
+   (Plex-format-compatible). Identified by ``Server.Id``.
+4. **Sonarr / Radarr**: top-level ``eventType`` plus ``movieFile`` /
+   ``episodeFile`` blocks. Path-bearing — no callback needed.
+5. **Path-first / templated**: a normalized ``{"path": "..."}`` body.
+   Used by custom integrations and templated Jellyfin webhooks.
+
+For any vendor identified by server id, we look the corresponding
+:class:`ServerConfig` up in the registry and use its
+:meth:`MediaServer.parse_webhook` to extract the item id, then call
+:meth:`MediaServer.resolve_item_to_remote_path` for the file path.
+The reported path is canonicalised via the server's own
+``path_mappings`` before being handed to the processor.
+
+A per-server fallback URL — ``POST /api/webhooks/server/<id>`` — is
+also available for setups where auto-detection is ambiguous (rare;
+typically only when two installations share a machine identifier).
+"""
+
+from __future__ import annotations
+
+import json
+from typing import Any
+
+from flask import jsonify, request
+from loguru import logger
+
+from ..servers import (
+    MediaServer,
+    ServerConfig,
+    ServerRegistry,
+    ServerType,
+    WebhookEvent,
+)
+from ..servers.ownership import apply_path_mappings
+from .settings_manager import get_settings_manager
+from .webhooks import _authenticate_webhook, create_vendor_webhook_job, webhooks_bp
+
+
+def _build_registry_from_settings() -> ServerRegistry:
+    """Construct a fresh :class:`ServerRegistry` from current settings.
+
+    Webhook-time construction is cheap (settings is already in memory and
+    each ``MediaServer`` instance defers HTTP I/O until first use). Doing
+    it per request keeps the router stateless and picks up settings
+    changes (added / removed servers) without any cache invalidation.
+    """
+    settings = get_settings_manager()
+    raw_servers = settings.get("media_servers") or []
+    if not isinstance(raw_servers, list):
+        raw_servers = []
+
+    # Plex needs the legacy config; Emby/Jellyfin don't. If load_config
+    # fails (no Plex configured, or running in a multi-server-only
+    # deployment), continue with legacy_config=None — the registry's
+    # _build_server skips Plex entries that lack one. Pass
+    # log_validation_errors=False so a non-Plex deployment doesn't
+    # spam ❌ Configuration Error lines on every webhook.
+    legacy_config = None
+    try:
+        from ..config import load_config
+
+        legacy_config = load_config(log_validation_errors=False)
+    except Exception as exc:
+        logger.debug("Webhook router: load_config failed (Plex paths disabled): {}", exc)
+
+    return ServerRegistry.from_settings(raw_servers, legacy_config=legacy_config)
+
+
+def _load_config_or_minimal():
+    """Deprecated stub kept for backwards compatibility with integration tests.
+
+    The webhook router no longer calls ``process_canonical_path`` directly —
+    every webhook becomes a Job that goes through the orchestrator's worker
+    pool, which builds its own Config. This function is unreachable from
+    the production code path. It's preserved so existing integration test
+    patches (``patch("...webhook_router._load_config_or_minimal", ...)``)
+    don't AttributeError. Safe to delete once those tests are updated to
+    patch the new entry point (``create_vendor_webhook_job``).
+    """
+    try:
+        from ..config import load_config
+
+        return load_config(log_validation_errors=False)
+    except Exception as exc:
+        logger.debug("_load_config_or_minimal: load_config failed ({}: {}) — returning None.", type(exc).__name__, exc)
+        return None
+
+
+def _classify_payload(req) -> tuple[str, dict[str, Any] | None, str]:
+    """Classify the inbound request by payload shape.
+
+    Returns ``(kind, parsed_payload, error_message)`` where ``kind`` is
+    one of ``"plex" | "jellyfin" | "emby" | "sonarr" | "radarr" |
+    "path" | "unknown"``. ``parsed_payload`` is the dict the rest of
+    the router walks; ``error_message`` is non-empty only when parsing
+    failed.
+    """
+    # Plex sends multipart form data with a JSON ``payload`` field.
+    plex_payload = req.form.get("payload") if req.form else None
+    if plex_payload:
+        try:
+            data = json.loads(plex_payload)
+        except (TypeError, ValueError) as exc:
+            return "plex", None, f"Plex payload was not valid JSON: {exc}"
+        if isinstance(data, dict):
+            return "plex", data, ""
+
+    # Everything else is JSON.
+    try:
+        data = req.get_json(silent=True, force=False) if req.is_json else None
+    except Exception:
+        data = None
+    if not isinstance(data, dict):
+        # Best-effort: try parsing the raw body as JSON.
+        try:
+            raw = req.get_data(as_text=True) or ""
+            if raw.strip().startswith("{"):
+                data = json.loads(raw)
+            else:
+                data = None
+        except (TypeError, ValueError):
+            data = None
+
+    if not isinstance(data, dict):
+        return "unknown", None, "request body was neither multipart nor JSON"
+
+    if "NotificationType" in data:
+        return "jellyfin", data, ""
+    if "Event" in data and isinstance(data.get("Server"), dict):
+        return "emby", data, ""
+    event_type = str(data.get("eventType") or "").lower()
+    if event_type and ("movie" in data or "movieFile" in data):
+        return "radarr", data, ""
+    if event_type and ("series" in data or "episodeFile" in data or "episodes" in data):
+        return "sonarr", data, ""
+    if "path" in data:
+        return "path", data, ""
+
+    return "unknown", data, "no recognised vendor signature in payload"
+
+
+def _server_id_from_payload(kind: str, payload: dict[str, Any]) -> str | None:
+    """Extract the source server identifier from a parsed payload.
+
+    Plex, Emby, and Jellyfin all surface the server id in webhook
+    payloads — Plex as ``Server.uuid``, Emby as ``Server.Id``, Jellyfin
+    as ``ServerId``. We use whichever is present to match the
+    configured registry entry.
+    """
+    if kind == "plex":
+        return str((payload.get("Server") or {}).get("uuid") or "") or None
+    if kind == "emby":
+        server = payload.get("Server") or {}
+        return str(server.get("Id") or server.get("uuid") or "") or None
+    if kind == "jellyfin":
+        return str(payload.get("ServerId") or "") or None
+    return None
+
+
+def _match_registry_server(
+    registry: ServerRegistry,
+    *,
+    kind: str,
+    server_id_hint: str | None,
+) -> tuple[MediaServer | None, ServerConfig | None]:
+    """Find the live ``MediaServer`` matching the payload's reported id.
+
+    Returns ``(None, None)`` when no match exists. Falls back to the
+    first server of the right type when the payload didn't carry an id
+    (some older webhook plugins omit it) and only one such server is
+    configured — that's safe because there's no ambiguity to resolve.
+    """
+    expected_type = {
+        "plex": ServerType.PLEX,
+        "emby": ServerType.EMBY,
+        "jellyfin": ServerType.JELLYFIN,
+    }.get(kind)
+
+    if expected_type is None:
+        return None, None
+
+    # Disabled servers are off the air — webhooks must not revive them.
+    # Mirror the gating that ownership.server_owns_path and the orchestrator
+    # scans already enforce; without this, a single webhook fire from a
+    # disabled vendor still creates jobs and burns CPU.
+    candidates = [(registry.get(c.id), c) for c in registry.configs() if c.type is expected_type and c.enabled]
+
+    if server_id_hint:
+        # Match against the server's *self-reported* identity
+        # captured at probe time (Plex machineIdentifier, Emby/
+        # Jellyfin ServerId). The locally-generated ``cfg.id`` UUID
+        # never appears in vendor payloads.
+        matches = [
+            (live, cfg) for live, cfg in candidates if cfg.server_identity and cfg.server_identity == server_id_hint
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            # Identity collision — extremely rare in practice (cloned-VM
+            # scenario where two Plex installs share the same
+            # machineIdentifier). The webhook can't be confidently routed
+            # so we refuse rather than silently picking one. Users hit
+            # this should give one of the two servers a fresh identity
+            # or use the per-server fallback URL ``/api/webhooks/server/<id>``.
+            logger.warning(
+                "Two or more configured {} servers share the same server identity ({!r}, {} matches). "
+                "We can't tell which one this webhook came from, so it's being dropped to avoid the "
+                "wrong server getting credit. Fix: either re-install one server so it has a fresh "
+                "identity, or point each server at its own URL '/api/webhooks/server/<server_id>' "
+                "(found on the Servers page).",
+                kind,
+                server_id_hint,
+                len(matches),
+            )
+            return None, None
+
+    # Single candidate: unambiguous — use it. Covers two cases:
+    # (a) the payload omits the identity hint, (b) the configured
+    # entry's ``server_identity`` hasn't been populated yet (e.g. user
+    # added the server while it was offline and never re-probed).
+    if len(candidates) == 1:
+        return candidates[0]
+
+    return None, None
+
+
+def _path_from_path_payload(payload: dict[str, Any]) -> str | None:
+    """Pull a path out of a Sonarr/Radarr/templated payload."""
+    path = payload.get("path")
+    if isinstance(path, str) and path.strip():
+        return path.strip()
+    # Sonarr / Radarr embed paths under typed sub-objects.
+    movie_file = payload.get("movieFile") or {}
+    if isinstance(movie_file, dict) and movie_file.get("path"):
+        return str(movie_file["path"])
+    episode_file = payload.get("episodeFile") or {}
+    if isinstance(episode_file, dict) and episode_file.get("path"):
+        return str(episode_file["path"])
+    return None
+
+
+def _canonicalize_path(remote_path: str, server_config: ServerConfig | None) -> str:
+    """Translate a server's view of a path to the local canonical view.
+
+    Falls back to the input path unchanged when no server is provided
+    (e.g. Sonarr/Radarr payloads) — the dispatcher's ownership
+    resolver will still match if the path is already local.
+    """
+    if not server_config or not server_config.path_mappings:
+        return remote_path
+    candidates = apply_path_mappings(remote_path, server_config.path_mappings)
+    return candidates[0] if candidates else remote_path
+
+
+def _resolve_to_canonical_path(
+    *,
+    kind: str,
+    payload: dict[str, Any],
+    registry: ServerRegistry,
+    explicit_server_id: str | None = None,
+) -> tuple[str | None, dict[str, str], str]:
+    """Convert any classified payload to a canonical local file path.
+
+    Returns ``(canonical_path, item_id_by_server, error_message)``.
+
+    ``item_id_by_server`` is forwarded to :func:`process_canonical_path`
+    so per-server adapters that need a server-specific item id (Plex's
+    bundle hash; Jellyfin's manifest key) can use the dispatcher's
+    hint instead of paying for a second API roundtrip.
+    """
+    if kind in ("sonarr", "radarr", "path"):
+        path = _path_from_path_payload(payload)
+        if not path:
+            return None, {}, "payload did not carry a usable file path"
+        return path, {}, ""
+
+    if kind in ("plex", "emby", "jellyfin"):
+        server_id_hint = explicit_server_id or _server_id_from_payload(kind, payload)
+        live_server, server_cfg = _match_registry_server(
+            registry,
+            kind=kind,
+            server_id_hint=server_id_hint,
+        )
+        if live_server is None or server_cfg is None:
+            return None, {}, f"could not match {kind} webhook to a configured server"
+
+        try:
+            event: WebhookEvent | None = live_server.parse_webhook(payload, headers=dict(request.headers))
+        except Exception as exc:
+            logger.debug("parse_webhook raised for {}: {}", live_server.name, exc)
+            return None, {}, f"{kind} webhook parsing failed: {exc}"
+        if event is None:
+            return None, {}, f"{kind} payload not relevant (e.g. playback event)"
+
+        # Path-bearing webhook (templated Jellyfin) — short-circuit.
+        if event.remote_path:
+            canonical = _canonicalize_path(event.remote_path, server_cfg)
+            return canonical, ({live_server.id: event.item_id} if event.item_id else {}), ""
+
+        if not event.item_id:
+            return None, {}, f"{kind} webhook had neither item id nor path"
+
+        try:
+            remote_path = live_server.resolve_item_to_remote_path(event.item_id)
+        except Exception as exc:
+            return None, {}, f"resolve_item_to_remote_path failed: {exc}"
+        if not remote_path:
+            return (
+                None,
+                {},
+                f"{kind} item {event.item_id!r} could not be resolved to a path (it may not be indexed yet)",
+            )
+
+        canonical = _canonicalize_path(remote_path, server_cfg)
+        return canonical, {live_server.id: event.item_id}, ""
+
+    return None, {}, f"unsupported webhook kind: {kind}"
+
+
+@webhooks_bp.route("/incoming", methods=["POST"])
+@_authenticate_webhook
+def webhook_incoming():
+    """Universal webhook entry point with auto-detected vendor routing.
+
+    Single URL accepts payloads from Plex, Emby, Jellyfin, Sonarr,
+    Radarr, and any custom integration that posts ``{"path": "..."}``.
+    The router resolves the payload to a canonical local path and calls
+    :func:`process_canonical_path` to fan out to every owning server.
+
+    Auth: same shared-secret token semantics as the existing
+    Sonarr/Radarr webhooks (token in ``Authorization`` header or
+    ``token`` query param). Plex's native webhook UI doesn't support
+    custom headers, so query-param auth is the only option for that
+    source.
+    """
+    kind, payload, parse_error = _classify_payload(request)
+    # Per-request classification at DEBUG only — the routing-decision line
+    # below at INFO is the actionable one. A high-volume Plex install
+    # would otherwise emit one INFO per webhook fire just for arrival.
+    logger.debug(
+        "Webhook arrived: kind={} remote={} content_type={} content_length={}",
+        kind,
+        request.remote_addr,
+        request.content_type,
+        request.content_length,
+    )
+    if payload is None:
+        logger.warning(
+            "Webhook from {} rejected: {}. "
+            "The body couldn't be parsed — make sure the source is sending JSON (Content-Type: application/json). "
+            "Plex sends multipart/form-data with a 'payload' field; that's also accepted.",
+            request.remote_addr,
+            parse_error or "unrecognised payload",
+        )
+        return jsonify({"status": "ignored", "reason": parse_error or "unrecognised"}), 400
+
+    if kind == "unknown":
+        # Body parsed but didn't match any vendor signature — caller error.
+        logger.warning(
+            "Webhook from {} (Content-Type={}) parsed OK but didn't match any known vendor shape "
+            '(Plex / Emby / Jellyfin / Sonarr / Radarr / generic \'{{"path": "..."}}\'). '
+            "If you're using a custom integration, post a JSON body with a top-level 'path' field.",
+            request.remote_addr,
+            request.content_type,
+        )
+        return (
+            jsonify({"status": "ignored", "kind": kind, "reason": parse_error or "unrecognised"}),
+            400,
+        )
+
+    registry = _build_registry_from_settings()
+    canonical, item_id_by_server, error = _resolve_to_canonical_path(
+        kind=kind,
+        payload=payload,
+        registry=registry,
+    )
+
+    if not canonical:
+        logger.info(
+            "Webhook router: ignoring {} payload from {} — {}",
+            kind,
+            request.remote_addr,
+            error,
+        )
+        return jsonify({"status": "ignored", "kind": kind, "reason": error}), 202
+
+    logger.info(
+        "Webhook router: routing {} payload to canonical_path={} (item hints: {})",
+        kind,
+        canonical,
+        item_id_by_server or "{}",
+    )
+    return _dispatch_canonical_path(
+        canonical,
+        item_id_by_server,
+        kind=kind,
+        regenerate=_extract_regenerate_flag(payload),
+    )
+
+
+@webhooks_bp.route("/server/<server_id>", methods=["POST"])
+@_authenticate_webhook
+def webhook_per_server(server_id: str):
+    """Per-server URL — disambiguates the source AND pins dispatch.
+
+    Two distinct uses:
+
+    1. **Disambiguation:** auto-detection can't tell two servers apart
+       (e.g. two Plex installs share a machine identifier — rare but real
+       with cloned VMs). The URL's ``server_id`` overrides any server-id
+       hint in the payload during resolution.
+    2. **Dispatch pinning:** when the user explicitly POSTs to this URL
+       they're saying "this webhook is for *this* server". We forward
+       ``server_id`` as a ``server_id_filter`` to ``process_canonical_path``
+       so previews are generated only for that server, even if a sibling
+       server in the registry also owns the canonical path. Without
+       this, the same Plex webhook on a Plex+Jellyfin install would
+       publish to both publishers — surprising given the URL's intent.
+    """
+    kind, payload, parse_error = _classify_payload(request)
+    if payload is None:
+        return jsonify({"status": "ignored", "reason": parse_error or "unrecognised"}), 400
+
+    registry = _build_registry_from_settings()
+    server_cfg = registry.get_config(server_id)
+    if server_cfg is None:
+        return jsonify({"status": "ignored", "reason": f"server {server_id!r} not configured"}), 404
+    if not server_cfg.enabled:
+        # The server exists but the user has switched it off — return 202
+        # (accepted-but-ignored) so the webhook source treats it as success
+        # and stops retrying. 404 would imply "fix your config"; the user's
+        # config is fine, they just paused this server.
+        logger.info(
+            "Webhook router: ignoring per-server payload for {!r} ({}) — server is disabled. "
+            "Re-enable on the Servers page if you want webhooks to flow.",
+            server_cfg.name,
+            server_id,
+        )
+        return jsonify({"status": "ignored", "reason": "server is disabled"}), 202
+
+    canonical, item_id_by_server, error = _resolve_to_canonical_path(
+        kind=kind,
+        payload=payload,
+        registry=registry,
+        explicit_server_id=server_id,
+    )
+    if not canonical:
+        return jsonify({"status": "ignored", "kind": kind, "reason": error}), 202
+
+    return _dispatch_canonical_path(
+        canonical,
+        item_id_by_server,
+        kind=kind,
+        server_id_filter=server_id,
+        regenerate=_extract_regenerate_flag(payload),
+    )
+
+
+def _extract_regenerate_flag(payload: dict | None) -> bool:
+    """Honour an opt-in ``regenerate`` flag from the webhook caller.
+
+    Accepts either a top-level body field (``{"path": "...", "regenerate": true}``)
+    or a URL query string (``?regenerate=true``). Truthy values: ``true``,
+    ``1``, ``yes`` (case-insensitive). Anything else (or absent) → False.
+
+    Both Sonarr-style and our generic webhooks can opt-in to force a
+    fresh extraction without touching settings.
+    """
+    raw = None
+    if isinstance(payload, dict):
+        raw = payload.get("regenerate")
+    if raw is None:
+        raw = request.args.get("regenerate")
+    if raw is None:
+        return False
+    if isinstance(raw, bool):
+        return raw
+    return str(raw).strip().lower() in ("true", "1", "yes")
+
+
+def _dispatch_canonical_path(
+    canonical_path: str,
+    item_id_by_server: dict[str, str],
+    *,
+    kind: str,
+    server_id_filter: str | None = None,
+    regenerate: bool = False,
+):
+    """Create a Job for this vendor webhook and return ``{job_id, status}``.
+
+    Vendor webhooks (Plex / Emby / Jellyfin) used to dispatch inline through
+    ``process_canonical_path`` — fast, but invisible in the Jobs UI. They now
+    create a real Job so users can see what fired and what publishers did.
+    De-duplication of repeated Plex ``library.new`` fires (same source, same
+    path) happens inside :func:`create_vendor_webhook_job` — webhooks from
+    different sources (Plex + Sonarr for the same file) intentionally still
+    create separate Jobs because they represent different events
+    ("Plex indexed this" vs "Sonarr imported this").
+
+    The earlier no_owners pre-flight was removed: it used the raw payload
+    path without applying ``webhook_prefixes``, so Sonarr installs that
+    translate ``/data/tv → /mnt/data/tv`` got 202s and silent webhook
+    drops. Always create a Job; let the orchestrator (which DOES apply
+    webhook_prefixes via ``_log_webhook_owning_servers`` and the worker
+    pool) decide ownership.
+    """
+    # ``server_id_filter`` (set by /api/webhooks/server/<id>) takes precedence
+    # over any single hint when picking the server that owns this webhook.
+    # Otherwise pick the lone hint server (vendor webhooks always carry
+    # exactly one hint pair).
+    owner_sid = server_id_filter or (next(iter(item_id_by_server), None) if item_id_by_server else None)
+
+    job_id = create_vendor_webhook_job(
+        source=kind,
+        canonical_path=canonical_path,
+        item_id_by_server=item_id_by_server,
+        server_id=owner_sid,
+        server_id_filter=server_id_filter,
+        regenerate=regenerate,
+    )
+
+    if job_id is None:
+        # Recent-duplicate suppression — the original Job is the
+        # authoritative one. 202 keeps Plex/Emby/Jelly happy (any 2xx).
+        return (
+            jsonify(
+                {
+                    "status": "ignored_duplicate",
+                    "kind": kind,
+                    "canonical_path": canonical_path,
+                    "message": "Recent duplicate webhook for this file — the original Job is the authoritative one.",
+                }
+            ),
+            202,
+        )
+
+    return (
+        jsonify(
+            {
+                "status": "queued",
+                "kind": kind,
+                "canonical_path": canonical_path,
+                "job_id": job_id,
+                "message": f"Job {job_id[:8]} queued for {canonical_path}",
+            }
+        ),
+        202,
+    )

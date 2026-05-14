@@ -4,7 +4,7 @@ import os
 import time
 from unittest.mock import patch
 
-from plex_generate_previews.web.routes.api_system import _get_timezone_info
+from media_preview_generator.web.routes.api_system import _get_timezone_info
 
 
 class TestGetTimezoneInfo:

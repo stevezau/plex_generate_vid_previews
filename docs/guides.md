@@ -12,6 +12,7 @@ Guides for the web interface, automation and webhooks, HDR handling, and trouble
 ## Contents
 
 - [Web Interface](#web-interface)
+- [Previews readiness (per-check toggles & explanations)](guides/previews-readiness.md)
 - [Webhook Integration](#webhook-integration)
 - [Auto-trigger from Plex (no Sonarr/Radarr)](#auto-trigger-from-plex-no-sonarrradarr)
 - [HDR & Dolby Vision](#hdr--dolby-vision)
@@ -33,15 +34,18 @@ Dashboard for managing preview generation jobs, settings, and schedules.
 
 ### Setup Wizard
 
-When you first access the web interface, you'll be guided through a **Setup Wizard**:
+When you first access the web interface, you'll be guided through a **Setup Wizard** that supports **Plex, Emby, and Jellyfin**:
 
-1. **Sign in with Plex** — authenticate securely via Plex OAuth (no manual token copying!)
-2. **Select Server** — choose which Plex server to connect to
-3. **Configure Paths** — set up media paths and path mappings
-4. **Processing Options** — configure GPU threads, CPU threads, thumbnail quality, etc.
-5. **Security** — view or customize your access token (optional)
+1. **Choose your media server** — pick **Plex**, **Emby**, or **Jellyfin**. The chosen card expands inline:
+   - **Plex** — sign in via Plex OAuth (no manual token copying), or paste a URL + token if you prefer.
+   - **Emby** — enter the server URL and an API key.
+   - **Jellyfin** — enter the URL and run a **Quick Connect** ceremony (or paste an API key).
+2. **Server & Libraries** *(Plex only)* — pick which Plex server (if you have several) and which libraries to enable. Emby/Jellyfin flows skip this step; libraries are managed later from **Settings → Media Servers**.
+3. **Path Configuration** *(Plex only)* — confirm the Plex application data folder where BIF files are written, plus any media path mappings. Emby/Jellyfin push their output via HTTP, so this step is skipped for those flows.
+4. **Processing Options** — per-GPU enable/workers/FFmpeg threads, CPU workers, thumbnail interval, and quality.
+5. **Security** — view or replace your access token (optional).
 
-After setup completes, you'll be taken to the dashboard.
+After setup completes, you'll land on the dashboard. You can add additional servers (any vendor, any number) at any time from **Settings → Media Servers** without re-running the wizard.
 
 ### Accessing the Dashboard
 
@@ -52,10 +56,10 @@ After setup completes, you'll be taken to the dashboard.
 
 ### Dashboard Features
 
-**Connection Status** — shows your Plex connection status:
+**Connection Status** — shows every configured server (Plex, Emby, Jellyfin):
 
-- **Connected** — server name and available GPUs displayed
-- **Not configured** — link to setup wizard
+- **Connected** — server name, vendor, and available GPUs displayed
+- **Not configured** — link to the setup wizard or **Servers** page to add one
 
 **Job Management:**
 
@@ -65,11 +69,15 @@ After setup completes, you'll be taken to the dashboard.
 - **Job history** — view completed/failed jobs
 
 > [!NOTE]
-> Only one job runs at a time. If a job is triggered (manually, by a schedule, or by a webhook) while another is already running, the incoming job is immediately marked **Cancelled** and a warning is logged. This prevents concurrent FFmpeg workloads and temp-folder conflicts.
+> Jobs queue with priority (1 = high, 2 = normal, 3 = low). The dispatcher runs
+> up to the configured concurrent-job cap; extra jobs sit in **Pending** and the
+> gate releases them in priority order as slots free up. Manual, webhook, and
+> scheduled jobs all share the same gate. To hard-stop everything, use
+> **Pause Processing** — the global pause is persisted and survives restarts.
 
 **Pause / Resume (global):**
 
-- **Pause Processing** — Stops all processing system-wide: no new jobs will start (manual, scheduled, or webhook), and the current job stops dispatching new tasks. Already-running FFmpeg tasks finish their current file (soft pause), then workers idle. Use this to cap bandwidth or pause overnight.
+- **Pause Processing** — Stops all processing system-wide: no new jobs will start (manual, scheduled, or webhook), and the current job stops dispatching new tasks. Files already mid-process finish first, then workers go idle (a "soft" pause — nothing is killed mid-frame). Use this to cap bandwidth or pause overnight.
 - **Resume Processing** — Clears the global pause; new jobs can start and the current job resumes dispatching.
 - Controls appear in the **Current Job** header and to the left of **Clear Jobs** in the Job Queue. State is persisted and survives restarts.
 
@@ -92,6 +100,11 @@ Access settings at `/settings` to manage:
 - **Libraries** — select which libraries to process
 - **Path Mappings** — media path, Plex videos path, local videos path
 - **Processing Options** — per-GPU settings (enable/disable, workers, FFmpeg threads), CPU threads, thumbnail interval and quality
+
+> For per-server settings audits (Plex FSEvent flags, Jellyfin trickplay flags,
+> Media Preview Bridge plugin presence, Plex config folder writability, path
+> mappings), open **Servers → Edit → Setup Health**. Full per-check reference:
+> [Previews Readiness guide](guides/previews-readiness.md).
 
 The Settings page and the Automation page's **Triggers** tab **save automatically as you edit** — there's no Save button. Toggles, sliders, and dropdowns commit immediately; text fields commit on blur (or ~1 s after you stop typing). A small status indicator in the page header shows `Saving…` / `Saved at HH:MM` so you can tell the change landed. If a save fails (e.g. the backend is down), the indicator shows an error and you can click it to retry.
 
@@ -120,13 +133,13 @@ Settings are saved to `/config/settings.json` and persist across restarts.
 
 The **Automation** page (`/automation`) hosts two tabs:
 
-- **Triggers** — incoming webhooks from Radarr, Sonarr, Sportarr, Tdarr / custom scripts, and Plex Direct. Also houses the Recently Added Scanner shortcut. This is where you wire the app up to whatever puts media into Plex.
+- **Triggers** — incoming webhooks from Radarr, Sonarr, Tdarr / custom scripts, and Plex Direct. Also houses the Recently Added Scanner shortcut. This is where you wire the app up to whatever puts media into Plex.
 - **Schedules** — full CRUD for recurring scans (cron / interval / specific time). Both Full library and Recently-Added scanners live here.
 
 The Triggers tab includes:
 
 - **Enable/Disable** — master toggle for webhook processing
-- **Webhook URLs** — copy-ready URLs for Radarr, Sonarr, Sportarr, and the generic Custom webhook
+- **Webhook URLs** — copy-ready URLs for Radarr, Sonarr, and the generic Custom webhook
 - **Delay** — seconds to wait after import (gives Plex time to index)
 - **Webhook Secret** — optional dedicated authentication token
 - **Setup instructions** — step-by-step guides for each source
@@ -136,20 +149,7 @@ The legacy `/webhooks` and `/schedules` URLs still work — they 302-redirect to
 
 ### Production Server
 
-In Docker, the web interface runs on **gunicorn** with the **gthread** worker class:
-
-- **WebSocket support** via Flask-SocketIO with threading async mode
-- **Real-time updates** — job progress and worker status over WebSocket
-
-| Setting | Value | Purpose |
-|---------|-------|---------|
-| Worker class | `gthread` | Threaded worker; SocketIO uses threading async mode |
-| Workers | `1` | Single worker (required for in-process job state) |
-| Timeout | `300s` | Accommodates long-running FFmpeg processing |
-| Keep-alive | `65s` | Outlives typical reverse proxy timeouts (60s) |
-
-> [!NOTE]
-> The server uses a single gunicorn worker because job state, schedules, and settings are managed in-process. Multiple workers would require Redis for shared state.
+The Docker image runs the web interface for you — there's nothing to configure. The dashboard updates in real time over WebSocket; long-running jobs survive the default proxy timeouts. If you're running the app outside Docker (or just curious how the container is wired internally — gunicorn settings, single-worker rationale, WebSocket transport), see [CONTRIBUTING.md → Architecture](../CONTRIBUTING.md#architecture).
 
 ### Reverse Proxy
 
@@ -256,13 +256,14 @@ Automatically generate preview thumbnails when Radarr or Sonarr imports new medi
 1. Radarr/Sonarr imports a file (or an external tool sends a custom webhook) and a POST is sent to this app.
 2. The app **queues** the file and starts (or resets) a timer. Imports from the same source (Radarr, Sonarr, or Custom) are batched together.
 3. A batch is processed only after the **delay** (e.g. 60s) has passed with **no new** imports from that source. So if another file arrives 1 second before the batch would run, it is added to the queue and the timer resets — the batch runs 60 seconds after that file. Every file gets at least 60 seconds before we process it.
-4. This delay is important because **Plex needs time to add the new file to its library**. If we process too soon, Plex may not have indexed the file yet and the job can fail or skip the item.
-5. When the timer fires, the app resolves each queued path to a Plex item and processes only those items (no full-library scan), limited to libraries selected in Settings. Items that already have preview thumbnails are skipped automatically.
+4. This delay is important because **your media servers need time to add the new file to their library**. If we process too soon, the file may not be indexed yet (regardless of vendor) and the job can fail or skip the item. Not-yet-indexed files are automatically re-queued on a 5-step backoff (30 s → 2 m → 5 m → 15 m → 60 m), so transient indexing lag doesn't drop work.
+5. When the timer fires, the app resolves each queued path against every configured server that owns it, processes it once, and publishes to each in its native format — Plex BIF bundle, Emby sidecar BIF, Jellyfin trickplay tiles. Items that already have a fresh preview are skipped automatically (source-aware dedup).
 
 ### Prerequisites
 
-- Plex Generate Previews running with the web UI accessible
+- Media Preview Generator running with the web UI accessible
 - Radarr and/or Sonarr installed and managing your media (for Radarr/Sonarr webhooks)
+- At least one media server configured in **Servers** (Plex, Emby, or Jellyfin — any combination). The app publishes webhook-triggered work to every server that owns the file.
 
 ### Configure Radarr
 
@@ -353,6 +354,25 @@ The `{{{args.inputFileObj._id}}}` template variable is replaced by Tdarr at runt
 
 > [!TIP]
 > If the webhook request fails (e.g. the server is temporarily down), add a **Reset Flow Error** plugin after the Send Web Request step so Tdarr doesn't mark the entire transcode as failed.
+
+#### Configure FileFlows
+
+FileFlows uses two nodes at the end of your flow: a **Set Variable** node to construct the final output path, then a **Web Request** node to POST it to the custom endpoint.
+
+1. In FileFlows, install the **Web** plugin (Plugins page → search "Web") so the **Web Request** node becomes available
+2. Open the **Flow** you want to trigger previews from
+3. Add a **Set Variable** node just before where the Web Request will go. FileFlows doesn't expose a built-in "final output path" variable, so build it from the folder + final filename + extension:
+   - **Variable**: `output_file`
+   - **Value**: `{folder.Orig.FullName}/{file.NameNoExtension}{ext}`
+4. Add a **Web Request** node after the Set Variable node:
+   - **Method**: `POST`
+   - **URL**: paste the Custom Webhook URL (e.g. `http://your-server:8080/api/webhooks/custom`)
+   - **Content Type**: `JSON`
+   - **Headers**: key `X-Auth-Token`, value `YOUR_TOKEN`
+   - **Body**: `{"file_path": "{output_file}"}`
+5. Save the flow
+
+The `{output_file}` placeholder is substituted by FileFlows at runtime with the absolute path of the file as it exists at the end of the flow (after any rename / re-extension steps).
 
 #### curl Example
 
@@ -460,47 +480,62 @@ You can enable **both** if you want belt-and-suspenders behavior — the recentl
 
 ## HDR & Dolby Vision
 
-The tool auto-detects HDR metadata and tone-maps to SDR before generating thumbnails. Behavior depends on the HDR format:
+**The short version:** HDR thumbnails get **tone-mapped** to SDR (standard dynamic range) automatically, so you don't see washed-out or pitch-black previews. Most HDR formats just work; the trickiest case is **Dolby Vision Profile 5** (4K Dolby Vision rips with no HDR10 fallback layer), and the only setup step you may need is on NVIDIA — see the warning at the bottom of this section.
 
-| Format | Method |
-|--------|--------|
-| HDR10 | zscale/tonemap (configurable algorithm, default: Hable) |
-| HLG | zscale/tonemap (configurable algorithm, default: Hable) |
-| HDR10+ (without Dolby Vision) | zscale/tonemap (configurable algorithm, default: Hable) |
-| Dolby Vision Profile 7/8 (with HDR10 fallback) | zscale/tonemap via HDR10 base layer + HW decode ([#178](https://github.com/stevezau/plex_generate_vid_previews/issues/178)) |
-| Dolby Vision Profile 5 (no backward-compat layer) | Per-vendor hardware path (see below); software decode + libplacebo fallback ([#172](https://github.com/stevezau/plex_generate_vid_previews/issues/172), [#178](https://github.com/stevezau/plex_generate_vid_previews/issues/178), [#212](https://github.com/stevezau/plex_generate_vid_previews/issues/212)) |
+> [!TIP]
+> **Quick glossary** (so the rest of this section is readable):
+>
+> - **Tone mapping** — converting HDR's wide brightness range down to the narrower SDR range a thumbnail can show. Without it, HDR content looks too dark or has a colour tint.
+> - **HDR10 / HDR10+ / HLG** — the common HDR formats; all use a single video track and tone-map cleanly.
+> - **Dolby Vision (DV)** — Dolby's HDR. **Profile 7/8** carries an HDR10 fallback layer (works the same as HDR10). **Profile 5** doesn't, and needs special handling.
+> - **libplacebo / Vulkan** — the GPU library that handles DV Profile 5 tone mapping. Needs a working Vulkan driver.
+
+| Format | What we do |
+|--------|------------|
+| HDR10 | Tone-map to SDR (algorithm configurable, default: Hable) |
+| HLG | Tone-map to SDR (algorithm configurable, default: Hable) |
+| HDR10+ (without Dolby Vision) | Tone-map to SDR (algorithm configurable, default: Hable) |
+| Dolby Vision Profile 7/8 (with HDR10 fallback) | Tone-map the HDR10 fallback layer with hardware decode ([#178](https://github.com/stevezau/media_preview_generator/issues/178)) |
+| Dolby Vision Profile 5 (no fallback layer) | Per-GPU specialist path (see below); software fallback uses libplacebo ([#172](https://github.com/stevezau/media_preview_generator/issues/172), [#178](https://github.com/stevezau/media_preview_generator/issues/178), [#212](https://github.com/stevezau/media_preview_generator/issues/212)) |
 
 ### Tone-map algorithm
 
-Non-DV HDR content (HDR10, HLG, HDR10+) uses the zscale/tonemap chain with a configurable algorithm. Change it in **Settings → Thumbnail Settings → HDR Tone Mapping** or via the `TONEMAP_ALGORITHM` env var. Available options: `hable` (default), `reinhard`, `mobius`, `clip`, `gamma`, `linear`. If HDR thumbnails look too dark, try `reinhard`. Without tone mapping, HDR content (especially DV Profile 5) can produce thumbnails with a green or purple tint.
+**What:** the formula used to compress HDR's brightness range into SDR. **Default works for almost everyone.** Change only if your HDR thumbnails look too dark or oddly tinted.
+
+Non-DV HDR content (HDR10, HLG, HDR10+) uses a configurable algorithm, set in **Settings → Thumbnail Settings → HDR Tone Mapping** or via the `TONEMAP_ALGORITHM` env var. Options: `hable` (default), `reinhard`, `mobius`, `clip`, `gamma`, `linear`. If HDR thumbnails look too dark, try `reinhard`.
 
 ### Dolby Vision Profile 5
 
-Profile 5 has no backward-compatible HDR10 layer, so the zscale/tonemap chain can't read its RPU reshaping metadata and produces dark or blank thumbnails. The tool picks the fastest working path per GPU vendor:
+**What:** the trickiest HDR format — has no HDR10 fallback layer, so the standard tone-mapping path can't read it. **What to do:** nothing — the tool picks the right path for whatever GPU you have. (NVIDIA users: see the warning below.)
 
-| Vendor | DV5 path | Typical speed on 4K |
+The tool picks the fastest working path per GPU vendor:
+
+| Vendor | Typical speed on 4K | Notes |
 |---|---|---|
-| Intel (iGPU / Arc via VAAPI) | VAAPI decode → OpenCL `tonemap_opencl` (Jellyfin-patched, DV-RPU-aware) | **~17×** (UHD 770) |
-| NVIDIA | NVDEC decode → Vulkan `libplacebo` via hwupload | ~10–16× (Turing), faster on Ada/Hopper |
-| AMD Radeon | VAAPI decode → Vulkan `libplacebo` via DMA-BUF hwmap | untested locally; same flags as NVIDIA |
-| CPU-only / software fallback | libx265 decode → Vulkan `libplacebo` | ~5–10× (CPU-bound) |
+| Intel iGPU / Arc | **~17×** (UHD 770) | Uses Jellyfin's DV-aware patch — currently the fastest path |
+| NVIDIA | ~10–16× (Turing); faster on Ada/Hopper | Needs Vulkan driver — see the NVIDIA warning below |
+| AMD Radeon | (untested locally; same flags as NVIDIA) | |
+| CPU-only fallback | ~5–10× (CPU-bound) | When no GPU is available |
 
-The image ships **jellyfin-ffmpeg 7.1.3** as the preferred FFmpeg binary because Jellyfin's fork carries the `tonemap_opencl` DV-aware patch upstream FFmpeg still lacks. Falls back to the base image's FFmpeg 8.0.1 automatically on non-amd64 builds.
+The image ships **jellyfin-ffmpeg 7.1.3** as its preferred FFmpeg because Jellyfin's fork carries a Dolby-Vision-aware tone-mapping patch upstream FFmpeg still lacks. Non-amd64 builds fall back to the base image's FFmpeg 8.0.1 automatically.
 
-Profile 7/8 (with HDR10 fallback) uses the standard zscale/tonemap chain — FFmpeg reads the HDR10 base layer, so no libplacebo or special handling is needed.
+Profile 7/8 (with HDR10 fallback) uses the standard tone-mapping chain — no Vulkan or special handling needed.
 
 ### Container edge cases handled automatically
 
-- **`/dev/dri/by-path` fixup.** Intel's OpenCL runtime (NEO) discovers GPUs by scanning `/dev/dri/by-path/*-render`. Under `--runtime=nvidia`, NVIDIA Container Toolkit populates that directory only for NVIDIA cards — leaving the Intel iGPU invisible to OpenCL. The container runs a oneshot s6 init (`init-dri-by-path`) that adds the missing symlinks for every DRM render node in `/dev/dri/`. No-op on bare metal / single-vendor hosts.
-- **NVIDIA Vulkan on dual-GPU hosts.** The Vulkan probe runs up to four retry strategies to get NVIDIA's ICD working (standard ICD, `__EGL_VENDOR_LIBRARY_FILENAMES`, synthesised GLVND vendor JSON, `VK_DRIVER_FILES`+EGL combined). On dual-GPU hosts (Intel iGPU + NVIDIA dGPU) the default probe picks Intel ANV first; the combined `VK_DRIVER_FILES` + `__EGL_VENDOR_LIBRARY_FILENAMES` retry forces NVIDIA so libplacebo runs on the NVIDIA card instead of ping-ponging frames across PCIe.
+You don't have to do anything for these — the container handles them on startup. Listed here so you know what the logs are telling you when they mention DRI symlinks or Vulkan probe retries.
+
+- **Intel GPU under `--runtime=nvidia`.** When you're running both an Intel iGPU and an NVIDIA card under the NVIDIA container runtime, NVIDIA's tooling hides the Intel device from one specific OpenCL discovery path. The container quietly re-adds the missing symlinks on startup so the Intel iGPU stays usable for tone mapping.
+- **NVIDIA Vulkan on dual-GPU hosts.** When both an Intel iGPU and an NVIDIA dGPU are present, Vulkan defaults to Intel — but Dolby Vision tone mapping is faster on the NVIDIA card. The container's Vulkan startup probe tries up to four configurations to force NVIDIA selection so frames don't bounce between the two cards.
 
 > [!IMPORTANT]
-> **NVIDIA users: `NVIDIA_DRIVER_CAPABILITIES` must include `graphics`.**
-> libplacebo needs a working Vulkan driver to tone-map DV Profile 5. The NVIDIA Container Toolkit only injects the NVIDIA Vulkan ICD into the container when the `graphics` driver capability is declared — `compute,video,utility` is not enough (that only covers CUDA/NVDEC/nvidia-smi). If the app detects that your container is running Vulkan on the software rasterizer (`llvmpipe`), your DV Profile 5 thumbnails will contain a green rectangle due to a libplacebo+llvmpipe rendering bug.
+> **NVIDIA users: set `NVIDIA_DRIVER_CAPABILITIES=all` (or include `graphics`).**
 >
-> **Fix:** set `NVIDIA_DRIVER_CAPABILITIES=all` in your `docker run` (`-e NVIDIA_DRIVER_CAPABILITIES=all`) or `docker-compose.yml` (`environment:` block) and restart the container. `all` is the simplest value and is what the upstream `nvidia/vulkan` image uses. If you prefer minimum-privilege, use `compute,video,utility,graphics`.
+> Dolby Vision Profile 5 needs the NVIDIA Vulkan driver inside the container. NVIDIA's container toolkit only loads it when the `graphics` capability is declared. The common `compute,video,utility` setting is fine for everything else but **not** for Dolby Vision — without `graphics`, DV Profile 5 thumbnails come out with a green rectangle.
 >
-> If the warning banner persists after the restart, your setup may be hitting one of the less-common causes (driver 570–579 regression, CDI manifest missing `libnvidia-glvkspirv.so`, or ICD JSON at the wrong path). The in-app warning will name the specific cause it detected. You can also open `GET /api/system/vulkan/debug` to fetch a plain-text diagnostic bundle to attach to a GitHub issue.
+> **Fix:** add `-e NVIDIA_DRIVER_CAPABILITIES=all` to your `docker run` command (or set it in the `environment:` block of your compose file) and restart the container. `all` is what the official NVIDIA Vulkan images use. If you prefer minimum privilege, `compute,video,utility,graphics` works too.
+>
+> If the in-app warning banner persists after the restart, you may be hitting a less-common cause (a driver-version regression, a missing library in the container runtime config, or an ICD file in the wrong place). The banner will name the specific cause; `GET /api/system/vulkan/debug` returns a plain-text diagnostic bundle you can attach to a GitHub issue.
 
 ---
 
@@ -516,17 +551,17 @@ Use this table to diagnose common failures quickly.
 
 | Symptom | Likely Cause | Fix |
 |---------|--------------|-----|
-| `Skipping as file not found` | Path mapping mismatch between Plex and this container | Verify mappings in [Path Mappings](reference.md#path-mappings). |
+| `Skipping as file not found` | Path mapping mismatch between a media server and this container | Verify the server's per-entry mappings in [Path Mappings](reference.md#path-mappings) (each Plex/Emby/Jellyfin entry has its own list). |
 | `GPU permission denied` | Container user cannot access GPU device files | Set `PUID`/`PGID` to a user with GPU access; on Unraid use `PUID=99`, `PGID=100`. |
-| `PLEX_CONFIG_FOLDER does not exist` | Incorrect mount or Plex config path | Confirm mounted path contains `Cache`, `Media`, and `Metadata`. |
-| `Connection failed to Plex` | Bad Plex URL, unreachable host, or invalid token | Use server IP (not `localhost` in Docker), verify Plex is running, and test token with curl. |
-| Webhook job shows as **Cancelled** in history | Another job was already running when the webhook delay expired | Wait for the active job to finish; webhooks fired while idle will run normally. To avoid this, increase the webhook delay so imports do not fire during long processing runs. |
+| `Plex config folder does not exist` / unwritable | Incorrect mount or wrong `plex_config_folder` | Confirm the mounted `/plex` path contains `Cache`, `Media`, and `Metadata`. Previews Readiness surfaces this per-Plex-server. |
+| `Connection failed` on a server card | Bad URL, unreachable host, or invalid token | Use server IP (not `localhost` in Docker), verify the server is running, and test the URL + token with curl. |
+| Webhook job sits in **Pending** for a long time | The concurrent-job gate is full — active jobs are running at capacity | Wait for a slot to free up (priority-ordered), raise the cap in **Settings → Processing Options**, or check the global **Pause Processing** toggle isn't on. Pausing ≠ cancelling — paused jobs stay in Pending. |
 | Webhook returns `401` | Invalid or missing authentication | In Sonarr/Radarr webhook settings, leave **Username** empty and set **Password** to your API token or webhook secret. |
 | Webhook test passes but imports do not trigger jobs | Wrong webhook events or webhooks disabled | Enable **On Import** in Radarr/Sonarr and verify `webhook_enabled=true`. |
 | New files are imported but previews are not generated | Plex indexing delay or wrong library mapping | Increase webhook delay and verify Radarr/Sonarr library mapping in Webhooks settings. |
 | Radarr/Sonarr cannot reach webhook URL | Network routing or hostname issue | Use host IP or reachable Docker hostname (not `localhost`), then verify firewall and port `8080`. |
 | New job starts after I paused | Global pause not set or UI not refreshed | Use **Pause Processing** (Current Job or Job Queue header). Pause is global and persisted; in-flight files finish before workers idle. |
-| DV Profile 5 thumbnails have a bright green rectangle or overall green cast | libplacebo is falling back to `llvmpipe` (software Vulkan) because the container has no real Vulkan device | Forward an iGPU or render node to the container with `--device /dev/dri:/dev/dri` (Intel/AMD) or ensure the NVIDIA runtime exposes the Vulkan ICD with `NVIDIA_DRIVER_CAPABILITIES=compute,video,utility,graphics`. Most users already forward `/dev/dri` for VAAPI, which brings Mesa's Vulkan driver along for free. |
+| DV Profile 5 thumbnails have a bright green rectangle or overall green cast | The container can't reach a real Vulkan-capable GPU, so DV tone mapping falls back to a slow software path that has a known rendering bug | Pass an iGPU to the container with `--device /dev/dri:/dev/dri` (Intel/AMD), or for NVIDIA set `NVIDIA_DRIVER_CAPABILITIES=all` so the NVIDIA Vulkan driver gets injected. Most users already pass `/dev/dri` for hardware video acceleration, which brings the Vulkan driver along for free. |
 
 ### Validate Plex Config Path
 
@@ -542,9 +577,37 @@ Enable detailed logs when diagnosing persistent issues. In **Settings** → **Pr
 
 ---
 
+## Rolling back to a previous version
+
+Schema downgrades are **not automated**. If you need to revert from a release that ran a settings migration, do it manually:
+
+1. **Stop the container.**
+   ```bash
+   docker stop media-preview-generator
+   ```
+2. **Restore the relevant `.bak` files** from your config volume. Each JSON file the app owns leaves a single rolling `.bak` next to it on every save:
+   ```bash
+   cd /your/config/dir
+   mv settings.json.bak settings.json          # required
+   mv schedules.json.bak schedules.json        # if you use Schedules
+   mv webhook_history.json.bak webhook_history.json  # optional
+   mv setup_state.json.bak setup_state.json    # optional
+   ```
+   `jobs.db` does **not** have a JSON `.bak` (jobs moved to SQLite as of this release). To recover an older job database, restore your full config-volume snapshot.
+3. **Start the older app version** that wrote those files.
+   ```bash
+   docker run ... your/image:older-tag
+   ```
+
+> **Multi-server caveat.** Multi-server installs cannot meaningfully downgrade to a single-server release without losing the second / third server's settings. The newer schema holds richer data than the older one can represent. The downgrade-refusal guard (introduced in this release) intentionally refuses to start the older binary against a newer `settings.json` — its log message names the `.bak` path so you have a one-line recovery hint.
+
+> **Why it refuses to "just work".** Silent acceptance would drop unknown fields on the next save — exactly the failure mode that wiped a user's job history during a tag-drift incident on the multi-server branch. Refusing to boot is loud and recoverable; silent truncation is quiet and final.
+
+---
+
 ## Support
 
-Open a [GitHub Issue](https://github.com/stevezau/plex_generate_vid_previews/issues).
+Open a [GitHub Issue](https://github.com/stevezau/media_preview_generator/issues).
 
 ---
 

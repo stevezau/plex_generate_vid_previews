@@ -25,9 +25,12 @@ on:
   workflow_dispatch:
 
 env:
-  # Change this to your Docker Hub image name for forks.
-  # See CONTRIBUTING.md for full instructions.
-  DOCKER_IMAGE: stevezzau/plex_generate_vid_previews
+  # Canonical Docker Hub image name. The deprecated mirror below keeps
+  # publishing alongside this one until 2026-10-29 so users on the old
+  # name keep getting updates while they migrate.
+  # Change DOCKER_IMAGE for forks; see CONTRIBUTING.md.
+  DOCKER_IMAGE: stevezzau/media_preview_generator
+  DOCKER_IMAGE_DEPRECATED: stevezzau/plex_generate_vid_previews
 
 concurrency:
   # Cancel superseded PR runs; never cancel in-flight pushes to main/dev/tags
@@ -50,6 +53,10 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          # Pip cache keyed on this lint job's only dep (ruff). cache-hits
+          # save ~5s; with this small a footprint the gain is small but
+          # the cache is shared across runs of the lint job.
+          cache: pip
 
       - name: Install ruff
         run: pip install ruff
@@ -71,27 +78,274 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          # Pip cache keyed on pyproject.toml — invalidated whenever a
+          # dep changes. Warm runs save ~60s of wheel downloads.
+          cache: pip
+          cache-dependency-path: pyproject.toml
 
-      - name: Install FFmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg mediainfo
+      - name: Install FFmpeg + mediainfo
+        # Plain apt-get rather than awalsh128/cache-apt-pkgs-action: the
+        # cache action restored ffmpeg's transitive deps (libblas3,
+        # liblapack3) as raw tar extractions that bypass dpkg's trigger
+        # pass — /etc/ld.so.cache stayed stale on cache HIT and ffmpeg
+        # failed every time with "error while loading shared libraries:
+        # libblas.so.3". Three escalations couldn't fix it (adding the
+        # transitive deps, ``execute_install_scripts: true``, an explicit
+        # ``sudo ldconfig`` step). Plain apt-get always runs the trigger
+        # pass; the ~25 s we lose vs the cache is worth a deterministic
+        # build. apt-get's own download cache is on the runner anyway.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg mediainfo
 
       - name: Install dependencies
         run: pip install -e ".[test]"
 
       - name: Run tests
-        run: pytest -m "not gpu and not e2e" --cov-report=xml
+        run: pytest -m "not gpu and not e2e and not integration" --cov-report=xml
 
       - name: Upload coverage to Codecov
-        if: github.event_name == 'push'
+        # Upload on every event that produced coverage.xml (push, PR,
+        # workflow_dispatch). Skipping PRs meant codecov never got data
+        # between PR merges, so the badge rendered "unknown" for weeks
+        # at a time and PR diff-coverage comments never ran. v4 of the
+        # action handles fork PRs gracefully — without a token it uses
+        # tokenless OIDC; with one, same-repo PRs still authenticate.
         uses: codecov/codecov-action@v4
         with:
           files: ./coverage.xml
           fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
 
-  context:
+  e2e:
+    name: e2e (shard ${{ matrix.shard }}/4)
+    runs-on: ubuntu-latest
+    # Only depend on lint (formatting/style). The unit `test` job covers
+    # different scope (no Playwright); making e2e wait for test serialises
+    # the two and adds ~95s to wall clock for no real gain. The final
+    # `merge` job still gates publishing on test + e2e + build all passing,
+    # so the safety contract is preserved.
+    needs: lint
+    strategy:
+      # Don't cancel sibling shards if one fails. If shard 2's Chromium
+      # crashes on test 35, we still want shards 1/3/4 to finish so
+      # the failure is visibly isolated rather than masking the others.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # setuptools-scm needs full history
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install FFmpeg + mediainfo + Playwright Chromium runtime libs (cached)
+        # Playwright's `--with-deps chromium` used to apt-install ~20
+        # Chromium runtime libs (libnss3, libgtk, etc.) on EVERY run —
+        # uncached, ~15-20s burned per push. Roll those packages into
+        # the existing apt cache step so warm runs skip apt entirely,
+        # then drop `--with-deps` from the playwright install below.
+        # Bump `version:` if any of these need to refresh.
+        uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: >-
+            ffmpeg
+            mediainfo
+            libblas3
+            liblapack3
+            fonts-liberation
+            libasound2t64
+            libatk-bridge2.0-0t64
+            libatk1.0-0t64
+            libatspi2.0-0t64
+            libcairo2
+            libcups2t64
+            libdbus-1-3
+            libdrm2
+            libgbm1
+            libglib2.0-0t64
+            libnspr4
+            libnss3
+            libpango-1.0-0
+            libx11-6
+            libxcb1
+            libxcomposite1
+            libxdamage1
+            libxext6
+            libxfixes3
+            libxkbcommon0
+            libxrandr2
+            xvfb
+          version: 4
+          # Same reason as the test job's apt cache step: a cache hit
+          # without post-install scripts leaves ffmpeg's libblas.so.3 /
+          # liblapack.so.3 invisible to the dynamic linker.
+          execute_install_scripts: true
+
+      - name: Refresh dynamic linker cache for restored libs
+        # See the test job's identical step — apt cache action skips the
+        # libc-bin trigger that rebuilds /etc/ld.so.cache, so on a cache
+        # HIT ffmpeg can't find libblas.so.3 / liblapack.so.3 even though
+        # the files are on disk.
+        run: sudo ldconfig
+
+      - name: Install dependencies
+        run: pip install -e ".[test]"
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
+
+      - name: Install Playwright Chromium (browser binary only; runtime libs cached above)
+        run: playwright install chromium
+
+      - name: Run e2e tests (shard ${{ matrix.shard }}/4)
+        # Sharding strategy (Playwright's officially-documented pattern
+        # for handling Chromium SIGSEGV on memory-constrained CI —
+        # playwright.dev/docs/test-parallel). Each matrix shard runs
+        # on its own ubuntu-latest runner = fresh Chromium = fresh
+        # memory budget, so cross-test accumulation can't pile up
+        # the way it did in the previous single-job design.
+        #
+        # 4 shards × ~30-42 tests/shard sits at or under the empirical
+        # ~30-test Chromium crash threshold from prior runs. Two real
+        # bugs were fixed before reaching for sharding (webhook race
+        # in c8ac9d4, APScheduler thread drain in 20c42cf) — sharding
+        # mitigates only the residual environmental flakes, not real
+        # regressions.
+        #
+        # --shard-id is 0-indexed; matrix index is 1-indexed for the
+        # GH status check display ("e2e (shard 3/4)"). Shell arithmetic
+        # below maps 1->0, 2->1, etc.
+        #
+        # No --reruns — the underlying flake was a 600ms setTimeout
+        # auto-advance in setup.html racing Playwright's stability
+        # check on ``#step1Next`` (every wizard-driving test went
+        # amber). Auto-advance removed at the source, so reruns are
+        # no longer needed to paper over it. ``pytest-rerunfailures``
+        # stays installed but the e2e command no longer requests it,
+        # so a real regression fails immediately instead of after
+        # three slow attempts.
+        run: >-
+          pytest -m e2e -n 0 --no-cov --tb=short --timeout=120
+          --shard-id=$((${{ matrix.shard }} - 1)) --num-shards=4
+        timeout-minutes: 10
+
+      - name: Upload Playwright traces on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          # Shard suffix prevents collision when multiple shards fail
+          # in the same run — actions/upload-artifact@v4 errors on
+          # duplicate names instead of merging.
+          name: playwright-traces-shard-${{ matrix.shard }}
+          path: tests/e2e/test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  e2e-real-vendors:
+    # Real Plex + Emby + Jellyfin in CI via the docker-compose.test.yml
+    # stack under tests/integration/. Boots all three vendors with seeded
+    # synthetic media, configures admin users via API, and runs the
+    # @pytest.mark.integration suite against them.
+    #
+    # Opt-in only — gated on:
+    #   * the workflow_dispatch event (manual trigger), OR
+    #   * a PR labeled `e2e-real-vendors`.
+    # Otherwise it would add ~5–8 min to every push and routinely break
+    # on vendor image updates (Jellyfin schema migrations etc.).
+    #
+    # Plex needs PLEX_CLAIM (4-min validity from https://plex.tv/claim)
+    # via the workflow_dispatch input or a long-lived secret. Without
+    # it the Plex tests are skipped; Emby + Jellyfin still run.
     runs-on: ubuntu-latest
     needs: [lint, test]
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'e2e-real-vendors')
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install FFmpeg + mediainfo
+        uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: ffmpeg mediainfo
+          version: 1
+
+      - name: Install dependencies
+        run: pip install -e ".[test]"
+
+      - name: Generate synthetic test media
+        working-directory: tests/integration
+        run: bash generate_test_media.sh
+
+      - name: Bring up vendor stack
+        working-directory: tests/integration
+        env:
+          # Optional: set repo secret PLEX_CLAIM_TOKEN for Plex tests.
+          # When unset, Plex still boots but stays unclaimed; tests that
+          # need a claimed Plex skip cleanly via the auto-skip in conftest.
+          PLEX_CLAIM: ${{ secrets.PLEX_CLAIM_TOKEN }}
+        run: |
+          docker compose -f docker-compose.test.yml up -d
+          # Wait for healthchecks (compose has them on each service).
+          for i in {1..60}; do
+            healthy=$(docker compose -f docker-compose.test.yml ps --format json | jq -r '.[] | select(.Health == "healthy") | .Name' | wc -l)
+            if [ "$healthy" -ge 2 ]; then
+              echo "At least Emby + Jellyfin healthy (Plex may still be initialising)"
+              break
+            fi
+            echo "Waiting for vendor stack (iteration $i)... ${healthy}/3 healthy"
+            sleep 5
+          done
+
+      - name: Configure servers via API
+        working-directory: tests/integration
+        run: python setup_servers.py
+        # setup_servers.py creates admin users + libraries on each
+        # reachable vendor. Skips any vendor that didn't come up.
+        continue-on-error: true
+
+      - name: Run integration tests
+        env:
+          PLEX_CLAIM: ${{ secrets.PLEX_CLAIM_TOKEN }}
+        run: pytest -m integration --no-cov --tb=short tests/integration/
+        timeout-minutes: 15
+
+      - name: Vendor stack logs on failure
+        if: failure()
+        working-directory: tests/integration
+        run: docker compose -f docker-compose.test.yml logs --tail=200
+
+      - name: Tear down vendor stack
+        if: always()
+        working-directory: tests/integration
+        run: docker compose -f docker-compose.test.yml down -v
+
+  context:
+    runs-on: ubuntu-latest
+    # Just resolves git/branch metadata — no test results needed. Letting
+    # context (and downstream `build`) start in parallel with test+e2e
+    # cuts ~95-170s off the critical path. Publishing safety is preserved
+    # by `merge` waiting on test + e2e + build.
+    needs: lint
     # Only publish on push to main/dev/tags or manual dispatch. PR runs stop
     # after lint/test so opening a PR never publishes a Docker image.
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
@@ -99,7 +353,8 @@ jobs:
       head_branch: ${{ steps.ctx.outputs.head_branch }}
       head_sha: ${{ steps.ctx.outputs.head_sha }}
       is_tag: ${{ steps.ctx.outputs.is_tag }}
-      docker_tags: ${{ steps.ctx.outputs.docker_tags }}
+      docker_tags_canonical: ${{ steps.ctx.outputs.docker_tags_canonical }}
+      docker_tags_deprecated: ${{ steps.ctx.outputs.docker_tags_deprecated }}
     steps:
       - name: Compute build context
         id: ctx
@@ -112,11 +367,13 @@ jobs:
           echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
           if [[ "$REF_TYPE" == "tag" ]]; then
             echo "is_tag=true" >> "$GITHUB_OUTPUT"
-            echo "docker_tags=-t ${{ env.DOCKER_IMAGE }}:$HEAD_BRANCH -t ${{ env.DOCKER_IMAGE }}:latest" >> "$GITHUB_OUTPUT"
+            echo "docker_tags_canonical=-t ${{ env.DOCKER_IMAGE }}:$HEAD_BRANCH -t ${{ env.DOCKER_IMAGE }}:latest" >> "$GITHUB_OUTPUT"
+            echo "docker_tags_deprecated=-t ${{ env.DOCKER_IMAGE_DEPRECATED }}:$HEAD_BRANCH -t ${{ env.DOCKER_IMAGE_DEPRECATED }}:latest" >> "$GITHUB_OUTPUT"
           else
             # dev branch push or manual workflow_dispatch
             echo "is_tag=false" >> "$GITHUB_OUTPUT"
-            echo "docker_tags=-t ${{ env.DOCKER_IMAGE }}:dev" >> "$GITHUB_OUTPUT"
+            echo "docker_tags_canonical=-t ${{ env.DOCKER_IMAGE }}:dev" >> "$GITHUB_OUTPUT"
+            echo "docker_tags_deprecated=-t ${{ env.DOCKER_IMAGE_DEPRECATED }}:dev" >> "$GITHUB_OUTPUT"
           fi
 
   build:
@@ -125,10 +382,24 @@ jobs:
       fail-fast: true
       matrix:
         include:
+          # 4 jobs total: 2 platforms × 2 image flavours. The deprecated
+          # mirror and the canonical image differ only in the published
+          # name + the DOCKER_IMAGE_NAME build-arg baked in (drives the
+          # in-app deprecation banner). Layer cache is shared across
+          # flavours via cache-scope so the second flavour's build is
+          # near-instant.
           - platform: linux/amd64
             runner: ubuntu-latest
+            image_flavour: canonical
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            image_flavour: deprecated
           - platform: linux/arm64
             runner: ubuntu-24.04-arm
+            image_flavour: canonical
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            image_flavour: deprecated
     runs-on: ${{ matrix.runner }}
 
     steps:
@@ -154,6 +425,30 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
+      - name: Resolve image name for this flavour
+        id: image
+        run: |
+          if [[ "${{ matrix.image_flavour }}" == "canonical" ]]; then
+            echo "name=${{ env.DOCKER_IMAGE }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${{ env.DOCKER_IMAGE_DEPRECATED }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Generate bundled release notes
+        # Fetches GitHub Releases into media_preview_generator/release_notes.json
+        # so the docker COPY picks it up. Powers the "What's new" popup
+        # without a live api.github.com call on user dashboards.
+        # Uses ${{ secrets.GITHUB_TOKEN }} for the 5000/hr rate limit
+        # (vs 60/hr anon — runners share an IP across the org).
+        # Best-effort: a fetch failure does NOT fail the build; the
+        # runtime falls back to a live GitHub fetch when the bundle is
+        # missing, so the worst case is the pre-bundle UX, never a
+        # broken image.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 scripts/refresh_release_notes.py || echo "::warning::Release-notes refresh failed; image will fall back to live GitHub fetch at runtime."
+
       - name: Build and push by digest
         id: build
         uses: docker/build-push-action@v6
@@ -163,8 +458,9 @@ jobs:
           build-args: |
             GIT_BRANCH=${{ needs.context.outputs.head_branch }}
             GIT_SHA=${{ needs.context.outputs.head_sha }}
+            DOCKER_IMAGE_NAME=${{ steps.image.outputs.name }}
             ${{ needs.context.outputs.is_tag == 'true' && format('SETUPTOOLS_SCM_PRETEND_VERSION={0}', needs.context.outputs.head_branch) || '' }}
-          outputs: type=image,name=${{ env.DOCKER_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          outputs: type=image,name=${{ steps.image.outputs.name }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=${{ matrix.platform }}
           cache-to: type=gha,scope=${{ matrix.platform }},mode=max
 
@@ -177,14 +473,19 @@ jobs:
       - name: Upload digest
         uses: actions/upload-artifact@v4
         with:
-          name: digest-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}
+          name: digest-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}-${{ matrix.image_flavour }}
           path: /tmp/digests/*
           if-no-files-found: error
           retention-days: 1
 
   merge:
     runs-on: ubuntu-latest
-    needs: [context, build]
+    # Publishing gate: hold the multi-arch manifest creation (which
+    # creates the public :dev / :latest tags) until BOTH the digest
+    # builds AND the test/e2e suites pass. The earlier `test` and
+    # `e2e` jobs run in parallel with `build` for speed, but nothing
+    # public ships unless all three are green.
+    needs: [context, build, test, e2e]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -192,11 +493,18 @@ jobs:
           fetch-depth: 0  # Full history for setuptools-scm versioning
           ref: ${{ needs.context.outputs.head_sha }}
 
-      - name: Download digests
+      - name: Download canonical digests
         uses: actions/download-artifact@v4
         with:
-          path: /tmp/digests
-          pattern: digest-*
+          path: /tmp/digests/canonical
+          pattern: digest-*-canonical
+          merge-multiple: true
+
+      - name: Download deprecated digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests/deprecated
+          pattern: digest-*-deprecated
           merge-multiple: true
 
       - name: Set up Docker Buildx
@@ -208,12 +516,19 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Create manifest list and push
-        working-directory: /tmp/digests
+      - name: Create canonical manifest list and push
+        working-directory: /tmp/digests/canonical
         run: |
           docker buildx imagetools create \
-            ${{ needs.context.outputs.docker_tags }} \
+            ${{ needs.context.outputs.docker_tags_canonical }} \
             $(printf '${{ env.DOCKER_IMAGE }}@sha256:%s ' *)
+
+      - name: Create deprecated mirror manifest list and push
+        working-directory: /tmp/digests/deprecated
+        run: |
+          docker buildx imagetools create \
+            ${{ needs.context.outputs.docker_tags_deprecated }} \
+            $(printf '${{ env.DOCKER_IMAGE_DEPRECATED }}@sha256:%s ' *)
 
   update-dockerhub-description:
     runs-on: ubuntu-latest
@@ -224,10 +539,18 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Update Docker Hub description
+      - name: Update canonical Docker Hub description
+        uses: peter-evans/dockerhub-description@v5
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: stevezzau/media_preview_generator
+          readme-filepath: ./DOCKERHUB_README.md
+
+      - name: Update deprecated mirror Docker Hub description
         uses: peter-evans/dockerhub-description@v5
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: stevezzau/plex_generate_vid_previews
-          readme-filepath: ./DOCKERHUB_README.md
+          readme-filepath: ./DOCKERHUB_DEPRECATED_README.md

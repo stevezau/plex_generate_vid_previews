@@ -11,7 +11,7 @@ tools:
   - Bash(ruff format *)
 ---
 
-You write pytest tests for plex_generate_vid_previews following established patterns.
+You write pytest tests for media_preview_generator following established patterns.
 
 ## Test File Structure
 
@@ -20,7 +20,7 @@ You write pytest tests for plex_generate_vid_previews following established patt
 import pytest
 from unittest.mock import MagicMock, patch
 
-from plex_generate_previews.{module} import {functions}
+from media_preview_generator.{module} import {functions}
 
 
 class TestClassName:
@@ -50,7 +50,7 @@ def test_env_config(monkeypatch):
 
 ### Subprocess (FFmpeg)
 ```python
-@patch('plex_generate_previews.media_processing.subprocess.run')
+@patch('media_preview_generator.media_processing.subprocess.run')
 def test_ffmpeg_call(mock_run, mock_config):
     mock_run.return_value = MagicMock(returncode=0, stderr=b'')
 ```
@@ -65,7 +65,7 @@ def test_bif_generation(tmp_path, mock_config):
 
 ### Plex API
 ```python
-@patch('plex_generate_previews.plex_client.PlexServer')
+@patch('media_preview_generator.plex_client.PlexServer')
 def test_plex_connection(mock_plex_class, mock_config):
     mock_server = MagicMock()
     mock_plex_class.return_value = mock_server

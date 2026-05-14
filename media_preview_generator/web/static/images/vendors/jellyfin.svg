@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" role="img" aria-label="Jellyfin">
+  <title>Jellyfin</title>
+  <!-- Jellyfin-inspired purple/teal twin-petal mark. -->
+  <defs>
+    <linearGradient id="jf-grad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#aa5cc3"/>
+      <stop offset="100%" stop-color="#00a4dc"/>
+    </linearGradient>
+  </defs>
+  <path fill="url(#jf-grad)" d="M12 3l8 14H4z"/>
+  <path fill="url(#jf-grad)" opacity="0.85" d="M12 9l5 8H7z"/>
+</svg>

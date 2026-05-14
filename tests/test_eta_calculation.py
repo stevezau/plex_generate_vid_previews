@@ -5,17 +5,8 @@ Job-level ETA was removed; worker ETA (from ffmpeg) is still exposed via WorkerS
 This module tests the data model and formatting contract for worker ETA.
 """
 
-from plex_generate_previews.web.jobs import JobProgress, WorkerStatus
-
-
-def _format_eta(seconds: float) -> str:
-    """Mirror of the _format_eta used in routes for worker ETA (ffmpeg remaining_time)."""
-    if seconds < 60:
-        return f"{int(seconds)}s"
-    elif seconds < 3600:
-        return f"{int(seconds // 60)}m {int(seconds % 60)}s"
-    else:
-        return f"{int(seconds // 3600)}h {int((seconds % 3600) // 60)}m"
+from media_preview_generator.web.jobs import JobProgress, WorkerStatus
+from media_preview_generator.web.routes.job_runner import _format_eta
 
 
 class TestJobProgressNoEta:

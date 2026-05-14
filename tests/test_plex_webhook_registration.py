@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from plex_generate_previews.web import plex_webhook_registration as pwh
+from media_preview_generator.web import plex_webhook_registration as pwh
 
 
 @pytest.fixture
@@ -39,6 +39,24 @@ def test_register_embeds_token_when_auth_provided():
     with patch("plexapi.myplex.MyPlexAccount", return_value=fake):
         pwh.register("token", "http://host/api/webhooks/plex", auth_token="abc")
     fake.addWebhook.assert_called_once_with("http://host/api/webhooks/plex?token=abc")
+
+
+def test_register_removes_legacy_plex_endpoint_when_targeting_incoming():
+    """Re-registering against /api/webhooks/incoming should also remove a
+    stale /api/webhooks/plex registration (one-time migration so installs
+    upgraded from the per-vendor URL don't end up double-firing every
+    event).
+    """
+    fake = MagicMock()
+    fake.webhooks.side_effect = [
+        ["http://host/api/webhooks/plex?token=OLD"],
+        ["http://host/api/webhooks/incoming?token=NEW"],
+    ]
+    fake.subscriptionActive = True
+    with patch("plexapi.myplex.MyPlexAccount", return_value=fake):
+        pwh.register("token", "http://host/api/webhooks/incoming", auth_token="NEW")
+    fake.deleteWebhook.assert_called_once_with("http://host/api/webhooks/plex?token=OLD")
+    fake.addWebhook.assert_called_once_with("http://host/api/webhooks/incoming?token=NEW")
 
 
 def test_register_replaces_stale_url_with_old_token():

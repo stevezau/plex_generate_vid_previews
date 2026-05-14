@@ -11,8 +11,8 @@ from unittest.mock import MagicMock, mock_open, patch
 
 import pytest
 
-from plex_generate_previews.gpu import VulkanProbeResult
-from plex_generate_previews.processing import (
+from media_preview_generator.gpu import VulkanProbeResult
+from media_preview_generator.processing import (
     DV5_PATH_INTEL_OPENCL,
     DV5_PATH_LIBPLACEBO,
     DV5_PATH_VAAPI_VULKAN,
@@ -35,7 +35,6 @@ from plex_generate_previews.processing import (
     generate_images,
     get_failures,
     parse_ffmpeg_progress_line,
-    process_item,
     record_failure,
 )
 
@@ -457,7 +456,7 @@ class TestDetectHwaccelRuntimeError:
 class TestGenerateImages:
     """Test thumbnail generation with FFmpeg."""
 
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
     @patch("subprocess.run")
     @patch("os.path.exists")
@@ -494,15 +493,26 @@ class TestGenerateImages:
 
         generate_images("/test/video.mp4", temp_dir, None, None, mock_config)
 
-        # Verify FFmpeg was called
-        assert mock_popen.called
+        # Verify FFmpeg was called with the configured binary AND a
+        # well-formed invocation — i.e. ``-i <source>`` (not just the
+        # source path floating in argv) and an output destination
+        # written into temp_dir. A regression that builds a malformed
+        # command (e.g. forgets ``-i`` or points the output elsewhere)
+        # would silently pass with the prior `_path in args` check.
+        mock_popen.assert_called_once()
         args = mock_popen.call_args[0][0]
-        assert mock_config.ffmpeg_path in args
-        assert "/test/video.mp4" in args
+        assert args[0] == mock_config.ffmpeg_path, f"FFmpeg binary should be argv[0]; got {args[0]!r} (full: {args!r})"
+        assert "-i" in args, f"FFmpeg invocation missing -i: {args!r}"
+        i_index = args.index("-i")
+        assert args[i_index + 1] == "/test/video.mp4", f"-i must be followed by source path; got {args[i_index + 1]!r}"
+        # Output target must point under the requested temp_dir so a
+        # regression that writes to a system location is caught.
+        output_arg = args[-1]
+        assert temp_dir in output_arg, f"FFmpeg output {output_arg!r} not under {temp_dir!r}"
 
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
-    @patch("plex_generate_previews.processing.ffmpeg_runner.time")
-    @patch("plex_generate_previews.processing.orchestrator.time")
+    @patch("media_preview_generator.processing.generator.MediaInfo")
+    @patch("media_preview_generator.processing.ffmpeg_runner.time")
+    @patch("media_preview_generator.processing.generator.time")
     @patch("subprocess.Popen")
     @patch("subprocess.run")
     @patch("os.path.exists")
@@ -561,7 +571,7 @@ class TestGenerateImages:
         assert mock_proc.kill.call_count == 2
         assert mock_proc.wait.call_count == 2
 
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
     @patch("subprocess.run")
     @patch("os.path.exists")
@@ -598,12 +608,21 @@ class TestGenerateImages:
         generate_images("/test/video.mp4", temp_dir, "NVIDIA", "cuda", mock_config)
 
         args = mock_popen.call_args[0][0]
-        assert "-hwaccel" in args
-        assert "cuda" in args
+        # -hwaccel must be IMMEDIATELY followed by "cuda" — checking
+        # that both tokens appear independently would pass even if the
+        # order were reversed (FFmpeg silently ignores trailing args
+        # before -i, masking the bug).
+        assert "-hwaccel" in args, f"NVIDIA path missing -hwaccel: {args!r}"
+        assert args[args.index("-hwaccel") + 1] == "cuda", (
+            f"-hwaccel must be followed by 'cuda'; got {args[args.index('-hwaccel') + 1]!r}"
+        )
         # Generic "cuda" (no index suffix) must NOT add -hwaccel_device.
         assert "-hwaccel_device" not in args
+        # And the source must still be wired through -i — the GPU
+        # branch must not accidentally clobber the input.
+        assert "-i" in args and args[args.index("-i") + 1] == "/test/video.mp4"
 
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
     @patch("subprocess.run")
     @patch("os.path.exists")
@@ -644,7 +663,7 @@ class TestGenerateImages:
         assert "-hwaccel_device" in args
         assert args[args.index("-hwaccel_device") + 1] == "1"
 
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
     @patch("subprocess.run")
     @patch("os.path.exists")
@@ -681,11 +700,25 @@ class TestGenerateImages:
         generate_images("/test/video.mp4", temp_dir, "AMD", "/dev/dri/renderD128", mock_config)
 
         args = mock_popen.call_args[0][0]
-        assert "-hwaccel" in args
-        assert "vaapi" in args
-        assert "/dev/dri/renderD128" in args
+        # Mirror the NVIDIA test (line ~581): assert adjacency rather than
+        # bare presence. A token-reorder regression that drops -hwaccel but
+        # leaves "vaapi" floating in argv would silently pass the old
+        # "vaapi" in args check (e.g. via -init_hw_device vaapi=...).
+        assert "-hwaccel" in args, f"AMD path missing -hwaccel: {args!r}"
+        assert args[args.index("-hwaccel") + 1] == "vaapi", (
+            f"-hwaccel must be followed by 'vaapi'; got {args[args.index('-hwaccel') + 1]!r}"
+        )
+        # The SUT (ffmpeg_runner.py:323-328) uses the modern -hwaccel_device
+        # (NOT the deprecated -vaapi_device) to carry the device path.
+        assert "-hwaccel_device" in args, f"AMD path missing -hwaccel_device: {args!r}"
+        assert args[args.index("-hwaccel_device") + 1] == "/dev/dri/renderD128", (
+            f"-hwaccel_device must be followed by the render path; got {args[args.index('-hwaccel_device') + 1]!r}"
+        )
+        # And the source must still flow through -i — the GPU branch must
+        # not accidentally clobber the input wiring.
+        assert "-i" in args and args[args.index("-i") + 1] == "/test/video.mp4"
 
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
     @patch("subprocess.run")
     @patch("os.path.exists")
@@ -722,12 +755,19 @@ class TestGenerateImages:
         generate_images("/test/video.mp4", temp_dir, None, None, mock_config)
 
         args = mock_popen.call_args[0][0]
-        # Should not have hwaccel
-        if "-hwaccel" in args:
-            # If it exists, it shouldn't be used (heuristic may add it)
-            pass
+        # CPU-only path: gpu=None should NOT enable any hardware decoder.
+        # Hardware-decoder flags are -hwaccel <type> with type in
+        # {cuda, vaapi, qsv, videotoolbox, drm, vulkan}. Asserting absence
+        # explicitly catches a regression that silently wires CUDA into the
+        # CPU branch — the "if/pass" we replaced let that pass forever.
+        gpu_decoders = {"cuda", "vaapi", "qsv", "videotoolbox", "drm", "vulkan", "auto"}
+        for i, a in enumerate(args):
+            if a == "-hwaccel" and i + 1 < len(args):
+                assert args[i + 1] not in gpu_decoders, (
+                    f"CPU-only generate_images() invoked GPU decoder {args[i + 1]!r} via -hwaccel"
+                )
 
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
     @patch("subprocess.run")
     @patch("os.path.exists")
@@ -769,11 +809,25 @@ class TestGenerateImages:
         vf_index = args.index("-vf")
         vf_value = args[vf_index + 1]
 
-        # Should contain HDR processing filters
-        assert "zscale" in vf_value
-        assert "tonemap" in vf_value
+        # zscale → tonemap MUST appear in that order in the filter
+        # graph. A reversed chain (tonemap before zscale) silently
+        # produces wrong colours because tonemap expects linear-light
+        # input that zscale is responsible for producing. The previous
+        # form of this test (independent presence checks) would pass
+        # even with the chain reversed.
+        assert "zscale" in vf_value, f"HDR path missing zscale: {vf_value!r}"
+        assert "tonemap" in vf_value, f"HDR path missing tonemap: {vf_value!r}"
+        zscale_pos = vf_value.find("zscale")
+        tonemap_pos = vf_value.find("tonemap")
+        assert zscale_pos < tonemap_pos, (
+            f"HDR filter chain order wrong: zscale must come before tonemap; got {vf_value!r}"
+        )
+        # Tonemap must specify an algorithm — a bare ``tonemap`` with
+        # no operator falls back to FFmpeg's default which differs
+        # across versions; pin the contract.
+        assert "tonemap=" in vf_value, f"tonemap must specify an algorithm (e.g. tonemap=hable); got {vf_value!r}"
 
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
     @patch("subprocess.run")
     @patch("os.rename")
@@ -817,72 +871,50 @@ class TestGenerateImages:
 
         generate_images("/test/video.mp4", temp_dir, None, None, mock_config)
 
-        # Verify rename was called with correct arguments
-        # img-000001.jpg (frame 0) -> 0000000000.jpg (0 seconds)
-        # img-000002.jpg (frame 1) -> 0000000005.jpg (5 seconds)
-        # img-000003.jpg (frame 2) -> 0000000010.jpg (10 seconds)
-        assert mock_rename.called
+        # Verify rename was called once per frame, mapping img-NNNNNN.jpg to
+        # the seconds-based name the BIF packer expects:
+        #   img-000001.jpg (frame 0) -> 0000000000.jpg (0 seconds)
+        #   img-000002.jpg (frame 1) -> 0000000005.jpg (5 seconds)
+        #   img-000003.jpg (frame 2) -> 0000000010.jpg (10 seconds)
         calls = mock_rename.call_args_list
         assert len(calls) == 3
+        renamed_targets = [os.path.basename(c.args[1]) for c in calls]
+        assert renamed_targets == ["0000000000.jpg", "0000000005.jpg", "0000000010.jpg"]
 
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    def test_generate_images_accepts_progress_callback_signature(self, mock_config):
+        """generate_images must accept a 6th positional ``progress_callback``
+        argument (the dispatcher passes one in real workloads). This test
+        REPLACED a previous version that called the function with mocks too
+        thin to actually drive the FFmpeg progress path; the old version
+        had NO assertion at all and a comment admitting "may not be called".
+
+        Here we verify the public contract via inspection — the call signature
+        must match what the dispatcher relies on. The actual progress-parsing
+        path is exercised end-to-end by tests/integration/test_e2e_*."""
+        import inspect
+
+        sig = inspect.signature(generate_images)
+        params = list(sig.parameters.values())
+        # Param order from production: video_file, output_folder, gpu, gpu_device,
+        # config, progress_callback (optional). At least 5 required + 1 optional.
+        assert len(params) >= 6, f"generate_images signature changed: {params!r}"
+        # progress_callback must be a positional-or-keyword parameter (not a
+        # keyword-only / **kwargs catch-all) so the dispatcher's positional
+        # invocation keeps working.
+        cb_param = params[5]
+        assert cb_param.name == "progress_callback", f"6th param is {cb_param.name!r}, expected 'progress_callback'"
+        assert cb_param.kind in (cb_param.POSITIONAL_OR_KEYWORD, cb_param.POSITIONAL_ONLY)
+
+    @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
     @patch("subprocess.run")
+    @patch("media_preview_generator.processing.generator.os.rename")
+    @patch("media_preview_generator.processing.generator.os.remove")
     @patch("os.path.exists")
     @patch("builtins.open", new_callable=mock_open)
     @patch("time.sleep")
-    @patch("glob.glob")
-    def test_generate_images_progress_callback(
-        self,
-        mock_glob,
-        mock_sleep,
-        mock_file,
-        mock_exists,
-        mock_run,
-        mock_popen,
-        mock_mediainfo,
-        temp_dir,
-        mock_config,
-    ):
-        """Test that progress callback is called during processing."""
-        mock_run.return_value = MagicMock(returncode=0)
-
-        mock_info = MagicMock()
-        mock_info.video_tracks = [MagicMock(hdr_format=None)]
-        mock_mediainfo.parse.return_value = mock_info
-
-        mock_proc = MagicMock()
-        mock_proc.poll.side_effect = [None, None, 0]
-        mock_proc.returncode = 0
-        mock_popen.return_value = mock_proc
-
-        mock_exists.return_value = True
-        mock_glob.return_value = []
-
-        # Mock reading FFmpeg output
-        mock_file.return_value.readlines.return_value = ["frame= 100 fps=30.0 time=00:00:10.00 speed=1.0x\n"]
-
-        callback_called = [False]
-
-        def callback(*args, **kwargs):
-            callback_called[0] = True
-
-        generate_images("/test/video.mp4", temp_dir, None, None, mock_config, callback)
-
-        # Callback should have been called at least once
-        # Note: Due to mocking, it may not be called, but the structure is there
-        # This test verifies the code doesn't crash with a callback
-
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
-    @patch("subprocess.Popen")
-    @patch("subprocess.run")
-    @patch("plex_generate_previews.processing.orchestrator.os.rename")
-    @patch("plex_generate_previews.processing.orchestrator.os.remove")
-    @patch("os.path.exists")
-    @patch("builtins.open", new_callable=mock_open)
-    @patch("time.sleep")
-    @patch("plex_generate_previews.processing.orchestrator.glob.glob")
-    @patch("plex_generate_previews.processing.orchestrator._detect_codec_error")
+    @patch("media_preview_generator.processing.generator.glob.glob")
+    @patch("media_preview_generator.processing.generator._detect_codec_error")
     def test_generate_images_raises_codec_error_in_gpu_context(
         self,
         mock_detect,
@@ -934,22 +966,26 @@ class TestGenerateImages:
             generate_images("/test/video.mp4", temp_dir, "NVIDIA", None, mock_config)
 
         assert "GPU processing failed" in str(exc_info.value)
-        assert mock_detect.called
+        # Codec-error detection ran on the failing FFmpeg process — that's
+        # the predicate that gates whether to raise CodecNotSupportedError
+        # vs fall back to CPU. Once is enough; more would mean the retry
+        # path is mis-checking.
+        assert mock_detect.call_count >= 1
         assert mock_popen.call_count == 2  # GPU with skip_frame + GPU without skip_frame (no CPU fallback)
 
-        # Verify cleanup was attempted
-        assert mock_remove.called
+        # Verify cleanup was attempted at least once for the partial output dir.
+        assert mock_remove.call_count >= 1
 
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
     @patch("subprocess.run")
-    @patch("plex_generate_previews.processing.orchestrator.os.rename")
-    @patch("plex_generate_previews.processing.orchestrator.os.remove")
+    @patch("media_preview_generator.processing.generator.os.rename")
+    @patch("media_preview_generator.processing.generator.os.remove")
     @patch("os.path.exists")
     @patch("builtins.open", new_callable=mock_open)
     @patch("time.sleep")
-    @patch("plex_generate_previews.processing.orchestrator.glob.glob")
-    @patch("plex_generate_previews.processing.orchestrator._detect_codec_error")
+    @patch("media_preview_generator.processing.generator.glob.glob")
+    @patch("media_preview_generator.processing.generator._detect_codec_error")
     def test_generate_images_no_cpu_fallback_when_disabled(
         self,
         mock_detect,
@@ -1007,19 +1043,19 @@ class TestGenerateImages:
         with pytest.raises(CodecNotSupportedError):
             generate_images("/test/video.mp4", temp_dir, "NVIDIA", None, mock_config)
 
-        assert mock_detect.called
+        assert mock_detect.call_count >= 1
         assert mock_popen.call_count == 2  # Initial attempt + skip_frame retry, no CPU fallback (exception raised)
 
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
     @patch("subprocess.run")
-    @patch("plex_generate_previews.processing.orchestrator.os.rename")
-    @patch("plex_generate_previews.processing.orchestrator.os.remove")
+    @patch("media_preview_generator.processing.generator.os.rename")
+    @patch("media_preview_generator.processing.generator.os.remove")
     @patch("os.path.exists")
     @patch("builtins.open", new_callable=mock_open)
     @patch("time.sleep")
-    @patch("plex_generate_previews.processing.orchestrator.glob.glob")
-    @patch("plex_generate_previews.processing.orchestrator._detect_codec_error")
+    @patch("media_preview_generator.processing.generator.glob.glob")
+    @patch("media_preview_generator.processing.generator._detect_codec_error")
     def test_generate_images_no_cpu_fallback_when_no_codec_error(
         self,
         mock_detect,
@@ -1080,19 +1116,19 @@ class TestGenerateImages:
         # Should fail (no fallback since not codec error)
         assert success is False
         assert image_count == 0
-        assert mock_detect.called
+        assert mock_detect.call_count >= 1
         assert mock_popen.call_count == 2  # Initial attempt + skip_frame retry, no CPU fallback
 
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
     @patch("subprocess.run")
-    @patch("plex_generate_previews.processing.orchestrator.os.rename")
-    @patch("plex_generate_previews.processing.orchestrator.os.remove")
+    @patch("media_preview_generator.processing.generator.os.rename")
+    @patch("media_preview_generator.processing.generator.os.remove")
     @patch("os.path.exists")
     @patch("builtins.open", new_callable=mock_open)
     @patch("time.sleep")
-    @patch("plex_generate_previews.processing.orchestrator.glob.glob")
-    @patch("plex_generate_previews.processing.orchestrator._detect_codec_error")
+    @patch("media_preview_generator.processing.generator.glob.glob")
+    @patch("media_preview_generator.processing.generator._detect_codec_error")
     def test_generate_images_dolby_vision_rpu_error_retries_with_dv_safe_filter_on_gpu(
         self,
         mock_detect,
@@ -1185,16 +1221,16 @@ class TestGenerateImages:
         assert "zscale" not in vf_value
         assert "tonemap" not in vf_value
 
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
     @patch("subprocess.run")
-    @patch("plex_generate_previews.processing.orchestrator.os.rename")
-    @patch("plex_generate_previews.processing.orchestrator.os.remove")
+    @patch("media_preview_generator.processing.generator.os.rename")
+    @patch("media_preview_generator.processing.generator.os.remove")
     @patch("os.path.exists")
     @patch("builtins.open", new_callable=mock_open)
     @patch("time.sleep")
-    @patch("plex_generate_previews.processing.orchestrator.glob.glob")
-    @patch("plex_generate_previews.processing.orchestrator._detect_codec_error")
+    @patch("media_preview_generator.processing.generator.glob.glob")
+    @patch("media_preview_generator.processing.generator._detect_codec_error")
     def test_generate_images_dolby_vision_rpu_error_cpu_returns_failure(
         self,
         mock_detect,
@@ -1249,16 +1285,16 @@ class TestGenerateImages:
         assert hw_used is False
         assert mock_popen.call_count == 3
 
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
     @patch("subprocess.run")
-    @patch("plex_generate_previews.processing.orchestrator.os.rename")
-    @patch("plex_generate_previews.processing.orchestrator.os.remove")
+    @patch("media_preview_generator.processing.generator.os.rename")
+    @patch("media_preview_generator.processing.generator.os.remove")
     @patch("os.path.exists")
     @patch("builtins.open", new_callable=mock_open)
     @patch("time.sleep")
-    @patch("plex_generate_previews.processing.orchestrator.glob.glob")
-    @patch("plex_generate_previews.processing.orchestrator._detect_codec_error")
+    @patch("media_preview_generator.processing.generator.glob.glob")
+    @patch("media_preview_generator.processing.generator._detect_codec_error")
     def test_generate_images_dolby_vision_rpu_error_retries_with_dv_safe_filter_on_cpu(
         self,
         mock_detect,
@@ -1338,257 +1374,6 @@ class TestGenerateImages:
         assert "scale=w=320:h=240:force_original_aspect_ratio=decrease" in vf_value
         assert "zscale" not in vf_value
         assert "tonemap" not in vf_value
-
-
-class TestProcessItem:
-    """Test the complete item processing pipeline."""
-
-    @patch("plex_generate_previews.processing.orchestrator.generate_bif")
-    @patch("plex_generate_previews.processing.orchestrator.generate_images")
-    @patch("os.path.isfile")
-    @patch("os.path.isdir")
-    @patch("os.makedirs")
-    @patch("shutil.rmtree")
-    def test_process_item_success(
-        self,
-        mock_rmtree,
-        mock_makedirs,
-        mock_isdir,
-        mock_isfile,
-        mock_gen_images,
-        mock_gen_bif,
-        mock_config,
-        plex_xml_movie_tree,
-    ):
-        """Test successful processing of a media item."""
-        # Mock Plex query response
-        mock_plex = MagicMock()
-
-        import xml.etree.ElementTree as ET
-
-        mock_plex.query.return_value = ET.fromstring(plex_xml_movie_tree)
-
-        # Mock file system - media file exists but index.bif doesn't
-        def isfile_side_effect(path):
-            # Media files exist, but not BIF files
-            return ".bif" not in path
-
-        mock_isfile.side_effect = isfile_side_effect
-        mock_isdir.return_value = False  # Directories don't exist yet
-
-        # Set config paths
-        mock_config.plex_config_folder = "/config/plex"
-        mock_config.tmp_folder = "/tmp"
-        mock_config.plex_local_videos_path_mapping = ""
-        mock_config.plex_videos_path_mapping = ""
-        mock_config.regenerate_thumbnails = False
-
-        # Simulate successful image generation: (success, image_count, hw, seconds, speed)
-        mock_gen_images.return_value = (True, 3, False, 1.2, "1.0x")
-        process_item("/library/metadata/54321", None, None, mock_config, mock_plex)
-
-        # Verify images and BIF were generated
-        assert mock_gen_images.called
-        assert mock_gen_bif.called
-
-    @patch("plex_generate_previews.processing.orchestrator.generate_bif")
-    @patch("plex_generate_previews.processing.orchestrator.generate_images")
-    @patch("os.path.isfile")
-    @patch("os.path.isdir")
-    @patch("os.makedirs")
-    @patch("shutil.rmtree")
-    def test_process_item_path_mapping(
-        self,
-        mock_rmtree,
-        mock_makedirs,
-        mock_isdir,
-        mock_isfile,
-        mock_gen_images,
-        mock_gen_bif,
-        mock_config,
-        plex_xml_movie_tree,
-    ):
-        """Test that path mapping is applied correctly."""
-        mock_plex = MagicMock()
-
-        import xml.etree.ElementTree as ET
-
-        mock_plex.query.return_value = ET.fromstring(plex_xml_movie_tree)
-
-        # Configure path mapping
-        mock_config.path_mappings = [
-            {
-                "plex_prefix": "/data",
-                "local_prefix": "/mnt/videos",
-                "webhook_prefixes": [],
-            }
-        ]
-        mock_config.plex_config_folder = "/config/plex"
-        mock_config.tmp_folder = "/tmp"
-        mock_config.regenerate_thumbnails = False
-
-        # Mock file system - media file exists but index.bif doesn't
-        def isfile_side_effect(path):
-            # Media files exist, but not BIF files
-            return ".bif" not in path
-
-        mock_isfile.side_effect = isfile_side_effect
-        mock_isdir.return_value = False  # Directories don't exist yet
-
-        mock_gen_images.return_value = (True, 2, False, 1.0, "1.0x")
-        process_item("/library/metadata/54321", None, None, mock_config, mock_plex)
-
-        # Verify generate_images was called with mapped path
-        assert mock_gen_images.called
-        called_path = mock_gen_images.call_args[0][0]
-        # Path should be remapped from /data to /mnt/videos
-        # On Windows, normpath converts forward slashes to backslashes
-        import os as _os
-
-        expected_prefix = _os.path.normpath("/mnt/videos")
-        assert called_path.startswith(expected_prefix)
-
-    @patch("plex_generate_previews.processing.orchestrator.generate_bif")
-    @patch("plex_generate_previews.processing.orchestrator.generate_images")
-    @patch("os.path.isfile")
-    @patch("os.path.isdir")
-    @patch("os.makedirs")
-    @patch("shutil.rmtree")
-    def test_process_item_mergerfs_multiple_plex_roots(
-        self,
-        mock_rmtree,
-        mock_makedirs,
-        mock_isdir,
-        mock_isfile,
-        mock_gen_images,
-        mock_gen_bif,
-        mock_config,
-        plex_xml_movie_tree,
-    ):
-        """Multiple Plex roots map to one local path in process_item."""
-        mock_plex = MagicMock()
-        import xml.etree.ElementTree as ET
-
-        # Fixture has /data/movies/...; use XML with /data_disk1/ so we map to /data
-        tree_xml = plex_xml_movie_tree.replace(
-            'file="/data/movies/',
-            'file="/data_disk1/movies/',
-        )
-        mock_plex.query.return_value = ET.fromstring(tree_xml)
-
-        mock_config.path_mappings = [
-            {
-                "plex_prefix": "/data_disk1",
-                "local_prefix": "/data",
-                "webhook_prefixes": [],
-            },
-            {
-                "plex_prefix": "/data_disk2",
-                "local_prefix": "/data",
-                "webhook_prefixes": [],
-            },
-        ]
-        mock_config.plex_config_folder = "/config/plex"
-        mock_config.tmp_folder = "/tmp"
-        mock_config.regenerate_thumbnails = False
-
-        def isfile_side_effect(path):
-            return ".bif" not in path
-
-        mock_isfile.side_effect = isfile_side_effect
-        mock_isdir.return_value = False
-        mock_gen_images.return_value = (True, 2, False, 1.0, "1.0x")
-
-        process_item("/library/metadata/54321", None, None, mock_config, mock_plex)
-
-        assert mock_gen_images.called
-        called_path = mock_gen_images.call_args[0][0]
-        import os as _os
-
-        expected_prefix = _os.path.normpath("/data")
-        assert called_path.startswith(expected_prefix), f"Expected path under /data, got {called_path}"
-
-    @patch("plex_generate_previews.processing.orchestrator.generate_bif")
-    @patch("plex_generate_previews.processing.orchestrator.generate_images")
-    @patch("os.path.isfile")
-    @patch("os.path.isdir")
-    @patch("os.makedirs")
-    @patch("shutil.rmtree")
-    def test_process_item_no_partial_prefix_match(
-        self,
-        mock_rmtree,
-        mock_makedirs,
-        mock_isdir,
-        mock_isfile,
-        mock_gen_images,
-        mock_gen_bif,
-        mock_config,
-        plex_xml_movie_tree,
-    ):
-        """Path /database/... is not remapped when mapping is /data -> /mnt/data."""
-        mock_plex = MagicMock()
-        import xml.etree.ElementTree as ET
-
-        tree_xml = plex_xml_movie_tree.replace(
-            'file="/data/movies/',
-            'file="/database/movies/',
-        )
-        mock_plex.query.return_value = ET.fromstring(tree_xml)
-
-        mock_config.path_mappings = [
-            {
-                "plex_prefix": "/data",
-                "local_prefix": "/mnt/data",
-                "webhook_prefixes": [],
-            }
-        ]
-        mock_config.plex_config_folder = "/config/plex"
-        mock_config.tmp_folder = "/tmp"
-        mock_config.regenerate_thumbnails = False
-
-        def isfile_side_effect(path):
-            return ".bif" not in path
-
-        mock_isfile.side_effect = isfile_side_effect
-        mock_isdir.return_value = False
-        mock_gen_images.return_value = (True, 2, False, 1.0, "1.0x")
-
-        process_item("/library/metadata/54321", None, None, mock_config, mock_plex)
-
-        assert mock_gen_images.called
-        called_path = mock_gen_images.call_args[0][0]
-        import os as _os
-
-        # Should still be /database/... (no mapping applied)
-        expected_prefix = _os.path.normpath("/database")
-        assert called_path.startswith(expected_prefix), f"Expected path under /database, got {called_path}"
-
-    @patch("os.path.isfile")
-    def test_process_item_missing_file(self, mock_isfile, mock_config, plex_xml_movie_tree):
-        """Test handling of missing video file."""
-        mock_plex = MagicMock()
-
-        import xml.etree.ElementTree as ET
-
-        mock_plex.query.return_value = ET.fromstring(plex_xml_movie_tree)
-
-        # File doesn't exist
-        mock_isfile.return_value = False
-
-        mock_config.plex_config_folder = "/config/plex"
-        mock_config.plex_local_videos_path_mapping = ""
-        mock_config.plex_videos_path_mapping = ""
-
-        # Should not crash, just skip the file
-        process_item("/library/metadata/54321", None, None, mock_config, mock_plex)
-
-    def test_process_item_plex_api_error(self, mock_config):
-        """Test handling of Plex API errors."""
-        mock_plex = MagicMock()
-        mock_plex.query.side_effect = Exception("Plex API error")
-
-        # Should not crash
-        process_item("/library/metadata/54321", None, None, mock_config, mock_plex)
 
 
 class TestMediaInfoImport:
@@ -1799,7 +1584,7 @@ class TestProactiveDVSkip:
             )
 
         with patch(
-            "plex_generate_previews.gpu.vulkan_probe.get_vulkan_device_info",
+            "media_preview_generator.gpu.vulkan_probe.get_vulkan_device_info",
             return_value=default_vulkan,
         ):
             success, image_count, hw_used, seconds, speed, *_ = generate_images(
@@ -1812,16 +1597,16 @@ class TestProactiveDVSkip:
 
         return mock_popen.call_args_list[0][0][0]
 
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
     @patch("subprocess.run")
-    @patch("plex_generate_previews.processing.orchestrator.os.rename")
-    @patch("plex_generate_previews.processing.orchestrator.os.remove")
+    @patch("media_preview_generator.processing.generator.os.rename")
+    @patch("media_preview_generator.processing.generator.os.remove")
     @patch("os.path.exists")
     @patch("builtins.open", new_callable=mock_open)
     @patch("time.sleep")
-    @patch("plex_generate_previews.processing.orchestrator.glob.glob")
-    @patch("plex_generate_previews.processing.orchestrator._detect_codec_error")
+    @patch("media_preview_generator.processing.generator.glob.glob")
+    @patch("media_preview_generator.processing.generator._detect_codec_error")
     def test_generate_images_dv_profile5_uses_libplacebo(
         self,
         mock_detect,
@@ -1913,16 +1698,16 @@ class TestProactiveDVSkip:
             "fps filter must run BEFORE hwmap so we drop frames at the VAAPI surface and don't waste tonemap cycles"
         )
 
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
     @patch("subprocess.run")
-    @patch("plex_generate_previews.processing.orchestrator.os.rename")
-    @patch("plex_generate_previews.processing.orchestrator.os.remove")
+    @patch("media_preview_generator.processing.generator.os.rename")
+    @patch("media_preview_generator.processing.generator.os.remove")
     @patch("os.path.exists")
     @patch("builtins.open", new_callable=mock_open)
     @patch("time.sleep")
-    @patch("plex_generate_previews.processing.orchestrator.glob.glob")
-    @patch("plex_generate_previews.processing.orchestrator._detect_codec_error")
+    @patch("media_preview_generator.processing.generator.glob.glob")
+    @patch("media_preview_generator.processing.generator._detect_codec_error")
     def test_generate_images_dv_profile5_amd_uses_vaapi_hwaccel(
         self,
         mock_detect,
@@ -1978,16 +1763,16 @@ class TestProactiveDVSkip:
         assert "libplacebo" in vf
         assert "hwupload" not in vf
 
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
     @patch("subprocess.run")
-    @patch("plex_generate_previews.processing.orchestrator.os.rename")
-    @patch("plex_generate_previews.processing.orchestrator.os.remove")
+    @patch("media_preview_generator.processing.generator.os.rename")
+    @patch("media_preview_generator.processing.generator.os.remove")
     @patch("os.path.exists")
     @patch("builtins.open", new_callable=mock_open)
     @patch("time.sleep")
-    @patch("plex_generate_previews.processing.orchestrator.glob.glob")
-    @patch("plex_generate_previews.processing.orchestrator._detect_codec_error")
+    @patch("media_preview_generator.processing.generator.glob.glob")
+    @patch("media_preview_generator.processing.generator._detect_codec_error")
     def test_generate_images_dv_profile5_non_dri_falls_back_to_sw_decode(
         self,
         mock_detect,
@@ -2043,16 +1828,16 @@ class TestProactiveDVSkip:
         assert "hwmap=derive_device=vulkan" not in vf
         assert "libplacebo" in vf
 
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
     @patch("subprocess.run")
-    @patch("plex_generate_previews.processing.orchestrator.os.rename")
-    @patch("plex_generate_previews.processing.orchestrator.os.remove")
+    @patch("media_preview_generator.processing.generator.os.rename")
+    @patch("media_preview_generator.processing.generator.os.remove")
     @patch("os.path.exists")
     @patch("builtins.open", new_callable=mock_open)
     @patch("time.sleep")
-    @patch("plex_generate_previews.processing.orchestrator.glob.glob")
-    @patch("plex_generate_previews.processing.orchestrator._detect_codec_error")
+    @patch("media_preview_generator.processing.generator.glob.glob")
+    @patch("media_preview_generator.processing.generator._detect_codec_error")
     def test_generate_images_dv_profile5_software_vulkan_uses_dv_safe_filter(
         self,
         mock_detect,
@@ -2119,16 +1904,16 @@ class TestProactiveDVSkip:
         assert "hwdownload" in vf
         assert vf.startswith("fps=fps=")
 
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
     @patch("subprocess.run")
-    @patch("plex_generate_previews.processing.orchestrator.os.rename")
-    @patch("plex_generate_previews.processing.orchestrator.os.remove")
+    @patch("media_preview_generator.processing.generator.os.rename")
+    @patch("media_preview_generator.processing.generator.os.remove")
     @patch("os.path.exists")
     @patch("builtins.open", new_callable=mock_open)
     @patch("time.sleep")
-    @patch("plex_generate_previews.processing.orchestrator.glob.glob")
-    @patch("plex_generate_previews.processing.orchestrator._detect_codec_error")
+    @patch("media_preview_generator.processing.generator.glob.glob")
+    @patch("media_preview_generator.processing.generator._detect_codec_error")
     def test_generate_images_dv_profile5_no_vulkan_device_uses_dv_safe_filter(
         self,
         mock_detect,
@@ -2176,16 +1961,16 @@ class TestProactiveDVSkip:
         assert "zscale" not in vf
         assert vf.startswith("fps=fps=")
 
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
     @patch("subprocess.run")
-    @patch("plex_generate_previews.processing.orchestrator.os.rename")
-    @patch("plex_generate_previews.processing.orchestrator.os.remove")
+    @patch("media_preview_generator.processing.generator.os.rename")
+    @patch("media_preview_generator.processing.generator.os.remove")
     @patch("os.path.exists")
     @patch("builtins.open", new_callable=mock_open)
     @patch("time.sleep")
-    @patch("plex_generate_previews.processing.orchestrator.glob.glob")
-    @patch("plex_generate_previews.processing.orchestrator._detect_codec_error")
+    @patch("media_preview_generator.processing.generator.glob.glob")
+    @patch("media_preview_generator.processing.generator._detect_codec_error")
     def test_generate_images_dv_profile5_nvidia_uses_nvdec(
         self,
         mock_detect,
@@ -2254,16 +2039,16 @@ class TestProactiveDVSkip:
         assert "hwupload" in vf
         assert "zscale" not in vf
 
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
     @patch("subprocess.run")
-    @patch("plex_generate_previews.processing.orchestrator.os.rename")
-    @patch("plex_generate_previews.processing.orchestrator.os.remove")
+    @patch("media_preview_generator.processing.generator.os.rename")
+    @patch("media_preview_generator.processing.generator.os.remove")
     @patch("os.path.exists")
     @patch("builtins.open", new_callable=mock_open)
     @patch("time.sleep")
-    @patch("plex_generate_previews.processing.orchestrator.glob.glob")
-    @patch("plex_generate_previews.processing.orchestrator._detect_codec_error")
+    @patch("media_preview_generator.processing.generator.glob.glob")
+    @patch("media_preview_generator.processing.generator._detect_codec_error")
     def test_generate_images_dv_profile5_cpu_skips_hwaccel(
         self,
         mock_detect,
@@ -2305,16 +2090,16 @@ class TestProactiveDVSkip:
         vf = args[args.index("-vf") + 1]
         assert "libplacebo" in vf
 
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
     @patch("subprocess.run")
-    @patch("plex_generate_previews.processing.orchestrator.os.rename")
-    @patch("plex_generate_previews.processing.orchestrator.os.remove")
+    @patch("media_preview_generator.processing.generator.os.rename")
+    @patch("media_preview_generator.processing.generator.os.remove")
     @patch("os.path.exists")
     @patch("builtins.open", new_callable=mock_open)
     @patch("time.sleep")
-    @patch("plex_generate_previews.processing.orchestrator.glob.glob")
-    @patch("plex_generate_previews.processing.orchestrator._detect_codec_error")
+    @patch("media_preview_generator.processing.generator.glob.glob")
+    @patch("media_preview_generator.processing.generator._detect_codec_error")
     def test_generate_images_dv_profile8_hdr10_uses_zscale(
         self,
         mock_detect,
@@ -2355,16 +2140,16 @@ class TestProactiveDVSkip:
         assert "tonemap" in vf
         assert "libplacebo" not in vf
 
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
     @patch("subprocess.run")
-    @patch("plex_generate_previews.processing.orchestrator.os.rename")
-    @patch("plex_generate_previews.processing.orchestrator.os.remove")
+    @patch("media_preview_generator.processing.generator.os.rename")
+    @patch("media_preview_generator.processing.generator.os.remove")
     @patch("os.path.exists")
     @patch("builtins.open", new_callable=mock_open)
     @patch("time.sleep")
-    @patch("plex_generate_previews.processing.orchestrator.glob.glob")
-    @patch("plex_generate_previews.processing.orchestrator._detect_codec_error")
+    @patch("media_preview_generator.processing.generator.glob.glob")
+    @patch("media_preview_generator.processing.generator._detect_codec_error")
     def test_generate_images_dv_hdr10plus_uses_zscale(
         self,
         mock_detect,
@@ -2404,16 +2189,16 @@ class TestProactiveDVSkip:
         assert "tonemap" in vf
         assert "libplacebo" not in vf
 
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
     @patch("subprocess.run")
-    @patch("plex_generate_previews.processing.orchestrator.os.rename")
-    @patch("plex_generate_previews.processing.orchestrator.os.remove")
+    @patch("media_preview_generator.processing.generator.os.rename")
+    @patch("media_preview_generator.processing.generator.os.remove")
     @patch("os.path.exists")
     @patch("builtins.open", new_callable=mock_open)
     @patch("time.sleep")
-    @patch("plex_generate_previews.processing.orchestrator.glob.glob")
-    @patch("plex_generate_previews.processing.orchestrator._detect_codec_error")
+    @patch("media_preview_generator.processing.generator.glob.glob")
+    @patch("media_preview_generator.processing.generator._detect_codec_error")
     def test_dv_profile8_with_gpu_uses_cuda_and_zscale(
         self,
         mock_detect,
@@ -2467,16 +2252,16 @@ class TestProactiveDVSkip:
 class TestLibplaceboFallback:
     """Test that libplacebo failure triggers the DV-safe retry with basic fps+scale."""
 
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
     @patch("subprocess.run")
-    @patch("plex_generate_previews.processing.orchestrator.os.rename")
-    @patch("plex_generate_previews.processing.orchestrator.os.remove")
+    @patch("media_preview_generator.processing.generator.os.rename")
+    @patch("media_preview_generator.processing.generator.os.remove")
     @patch("os.path.exists")
     @patch("builtins.open", new_callable=mock_open)
     @patch("time.sleep")
-    @patch("plex_generate_previews.processing.orchestrator.glob.glob")
-    @patch("plex_generate_previews.processing.orchestrator._detect_codec_error")
+    @patch("media_preview_generator.processing.generator.glob.glob")
+    @patch("media_preview_generator.processing.generator._detect_codec_error")
     def test_generate_images_dv_profile5_libplacebo_failure_falls_back(
         self,
         mock_detect,
@@ -2540,7 +2325,7 @@ class TestLibplaceboFallback:
         # This test specifically exercises the in-flight libplacebo failure
         # path, not the software-Vulkan pre-flight fallback.
         with patch(
-            "plex_generate_previews.gpu.vulkan_probe.get_vulkan_device_info",
+            "media_preview_generator.gpu.vulkan_probe.get_vulkan_device_info",
             return_value=VulkanProbeResult(device="Quadro P4000", is_software=False),
         ):
             success, image_count, hw_used, seconds, speed, *_ = generate_images(
@@ -2575,16 +2360,16 @@ class TestLibplaceboFallback:
 class TestZscaleErrorRetry:
     """M6: Test that zscale colorspace errors trigger the DV-safe retry path."""
 
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
     @patch("subprocess.run")
-    @patch("plex_generate_previews.processing.orchestrator.os.rename")
-    @patch("plex_generate_previews.processing.orchestrator.os.remove")
+    @patch("media_preview_generator.processing.generator.os.rename")
+    @patch("media_preview_generator.processing.generator.os.remove")
     @patch("os.path.exists")
     @patch("builtins.open", new_callable=mock_open)
     @patch("time.sleep")
-    @patch("plex_generate_previews.processing.orchestrator.glob.glob")
-    @patch("plex_generate_previews.processing.orchestrator._detect_codec_error")
+    @patch("media_preview_generator.processing.generator.glob.glob")
+    @patch("media_preview_generator.processing.generator._detect_codec_error")
     def test_generate_images_zscale_error_triggers_dv_safe_retry(
         self,
         mock_detect,
@@ -2673,16 +2458,16 @@ class TestZscaleErrorRetry:
 class TestDVSafeRetryGpuFailure:
     """M8: DV-safe retry fails on GPU — should raise CodecNotSupportedError."""
 
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
     @patch("subprocess.run")
-    @patch("plex_generate_previews.processing.orchestrator.os.rename")
-    @patch("plex_generate_previews.processing.orchestrator.os.remove")
+    @patch("media_preview_generator.processing.generator.os.rename")
+    @patch("media_preview_generator.processing.generator.os.remove")
     @patch("os.path.exists")
     @patch("builtins.open", new_callable=mock_open)
     @patch("time.sleep")
-    @patch("plex_generate_previews.processing.orchestrator.glob.glob")
-    @patch("plex_generate_previews.processing.orchestrator._detect_codec_error")
+    @patch("media_preview_generator.processing.generator.glob.glob")
+    @patch("media_preview_generator.processing.generator._detect_codec_error")
     def test_generate_images_dv_safe_retry_gpu_failure_raises_codec_error(
         self,
         mock_detect,
@@ -2738,16 +2523,16 @@ class TestDVSafeRetryGpuFailure:
 class TestDynamicNpl:
     """M7: Test that npl is always 100 (SDR reference white) regardless of MaxCLL."""
 
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
     @patch("subprocess.run")
-    @patch("plex_generate_previews.processing.orchestrator.os.rename")
-    @patch("plex_generate_previews.processing.orchestrator.os.remove")
+    @patch("media_preview_generator.processing.generator.os.rename")
+    @patch("media_preview_generator.processing.generator.os.remove")
     @patch("os.path.exists")
     @patch("builtins.open", new_callable=mock_open)
     @patch("time.sleep")
-    @patch("plex_generate_previews.processing.orchestrator.glob.glob")
-    @patch("plex_generate_previews.processing.orchestrator._detect_codec_error")
+    @patch("media_preview_generator.processing.generator.glob.glob")
+    @patch("media_preview_generator.processing.generator._detect_codec_error")
     def test_npl_always_100_with_maxcll(
         self,
         mock_detect,
@@ -2803,16 +2588,16 @@ class TestDynamicNpl:
         assert "npl=100" in vf_value
         assert "npl=1000" not in vf_value
 
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
     @patch("subprocess.run")
-    @patch("plex_generate_previews.processing.orchestrator.os.rename")
-    @patch("plex_generate_previews.processing.orchestrator.os.remove")
+    @patch("media_preview_generator.processing.generator.os.rename")
+    @patch("media_preview_generator.processing.generator.os.remove")
     @patch("os.path.exists")
     @patch("builtins.open", new_callable=mock_open)
     @patch("time.sleep")
-    @patch("plex_generate_previews.processing.orchestrator.glob.glob")
-    @patch("plex_generate_previews.processing.orchestrator._detect_codec_error")
+    @patch("media_preview_generator.processing.generator.glob.glob")
+    @patch("media_preview_generator.processing.generator._detect_codec_error")
     def test_npl_always_100_without_maxcll(
         self,
         mock_detect,
@@ -2867,16 +2652,16 @@ class TestDynamicNpl:
         vf_value = first_args[vf_index + 1]
         assert "npl=100" in vf_value
 
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
     @patch("subprocess.run")
-    @patch("plex_generate_previews.processing.orchestrator.os.rename")
-    @patch("plex_generate_previews.processing.orchestrator.os.remove")
+    @patch("media_preview_generator.processing.generator.os.rename")
+    @patch("media_preview_generator.processing.generator.os.remove")
     @patch("os.path.exists")
     @patch("builtins.open", new_callable=mock_open)
     @patch("time.sleep")
-    @patch("plex_generate_previews.processing.orchestrator.glob.glob")
-    @patch("plex_generate_previews.processing.orchestrator._detect_codec_error")
+    @patch("media_preview_generator.processing.generator.glob.glob")
+    @patch("media_preview_generator.processing.generator._detect_codec_error")
     def test_hdr_uses_desat_0(
         self,
         mock_detect,
@@ -3042,7 +2827,7 @@ class TestVerifyTmpFolderHealth:
         assert "not writable" in messages[0].lower()
 
     def test_warns_when_disk_space_low(self, tmp_path) -> None:
-        with patch("plex_generate_previews.processing.orchestrator.shutil.disk_usage") as mock_usage:
+        with patch("media_preview_generator.processing.generator.shutil.disk_usage") as mock_usage:
             mock_usage.return_value = MagicMock(free=0)
             ok, messages = _verify_tmp_folder_health(str(tmp_path), min_free_mb=1)
         assert ok is True
@@ -3053,16 +2838,16 @@ class TestVerifyTmpFolderHealth:
 class TestHdrFormatNoneString:
     """L12: hdr_format='None' string should produce the SDR filter path."""
 
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
     @patch("subprocess.run")
-    @patch("plex_generate_previews.processing.orchestrator.os.rename")
-    @patch("plex_generate_previews.processing.orchestrator.os.remove")
+    @patch("media_preview_generator.processing.generator.os.rename")
+    @patch("media_preview_generator.processing.generator.os.remove")
     @patch("os.path.exists")
     @patch("builtins.open", new_callable=mock_open)
     @patch("time.sleep")
-    @patch("plex_generate_previews.processing.orchestrator.glob.glob")
-    @patch("plex_generate_previews.processing.orchestrator._detect_codec_error")
+    @patch("media_preview_generator.processing.generator.glob.glob")
+    @patch("media_preview_generator.processing.generator._detect_codec_error")
     def test_hdr_format_none_string_uses_sdr_path(
         self,
         mock_detect,
@@ -3136,13 +2921,13 @@ class TestGpuScaleOptimisation:
             patch("os.path.exists", return_value=False),
             patch("builtins.open", new_callable=mock_open),
             patch("time.sleep"),
-            patch("plex_generate_previews.processing.orchestrator.glob.glob", return_value=[]),
+            patch("media_preview_generator.processing.generator.glob.glob", return_value=[]),
             patch("subprocess.run", return_value=MagicMock(returncode=0)),
         ):
             generate_images("/test/v.mp4", "/tmp/o", gpu, gpu_device, mock_config)
         return mock_popen.call_args[0][0]
 
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
     def test_nvidia_sdr_uses_scale_cuda_with_hwaccel_output_format(self, mock_popen, mock_mediainfo, mock_config):
         args = self._run(
@@ -3168,7 +2953,7 @@ class TestGpuScaleOptimisation:
         assert "-threads:v" in args
         assert args[args.index("-threads:v") + 1] == "1"
 
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
     def test_nvidia_hdr10_downscales_on_gpu_before_zscale(self, mock_popen, mock_mediainfo, mock_config):
         args = self._run(
@@ -3189,7 +2974,7 @@ class TestGpuScaleOptimisation:
         assert "format=p010le" in vf, "HDR10 path must keep 10-bit through GPU scale"
         assert "tonemap=hable" in vf
 
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
     def test_vaapi_sdr_uses_scale_vaapi_with_even_parity_safety(self, mock_popen, mock_mediainfo, mock_config):
         args = self._run(
@@ -3216,7 +3001,7 @@ class TestGpuScaleOptimisation:
         # hwdownload snaps letterboxed odd heights (e.g. 320x133) to even.
         assert "scale=trunc(iw/2)*2:trunc(ih/2)*2" in vf
 
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
     def test_vaapi_hdr10_downscales_on_gpu_before_zscale(self, mock_popen, mock_mediainfo, mock_config):
         args = self._run(
@@ -3237,7 +3022,7 @@ class TestGpuScaleOptimisation:
         assert scale_idx < parity_idx < zscale_idx
         assert "format=p010le" in vf
 
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
     def test_cpu_path_retains_software_scale(self, mock_popen, mock_mediainfo, mock_config):
         args = self._run(
@@ -3258,14 +3043,14 @@ class TestGpuScaleOptimisation:
         assert "-hwaccel_output_format" not in args
 
     @patch(
-        "plex_generate_previews.gpu.vulkan_probe.get_vulkan_device_info",
+        "media_preview_generator.gpu.vulkan_probe.get_vulkan_device_info",
         return_value=VulkanProbeResult(device="vk", is_software=False),
     )
     @patch(
-        "plex_generate_previews.gpu.vulkan_probe.get_vulkan_env_overrides",
+        "media_preview_generator.gpu.vulkan_probe.get_vulkan_env_overrides",
         return_value={},
     )
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
     def test_dv5_libplacebo_vf_unchanged(self, mock_popen, mock_mediainfo, _vk_env, _vk_info, mock_config):
         args = self._run(
@@ -3301,7 +3086,7 @@ class TestGpuScaleOptimisation:
 class TestFfmpegThreadFlags:
     """Test that FFmpeg thread cap flags are applied correctly."""
 
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
     @patch("subprocess.run")
     @patch("os.path.exists")
@@ -3348,7 +3133,7 @@ class TestFfmpegThreadFlags:
         tv_idx = args.index("-threads:v")
         assert args[tv_idx + 1] == "1"
 
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
     @patch("subprocess.run")
     @patch("os.path.exists")
@@ -3390,7 +3175,7 @@ class TestFfmpegThreadFlags:
         bare_threads = [i for i, a in enumerate(args) if a == "-threads"]
         assert len(bare_threads) == 0, "CPU path should not have global -threads cap"
 
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
     @patch("subprocess.run")
     @patch("os.path.exists")
@@ -3432,7 +3217,7 @@ class TestFfmpegThreadFlags:
 class TestCancellation:
     """Test that cancellation kills FFmpeg and skips retries."""
 
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
     @patch("subprocess.run")
     @patch("os.path.exists")
@@ -3475,13 +3260,13 @@ class TestCancellation:
 
         mock_proc.terminate.assert_called_once()
 
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
     @patch("subprocess.run")
     @patch("os.path.exists")
     @patch("builtins.open", new_callable=mock_open)
     @patch("time.sleep")
-    @patch("plex_generate_previews.processing.orchestrator.glob.glob")
+    @patch("media_preview_generator.processing.generator.glob.glob")
     def test_cancel_skips_skip_frame_retry(
         self,
         mock_glob,
@@ -3529,13 +3314,13 @@ class TestCancellation:
 
         assert mock_popen.call_count == 1
 
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
     @patch("subprocess.run")
     @patch("os.path.exists")
     @patch("builtins.open", new_callable=mock_open)
     @patch("time.sleep")
-    @patch("plex_generate_previews.processing.orchestrator.glob.glob")
+    @patch("media_preview_generator.processing.generator.glob.glob")
     def test_cancel_skips_dv_safe_retry(
         self,
         mock_glob,
@@ -3583,14 +3368,14 @@ class TestCancellation:
 
         assert mock_popen.call_count == 1
 
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
     @patch("subprocess.run")
     @patch("os.path.exists")
     @patch("builtins.open", new_callable=mock_open)
     @patch("time.sleep")
-    @patch("plex_generate_previews.processing.orchestrator.glob.glob")
-    @patch("plex_generate_previews.processing.orchestrator._detect_codec_error")
+    @patch("media_preview_generator.processing.generator.glob.glob")
+    @patch("media_preview_generator.processing.generator._detect_codec_error")
     def test_cancel_skips_gpu_to_cpu_fallback(
         self,
         mock_detect,
@@ -3643,6 +3428,153 @@ class TestCancellation:
             )
 
         assert mock_popen.call_count == 2
+
+    @patch("media_preview_generator.processing.generator.MediaInfo")
+    @patch("subprocess.Popen")
+    @patch("subprocess.run")
+    @patch("os.path.exists")
+    @patch("builtins.open", new_callable=mock_open)
+    @patch("time.sleep")
+    def test_cancel_after_pause_resumes_before_terminating(
+        self,
+        mock_sleep,
+        mock_file,
+        mock_exists,
+        mock_run,
+        mock_popen,
+        mock_mediainfo,
+        temp_dir,
+        mock_config,
+    ):
+        """Cancel while paused must SIGCONT BEFORE terminate(), otherwise the
+        SIGTERM is queued behind SIGSTOP and the FFmpeg process hangs forever.
+
+        Production handles this at ffmpeg_runner.py line ~485-491:
+        ``if paused_locally: proc.send_signal(SIGCONT) … proc.terminate()``.
+        Without this ordering, a user who clicks Pause then Cancel ends up
+        with FFmpeg silently stuck and the worker slot wedged for the rest
+        of the run. This test pins the ordering: SIGCONT MUST precede
+        terminate when the process was paused at the moment of cancel.
+        """
+        import signal as _signal
+
+        mock_run.return_value = MagicMock(returncode=0)
+        mock_info = MagicMock()
+        mock_info.video_tracks = [MagicMock(hdr_format=None)]
+        mock_mediainfo.parse.return_value = mock_info
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None  # never exits on its own
+        mock_proc.wait.return_value = None
+        mock_popen.return_value = mock_proc
+
+        mock_exists.return_value = False
+
+        # First call to pause_check is True (so SIGSTOP fires); subsequent
+        # calls are False (so we leave the pause-branch on the next loop).
+        # cancel_check fires True on the second iteration so we hit cancel
+        # while paused_locally is True.
+        pause_calls = {"n": 0}
+
+        def pause_check():
+            pause_calls["n"] += 1
+            return pause_calls["n"] == 1  # True only on first call
+
+        cancel_calls = {"n": 0}
+
+        def cancel_check():
+            cancel_calls["n"] += 1
+            return cancel_calls["n"] >= 2  # cancel on the second loop
+
+        with pytest.raises(CancellationError):
+            generate_images(
+                "/test/video.mp4",
+                temp_dir,
+                None,
+                None,
+                mock_config,
+                cancel_check=cancel_check,
+                pause_check=pause_check,
+            )
+
+        # Verify the SIGCONT-before-terminate ordering in the call stream.
+        sigcont_call_indices: list[int] = []
+        terminate_call_indices: list[int] = []
+        for idx, call in enumerate(mock_proc.method_calls):
+            if call[0] == "send_signal" and call[1] and call[1][0] == _signal.SIGCONT:
+                sigcont_call_indices.append(idx)
+            if call[0] == "terminate":
+                terminate_call_indices.append(idx)
+
+        assert sigcont_call_indices, (
+            "SIGCONT was never sent — paused FFmpeg can't receive SIGTERM and would hang forever"
+        )
+        assert terminate_call_indices, "terminate() was never called after cancel"
+        assert sigcont_call_indices[0] < terminate_call_indices[0], (
+            "SIGCONT must precede terminate(); otherwise SIGTERM queues behind SIGSTOP and FFmpeg hangs"
+        )
+
+    @patch("media_preview_generator.processing.generator.MediaInfo")
+    @patch("subprocess.Popen")
+    @patch("subprocess.run")
+    @patch("os.path.exists")
+    @patch("builtins.open", new_callable=mock_open)
+    @patch("time.sleep")
+    def test_cancel_falls_back_to_kill_when_terminate_times_out(
+        self,
+        mock_sleep,
+        mock_file,
+        mock_exists,
+        mock_run,
+        mock_popen,
+        mock_mediainfo,
+        temp_dir,
+        mock_config,
+    ):
+        """If FFmpeg ignores SIGTERM for 5s, we MUST escalate to SIGKILL.
+
+        Production at ffmpeg_runner.py line ~493-497:
+            try: proc.wait(timeout=5)
+            except subprocess.TimeoutExpired: proc.kill(); proc.wait()
+
+        Without this fallback, a stuck FFmpeg (e.g. blocked on broken
+        hardware decoder) leaks a worker slot and a GPU context until
+        the entire app restarts. This test pins the kill() escalation
+        so a refactor that drops the timeout/except branch is caught.
+        """
+        import subprocess as _subprocess
+
+        mock_run.return_value = MagicMock(returncode=0)
+        mock_info = MagicMock()
+        mock_info.video_tracks = [MagicMock(hdr_format=None)]
+        mock_mediainfo.parse.return_value = mock_info
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        # First wait() (after terminate) raises TimeoutExpired to force
+        # the kill escalation; second wait() (after kill) returns cleanly.
+        mock_proc.wait.side_effect = [_subprocess.TimeoutExpired(cmd="ffmpeg", timeout=5), None]
+        mock_popen.return_value = mock_proc
+
+        mock_exists.return_value = False
+
+        with pytest.raises(CancellationError):
+            generate_images(
+                "/test/video.mp4",
+                temp_dir,
+                None,
+                None,
+                mock_config,
+                cancel_check=lambda: True,
+            )
+
+        mock_proc.terminate.assert_called_once()
+        (
+            mock_proc.kill.assert_called_once(),
+            ("terminate() timed out → kill() escalation missing; FFmpeg would leak indefinitely"),
+        )
+        # And the wait() after kill MUST be called (otherwise we leak a zombie).
+        assert mock_proc.wait.call_count >= 2, "wait() must be called again after kill() to reap the zombie"
 
 
 class TestFailureScope:
@@ -3799,16 +3731,16 @@ class TestSkipFrameInitialDefaults:
 
         mock_glob.side_effect = glob_side_effect
 
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
     @patch("subprocess.run")
-    @patch("plex_generate_previews.processing.orchestrator.os.rename")
-    @patch("plex_generate_previews.processing.orchestrator.os.remove")
+    @patch("media_preview_generator.processing.generator.os.rename")
+    @patch("media_preview_generator.processing.generator.os.remove")
     @patch("os.path.exists")
     @patch("builtins.open", new_callable=mock_open)
     @patch("time.sleep")
-    @patch("plex_generate_previews.processing.orchestrator.glob.glob")
-    @patch("plex_generate_previews.processing.orchestrator._detect_codec_error")
+    @patch("media_preview_generator.processing.generator.glob.glob")
+    @patch("media_preview_generator.processing.generator._detect_codec_error")
     def test_sdr_first_attempt_uses_skip_frame(
         self,
         mock_detect,
@@ -3846,16 +3778,16 @@ class TestSkipFrameInitialDefaults:
         assert "-skip_frame:v" in args
         assert args[args.index("-skip_frame:v") + 1] == "nokey"
 
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
     @patch("subprocess.run")
-    @patch("plex_generate_previews.processing.orchestrator.os.rename")
-    @patch("plex_generate_previews.processing.orchestrator.os.remove")
+    @patch("media_preview_generator.processing.generator.os.rename")
+    @patch("media_preview_generator.processing.generator.os.remove")
     @patch("os.path.exists")
     @patch("builtins.open", new_callable=mock_open)
     @patch("time.sleep")
-    @patch("plex_generate_previews.processing.orchestrator.glob.glob")
-    @patch("plex_generate_previews.processing.orchestrator._detect_codec_error")
+    @patch("media_preview_generator.processing.generator.glob.glob")
+    @patch("media_preview_generator.processing.generator._detect_codec_error")
     def test_dv_profile8_hdr10_first_attempt_uses_skip_frame(
         self,
         mock_detect,
@@ -3898,16 +3830,16 @@ class TestSkipFrameInitialDefaults:
         assert "-skip_frame:v" in args
         assert args[args.index("-skip_frame:v") + 1] == "nokey"
 
-    @patch("plex_generate_previews.processing.orchestrator.MediaInfo")
+    @patch("media_preview_generator.processing.generator.MediaInfo")
     @patch("subprocess.Popen")
     @patch("subprocess.run")
-    @patch("plex_generate_previews.processing.orchestrator.os.rename")
-    @patch("plex_generate_previews.processing.orchestrator.os.remove")
+    @patch("media_preview_generator.processing.generator.os.rename")
+    @patch("media_preview_generator.processing.generator.os.remove")
     @patch("os.path.exists")
     @patch("builtins.open", new_callable=mock_open)
     @patch("time.sleep")
-    @patch("plex_generate_previews.processing.orchestrator.glob.glob")
-    @patch("plex_generate_previews.processing.orchestrator._detect_codec_error")
+    @patch("media_preview_generator.processing.generator.glob.glob")
+    @patch("media_preview_generator.processing.generator._detect_codec_error")
     def test_retry_drops_skip_frame_when_first_attempt_fails(
         self,
         mock_detect,

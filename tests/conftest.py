@@ -29,7 +29,7 @@ import pytest
 try:
     from apscheduler.jobstores.memory import MemoryJobStore as _MemoryJobStore
 
-    import plex_generate_previews.web.scheduler as _sched_mod
+    import media_preview_generator.web.scheduler as _sched_mod
 
     class _TestMemoryJobStore(_MemoryJobStore):
         def __init__(self, *args, **kwargs):  # noqa: D401
@@ -38,6 +38,62 @@ try:
     _sched_mod.SQLAlchemyJobStore = _TestMemoryJobStore
 except ImportError:  # pragma: no cover
     pass
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _isolate_dotenv_from_tests():
+    """Prevent the developer's local ``.env`` from leaking into the test suite.
+
+    Production ``load_config()`` calls ``dotenv.load_dotenv()`` unconditionally,
+    which reads the repo-root ``.env`` into ``os.environ``. On a dev machine
+    that file holds real ``PLEX_URL`` / ``PLEX_TOKEN`` values; once they land in
+    ``os.environ`` they survive ``reset_settings_manager()`` and every
+    subsequent ``create_app()`` runs ``upgrade._migrate_env_vars()`` against the
+    still-poisoned env — writing real credentials into per-test temp
+    ``settings.json`` and breaking ~35 tests that assert on the absence of
+    ``plex_url`` / ``plex_token`` / ``setup_complete``.
+
+    Fix: (a) replace ``load_dotenv`` with a no-op for the test session, and
+    (b) pre-clean ``os.environ`` of every migration key (plus the deprecated
+    ones, in case a developer shell still sets them).
+    """
+    import media_preview_generator.config as _config_mod
+    from media_preview_generator.upgrade import _DEPRECATED_ENV_VARS, _ENV_MIGRATION_MAP
+
+    original_load_dotenv = _config_mod.load_dotenv
+    _config_mod.load_dotenv = lambda *a, **kw: None
+
+    keys_to_clean = [env_name for env_name, *_ in _ENV_MIGRATION_MAP] + list(_DEPRECATED_ENV_VARS)
+    saved = {k: os.environ.pop(k, None) for k in keys_to_clean}
+
+    try:
+        yield
+    finally:
+        _config_mod.load_dotenv = original_load_dotenv
+        for k, v in saved.items():
+            if v is not None:
+                os.environ[k] = v
+
+
+@pytest.fixture(autouse=True)
+def _reset_frame_cache_between_tests():
+    """Drop the frame-cache singleton before AND after every test.
+
+    The cache is a module-level singleton with a ``base_dir`` lock —
+    tests that construct it with different ``base_dir`` values (often
+    via MagicMock-derived paths) would otherwise trip the
+    "already initialised with a different base_dir" guard. Resetting
+    keeps tests independent without each one needing to remember to
+    do this in setup.
+    """
+    try:
+        from media_preview_generator.processing.frame_cache import reset_frame_cache
+    except Exception:
+        yield
+        return
+    reset_frame_cache()
+    yield
+    reset_frame_cache()
 
 
 @pytest.fixture
@@ -111,7 +167,7 @@ def mock_config():
     config.gpu_threads = 1
     config.cpu_threads = 1
     config.gpu_config = []
-    config.tmp_folder = "/tmp/plex_generate_previews"
+    config.tmp_folder = "/tmp/media_preview_generator"
     config.tmp_folder_created_by_us = False
     config.ffmpeg_path = "/usr/bin/ffmpeg"
     config.ffmpeg_threads = 2
@@ -164,6 +220,7 @@ def mock_plex_movie():
     """Create a mock Plex movie item."""
     movie = MagicMock()
     movie.key = "/library/metadata/54321"
+    movie.ratingKey = 54321
     movie.title = "Test Movie"
     movie.locations = ["/data/movies/Test Movie (2024)/Test Movie (2024).mkv"]
     return movie
@@ -174,6 +231,7 @@ def mock_plex_episode():
     """Create a mock Plex episode item."""
     episode = MagicMock()
     episode.key = "/library/metadata/12345"
+    episode.ratingKey = 12345
     episode.title = "Pilot"
     episode.grandparentTitle = "Test Show"
     episode.seasonEpisode = "s01e01"
@@ -342,7 +400,7 @@ def _neutralize_prewarm_caches(request, monkeypatch):
     if request.node.get_closest_marker("real_prewarm"):
         return
     try:
-        import plex_generate_previews.web.app as app_mod
+        import media_preview_generator.web.app as app_mod
     except ImportError:
         return
     monkeypatch.setattr(app_mod, "_prewarm_caches", lambda: None)
@@ -362,8 +420,8 @@ def _neutralize_setup_logging(request, monkeypatch):
     if request.node.get_closest_marker("real_logging"):
         return
     try:
-        import plex_generate_previews.logging_config as lc_mod
-        import plex_generate_previews.web.app as app_mod
+        import media_preview_generator.logging_config as lc_mod
+        import media_preview_generator.web.app as app_mod
     except ImportError:
         return
     noop = lambda *a, **kw: None  # noqa: E731
@@ -392,7 +450,7 @@ def _neutralize_real_world_calls(request, monkeypatch):
     """
     if request.node.get_closest_marker("real_plex_server") is None:
         try:
-            import plex_generate_previews.plex_client as pc_mod
+            import media_preview_generator.plex_client as pc_mod
 
             mock_server = MagicMock()
             mock_server.library.sections.return_value = []
@@ -409,7 +467,7 @@ def _neutralize_real_world_calls(request, monkeypatch):
         # read, which sends ``_ensure_gpu_cache`` back to the real ffmpeg
         # subprocess probes.
         try:
-            import plex_generate_previews.gpu.detect as gd_mod
+            import media_preview_generator.gpu.detect as gd_mod
 
             monkeypatch.setattr(gd_mod, "detect_all_gpus", lambda *a, **kw: [], raising=True)
         except ImportError:
@@ -422,7 +480,7 @@ def _sync_start_job_async(request, monkeypatch):
 
     Route handlers (``POST /api/jobs``, webhook endpoints, settings resume, …)
     normally spawn a daemon ``run_job`` thread via
-    ``plex_generate_previews.web.routes.job_runner._start_job_async``. That
+    ``media_preview_generator.web.routes.job_runner._start_job_async``. That
     thread escapes the test's ``with patch(...)`` scope and keeps running
     after teardown — enumerating the real Plex library (if ``PLEX_URL`` is
     set), probing real GPUs, and flooding stderr with ``I/O operation on
@@ -446,7 +504,7 @@ def _sync_start_job_async(request, monkeypatch):
     if request.node.get_closest_marker("real_job_async"):
         return
     try:
-        import plex_generate_previews.web.routes.job_runner as jr_mod
+        import media_preview_generator.web.routes.job_runner as jr_mod
     except ImportError:
         return
 
@@ -484,8 +542,453 @@ def _sync_start_job_async(request, monkeypatch):
     monkeypatch.setattr(jr_mod, "threading", _ThreadingShim(), raising=True)
 
 
+# ---------------------------------------------------------------------------
+# Shared helpers for the unified ProcessableItem dispatch path.
+#
+# Six test modules historically duplicated the same _pi/_pi_list/
+# _pi_list_or_passthrough/_ms helper trio. They now live here and are
+# imported by name from this conftest. Keep the signatures stable —
+# changing them ripples across the whole worker test surface.
+# ---------------------------------------------------------------------------
+
+
+def _pi(key="test_key", title="Test", media_type=None, canonical_path=None, server_id="plex-1"):
+    """Build a ``ProcessableItem`` matching what the tests used to assemble as a tuple.
+
+    ``media_type`` is accepted for backward compat with the legacy 3-tuple
+    callsites but is intentionally ignored — :class:`ProcessableItem` has
+    no media-type field; vendor processors derive that from the path.
+
+    D31 guardrail: refuse a Plex item key in the ``/library/metadata/<id>``
+    URL form. The bug we shipped silently for days came from production
+    code accidentally storing the URL form here, then downstream code
+    building ``f"/library/metadata/{item_id}/tree"`` and doubling the
+    prefix. Tests that need to exercise the legacy URL-form input path
+    (e.g. defensive normalisation tests) must pass it directly to the
+    target API, not through this builder. Without this guardrail, the
+    ``conftest._pi`` helper made it cheap to author new D31-shape tests
+    that pass while production silently fails.
+    """
+    from media_preview_generator.processing.types import ProcessableItem
+
+    del media_type  # see docstring — accepted but unused
+    if isinstance(key, str) and key.startswith("/library/metadata/"):
+        raise ValueError(
+            f"D31 guardrail: _pi(key={key!r}) is the URL form. Production stores "
+            "the bare ratingKey here (e.g. '54321'). If you intentionally need "
+            "the URL form to test defensive normalisation, build the ProcessableItem "
+            "directly with item_id_by_server=... rather than via this helper."
+        )
+    return ProcessableItem(
+        canonical_path=canonical_path or f"/data/{key.replace('/', '_').strip('_') or 'item'}.mkv",
+        server_id=server_id,
+        item_id_by_server={server_id: key} if key else {},
+        title=title,
+        library_id="lib-1",
+    )
+
+
+def _pi_list(triples, *, server_id="plex-1"):
+    """Bulk version: convert ``[(key, title, media_type?)]`` tuples to ``ProcessableItem`` instances."""
+    out = []
+    for entry in triples:
+        if not entry:
+            continue
+        key = entry[0]
+        title = entry[1] if len(entry) > 1 else "Test"
+        # tuple's optional third slot (media_type) is dropped; see _pi docstring.
+        out.append(_pi(key, title=title, server_id=server_id))
+    return out
+
+
+def _pi_list_or_passthrough(items):
+    """Pass through a list of ``ProcessableItem`` instances untouched, or convert tuples on the fly."""
+    from media_preview_generator.processing.types import ProcessableItem
+
+    if not items:
+        return []
+    if isinstance(items[0], ProcessableItem):
+        return items
+    return _pi_list(items)
+
+
+def _ms(status="generated", canonical_path="/data/test.mkv", message=""):
+    """Build a ``MultiServerResult`` whose status maps back to a specific ``ProcessingResult``."""
+    from media_preview_generator.processing.multi_server import MultiServerResult, MultiServerStatus
+
+    status_map = {
+        "generated": MultiServerStatus.PUBLISHED,
+        "published": MultiServerStatus.PUBLISHED,
+        "skipped_bif_exists": MultiServerStatus.SKIPPED,
+        "skipped": MultiServerStatus.SKIPPED,
+        "skipped_not_indexed": MultiServerStatus.SKIPPED_NOT_INDEXED,
+        "skipped_file_not_found": MultiServerStatus.SKIPPED_FILE_NOT_FOUND,
+        "no_media_parts": MultiServerStatus.NO_OWNERS,
+        "no_owners": MultiServerStatus.NO_OWNERS,
+        "failed": MultiServerStatus.FAILED,
+    }
+    return MultiServerResult(
+        canonical_path=canonical_path,
+        status=status_map.get(status, MultiServerStatus.PUBLISHED),
+        message=message,
+    )
+
+
 # Export helper functions so tests can use them
 __all__ = [
+    "_ms",
+    "_pi",
+    "_pi_list",
+    "_pi_list_or_passthrough",
     "create_mock_ffmpeg_process",
     "create_mock_mediainfo",
 ]
+
+
+# ---------------------------------------------------------------------------
+# VCR / pytest-recording fixtures for vendor-API contract tests.
+#
+# Cassettes live under ``tests/cassettes/<test_module>/<test_name>.yaml`` and
+# are committed to the repo so CI replays them without needing live
+# Plex/Emby/Jellyfin servers. Re-record by deleting a cassette and running
+# the test with ``--record-mode=once`` against a live server; environment
+# variables ``PLEX_URL`` / ``PLEX_TOKEN`` / ``EMBY_URL`` / ``EMBY_TOKEN`` /
+# ``EMBY_USER_ID`` / ``JELLYFIN_URL`` / ``JELLYFIN_TOKEN`` are consumed by
+# the contract-test fixtures only when recording.
+#
+# Why this exists: the production "Plex 500s when ``type=`` is omitted" bug
+# shipped because the unit test mocked ``plex.fetchItems`` and asserted on
+# a substring of the URL. Cassettes capture the exact API contract — Plex's
+# real response shape, status codes, and parameter requirements — so any
+# future change that strays from the recorded shape fails fast.
+# ---------------------------------------------------------------------------
+
+
+def _scrub_request_uri(request):
+    """Replace the recorded URI's host/port/scheme with a fake one.
+
+    Cassettes commit to the repo, so the URI MUST NOT leak:
+    - LAN IPs (``172.16.10.210``)
+    - Plex direct cert hostnames (``172-16-10-240.262280e6da5f4e50adbc3bffffa82415.plex.direct``)
+      — these encode the user's Plex ``machineIdentifier``.
+    - Custom port numbers that hint at network topology.
+
+    Replaces every recorded request URI with a generic ``http://fake-server``
+    prefix, keeping the path + query (which IS the API contract we
+    want to pin) intact. vcrpy's ``match_on`` is configured to match
+    on path + query only, so the scrubbed URI still replays correctly.
+    """
+    from urllib.parse import urlparse, urlunparse
+
+    parsed = urlparse(request.uri)
+    fake = parsed._replace(scheme="http", netloc="fake-server")
+    request.uri = urlunparse(fake)
+    return request
+
+
+def _scrub_response_body(response):
+    """Scrub identifying data out of vendor API response bodies.
+
+    Cassettes commit to the repo, so the response body MUST NOT leak:
+    - Plex ``machineIdentifier`` (server fingerprint)
+    - Plex ``friendlyName`` (server name)
+    - Emby/Jellyfin ``ServerId`` / ``ServerName``
+    - Library titles / item titles / file paths from the user's actual
+      library
+
+    Replaces all of the above with FAKE_* placeholders. The scrub is
+    aggressive — it preserves request/response SHAPE but not the
+    user's data — exactly what the cassette is for (contract pinning,
+    not data fixture).
+
+    Called by vcrpy's ``before_record_response`` hook at record time.
+    Replay reads the already-scrubbed body from disk, so this never
+    runs in CI.
+    """
+    import re
+
+    # Response-header scrub. vcrpy's ``filter_headers`` config applies
+    # to REQUEST headers only; we do response headers ourselves.
+    # ``Private-Network-Access-Id`` is the Emby ServerId, and
+    # ``Private-Network-Access-Name`` is the container hostname.
+    headers = response.get("headers") or {}
+    for hdr_name, replacement in (
+        ("Private-Network-Access-Id", ["FAKE_PNA_ID"]),
+        ("Private-Network-Access-Name", ["FAKE_PNA_NAME"]),
+    ):
+        if hdr_name in headers:
+            headers[hdr_name] = replacement
+
+    body = response.get("body", {})
+    raw = body.get("string")
+    if not raw:
+        return response
+    if isinstance(raw, bytes):
+        try:
+            text = raw.decode("utf-8", errors="replace")
+        except Exception:
+            return response
+    else:
+        text = str(raw)
+
+    # JSON: Plex `/library/sections` returns
+    # ``{"MediaContainer": {"machineIdentifier": "...", "friendlyName": "...", "Directory": [...]}}``;
+    # Emby/Jellyfin return ``{"Items": [{"Path": "...", "Name": "..."}]}``.
+    substitutions = [
+        # Plex
+        (r'"machineIdentifier"\s*:\s*"[^"]+"', '"machineIdentifier":"FAKE_PLEX_MID"'),
+        (r'"friendlyName"\s*:\s*"[^"]+"', '"friendlyName":"FAKE_PLEX_NAME"'),
+        (r'machineIdentifier="[^"]+"', 'machineIdentifier="FAKE_PLEX_MID"'),
+        (r'friendlyName="[^"]+"', 'friendlyName="FAKE_PLEX_NAME"'),
+        # Emby / Jellyfin
+        (r'"ServerId"\s*:\s*"[^"]+"', '"ServerId":"FAKE_SERVER_ID"'),
+        (r'"ServerName"\s*:\s*"[^"]+"', '"ServerName":"FAKE_SERVER_NAME"'),
+    ]
+    scrubbed = text
+    for pattern, replacement in substitutions:
+        scrubbed = re.sub(pattern, replacement, scrubbed)
+
+    # JSON Items / Directory array handling — two paths:
+    #
+    # 1. **Synthetic test-stack data** (every item's Path starts with
+    #    ``/em-media/``, ``/jf-media/``, or ``/media/Movies/Test ``).
+    #    These are the deterministic fixtures generated by
+    #    ``tests/integration/generate_test_media.sh``; they're safe to
+    #    commit verbatim. We strip per-item identifying fields
+    #    (``ServerId``, ``Etag``) but keep ``Id`` / ``Name`` / ``Path``
+    #    intact so HIT cassettes can actually return items the SUT
+    #    will match against.
+    #
+    # 2. **Anything else** (defensive fallback for "developer
+    #    accidentally pointed PLEX_URL at their live server"). Collapse
+    #    the array entirely — we can't know if the items leak PII
+    #    without inspecting every field. Loses HIT recall, but losing
+    #    a cassette is much cheaper than leaking a library listing.
+    #
+    # The recording workflow (``tests/integration/up.sh``) ensures
+    # path 1 is the normal case; path 2 is the safety net.
+    _SYNTHETIC_PREFIXES = ("/em-media/", "/jf-media/", "/media/Movies/Test ")
+
+    def _all_synthetic(items):
+        return all(
+            isinstance(it, dict) and any(str(it.get("Path") or "").startswith(p) for p in _SYNTHETIC_PREFIXES)
+            for it in items
+        )
+
+    def _strip_item_identifiers(items):
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            if "ServerId" in it:
+                it["ServerId"] = "FAKE_SERVER_ID"
+            if "Etag" in it:
+                it["Etag"] = "FAKE_ETAG"
+
+    try:
+        import json
+
+        parsed = json.loads(scrubbed)
+    except (ValueError, TypeError):
+        parsed = None
+    if isinstance(parsed, dict):
+        # Emby/Jellyfin envelope.
+        items = parsed.get("Items")
+        if isinstance(items, list) and items:
+            if _all_synthetic(items):
+                _strip_item_identifiers(items)
+            else:
+                parsed["Items"] = []
+                parsed["TotalRecordCount"] = 0
+            scrubbed = json.dumps(parsed)
+        # Plex JSON envelope: ``{"MediaContainer": {"size": N, "Metadata": [...]}}``.
+        mc = parsed.get("MediaContainer") if isinstance(parsed, dict) else None
+        if isinstance(mc, dict):
+            metadata = mc.get("Metadata")
+            if isinstance(metadata, list) and metadata:
+                if _all_synthetic(metadata):
+                    _strip_item_identifiers(metadata)
+                else:
+                    mc["Metadata"] = []
+                    mc["size"] = 0
+                scrubbed = json.dumps(parsed)
+            # Directory array (e.g. /library/sections lists library
+            # names + their on-disk locations — strong PII even on
+            # the test stack since location strings are ``/media``,
+            # which is fine, but tightening up to be explicit).
+            directory = mc.get("Directory")
+            if isinstance(directory, list) and directory:
+                # Always collapse Directory — never has Path-based
+                # content that can be identified as synthetic.
+                mc["Directory"] = []
+                mc["size"] = 0
+                scrubbed = json.dumps(parsed)
+
+    # Plex XML responses (plexapi's session uses XML by default for
+    # ``plex.query`` / ``plex.fetchItems`` — different from raw
+    # requests with Accept: application/json). Scrub user-identifying
+    # attributes:
+    # - <Directory ...> entries inside <MediaContainer> list each
+    #   library by title + uuid + locations. Strip everything except
+    #   the structural envelope.
+    # - <Location path="/data_16tb/Movies" /> embeds the user's actual
+    #   mount paths.
+    # - <Video>/<Episode>/<Movie> Metadata children embed every
+    #   identifying field (title, summary, file path, IMDB tag).
+    #
+    # **Synthetic-data carve-out**: when the response references the
+    # test-stack's synthetic media (paths starting with
+    # ``/em-media/``, ``/jf-media/``, or ``/media/Movies/Test ``), we
+    # KEEP the structural attributes that HIT cassettes need
+    # (``ratingKey``, ``key``, the ``<Media>``/``<Part>`` children
+    # carrying the bundle hash + file path). Otherwise we strip the
+    # whole element to the structural envelope. Same defensive shape
+    # as the JSON ``_all_synthetic`` carve-out for ``Items`` arrays.
+    # Detect synthetic test-stack data by Location/file/path attributes.
+    # The integration containers mount media at:
+    #   Plex: /media/Movies, /media/TV
+    #   Emby: /em-media/Movies, /em-media/TV
+    #   Jellyfin: /jf-media/Movies, /jf-media/TV
+    # The /library/sections response has only ``<Location path="/media/Movies"/>``
+    # (no file= attribute), while item-detail responses have ``<Part file="…">``.
+    # Match either to keep the synthetic carve-out applied across all
+    # request types in the cassette.
+    xml_synthetic = bool(
+        re.search(
+            r'(?:file|path)="(?:/em-media/|/jf-media/|/media/Movies(?:/|")|/media/TV(?:/|")) ?',
+            scrubbed,
+        )
+    )
+
+    # NOTE: synthetic detection MUST run before any of the scrubs
+    # below, because the always-on ``<Location path>`` scrub destroys
+    # the very attribute the detector inspects.
+
+    # Always-on scrubs (PII regardless of synthetic context):
+    always_on = [
+        (r'machineIdentifier="[^"]*"', 'machineIdentifier="FAKE_PLEX_MID"'),
+        (r'friendlyName="[^"]*"', 'friendlyName="FAKE_PLEX_NAME"'),
+    ]
+    for pattern, replacement in always_on:
+        scrubbed = re.sub(pattern, replacement, scrubbed, flags=re.DOTALL)
+    # ``<Location>`` scrub: defensive collapse on non-synthetic
+    # responses; on synthetic responses keep the structural attribute
+    # since paths like ``/media/Movies`` aren't PII.
+    if not xml_synthetic:
+        scrubbed = re.sub(r"<Location\b[^/]*path=\"[^\"]*\"[^/]*/>", '<Location path="/FAKE" />', scrubbed)
+
+    # Directory scrubbing: structural attrs (``key``, ``type``,
+    # ``size``) are needed for plexapi to enumerate sections — so HIT
+    # cassettes can call ``plex.library.sections()``. PII attrs
+    # (``title``, ``uuid``, ``agent``, ``scanner``, ``language``) get
+    # surgical scrubs. Inner ``<Location>`` elements are scrubbed by
+    # the always_on rule above.
+    #
+    # On non-synthetic responses (defensive fallback when someone
+    # records against a live server), strip Directory wholesale —
+    # title + uuid + scanner combinations can fingerprint a server.
+    if xml_synthetic:
+        # Only strip ``uuid`` (server-fingerprint) — keep ``title``,
+        # ``agent``, ``scanner``, ``language`` because plexapi's
+        # MovieSection parser dereferences those (``.lower()`` on
+        # ``agent``/``scanner``) and a missing attr blows up
+        # ``plex.library.sections()`` with NoneType errors. The
+        # test-stack library titles are generic ("Movies", "TV Shows")
+        # so they aren't PII; agent/scanner are vendor metadata
+        # category strings.
+        scrubbed = re.sub(r'(<Directory\b[^>]*?)\s+uuid="[^"]*"', r"\1", scrubbed, flags=re.DOTALL)
+    else:
+        defensive_dir = [
+            (r"<Directory\b[^>]*>.*?</Directory>", '<Directory title="FAKE" />'),
+            (r"<Directory\b[^/]*/>", '<Directory title="FAKE" />'),
+        ]
+        for pattern, replacement in defensive_dir:
+            scrubbed = re.sub(pattern, replacement, scrubbed, flags=re.DOTALL)
+
+    if not xml_synthetic:
+        # Defensive fallback: response references real (non-test-stack)
+        # paths. Strip <Video>/<Episode>/<Movie> child elements
+        # wholesale — keep the structural envelope, drop everything
+        # else (titles, summaries, file paths, IMDB tags, etc.).
+        defensive = [
+            (r"<Video\b[^>]*>.*?</Video>", '<Video title="FAKE" />'),
+            (r"<Video\b[^/]*/>", '<Video title="FAKE" />'),
+            (r"<Episode\b[^>]*>.*?</Episode>", '<Episode title="FAKE" />'),
+            (r"<Movie\b[^>]*>.*?</Movie>", '<Movie title="FAKE" />'),
+        ]
+        for pattern, replacement in defensive:
+            scrubbed = re.sub(pattern, replacement, scrubbed, flags=re.DOTALL)
+    # Synthetic-path scrub: even when the body is "safe", remove a
+    # handful of attributes that aren't relevant to the test-stack
+    # contract but accumulate noise (last-viewed timestamps, view
+    # counts, audience ratings). Field-level so it doesn't touch
+    # ratingKey / key / Media / Part / file.
+    else:
+        synthetic_attr_scrub = [
+            r'\s+lastViewedAt="[^"]*"',
+            r'\s+viewCount="[^"]*"',
+            r'\s+addedAt="[^"]*"',
+            r'\s+updatedAt="[^"]*"',
+            r'\s+audienceRating="[^"]*"',
+            r'\s+userRating="[^"]*"',
+        ]
+        for pattern in synthetic_attr_scrub:
+            scrubbed = re.sub(pattern, "", scrubbed, flags=re.DOTALL)
+
+    response["body"]["string"] = scrubbed.encode("utf-8") if isinstance(raw, bytes) else scrubbed
+    return response
+
+
+@pytest.fixture(scope="module")
+def vcr_config():
+    """Default VCR config applied to every ``@pytest.mark.vcr`` test.
+
+    Scrubs every credential-bearing header AND aggressively scrubs
+    response bodies (server identifiers, library/item titles) so
+    cassettes are safe to commit to a public repo. Replays
+    once-recorded interactions; in CI no network calls happen at all
+    (record_mode='none' set per-test or via the project's pytest
+    invocation).
+    """
+    return {
+        # Scrub vendor auth headers — these MUST never land in committed
+        # cassettes. Each vendor uses one of these; we strip them all.
+        # ``Private-Network-Access-*`` are added by Emby's CORS handling
+        # and embed the server's identifier + container hostname.
+        "filter_headers": [
+            ("X-Plex-Token", "FAKE_PLEX_TOKEN"),
+            ("X-Emby-Token", "FAKE_EMBY_TOKEN"),
+            ("Authorization", "FAKE_AUTH"),
+            ("Cookie", "FAKE_COOKIE"),
+            ("Set-Cookie", "FAKE_SET_COOKIE"),
+            ("Private-Network-Access-Id", "FAKE_PNA_ID"),
+            ("Private-Network-Access-Name", "FAKE_PNA_NAME"),
+        ],
+        # Plex passes the token in a query string too. Scrub it.
+        "filter_query_parameters": [
+            ("X-Plex-Token", "FAKE_PLEX_TOKEN"),
+            ("api_key", "FAKE_API_KEY"),
+        ],
+        # Aggressive request-URI scrubbing — strips LAN IPs and
+        # Plex direct cert hostnames (which encode machineIdentifier)
+        # so cassettes don't leak network topology.
+        "before_record_request": _scrub_request_uri,
+        # Aggressive response-body scrubbing — server identifiers,
+        # library names, item titles all become FAKE_* before hitting
+        # disk.
+        "before_record_response": _scrub_response_body,
+        # Match on URL shape only (method + path + query) — NOT host or
+        # port. Cassettes must be portable across recording environment
+        # (Steve's LAN Plex at 172.16.10.240) and CI (no live server),
+        # which means matching on the host the request was originally
+        # sent to would always fail. The cassette's role is to pin the
+        # API contract (path / query / method / response shape), not to
+        # tie the test to a specific server instance.
+        "match_on": ["method", "path", "query"],
+        # Don't barf on the unknown 'urllib3' transport plexapi uses.
+        "decode_compressed_response": True,
+        # NOTE: ``record_mode`` is intentionally NOT set here so the
+        # ``--record-mode=once`` CLI flag drives it during recording.
+        # Default behaviour without the flag is 'none' (replay-only) —
+        # missing cassette → strict failure → exactly the "fail
+        # loudly when cassette missing" contract the user asked for.
+    }

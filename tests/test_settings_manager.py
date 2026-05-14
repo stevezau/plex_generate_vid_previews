@@ -21,7 +21,7 @@ class TestSettingsManager:
     @pytest.fixture
     def settings_manager(self, temp_config_dir):
         """Create a SettingsManager with temporary directory."""
-        from plex_generate_previews.web.settings_manager import SettingsManager
+        from media_preview_generator.web.settings_manager import SettingsManager
 
         return SettingsManager(config_dir=temp_config_dir)
 
@@ -54,7 +54,7 @@ class TestSettingsManager:
 
     def test_persistence(self, temp_config_dir):
         """Test that settings persist across instances."""
-        from plex_generate_previews.web.settings_manager import SettingsManager
+        from media_preview_generator.web.settings_manager import SettingsManager
 
         # Create manager and set value
         manager1 = SettingsManager(config_dir=temp_config_dir)
@@ -79,8 +79,11 @@ class TestPreviewSettingsAfterUpdate:
     """preview_settings_after_update matches SettingsManager.update for gpu_threads."""
 
     def test_gpu_threads_distribution_matches_update(self, tmp_path):
-        from plex_generate_previews.config import validate_processing_thread_totals
-        from plex_generate_previews.web.settings_manager import (
+        """Preview must match what update() actually writes — including the per-GPU
+        distribution, not just the total. Without this, the UI's "Apply" preview
+        could show a different layout than what gets persisted."""
+        from media_preview_generator.config import validate_processing_thread_totals
+        from media_preview_generator.web.settings_manager import (
             SettingsManager,
             preview_settings_after_update,
         )
@@ -97,6 +100,22 @@ class TestPreviewSettingsAfterUpdate:
         total = sum(e["workers"] for e in merged["gpu_config"] if isinstance(e, dict) and e.get("enabled", True))
         assert total == 3
 
+        # The preview's per-GPU layout must match what an actual sm.update() writes.
+        # Mismatch here was the failure mode that motivated this test.
+        sm2 = SettingsManager(config_dir=str(tmp_path / "sm2"))
+        sm2.gpu_config = [
+            {"device": "/a", "enabled": True, "workers": 1, "ffmpeg_threads": 2},
+            {"device": "/b", "enabled": True, "workers": 1, "ffmpeg_threads": 2},
+        ]
+        sm2.set("cpu_threads", 1)
+        sm2.update({"gpu_threads": 3})
+        actual_workers = [e["workers"] for e in sm2.gpu_config]
+        merged_workers = [e["workers"] for e in merged["gpu_config"]]
+        assert actual_workers == merged_workers, f"preview {merged_workers} diverged from update() {actual_workers}"
+        # And the distribution must be the canonical "first GPUs get extras" layout:
+        # 3 workers across 2 enabled GPUs → [2, 1].
+        assert merged_workers == [2, 1]
+
 
 class TestSettingsManagerProperties:
     """Tests for SettingsManager property methods."""
@@ -104,7 +123,7 @@ class TestSettingsManagerProperties:
     @pytest.fixture
     def settings_manager(self, tmp_path):
         """Create a SettingsManager with temporary directory."""
-        from plex_generate_previews.web.settings_manager import SettingsManager
+        from media_preview_generator.web.settings_manager import SettingsManager
 
         return SettingsManager(config_dir=str(tmp_path))
 
@@ -119,7 +138,19 @@ class TestSettingsManagerProperties:
         assert settings_manager.plex_token == "test-token-123"
 
     def test_gpu_threads_property(self, settings_manager):
-        """Test gpu_threads computed from gpu_config and distributed by setter."""
+        """gpu_threads sums enabled-GPU workers, setter distributes evenly.
+
+        Audit fix — original test set gpu_threads=4 and asserted the
+        getter returned 4. That's a partial passthrough check that misses
+        the actual non-trivial behaviour: the setter calls
+        ``_distribute_gpu_threads_into_dict`` (settings_manager.py:19-44)
+        which does ``per_gpu = value // len(enabled)`` plus a remainder
+        round-robin. With 2 enabled GPUs and value=4, each GPU must end
+        up with workers=2. With value=5, one gets 3 and the other 2.
+        Pin the per-entry distribution so a regression in the
+        even-distribution math gets caught (e.g. dumping all workers
+        onto the first GPU).
+        """
         settings_manager.gpu_config = [
             {
                 "device": "/dev/dri/renderD128",
@@ -140,6 +171,29 @@ class TestSettingsManagerProperties:
         ]
         settings_manager.gpu_threads = 4
         assert settings_manager.gpu_threads == 4
+        # Even distribution: 4 // 2 = 2 each, remainder 0.
+        per_gpu_workers = [entry.get("workers") for entry in settings_manager.gpu_config]
+        assert per_gpu_workers == [2, 2], (
+            f"gpu_threads=4 across 2 enabled GPUs must distribute evenly to [2, 2]; "
+            f"got {per_gpu_workers!r}. Regression in _distribute_gpu_threads math."
+        )
+
+        # Round-robin remainder: 5 // 2 = 2 base, remainder 1 → first GPU gets +1.
+        settings_manager.gpu_threads = 5
+        assert settings_manager.gpu_threads == 5
+        per_gpu_workers = [entry.get("workers") for entry in settings_manager.gpu_config]
+        assert per_gpu_workers == [3, 2], (
+            f"gpu_threads=5 across 2 enabled GPUs must distribute as [3, 2] (remainder to first); "
+            f"got {per_gpu_workers!r}."
+        )
+
+        # Type coercion: string-shaped int must be accepted (the setter
+        # does ``int(value)`` defensively because the web form delivers
+        # strings). Pin so a refactor that drops the cast surfaces.
+        settings_manager.gpu_threads = "6"
+        assert settings_manager.gpu_threads == 6
+        per_gpu_workers = [entry.get("workers") for entry in settings_manager.gpu_config]
+        assert per_gpu_workers == [3, 3], f"String '6' must coerce and distribute as [3, 3]; got {per_gpu_workers!r}."
 
     def test_plex_verify_ssl_property(self, settings_manager):
         """Test plex_verify_ssl property with bool conversion."""
@@ -175,7 +229,7 @@ class TestSettingsManagerProperties:
         """Test cpu_threads=0 is preserved (issue #142)."""
         settings_manager.cpu_threads = 0
         assert settings_manager.cpu_threads == 0
-        from plex_generate_previews.web.settings_manager import SettingsManager
+        from media_preview_generator.web.settings_manager import SettingsManager
 
         sm2 = SettingsManager(config_dir=str(settings_manager.config_dir))
         assert sm2.cpu_threads == 0
@@ -196,7 +250,7 @@ class TestGpuConfig:
 
     @pytest.fixture
     def settings_manager(self, tmp_path, monkeypatch):
-        from plex_generate_previews.web.settings_manager import SettingsManager
+        from media_preview_generator.web.settings_manager import SettingsManager
 
         monkeypatch.delenv("GPU_THREADS", raising=False)
         monkeypatch.delenv("GPU_SELECTION", raising=False)
@@ -326,7 +380,7 @@ class TestSettingsManagerConfigStatus:
     @pytest.fixture
     def settings_manager(self, tmp_path, monkeypatch):
         """Create a SettingsManager with clean environment."""
-        from plex_generate_previews.web.settings_manager import SettingsManager
+        from media_preview_generator.web.settings_manager import SettingsManager
 
         # Clear environment variables
         monkeypatch.delenv("PLEX_URL", raising=False)
@@ -343,6 +397,139 @@ class TestSettingsManagerConfigStatus:
         settings_manager.set("plex_token", "test-token")
         assert settings_manager.is_configured() is True
 
+    def test_is_configured_true_for_jellyfin_only_install(self, settings_manager):
+        """B1: a multi-server install with only Jellyfin (no Plex) must pass setup."""
+        settings_manager.set(
+            "media_servers",
+            [
+                {
+                    "id": "jf-1",
+                    "type": "jellyfin",
+                    "name": "Home Jellyfin",
+                    "url": "http://jf.local:8096",
+                    "auth": {"method": "api_key", "api_key": "abc123"},
+                    "enabled": True,
+                }
+            ],
+        )
+        assert settings_manager.is_configured() is True
+
+    def test_is_configured_true_for_emby_only_install(self, settings_manager):
+        """B1: same for an Emby-only install."""
+        settings_manager.set(
+            "media_servers",
+            [
+                {
+                    "id": "emby-1",
+                    "type": "emby",
+                    "name": "Home Emby",
+                    "url": "http://emby.local:8096",
+                    "auth": {"method": "api_key", "api_key": "xyz"},
+                    "enabled": True,
+                }
+            ],
+        )
+        assert settings_manager.is_configured() is True
+
+    def test_is_configured_false_when_only_disabled_servers(self, settings_manager):
+        """B1: disabled entries don't count — every enabled entry would have to pass."""
+        settings_manager.set(
+            "media_servers",
+            [
+                {
+                    "id": "jf-1",
+                    "type": "jellyfin",
+                    "url": "http://jf.local:8096",
+                    "auth": {"api_key": "x"},
+                    "enabled": False,
+                }
+            ],
+        )
+        assert settings_manager.is_configured() is False
+
+    def test_is_configured_false_when_emby_missing_api_key(self, settings_manager):
+        """B1: an Emby/Jellyfin entry with no api_key isn't enough."""
+        settings_manager.set(
+            "media_servers",
+            [
+                {
+                    "id": "emby-1",
+                    "type": "emby",
+                    "url": "http://emby.local:8096",
+                    "auth": {},
+                    "enabled": True,
+                }
+            ],
+        )
+        assert settings_manager.is_configured() is False
+
+    def test_is_configured_false_when_jellyfin_missing_api_key(self, settings_manager):
+        """Audit fix — original suite tested this for Emby only. Jellyfin
+        has the same auth contract and the same misconfiguration mode;
+        without a per-vendor cell it'd silently regress."""
+        settings_manager.set(
+            "media_servers",
+            [
+                {
+                    "id": "jf-1",
+                    "type": "jellyfin",
+                    "url": "http://jf.local:8096",
+                    "auth": {},
+                    "enabled": True,
+                }
+            ],
+        )
+        assert settings_manager.is_configured() is False
+
+    def test_is_configured_false_when_plex_missing_token(self, settings_manager):
+        """Audit fix — same matrix gap for Plex. A Plex entry with no
+        token is misconfigured and is_configured must reject."""
+        settings_manager.set(
+            "media_servers",
+            [
+                {
+                    "id": "plex-1",
+                    "type": "plex",
+                    "url": "http://plex.local:32400",
+                    "auth": {},
+                    "enabled": True,
+                }
+            ],
+        )
+        # Plex authentication can also come from the legacy plex_token
+        # setting, so don't seed that. is_configured should be False.
+        assert settings_manager.is_configured() is False
+
+    def test_is_configured_true_when_one_of_many_is_well_configured(self, settings_manager):
+        """Audit fix — multi-vendor matrix. The actual contract (per
+        ``is_configured``'s docstring) is "at least one enabled server
+        passes." A mixed list with one good + one broken still returns
+        True. This test pins that contract so a regression that flipped
+        to "all must pass" wouldn't ship a UX downgrade silently."""
+        settings_manager.set(
+            "media_servers",
+            [
+                {
+                    "id": "emby-good",
+                    "type": "emby",
+                    "url": "http://emby.local:8096",
+                    "auth": {"api_key": "valid-key"},
+                    "enabled": True,
+                },
+                {
+                    "id": "jf-broken",
+                    "type": "jellyfin",
+                    "url": "http://jf.local:8096",
+                    "auth": {},  # missing api_key — silently skipped
+                    "enabled": True,
+                },
+            ],
+        )
+        assert settings_manager.is_configured() is True, (
+            "is_configured contract: at least one enabled server must pass — "
+            "the well-configured Emby above is enough; the broken Jellyfin is silently skipped"
+        )
+
     def test_is_plex_authenticated_false(self, settings_manager):
         """Test is_plex_authenticated returns False when no token."""
         assert settings_manager.is_plex_authenticated() is False
@@ -357,17 +544,42 @@ class TestClientIdentifier:
     """Tests for client identifier management."""
 
     def test_get_client_identifier_generates_id(self, tmp_path):
-        """Test that get_client_identifier generates a new ID."""
-        from plex_generate_previews.web.settings_manager import SettingsManager
+        """get_client_identifier returns a well-formed UUID4-suffixed ID.
+
+        Audit fix — original test only checked the
+        ``"plex-preview-generator-"`` prefix. That passes for
+        ``"plex-preview-generator-"`` (empty suffix), or any garbage
+        suffix like ``"plex-preview-generator-foo"``. Production format
+        at settings_manager.py:610 is
+        ``f"plex-preview-generator-{uuid.uuid4()}"`` — pin both the
+        regex shape AND that the suffix parses as a valid UUID so a
+        regression to a sequential counter / wrong-version UUID surfaces.
+        """
+        import re
+        import uuid
+
+        from media_preview_generator.web.settings_manager import SettingsManager
 
         manager = SettingsManager(config_dir=str(tmp_path))
 
         client_id = manager.get_client_identifier()
-        assert client_id.startswith("plex-preview-generator-")
+        prefix = "plex-preview-generator-"
+        assert client_id.startswith(prefix), f"client_id must start with {prefix!r}; got {client_id!r}"
+        # Full string must match the canonical UUID-suffixed shape.
+        assert re.fullmatch(
+            r"plex-preview-generator-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", client_id
+        ), f"client_id must match 'plex-preview-generator-<uuid4>'; got {client_id!r}"
+        # Suffix must parse as a real UUID (catches regression to a
+        # truncated or non-uuid suffix that happens to match the regex).
+        suffix = client_id[len(prefix) :]
+        parsed = uuid.UUID(suffix)
+        assert parsed.version == 4, (
+            f"client_id suffix must be a UUID4 (version=4); got version={parsed.version} from {suffix!r}"
+        )
 
     def test_client_identifier_persists(self, tmp_path):
         """Test that client identifier persists across instances."""
-        from plex_generate_previews.web.settings_manager import SettingsManager
+        from media_preview_generator.web.settings_manager import SettingsManager
 
         manager1 = SettingsManager(config_dir=str(tmp_path))
         client_id1 = manager1.get_client_identifier()
@@ -384,7 +596,7 @@ class TestSetupState:
     @pytest.fixture
     def settings_manager(self, tmp_path):
         """Create a SettingsManager with temporary directory."""
-        from plex_generate_previews.web.settings_manager import SettingsManager
+        from media_preview_generator.web.settings_manager import SettingsManager
 
         return SettingsManager(config_dir=str(tmp_path))
 
@@ -429,7 +641,7 @@ class TestApplyChanges:
 
     @pytest.fixture
     def settings_manager(self, tmp_path):
-        from plex_generate_previews.web.settings_manager import SettingsManager
+        from media_preview_generator.web.settings_manager import SettingsManager
 
         return SettingsManager(config_dir=str(tmp_path))
 
@@ -468,7 +680,7 @@ class TestGpuConfigEdgeCases:
 
     @pytest.fixture
     def settings_manager(self, tmp_path):
-        from plex_generate_previews.web.settings_manager import SettingsManager
+        from media_preview_generator.web.settings_manager import SettingsManager
 
         return SettingsManager(config_dir=str(tmp_path))
 
@@ -603,3 +815,69 @@ class TestGpuConfigEdgeCases:
         settings_manager.update(payload)
         assert "gpu_threads" in payload
         assert payload["gpu_threads"] == 3
+
+
+class TestSingletonInitDeadlockRegression:
+    """Lazy-init race guard for the get_settings_manager singleton.
+
+    Pre-fix, ``utils._backup_retention`` called ``get_settings_manager()``
+    while ``atomic_json_save_with_backup`` was being driven by the
+    singleton's own ``__init__`` (via the ``plex_webhook_*`` migration in
+    ``_load``). The outer call held ``_settings_lock`` (non-reentrant); the
+    recursive call tried to acquire it again and deadlocked. Triggered on
+    first boot for every user upgrading from 3.7.5 (which writes the
+    legacy webhook keys), with no error in the logs — the worker just sat
+    there. See ``utils._backup_retention`` /
+    ``settings_manager._migrate_global_plex_webhook_to_per_server``.
+    """
+
+    def test_init_does_not_deadlock_with_legacy_webhook_keys(self, tmp_path):
+        import threading
+
+        from media_preview_generator.web.settings_manager import (
+            get_settings_manager,
+            reset_settings_manager,
+        )
+
+        settings_path = tmp_path / "settings.json"
+        settings_path.write_text(
+            json.dumps(
+                {
+                    "_schema_version": 6,
+                    "plex_url": "http://plex:32400",
+                    "plex_token": "fake-token",
+                    "plex_webhook_enabled": True,
+                    "plex_webhook_public_url": "https://example.com/webhook",
+                }
+            )
+        )
+
+        reset_settings_manager()
+        result: dict = {}
+
+        def init_in_thread() -> None:
+            sm = get_settings_manager(str(tmp_path))
+            result["settings"] = sm.get_all()
+
+        t = threading.Thread(target=init_in_thread, daemon=True)
+        t.start()
+        t.join(timeout=5.0)
+        try:
+            if t.is_alive():
+                pytest.fail(
+                    "SettingsManager init deadlocked: get_settings_manager() did "
+                    "not return within 5s with legacy plex_webhook_* keys in "
+                    "settings.json. The recursive get_settings_manager() call "
+                    "from utils._backup_retention re-entered the non-reentrant "
+                    "_settings_lock. See utils.py:_backup_retention."
+                )
+
+            settings = result["settings"]
+            assert "plex_webhook_enabled" not in settings, (
+                "Legacy plex_webhook_enabled key was not migrated away during _load"
+            )
+            assert "plex_webhook_public_url" not in settings, (
+                "Legacy plex_webhook_public_url key was not migrated away during _load"
+            )
+        finally:
+            reset_settings_manager()

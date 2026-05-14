@@ -1,0 +1,2395 @@
+"""Job management for the web interface.
+
+Provides JobManager class for tracking job state, emitting SocketIO events,
+and persisting job data to disk via SQLite.
+
+Storage moved from jobs.json (per-write whole-file rewrite, schema-fragile)
+to jobs.db (per-row upserts, schema-stable) in Phase J8 — see ``JobStorage``
+below. Free-form fields (progress, config, publishers) stay as JSON blobs
+inside their columns so adding a new field there is a no-op at the schema
+level. The first start of the new code imports any existing jobs.json then
+renames it ``jobs.json.imported.bak``.
+"""
+
+import json
+import os
+import sqlite3
+import threading
+import uuid
+from collections import deque
+from collections.abc import Callable
+from dataclasses import asdict, dataclass, field, fields
+from datetime import datetime, timedelta, timezone
+from enum import Enum
+from typing import Any, Optional
+
+from loguru import logger
+
+# Message shown in UI when a job's log file was removed by retention policy.
+LOG_RETENTION_CLEARED_MESSAGE = "Log file was cleared due to log retention policy."
+
+
+def _synthesize_retry_chain_log_lines(job: "Job") -> list[str]:
+    """Render a retry-chain Job's state as readable log-style lines.
+
+    Retry-chain rows (``config["is_retry_chain"]``) are the parent
+    rollup for the headless retry queue — they don't run themselves.
+    Each firing inside the chain spawns a real per-attempt Job (UUID
+    in ``config["child_job_ids"]``) that writes its own properly-
+    levelled log file, so the user has somewhere with INFO/WARNING
+    colour-coded lines to drill into.
+
+    The lines below are prefixed with ``INFO -`` / ``WARNING -`` so
+    ``colorizeLogLine`` in ``job_modal.js`` paints them the same teal
+    /amber as every other Job log — without prefixes the chain row's
+    log was the one un-coloured surface in the dashboard.
+    """
+
+    def _ts(iso_value: str | None) -> str:
+        if not iso_value:
+            return "--:--:--"
+        try:
+            return datetime.fromisoformat(iso_value).strftime("%H:%M:%S")
+        except (TypeError, ValueError):
+            return "--:--:--"
+
+    cfg = job.config or {}
+    started_at = cfg.get("retry_started_at") or job.created_at
+    started_ts = _ts(started_at)
+    basename = cfg.get("retry_basename") or job.library_name or "(unknown)"
+    canonical = cfg.get("retry_chain_for") or "(unknown)"
+    attempt = cfg.get("retry_attempt", 0)
+    max_attempts = cfg.get("retry_max_attempts", 0)
+    last_outcome = cfg.get("last_outcome") or "(unknown)"
+    status_text = job.status.value if hasattr(job.status, "value") else job.status
+
+    lines = [
+        f"[{started_ts}] INFO - Retry-chain summary row for '{basename}'.",
+        f"[{started_ts}] INFO - Each attempt below is a real Job with its own log "
+        "(open it from the Jobs panel for line-by-line dispatch output).",
+        f"[{started_ts}] INFO - Source path: {canonical}",
+        f"[{started_ts}] INFO - Chain status: {status_text}",
+        f"[{started_ts}] INFO - Attempt: {attempt} of {max_attempts}",
+        f"[{started_ts}] INFO - Last outcome: {last_outcome}",
+    ]
+
+    child_ids = list(cfg.get("child_job_ids") or [])
+    if child_ids:
+        lines.append(f"[{started_ts}] INFO - Per-attempt Job IDs (newest last): " + ", ".join(child_ids))
+    else:
+        lines.append(
+            f"[{started_ts}] INFO - No per-attempt Jobs recorded yet — the first firing "
+            "will spawn one and link it here."
+        )
+
+    if job.progress and job.progress.retry_eta:
+        eta_ts = _ts(job.progress.retry_eta)
+        lines.append(f"[{started_ts}] INFO - Next attempt scheduled at: {eta_ts}")
+    if job.error:
+        lines.append(f"[{started_ts}] WARNING - Reason: {job.error}")
+    return lines
+
+
+# Sentinel for update_progress kwargs that need to distinguish
+# "not passed" from "explicitly set to None" — the existing fields use
+# None as "leave alone," but retry_eta needs an explicit clear path.
+class _UnsetType:
+    pass
+
+
+_UNSET = _UnsetType()
+
+PRIORITY_HIGH = 1
+PRIORITY_NORMAL = 2
+PRIORITY_LOW = 3
+
+PRIORITY_LABELS = {
+    PRIORITY_HIGH: "high",
+    PRIORITY_NORMAL: "normal",
+    PRIORITY_LOW: "low",
+}
+PRIORITY_FROM_LABEL = {v: k for k, v in PRIORITY_LABELS.items()}
+
+
+def parse_priority(value) -> int:
+    """Parse a priority value from int or string label.
+
+    Args:
+        value: Integer (1-3) or string ("high", "normal", "low").
+
+    Returns:
+        Priority integer, defaulting to PRIORITY_NORMAL for invalid input.
+    """
+    if isinstance(value, int) and value in PRIORITY_LABELS:
+        return value
+    if isinstance(value, str):
+        return PRIORITY_FROM_LABEL.get(value.lower(), PRIORITY_NORMAL)
+    return PRIORITY_NORMAL
+
+
+class JobStatus(str, Enum):
+    """Job status enumeration."""
+
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+@dataclass
+class WorkerStatus:
+    """Status information for a single worker."""
+
+    worker_id: int = 0
+    worker_type: str = "CPU"  # "GPU" or "CPU"
+    worker_name: str = "CPU Worker"
+    status: str = "idle"  # "idle", "processing"
+    current_file: str = ""
+    current_title: str = ""
+    library_name: str = ""
+    progress_percent: float = 0.0
+    speed: str = "0.0x"
+    eta: str = ""
+    # True once FFmpeg's progress parser has reported at least once
+    # for this task. Lets the UI distinguish "doing pre-FFmpeg setup
+    # work" (resolving item ids, unpacking a sibling BIF, publishing
+    # — all of which leave progress at 0%) from "FFmpeg is actually
+    # encoding right now and we're between progress events." Without
+    # it both render as "0.0% / 0.0x" and look like a stuck worker.
+    ffmpeg_started: bool = False
+    # Live sub-phase string set by the multi-server processor at each
+    # stage transition (cache check, frame extract/reuse, per-server
+    # publish, item-id resolution). The UI shows this in place of a
+    # generic "Working…" so an op can tell at a glance *what* the
+    # worker is busy with — e.g. "Resolving item id on EmbyTest…"
+    # explains a 30s gap that would otherwise look like a hang.
+    current_phase: str = ""
+
+    def to_dict(self) -> dict:
+        """Serialize to dictionary."""
+        return asdict(self)
+
+
+@dataclass
+class JobProgress:
+    """Progress information for a job."""
+
+    percent: float = 0.0
+    current_item: str = ""
+    total_items: int = 0
+    processed_items: int = 0
+    speed: str = "0.0x"
+    current_file: str = ""
+    workers: list[WorkerStatus] = field(default_factory=list)
+    outcome: dict[str, int] | None = None
+    # ISO end-time + duration of an in-progress retry-backoff wait.
+    # Lets the UI render a smooth client-side countdown + a bar that
+    # fills as the wait elapses, instead of a stuck-looking 0% bar.
+    retry_eta: str | None = None
+    retry_wait_total: int | None = None
+
+    def to_dict(self) -> dict:
+        """Serialize to dictionary."""
+        result = asdict(self)
+        result["workers"] = [w.to_dict() if isinstance(w, WorkerStatus) else w for w in self.workers]
+        return result
+
+
+@dataclass
+class Job:
+    """Represents a processing job."""
+
+    id: str
+    status: JobStatus = JobStatus.PENDING
+    created_at: str = ""
+    started_at: str | None = None
+    completed_at: str | None = None
+    library_id: str | None = None
+    library_name: str = ""
+    # Multi-server attribution: which configured server this job targets.
+    # Optional / nullable for back-compat with jobs created before the
+    # multi-server transition (those render as "All servers" in the UI).
+    server_id: str | None = None
+    server_name: str | None = None
+    server_type: str | None = None  # plex / emby / jellyfin
+    # Per-publisher outcomes from the multi-server dispatcher. Each entry:
+    # {server_id, server_name, server_type, adapter_name, status, message,
+    #  canonical_path}. Persists in jobs.json so historical jobs keep their
+    # publisher breakdown across restarts. Empty list for legacy jobs.
+    publishers: list[dict] = field(default_factory=list)
+    progress: JobProgress = field(default_factory=JobProgress)
+    error: str | None = None
+    config: dict[str, Any] = field(default_factory=dict)
+    paused: bool = False
+    priority: int = PRIORITY_NORMAL
+    # D20 — id of the schedule that spawned this job, or "" for manual /
+    # webhook jobs. Used by execute_schedule_stop() to find which jobs
+    # to pause when a schedule's stop_time fires, and by
+    # execute_scheduled_job() to detect "is there an existing paused
+    # job from this schedule that should be resumed instead of spawning
+    # a new one?" so library scans can naturally span multiple nights.
+    parent_schedule_id: str = ""
+
+    def __post_init__(self):
+        if not self.created_at:
+            self.created_at = datetime.now(timezone.utc).isoformat()
+        if isinstance(self.progress, dict):
+            # Strip legacy 'eta' so persisted jobs.json loads without error
+            data = dict(self.progress)
+            data.pop("eta", None)
+            self.progress = JobProgress(**data)
+        if isinstance(self.status, str):
+            self.status = JobStatus(self.status)
+        self.priority = parse_priority(self.priority)
+
+    def to_dict(self) -> dict:
+        """Serialize to dictionary."""
+        return {
+            "id": self.id,
+            "status": self.status.value,
+            "created_at": self.created_at,
+            "started_at": self.started_at,
+            "completed_at": self.completed_at,
+            "library_id": self.library_id,
+            "library_name": self.library_name,
+            "server_id": self.server_id,
+            "server_name": self.server_name,
+            "server_type": self.server_type,
+            "publishers": list(self.publishers or []),
+            "progress": self.progress.to_dict(),
+            "error": self.error,
+            "config": self.config,
+            "paused": self.paused,
+            "priority": self.priority,
+            "parent_schedule_id": self.parent_schedule_id,
+        }
+
+
+class JobStorage:
+    """SQLite-backed persistence for jobs (Phase J8).
+
+    One table, one connection (gunicorn runs a single worker, so no
+    multi-process write contention). Free-form data — JobProgress, the
+    per-job config dict, the publishers list — lives in JSON-text columns
+    so adding a field inside any of those structures is a no-op at the
+    schema level. That's the whole point of moving off jobs.json: schema
+    drift on those fields can never wipe history again.
+
+    Columns we *do* break out are the ones the UI / API filter or sort
+    on (status, created_at, server_id) so the common queries hit indexes.
+    """
+
+    _SCHEMA_SQL = (
+        """
+        CREATE TABLE IF NOT EXISTS jobs (
+            id                  TEXT PRIMARY KEY,
+            status              TEXT NOT NULL,
+            created_at          TEXT NOT NULL,
+            started_at          TEXT,
+            completed_at        TEXT,
+            library_id          TEXT,
+            library_name        TEXT,
+            server_id           TEXT,
+            server_name         TEXT,
+            server_type         TEXT,
+            priority            INTEGER NOT NULL DEFAULT 2,
+            paused              INTEGER NOT NULL DEFAULT 0,
+            error               TEXT,
+            progress_json       TEXT NOT NULL DEFAULT '{}',
+            config_json         TEXT NOT NULL DEFAULT '{}',
+            publishers_json     TEXT NOT NULL DEFAULT '[]',
+            parent_schedule_id  TEXT NOT NULL DEFAULT ''
+        );
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);",
+        "CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at);",
+    )
+
+    def __init__(self, db_path: str):
+        self.db_path = db_path
+        parent = os.path.dirname(db_path) or "."
+        os.makedirs(parent, exist_ok=True)
+        # check_same_thread=False so worker threads can persist progress
+        # without going through the main thread; isolation_level=None puts
+        # us in autocommit mode (we want every UPSERT durable immediately).
+        self._conn = sqlite3.connect(db_path, check_same_thread=False, isolation_level=None)
+        self._conn.row_factory = sqlite3.Row
+        # WAL: concurrent reads + a single writer with no fsync stalls on
+        # every commit. Safe with one gunicorn worker (project default).
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA synchronous=NORMAL")
+        self._lock = threading.RLock()
+        for stmt in self._SCHEMA_SQL:
+            self._conn.execute(stmt)
+        self._migrate_schema()
+        self._ensure_incremental_autovacuum()
+
+    def _ensure_incremental_autovacuum(self) -> None:
+        """Enable SQLite incremental auto-vacuum, compacting an existing DB on first upgrade.
+
+        Without auto_vacuum the .db file grows monotonically — deleted rows
+        leave freelist pages that are reused for future inserts but never
+        returned to the OS. A live case: the production container's
+        jobs.db had 4 rows but 20,114 pages (82 MB, 99.7% slack) because
+        a 117k-item full-scan had previously bloated publishers_json to
+        ~11 MB per UPSERT before the ``set_publishers`` fix landed.
+
+        ``auto_vacuum=INCREMENTAL`` is sticky per-database and only takes
+        effect on an *existing* DB after a full ``VACUUM``. So: if the
+        connected DB is still at the default ``NONE`` setting, we flip
+        it to INCREMENTAL and run one VACUUM to apply + compact. After
+        that, ``_retention_tick`` can reclaim freelist pages cheaply
+        via ``PRAGMA incremental_vacuum`` without a full rewrite.
+        """
+        try:
+            current = self._conn.execute("PRAGMA auto_vacuum").fetchone()
+            mode = int(current[0]) if current else 0
+        except Exception as exc:
+            logger.debug("Could not read auto_vacuum PRAGMA: {}", exc)
+            return
+        if mode == 2:
+            return
+        try:
+            # Checkpoint-truncate first so any pending WAL pages land in
+            # the main DB — VACUUM rewrites the main file, and without
+            # the checkpoint a large WAL backlog gets stranded (the
+            # file size wouldn't actually shrink until the next WAL
+            # rotation). See the live production case: 82 MB main +
+            # 76 MB WAL sitting there for the same scan.
+            self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            self._conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
+            self._conn.execute("VACUUM")
+            self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            logger.info("Jobs DB: auto_vacuum set to INCREMENTAL and compacted")
+        except Exception as exc:
+            logger.warning(
+                "Could not enable incremental auto_vacuum on jobs DB ({}); "
+                "the file may grow monotonically until a manual VACUUM. "
+                "This is non-fatal — job state persistence still works.",
+                exc,
+            )
+
+    def _migrate_schema(self) -> None:
+        """One-shot ALTER TABLE migrations for columns added after launch.
+
+        SQLite's ALTER TABLE ADD COLUMN is idempotent only via try/except
+        (no IF NOT EXISTS). Each statement is independently best-effort —
+        a duplicate-column OperationalError on ALTER just means the
+        column is already there from a prior run, and the index creation
+        is IF NOT EXISTS so it's safe to run on every startup.
+        """
+        with self._lock:
+            try:
+                self._conn.execute("ALTER TABLE jobs ADD COLUMN parent_schedule_id TEXT NOT NULL DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                self._conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_parent_schedule_id ON jobs(parent_schedule_id)")
+            except sqlite3.OperationalError:
+                pass
+
+    def upsert(self, job: "Job") -> None:
+        d = job.to_dict()
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO jobs (id, status, created_at, started_at, completed_at,
+                                  library_id, library_name, server_id, server_name, server_type,
+                                  priority, paused, error,
+                                  progress_json, config_json, publishers_json,
+                                  parent_schedule_id)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET
+                    status=excluded.status,
+                    started_at=excluded.started_at,
+                    completed_at=excluded.completed_at,
+                    library_id=excluded.library_id,
+                    library_name=excluded.library_name,
+                    server_id=excluded.server_id,
+                    server_name=excluded.server_name,
+                    server_type=excluded.server_type,
+                    priority=excluded.priority,
+                    paused=excluded.paused,
+                    error=excluded.error,
+                    progress_json=excluded.progress_json,
+                    config_json=excluded.config_json,
+                    publishers_json=excluded.publishers_json,
+                    parent_schedule_id=excluded.parent_schedule_id
+                """,
+                (
+                    d["id"],
+                    d["status"],
+                    d["created_at"],
+                    d["started_at"],
+                    d["completed_at"],
+                    d["library_id"],
+                    d["library_name"],
+                    d["server_id"],
+                    d["server_name"],
+                    d["server_type"],
+                    int(d["priority"]),
+                    1 if d["paused"] else 0,
+                    d["error"],
+                    json.dumps(d["progress"]),
+                    json.dumps(d["config"]),
+                    json.dumps(d["publishers"]),
+                    d.get("parent_schedule_id") or "",
+                ),
+            )
+
+    def delete(self, job_id: str) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+
+    def all_jobs(self) -> list["Job"]:
+        with self._lock:
+            rows = self._conn.execute("SELECT * FROM jobs ORDER BY created_at ASC").fetchall()
+        return [self._row_to_job(r) for r in rows]
+
+    def row_count(self) -> int:
+        with self._lock:
+            row = self._conn.execute("SELECT COUNT(*) AS c FROM jobs").fetchone()
+        return int(row["c"]) if row else 0
+
+    def close(self) -> None:
+        with self._lock:
+            try:
+                self._conn.close()
+            except sqlite3.Error:
+                pass
+
+    @staticmethod
+    def _row_to_job(row) -> "Job":
+        def _safe_json(blob, fallback):
+            """Parse JSON blob, falling back to ``fallback`` on parse error
+            OR when the parsed value's type doesn't match the fallback's
+            type. Without the type guard a row with e.g. progress_json='[]'
+            (list) would deserialize to a list and trip Job.to_dict() later
+            because JobProgress.to_dict() only works on dicts.
+            """
+            if not blob:
+                return fallback
+            try:
+                parsed = json.loads(blob)
+            except (json.JSONDecodeError, TypeError):
+                return fallback
+            if not isinstance(parsed, type(fallback)):
+                return fallback
+            return parsed
+
+        # parent_schedule_id was added post-launch via _migrate_schema;
+        # row.keys() may not include it on a fresh-built dataclass row
+        # in tests, so guard the access.
+        _psi = ""
+        try:
+            _psi = row["parent_schedule_id"] or ""
+        except (IndexError, KeyError):
+            pass
+        return Job(
+            id=row["id"],
+            status=row["status"],
+            created_at=row["created_at"],
+            started_at=row["started_at"],
+            completed_at=row["completed_at"],
+            library_id=row["library_id"],
+            library_name=row["library_name"] or "",
+            server_id=row["server_id"],
+            server_name=row["server_name"],
+            server_type=row["server_type"],
+            priority=row["priority"],
+            paused=bool(row["paused"]),
+            error=row["error"],
+            progress=_safe_json(row["progress_json"], {}),
+            config=_safe_json(row["config_json"], {}),
+            publishers=_safe_json(row["publishers_json"], []),
+            parent_schedule_id=_psi,
+        )
+
+
+class JobManager:
+    """Manages job queue and state for the web interface.
+
+    Provides methods for creating, updating, and querying jobs,
+    as well as emitting SocketIO events for real-time updates.
+    """
+
+    def __init__(self, config_dir: str = "/config", socketio=None):
+        """Initialize job manager with config directory and optional SocketIO instance."""
+        self.config_dir = config_dir
+        # Pre-J8 path, kept on the instance only so the legacy-import code
+        # path can find any old jobs.json that's still on disk.
+        self.jobs_file = os.path.join(config_dir, "jobs.json")
+        self.jobs_db_path = os.path.join(config_dir, "jobs.db")
+        self._job_logs_dir = os.path.join(config_dir, "logs", "jobs")
+        self._job_file_results_dir = os.path.join(config_dir, "logs", "job_file_results")
+        self.socketio = socketio
+        self._jobs: dict[str, Job] = {}
+        self._storage: JobStorage | None = None
+        self._lock = threading.RLock()
+        self._running_job_ids: set = set()
+        self._on_progress_callbacks: list[Callable] = []
+
+        # Job logs storage (in-memory for running jobs, plus file-backed under _job_logs_dir)
+        self._job_logs: dict[str, deque] = {}
+        self._max_log_lines = 500
+
+        # Per-job file-results JSONL counter — keyed by job_id, lazily seeded
+        # from disk on first record_file_result call. Without this, the cap
+        # check would re-scan the JSONL on EVERY append and a 100k-item scan
+        # past the 5000-entry cap would do ~95k * O(5k) = 475M file reads.
+        self._file_result_counts: dict[str, int] = {}
+        self._file_result_counts_lock = threading.Lock()
+
+        # Worker status tracking
+        self._worker_statuses: dict[str, WorkerStatus] = {}
+
+        # Cancellation flags
+        self._cancellation_flags: dict[str, bool] = {}
+        self._pause_flags: dict[str, bool] = {}
+        self._pause_events: dict[str, threading.Event] = {}
+        self._active_worker_pools: dict[str, Any] = {}
+
+        # Background retention timer
+        self._retention_timer: threading.Timer | None = None
+        self._interrupted_jobs: list[Job] = []
+        # Chain Jobs that were in PENDING/RUNNING at load time. The
+        # retry children that drive the chain are real Jobs and are
+        # revived by the generic ``_requeue_interrupted_on_startup``
+        # path; this list lets the app's boot phase reconcile the
+        # remaining "chain head with no living child" cases. Surfaced
+        # via ``interrupted_retry_chains()``.
+        self._interrupted_retry_chains: list[Job] = []
+
+        # Load existing jobs from disk
+        self._load_jobs()
+        try:
+            os.makedirs(self._job_logs_dir, exist_ok=True)
+            os.makedirs(self._job_file_results_dir, exist_ok=True)
+            self._enforce_log_retention()
+        except OSError as e:
+            logger.warning(
+                "Could not create the job-logs directory at {} ({}: {}). "
+                "Jobs will still run, but per-job log lines won't be saved to disk — "
+                "they'll only show in the live Job Detail page while the job is running. "
+                "Check the config directory is writable (Docker: confirm volume mount permissions and PUID/PGID).",
+                self._job_logs_dir,
+                type(e).__name__,
+                e,
+            )
+        self._start_retention_timer()
+
+    def set_socketio(self, socketio) -> None:
+        """Set the SocketIO instance for real-time updates."""
+        self.socketio = socketio
+
+    def _load_jobs(self) -> None:
+        """Open the SQLite store, import any legacy jobs.json once, hydrate cache.
+
+        Mirrors the prior JSON loader's behaviour: any RUNNING job from the
+        previous process becomes FAILED with a clear error, and PENDING jobs
+        join self._interrupted_jobs so the app can offer to revive them.
+        """
+        try:
+            self._storage = JobStorage(self.jobs_db_path)
+        except sqlite3.Error as e:
+            logger.error(
+                "Could not open jobs database at {} ({}: {}). "
+                "Jobs will run this session but their state will not survive a restart. "
+                "Check that the config directory is writable (Docker: confirm volume mount + PUID/PGID).",
+                self.jobs_db_path,
+                type(e).__name__,
+                e,
+            )
+            self._storage = None
+            return
+
+        self._maybe_import_legacy_json()
+
+        try:
+            stored_jobs = self._storage.all_jobs()
+        except sqlite3.Error as e:
+            logger.error(
+                "Could not read jobs from {} ({}: {}). Starting this session with an empty jobs list — "
+                "your history is still on disk and should reappear on the next clean start.",
+                self.jobs_db_path,
+                type(e).__name__,
+                e,
+            )
+            return
+
+        needs_resave: list[Job] = []
+        retry_interrupted_count = 0
+        legacy_retry_ids: list[str] = []
+        for job in stored_jobs:
+            # Legacy ``retry-<sha256(path)[:16]>`` rows are obsolete after
+            # the chain rewrite (the chain is now the originating
+            # dispatch's UUID — no separate row). Drop them at load AND
+            # remove from the SQLite store so the next graceful exit
+            # doesn't re-write them. Per-attempt rows whose
+            # ``parent_chain_id`` pointed at one of these legacy
+            # chains are also orphans — their parent is gone — but we
+            # keep them for log-history purposes (their .log files are
+            # still on disk; the dropdown won't surface them but
+            # direct ID URLs still work).
+            if job.id.startswith("retry-"):
+                legacy_retry_ids.append(job.id)
+                continue
+
+            # Chain Jobs (originating dispatch with is_retry_chain=True)
+            # in PENDING/RUNNING get RECOVERED for resume rather than
+            # failed. The retry children that drive the chain are real
+            # Jobs revived by the generic requeue path; this list lets
+            # the app's boot-phase reconciler check whether each chain
+            # has a living child or needs to be marked FAILED. Pre-fix
+            # this branch marked chains FAILED with a "re-trigger the
+            # source webhook to resume" error; that was hostile UX
+            # (DEV_RELOAD reload nuked in-flight chains for no
+            # controllable reason).
+            if job.config.get("is_retry_chain") and job.status in (JobStatus.PENDING, JobStatus.RUNNING):
+                if job.status == JobStatus.RUNNING:
+                    # RUNNING means a retry child was mid-dispatch when
+                    # the process died. Recover the chain as PENDING so
+                    # the boot reconciler treats the absent dispatch as
+                    # "needs the next retry child to resume" rather than
+                    # leaving the row stuck claiming work is in flight.
+                    job.status = JobStatus.PENDING
+                    # Ensure retry_eta exists so the chip has a
+                    # countdown to show until the next retry child
+                    # comes back online — default to "now" if it was
+                    # cleared by the running transition.
+                    if not job.progress.retry_eta:
+                        job.progress.retry_eta = datetime.now(timezone.utc).isoformat()
+                    job.progress.current_item = ""
+                    needs_resave.append(job)
+                self._interrupted_retry_chains.append(job)
+                self._jobs[job.id] = job
+                continue
+
+            # Per-attempt rows (is_retry_attempt) that were RUNNING when
+            # the process died ARE dead work — a fresh attempt Job will
+            # be created when the chain's next firing executes, so this
+            # one's log/state should reflect that it was interrupted.
+            # Keep them visible in the modal Attempts dropdown for
+            # history but mark FAILED.
+            if job.config.get("is_retry_attempt") and job.status in (JobStatus.PENDING, JobStatus.RUNNING):
+                job.status = JobStatus.FAILED
+                job.error = (
+                    "Attempt interrupted by container restart — a fresh attempt will run from the chain's next firing."
+                )
+                job.completed_at = datetime.now(timezone.utc).isoformat()
+                needs_resave.append(job)
+                retry_interrupted_count += 1
+                self._jobs[job.id] = job
+                continue
+            # Mark any "running" jobs as failed on startup (interrupted by
+            # restart/crash). Same policy as the legacy JSON loader had.
+            if job.status == JobStatus.RUNNING:
+                logger.warning(
+                    "Job {} was still running when the app last shut down — marking it as failed. "
+                    "If auto-requeue-on-restart is enabled (Settings → Jobs), it will be revived shortly; "
+                    "otherwise re-run it from the Jobs page when you're ready.",
+                    job.id,
+                )
+                job.status = JobStatus.FAILED
+                job.error = "Job was interrupted by server restart"
+                job.completed_at = datetime.now(timezone.utc).isoformat()
+                needs_resave.append(job)
+                self._interrupted_jobs.append(job)
+            elif job.status == JobStatus.PENDING:
+                self._interrupted_jobs.append(job)
+            self._jobs[job.id] = job
+
+        if retry_interrupted_count:
+            logger.info(
+                "Marked {} interrupted per-attempt Job(s) as failed (their worker thread "
+                "didn't survive restart; history kept for the modal Attempts dropdown).",
+                retry_interrupted_count,
+            )
+        if self._interrupted_retry_chains:
+            logger.info(
+                "Found {} retry-chain Job(s) interrupted by restart — keeping PENDING; "
+                "the boot reconciler will check each for a living retry child.",
+                len(self._interrupted_retry_chains),
+            )
+
+        for job in needs_resave:
+            self._persist_job(job)
+
+        # Clean up legacy retry-<hash> rows from disk. After the chain
+        # rewrite (commit replacing this comment), the chain identity
+        # IS the originating dispatch's UUID — there is no separate
+        # retry-<sha256(path)[:16]> row. Any such rows on disk are
+        # from before the rewrite; drop them so the dashboard doesn't
+        # show them on first boot of the new code.
+        if legacy_retry_ids and self._storage is not None:
+            logger.info(
+                "Dropping {} legacy retry-<hash> Job row(s) from previous schema "
+                "(chain rewrite: chain is now the originating dispatch's UUID).",
+                len(legacy_retry_ids),
+            )
+            for legacy_id in legacy_retry_ids:
+                try:
+                    self._storage.delete(legacy_id)
+                except Exception as exc:
+                    logger.debug("Could not delete legacy retry row {}: {}", legacy_id, exc)
+
+        logger.info("Loaded {} jobs from {}", len(self._jobs), self.jobs_db_path)
+        if self._interrupted_jobs:
+            logger.info("Found {} interrupted/pending job(s) from previous run", len(self._interrupted_jobs))
+
+    def _maybe_import_legacy_json(self) -> None:
+        """One-shot import of pre-J8 jobs.json into the SQLite store.
+
+        Only runs when the DB is empty (so a manually restored jobs.json
+        doesn't double-import on top of an existing DB). After import, the
+        legacy file is renamed ``jobs.json.imported.bak`` so we never try
+        again. Each record uses the same kwarg-filtering pattern the JSON
+        loader had — one bad row never blocks the rest.
+        """
+        legacy = self.jobs_file
+        if not os.path.exists(legacy):
+            return
+        if self._storage is None or self._storage.row_count() > 0:
+            return
+
+        try:
+            with open(legacy) as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError) as e:
+            logger.warning(
+                "Could not import legacy {} ({}: {}). Starting with an empty jobs DB.",
+                legacy,
+                type(e).__name__,
+                e,
+            )
+            return
+
+        _job_field_names = {f.name for f in fields(Job)}
+        imported = skipped = 0
+        for job_data in data.get("jobs", []):
+            try:
+                filtered = {k: v for k, v in (job_data or {}).items() if k in _job_field_names}
+                job = Job(**filtered)
+                self._storage.upsert(job)
+                imported += 1
+            except (TypeError, KeyError, ValueError, AttributeError, sqlite3.Error) as exc:
+                # AttributeError covers untrusted-data shapes like progress="str"
+                # — Job.__post_init__ keeps it as a string, then to_dict() trips.
+                # Per-record skip mirrors the legacy JSON loader's behaviour
+                # (Phase H Fix-5) — one bad row never blocks the rest.
+                skipped += 1
+                logger.warning(
+                    "Skipping job {} during legacy import ({}: {}).",
+                    (job_data or {}).get("id", "<no id>"),
+                    type(exc).__name__,
+                    exc,
+                )
+
+        archive = legacy + ".imported.bak"
+        try:
+            os.replace(legacy, archive)
+        except OSError as exc:
+            logger.warning("Imported {} jobs but could not rename {} → {}: {}", imported, legacy, archive, exc)
+
+        logger.info(
+            "Imported {} job(s) from {} into {} ({} skipped). Legacy file preserved at {}.",
+            imported,
+            legacy,
+            self.jobs_db_path,
+            skipped,
+            archive,
+        )
+
+    def _persist_job(self, job: "Job") -> None:
+        """Upsert a single job's row to disk. No-op if storage couldn't open.
+
+        Retry-chain rows AND their per-attempt child Jobs DO persist so
+        that the Job Details modal's Attempts dropdown can show the
+        full history of a chain across container restarts (the in-
+        memory ``threading.Timer`` driving the chain is gone after a
+        restart, so on boot ``_load_jobs`` marks any non-terminal
+        chain/attempt row as FAILED with a 'Retry interrupted by
+        restart' reason — see ``_load_jobs`` for the recovery path).
+
+        Pre-PLAN-collapse this method skipped both ``is_retry_chain``
+        and ``is_retry_attempt`` outright because the design then was
+        "many visible rows per chain, all ephemeral, drop on restart."
+        That accumulated thousands of dashboard rows during JellyTest
+        backfill (~600/day) so the design flipped to "one chain row
+        per file, attempts only visible inside the modal dropdown".
+        With attempts hidden from the main list by default
+        (``api_jobs.py`` opt-in flag) row count is bounded by the
+        number of in-flight chains — typically tens, not thousands.
+        """
+        if self._storage is None:
+            return
+        try:
+            self._storage.upsert(job)
+        except sqlite3.Error as e:
+            logger.error(
+                "Could not persist job {} to {} ({}: {}). Job state will be lost on restart.",
+                job.id,
+                self.jobs_db_path,
+                type(e).__name__,
+                e,
+            )
+
+    def _persist_delete(self, job_id: str) -> None:
+        """Delete a single job's row from disk."""
+        if self._storage is None:
+            return
+        try:
+            self._storage.delete(job_id)
+        except sqlite3.Error as e:
+            logger.error(
+                "Could not delete job {} from {} ({}: {}).",
+                job_id,
+                self.jobs_db_path,
+                type(e).__name__,
+                e,
+            )
+
+    def _emit_event(self, event: str, data: dict) -> None:
+        """Emit a SocketIO event without blocking the caller.
+
+        Runs the emit in a separate green thread so the processing
+        loop never pauses while data is being sent to clients.
+        """
+        if not self.socketio:
+            return
+
+        def _do_emit():
+            try:
+                self.socketio.emit(event, data, namespace="/jobs")
+            except Exception:
+                logger.debug("SocketIO emit failed for {}", event, exc_info=True)
+
+        t = threading.Thread(target=_do_emit, daemon=True)
+        t.start()
+
+    def emit_processing_paused_changed(self, paused: bool) -> None:
+        """Emit event when global processing pause state changes."""
+        self._emit_event("processing_paused_changed", {"paused": paused})
+
+    def _delete_job_log_file(self, job_id: str) -> None:
+        """Remove the persisted log file for a job if it exists. Caller must hold _lock."""
+        path = os.path.join(self._job_logs_dir, f"{job_id}.log")
+        try:
+            if os.path.isfile(path):
+                os.remove(path)
+        except OSError as e:
+            logger.debug("Could not remove job log file {}: {}", path, e)
+
+    def _get_job_history_days(self) -> int:
+        """Read job_history_days from settings, defaulting to 30."""
+        try:
+            from .settings_manager import get_settings_manager
+
+            sm = get_settings_manager()
+            return int(sm.get("job_history_days", 30))
+        except Exception:
+            logger.debug("Could not read job_history_days from settings", exc_info=True)
+            return 30
+
+    def _enforce_log_retention(self) -> None:
+        """Delete terminal jobs and their log files older than job_history_days.
+
+        Also removes orphaned log files (no matching job entry).
+        Caller must hold _lock.
+        """
+        days = self._get_job_history_days()
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        cutoff_iso = cutoff.isoformat()
+
+        expired_ids = []
+        for job_id, job in self._jobs.items():
+            if job.status not in (
+                JobStatus.COMPLETED,
+                JobStatus.FAILED,
+                JobStatus.CANCELLED,
+            ):
+                continue
+            ref_time = job.completed_at or job.created_at
+            if ref_time and ref_time < cutoff_iso:
+                expired_ids.append(job_id)
+
+        if expired_ids:
+            for job_id in expired_ids:
+                self._delete_job_log_file(job_id)
+                self._delete_file_results(job_id)
+                self._job_logs.pop(job_id, None)
+                del self._jobs[job_id]
+                self._persist_delete(job_id)
+            logger.info("Retention: removed {} job(s) older than {} day(s)", len(expired_ids), days)
+            # Reclaim the freelist pages those deletes produced so the
+            # .db file shrinks back to live-data size. Cheap with
+            # auto_vacuum=INCREMENTAL (only the freelist is rewritten,
+            # not the whole table). Goes through the storage layer's
+            # connection — JobManager does not own a raw sqlite3 handle.
+            if self._storage is not None:
+                try:
+                    self._storage._conn.execute("PRAGMA incremental_vacuum")
+                except Exception as exc:
+                    logger.debug("incremental_vacuum after retention sweep failed: {}", exc)
+
+        # Clean orphaned job log files
+        if os.path.isdir(self._job_logs_dir):
+            for name in os.listdir(self._job_logs_dir):
+                if not name.endswith(".log"):
+                    continue
+                job_id = name[:-4]
+                if job_id not in self._jobs:
+                    path = os.path.join(self._job_logs_dir, name)
+                    try:
+                        os.remove(path)
+                        logger.debug("Removed orphaned job log: {}", path)
+                    except OSError:
+                        pass
+
+        # Clean orphaned file-result JSONL files
+        if os.path.isdir(self._job_file_results_dir):
+            for name in os.listdir(self._job_file_results_dir):
+                if not name.endswith(".jsonl"):
+                    continue
+                job_id = name[:-6]
+                if job_id not in self._jobs:
+                    path = os.path.join(self._job_file_results_dir, name)
+                    try:
+                        os.remove(path)
+                        logger.debug("Removed orphaned file results: {}", path)
+                    except OSError:
+                        pass
+
+    _RETENTION_INTERVAL_SEC = 3600  # 1 hour
+
+    def _start_retention_timer(self) -> None:
+        """Start (or restart) the background hourly retention timer."""
+        self._stop_retention_timer()
+        timer = threading.Timer(self._RETENTION_INTERVAL_SEC, self._retention_tick)
+        timer.daemon = True
+        timer.start()
+        self._retention_timer = timer
+
+    def _stop_retention_timer(self) -> None:
+        """Cancel the background retention timer if running."""
+        if self._retention_timer is not None:
+            self._retention_timer.cancel()
+            self._retention_timer = None
+
+    def _retention_tick(self) -> None:
+        """Periodic callback: run retention then schedule the next tick."""
+        try:
+            with self._lock:
+                self._enforce_log_retention()
+        except Exception as e:
+            logger.debug("Retention tick error: {}", e)
+        self._start_retention_timer()
+
+    def create_job(
+        self,
+        library_id: str | None = None,
+        library_name: str = "",
+        config: dict[str, Any] | None = None,
+        priority: int = PRIORITY_NORMAL,
+        server_id: str | None = None,
+        server_name: str | None = None,
+        server_type: str | None = None,
+        parent_schedule_id: str = "",
+    ) -> Job:
+        """Create a new job.
+
+        Args:
+            library_id: Library section ID (vendor-specific).
+            library_name: Human-readable library name.
+            config: Job configuration overrides.
+            priority: Dispatch priority (1=high, 2=normal, 3=low).
+            server_id: Configured media-server id this job targets (optional).
+            server_name: Display name of the targeted server (optional).
+            server_type: Vendor type — "plex" / "emby" / "jellyfin".
+            parent_schedule_id: id of the schedule that spawned this job
+                (D20). Empty for manual / webhook-triggered jobs. Used
+                for pause-on-stop-time and resume-on-next-start lookups.
+        """
+        with self._lock:
+            job = Job(
+                id=str(uuid.uuid4()),
+                library_id=library_id,
+                library_name=library_name,
+                server_id=server_id,
+                server_name=server_name,
+                server_type=server_type,
+                config=config or {},
+                priority=parse_priority(priority),
+                parent_schedule_id=parent_schedule_id or "",
+            )
+            self._jobs[job.id] = job
+            self._persist_job(job)
+            self._emit_event("job_created", job.to_dict())
+        logger.info(
+            "Created job {} for library {} (server={})",
+            job.id,
+            library_name or "(all)",
+            server_name or server_id or "(all)",
+        )
+        return job
+
+    def requeue_interrupted_jobs(self, max_age_minutes: int = 720) -> list[Job]:
+        """Revive jobs that were interrupted by the last restart.
+
+        Each interrupted job is restored to ``PENDING`` in place (same
+        job ID, same ``created_at``) so it can be restarted.  No new
+        jobs are created.  The library will be re-scanned on start and
+        items that already have previews are skipped automatically.
+
+        Args:
+            max_age_minutes: Only revive jobs whose last activity
+                (``started_at``, falling back to ``created_at``) is
+                within this many minutes of the current time.  Older
+                jobs are considered stale and left as-is.
+                Range: 5 – 1440 (1 day).
+
+        Returns:
+            List of revived ``Job`` objects ready to be started.
+
+        """
+        if not self._interrupted_jobs:
+            return []
+
+        max_age_minutes = max(5, min(1440, max_age_minutes))
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=max_age_minutes)
+        revived: list[Job] = []
+
+        for job in self._interrupted_jobs:
+            # Check age — skip stale jobs.  Use started_at (when
+            # available) so long-running jobs aren't wrongly considered
+            # "too old" based on their creation timestamp.
+            try:
+                ref_str = job.started_at or job.created_at
+                ref_time = datetime.fromisoformat(ref_str.replace("Z", "+00:00"))
+                if ref_time.tzinfo is None:
+                    ref_time = ref_time.replace(tzinfo=timezone.utc)
+                if ref_time < cutoff:
+                    logger.debug("Skipping revive of job {} — too old (ref={})", job.id[:8], ref_str)
+                    continue
+            except (ValueError, AttributeError):
+                # Can't parse date — skip to be safe
+                continue
+
+            # Revive the job in place — same ID, same created_at
+            with self._lock:
+                job.status = JobStatus.PENDING
+                job.error = None
+                job.completed_at = None
+                job.paused = False
+                job.progress = JobProgress()
+
+            self.add_log(
+                job.id,
+                "INFO - Job revived after server restart; processing will resume.",
+            )
+            revived.append(job)
+            logger.info("Revived interrupted job {} ({})", job.id[:8], job.library_name)
+
+        if revived:
+            with self._lock:
+                for job in revived:
+                    self._persist_job(job)
+
+        # Clear the list so it's not processed again
+        self._interrupted_jobs = []
+        return revived
+
+    def interrupted_retry_chains(self) -> list[Job]:
+        """Return chain Jobs that were in PENDING/RUNNING at load time.
+
+        The boot-phase reconciler walks this list and, for each chain,
+        checks whether a living retry child Job exists (the generic
+        requeue path revives the child if so). Chains without a living
+        child are marked FAILED so the user knows to re-trigger. The
+        accessor itself is read-only — the caller is responsible for
+        clearing the list after consuming via
+        :meth:`consume_interrupted_retry_chains`.
+        """
+        return list(self._interrupted_retry_chains)
+
+    def consume_interrupted_retry_chains(self) -> list[Job]:
+        """Pop the interrupted-chains list — idempotent across boots.
+
+        Returns the chains, then clears the list so a second call
+        returns nothing. The boot-phase resume code calls this once.
+        """
+        chains = list(self._interrupted_retry_chains)
+        self._interrupted_retry_chains = []
+        return chains
+
+    def get_job(self, job_id: str) -> Job | None:
+        """Get a job by ID."""
+        return self._jobs.get(job_id)
+
+    def get_all_jobs(self) -> list[Job]:
+        """Get all jobs."""
+        return list(self._jobs.values())
+
+    def get_pending_jobs(self) -> list[Job]:
+        """Get all pending jobs."""
+        return [j for j in self._jobs.values() if j.status == JobStatus.PENDING]
+
+    def get_running_job(self) -> Job | None:
+        """Get a currently running job (first found).
+
+        For backward compatibility. Prefer ``get_running_jobs`` when
+        multiple jobs may run concurrently.
+        """
+        with self._lock:
+            for jid in list(self._running_job_ids):
+                job = self._jobs.get(jid)
+                if job and job.status == JobStatus.RUNNING:
+                    return job
+        return None
+
+    def get_running_jobs(self) -> list[Job]:
+        """Get all currently running jobs."""
+        with self._lock:
+            return [
+                self._jobs[jid]
+                for jid in self._running_job_ids
+                if jid in self._jobs and self._jobs[jid].status == JobStatus.RUNNING
+            ]
+
+    def upsert_retry_chain_job(
+        self,
+        *,
+        canonical_path: str,
+        basename: str,
+        attempt: int,
+        max_attempts: int,
+        next_run_at: str | None,
+        wait_seconds: int | None,
+        outcome: str,  # "scheduled" | "queued_for_slot" | "running" | "completed" | "exhausted"
+        server_id: str | None = None,
+        server_name: str | None = None,
+        server_type: str | None = None,
+        reason: str | None = None,
+        source: str | None = None,
+        originating_job_id: str,
+        publishers: list[dict] | None = None,
+        wait_active: int | None = None,
+        wait_cap: int | None = None,
+    ) -> Job | None:
+        """Mutate the originating dispatch Job to ADD or UPDATE retry-chain state.
+
+        **The chain head IS the originating dispatch Job.** Its UUID is
+        the chain identity. Retry firings are real child Jobs
+        (``is_retry=True``, ``parent_job_id=<chain.id>``) spawned by
+        ``job_runner._spawn_retry_job``; they're hidden from the Jobs
+        panel via the ``/api/jobs`` filter and surface in the parent's
+        modal Attempts dropdown. The user sees ONE row per dispatch
+        across the entire lifecycle (initial run + every retry), with
+        the retry chip + countdown + status reflecting the whole
+        journey.
+
+        Pre-rewrite there was a synthetic ``retry-<sha256(path)[:16]>``
+        row separate from the originating dispatch, which created the
+        "two rows for one file" UX bug: the user saw both the
+        completed dispatch (Plex+Emby published) AND a pending chain
+        row counting down, and read them as separate jobs. The rewrite
+        collapses them: the originating Job is mutated in place when
+        a publisher needs a retry chain.
+
+        State machine driven by ``outcome``:
+          * ``"scheduled"``       → status=PENDING, retry_eta + retry_wait_total set,
+                                    completed_at cleared, error cleared
+          * ``"queued_for_slot"`` → status=PENDING, current_item shows
+                                    "Queued — waiting for active slot (X of Y busy)";
+                                    fired by JobGate's on_wait callback while a retry
+                                    callback is blocked waiting for max_concurrent_jobs.
+                                    Requires ``wait_active`` + ``wait_cap`` kwargs.
+          * ``"running"``         → status=RUNNING, retry_eta cleared (countdown stops)
+          * ``"completed"``       → status=COMPLETED, completed_at set, error cleared
+          * ``"exhausted"``       → status=FAILED with ``reason`` written to ``error``
+
+        Args:
+            canonical_path: Source media path (stored on the Job's
+                config as ``retry_chain_for`` so the retry queue can
+                find this Job from a Timer callback that only knows
+                the path).
+            basename: Cleaned title for the Job's ``library_name`` slot.
+                Only applied on first chain mutation OR when the
+                incoming title is cleaner than the existing one (see
+                the extension-aware heuristic below) — the originating
+                dispatch already set a sensible title; we only swap
+                if we have a better one.
+            attempt: Current attempt number (1-indexed).
+            max_attempts: Backoff schedule's max attempts.
+            next_run_at: ISO timestamp when the next attempt fires.
+            wait_seconds: Seconds until ``next_run_at`` (drives the bar).
+            outcome: State transition (see state machine above).
+            server_id / server_name / server_type: Late-arriving server
+                attribution. Only applied if the originating Job didn't
+                already have it set.
+            reason: Exhaustion reason (written to ``error`` on outcome="exhausted").
+            source: Trigger pill ("sonarr"/"radarr"/"plex"/…); set if
+                not already on the Job.
+            originating_job_id: **Required.** UUID of the originating
+                dispatch Job to mutate. If the Job doesn't exist (CLI
+                smoke test, deleted by retention before chain fired),
+                this method is a no-op and returns ``None``.
+
+        Returns:
+            The mutated Job, or ``None`` if no originating Job exists.
+        """
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        with self._lock:
+            job = self._jobs.get(originating_job_id)
+            if job is None:
+                # No originating Job to mutate — happens in CLI smoke
+                # tests, or if the dispatch's Job was deleted between
+                # the retry child spawning and the chain-state hook
+                # firing. Silently no-op so the spawner doesn't crash.
+                logger.debug(
+                    "upsert_retry_chain_job: no Job {} to mutate (CLI / deleted)",
+                    originating_job_id,
+                )
+                return None
+
+            # CANCELLED is the user's explicit terminal state — never
+            # let a late retry-child upsert flip it back to
+            # RUNNING/COMPLETED/PENDING. Without this guard a TOCTOU
+            # race between ``cancel_job`` and a retry child's terminal
+            # state hook produces a "ghost resurrection": the cascade
+            # marks the Job CANCELLED, then the mid-flight retry
+            # child's post-process upsert silently overwrites it.
+            if job.status == JobStatus.CANCELLED:
+                self._persist_job(job)
+                return job
+
+            # Late-arriving server attribution wins over an empty one
+            # (originating dispatch may have had no server pin set if
+            # this was a multi-server fan-out).
+            if not job.server_id and server_id:
+                job.server_id = server_id
+                job.server_name = server_name
+                job.server_type = server_type
+            if source and not job.config.get("source"):
+                job.config["source"] = source
+
+            # Title cleanup heuristic: only swap library_name when the
+            # incoming basename is CLEANER than what's there. Originating
+            # dispatch's library_name is already the cleaned Sonarr/Radarr
+            # title in the typical case; we don't want to clobber it with
+            # a raw ``os.path.basename`` like ``Foo.mkv``. Rule: titles
+            # ending in a media extension lose to non-extension titles,
+            # regardless of length. Same as pre-rewrite.
+            #
+            # Guard: the per-job retry caller passes ``canonical_path=""``
+            # since the chain represents the whole batch, not one file.
+            # Skip the heuristic in that case — there's no per-file
+            # basename to compare against, and the parent's title (e.g.
+            # "333 files") is already what we want.
+            _MEDIA_EXTS = (".mkv", ".mp4", ".m4v", ".avi", ".mov", ".wmv", ".ts")
+            if canonical_path and basename and basename != job.library_name:
+                cur = job.library_name or ""
+                new_dirty = basename.lower().endswith(_MEDIA_EXTS)
+                cur_dirty = cur.lower().endswith(_MEDIA_EXTS)
+                prefer_new = False
+                if cur_dirty and not new_dirty:
+                    prefer_new = True
+                elif not new_dirty and not cur_dirty and len(basename) < len(cur):
+                    prefer_new = True
+                elif new_dirty and cur_dirty and len(basename) < len(cur):
+                    prefer_new = True
+                if prefer_new:
+                    job.library_name = basename
+                    job.config["retry_basename"] = basename
+
+            # First mutation: stamp the chain-init bits onto the Job's
+            # config so it's recognised as a chain everywhere downstream
+            # (status badge, retry chip, modal dropdown). Subsequent
+            # upserts skip this block.
+            #
+            # ``retry_chain_for`` is only set when the caller supplies a
+            # non-empty canonical_path. The job-level caller passes
+            # ``canonical_path=""`` (the chain represents the whole
+            # batch, not one file), and writing the empty string would
+            # mislead any downstream reader. Legacy callers that pass a
+            # real path keep the field. Subsequent upserts never
+            # overwrite — the field is initialised at most once.
+            if not job.config.get("is_retry_chain"):
+                job.config["is_retry_chain"] = True
+                if canonical_path:
+                    job.config["retry_chain_for"] = canonical_path
+                job.config["retry_started_at"] = now_iso
+                if not job.config.get("retry_basename"):
+                    job.config["retry_basename"] = job.library_name or basename
+
+            job.config["retry_attempt"] = int(attempt)
+            job.config["retry_max_attempts"] = int(max_attempts)
+            job.config["last_outcome"] = outcome
+            # Aliases the existing app.js retry badge reads (chip
+            # renders on ``is_retry: true && max_retries > 0``).
+            job.config["is_retry"] = True
+            job.config["max_retries"] = int(max_attempts)
+
+            # State transitions. ``completed_at`` is cleared on
+            # re-armed PENDING (chain restart after an attempt) so the
+            # Job doesn't look "completed in the past" while it's
+            # actually counting down to the next firing.
+            if outcome == "scheduled":
+                job.status = JobStatus.PENDING
+                job.progress.retry_eta = next_run_at
+                job.progress.retry_wait_total = wait_seconds
+                job.completed_at = None
+                job.error = None
+                # Clear the worker's last-firing status text so a stale
+                # "Queued — waiting for active slot" or per-file progress
+                # line from a prior firing doesn't linger on the row
+                # while it's actually counting down to the next retry.
+                # The Queue/countdown surface (retry_eta + retry_wait_total
+                # above) owns the visual state for PENDING chain rows.
+                job.progress.current_item = ""
+            elif outcome == "queued_for_slot":
+                # Retry callback fired (backoff is over) but waiting for
+                # a JobGate slot. Same status text format dispatches use
+                # at job_runner.py:533-544 so the dashboard's existing
+                # "Queued — waiting" regex matches.
+                job.status = JobStatus.PENDING
+                job.progress.retry_eta = None
+                job.progress.retry_wait_total = None
+                active = wait_active if wait_active is not None else 0
+                cap = wait_cap if wait_cap is not None else 0
+                job.progress.current_item = f"Queued — waiting for active slot ({active} of {cap} busy)"
+                job.error = None
+            elif outcome == "running":
+                job.status = JobStatus.RUNNING
+                job.started_at = job.started_at or now_iso
+                job.progress.retry_eta = None
+                job.progress.retry_wait_total = None
+                # Defensive: if a callback lands directly on
+                # outcome="running" as the FIRST chain mutation on an
+                # already-COMPLETED originating Job (no prior "scheduled"
+                # leg cleared it), ``completed_at`` would still be set
+                # — leaving a Job in status=RUNNING with a non-null
+                # completed_at, which downstream readers
+                # (sort/filter/duration) don't expect. Clear it.
+                job.completed_at = None
+                job.error = None
+            elif outcome == "completed":
+                job.status = JobStatus.COMPLETED
+                job.completed_at = now_iso
+                job.progress.retry_eta = None
+                job.progress.retry_wait_total = None
+                job.error = None
+                # Refresh the chain's publishers snapshot from the
+                # successful firing's result so the modal's per-server
+                # tiles don't keep rendering the originating dispatch's
+                # stale ``published_pending_registration`` after the
+                # chain has actually completed. The originating dispatch's
+                # snapshot is captured the instant the publishers return —
+                # at that moment Jellyfin/Emby may not have indexed the
+                # file yet, so the snapshot records pending_registration.
+                # By the time a retry attempt actually registers the
+                # trickplay (item id resolved, Bridge plugin call wrote
+                # the DB row), the chain has moved on. Without this
+                # refresh the user sees a green-completed status next to
+                # a publisher tile that still claims auto-retry.
+                # See ``test_completed_outcome_refreshes_publishers_from_attempt``
+                # for the pinned contract.
+                if publishers is not None:
+                    job.publishers = list(publishers)
+            elif outcome == "exhausted":
+                job.status = JobStatus.FAILED
+                job.completed_at = now_iso
+                job.progress.retry_eta = None
+                job.progress.retry_wait_total = None
+                job.error = reason or f"Retry chain exhausted after {attempt} attempts"
+                # Stale per-firing status doesn't belong on a terminal row.
+                job.progress.current_item = ""
+                # Same publishers refresh as the completed path — between
+                # attempts a publisher may have transitioned (e.g. Plex
+                # ``skipped_not_indexed`` → ``skipped_output_exists``).
+                # The last firing's snapshot is the most accurate
+                # diagnostic of where each server ended up.
+                if publishers is not None:
+                    job.publishers = list(publishers)
+
+            # Bump created_at so the row sorts to top of the
+            # newest-first Jobs list on each chain state change.
+            # Preserves the original dispatch start in
+            # ``config["retry_started_at"]`` for chain-age display.
+            #
+            # Exception: ``queued_for_slot`` fires from the JobGate's
+            # on_wait callback every poll tick (~1s) while a retry
+            # waits for a slot. Bumping created_at every second would
+            # thrash the sort-by-recency order and starve older chains
+            # of their top-of-list position. Hold the existing
+            # created_at instead — the chain's identity hasn't changed,
+            # only its wait counter has.
+            if outcome != "queued_for_slot":
+                job.created_at = now_iso
+
+            self._persist_job(job)
+            self._emit_event("job_updated", job.to_dict())
+        return job
+
+    def update_job_config(self, job_id: str, config: dict[str, Any]) -> None:
+        """Update stored config for a job (e.g. when start is deferred due to pause)."""
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job:
+                job.config = dict(config)
+                self._persist_job(job)
+                self._emit_event("job_updated", job.to_dict())
+
+    def update_job_library_name(self, job_id: str, library_name: str) -> None:
+        """Update the displayed ``library_name`` of an existing job.
+
+        Used by the Job-at-batch-open webhook flow to flip the title from
+        the first-webhook's media name to ``"N files"`` once a debounce
+        batch picks up additional paths.
+        """
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job and job.library_name != library_name:
+                job.library_name = library_name
+                self._persist_job(job)
+                self._emit_event("job_updated", job.to_dict())
+
+    def update_job_priority(self, job_id: str, priority: int) -> Job | None:
+        """Update the dispatch priority of a job.
+
+        Args:
+            job_id: Job identifier.
+            priority: New priority value (1=high, 2=normal, 3=low).
+
+        Returns:
+            The updated Job, or None if not found.
+        """
+        priority = parse_priority(priority)
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                return None
+            job.priority = priority
+            self._persist_job(job)
+            self._emit_event("job_updated", job.to_dict())
+        return job
+
+    def start_job(self, job_id: str) -> Job | None:
+        """Mark a job as started.
+
+        Idempotent: if the job is already running, this is a no-op.  The
+        existing ``started_at`` timestamp is preserved so wall-clock
+        duration reflects when the worker thread began, not when items
+        were first dispatched.
+        """
+        started = False
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job and job.status != JobStatus.RUNNING:
+                job.status = JobStatus.RUNNING
+                job.paused = False
+                job.started_at = datetime.now(timezone.utc).isoformat()
+                self._running_job_ids.add(job_id)
+                self._pause_flags[job_id] = False
+                self._pause_events[job_id] = threading.Event()
+                self._pause_events[job_id].set()
+                self._persist_job(job)
+                self._emit_event("job_started", job.to_dict())
+                started = True
+        if started:
+            logger.info("Started job {}", job_id)
+        return job
+
+    def append_publishers(self, job_id: str, publisher_rows: list[dict]) -> None:
+        """Append per-publisher outcome rows to a job (Phase H5).
+
+        Called by the multi-server dispatcher after each ``process_canonical_path``
+        run so the Jobs UI can show "this file published to Plex (ok), Emby
+        (failed)" without users having to grep the log stream.
+        """
+        if not publisher_rows:
+            return
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return
+            existing = list(job.publishers or [])
+            existing.extend(publisher_rows)
+            job.publishers = existing
+            self._persist_job(job)
+            self._emit_event("job_updated", job.to_dict())
+
+    def set_publishers(self, job_id: str, publisher_rows: list[dict]) -> None:
+        """Replace the per-server publisher aggregate on a job (D12).
+
+        Distinct from :meth:`append_publishers` — the dispatcher rebuilds
+        a fixed-size per-server summary (one entry per server_id) on
+        every task and overwrites the field, so this needs replace
+        semantics rather than append. Keeps job.publishers bounded by
+        the number of registered media servers, not by file count.
+        """
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return
+            job.publishers = list(publisher_rows or [])
+            self._persist_job(job)
+            self._emit_event("job_updated", job.to_dict())
+
+    def update_progress(
+        self,
+        job_id: str,
+        percent: float | None = None,
+        current_item: str | None = None,
+        total_items: int | None = None,
+        processed_items: int | None = None,
+        speed: str | None = None,
+        current_file: str | None = None,
+        retry_eta: str | None | _UnsetType = _UNSET,
+        retry_wait_total: int | None | _UnsetType = _UNSET,
+    ) -> Job | None:
+        """Update job progress."""
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job:
+                if percent is not None:
+                    job.progress.percent = percent
+                if current_item is not None:
+                    job.progress.current_item = current_item
+                if total_items is not None:
+                    job.progress.total_items = total_items
+                if processed_items is not None:
+                    job.progress.processed_items = processed_items
+                if speed is not None:
+                    job.progress.speed = speed
+                if current_file is not None:
+                    job.progress.current_file = current_file
+                # Sentinel-default lets callers explicitly set retry_eta
+                # back to None to clear the countdown — `None` already
+                # means "leave it alone" for the other fields.
+                if retry_eta is not _UNSET:
+                    job.progress.retry_eta = retry_eta
+                if retry_wait_total is not _UNSET:
+                    job.progress.retry_wait_total = retry_wait_total
+
+                # Emit progress event (don't save to disk on every update)
+                self._emit_event(
+                    "job_progress",
+                    {"job_id": job_id, "progress": job.progress.to_dict()},
+                )
+            return job
+
+    def set_job_outcome(self, job_id: str, outcome: dict[str, int]) -> Optional["Job"]:
+        """Store the processing outcome breakdown on a job.
+
+        Args:
+            job_id: Job identifier.
+            outcome: Dict mapping ProcessingResult values to counts.
+
+        """
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job:
+                job.progress.outcome = outcome
+            return job
+
+    def complete_job(
+        self,
+        job_id: str,
+        error: str | None = None,
+        warning: str | None = None,
+    ) -> Job | None:
+        """Mark a job as completed, completed-with-warning, or failed.
+
+        Args:
+            job_id: Job identifier.
+            error: If set, marks job as FAILED (red badge).
+            warning: If set (and error is not), marks job as COMPLETED with a
+                     warning message (amber badge in UI). The warning text is
+                     stored in `job.error` so the UI can display it.
+
+        """
+        log_msg = None
+        log_level = "info"
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job:
+                if job.status == JobStatus.CANCELLED:
+                    self.clear_pause_flag(job_id)
+                    self.clear_cancellation_flag(job_id)
+                    self.clear_active_worker_pool(job_id)
+                    self._persist_job(job)
+                    log_msg = f"Job {job_id} already cancelled; skipping completion update"
+                    # Early return after logging outside the lock
+                elif job.config.get("is_retry_chain") and job.status in (
+                    JobStatus.PENDING,
+                    JobStatus.RUNNING,
+                ):
+                    # Chain has taken over this Job's lifecycle. The
+                    # original dispatch ran successfully but a publisher
+                    # returned PUBLISHED_PENDING_REGISTRATION, so the
+                    # retry queue mutated this Job to is_retry_chain=true
+                    # with PENDING status + retry_eta. The worker's
+                    # ``complete_job`` call (job_runner.py post-dispatch)
+                    # would otherwise overwrite the chain state back to
+                    # COMPLETED, hiding the active retry cadence from
+                    # the dashboard. Skip the status transition — chain's
+                    # own state machine (driven by ``upsert_retry_chain_job``)
+                    # will land the terminal state when the chain finishes
+                    # or exhausts.
+                    #
+                    # BUT: still clear the worker-pool bookkeeping. The
+                    # dispatch IS done — the worker pool has released
+                    # this slot, the cancellation/pause flags were
+                    # specific to that worker thread, and leaving them
+                    # set would (a) leak job_id in ``_running_job_ids``
+                    # (used for live job count), and (b) trip a future
+                    # ``is_cancellation_requested`` check inside a
+                    # retry firing's per-attempt sub-process. Architecture
+                    # review caught this — the chain's own COMPLETED /
+                    # EXHAUSTED upsert paths don't clear these either,
+                    # so without doing it here the bookkeeping leaks
+                    # until restart.
+                    self._running_job_ids.discard(job_id)
+                    self.clear_pause_flag(job_id)
+                    self.clear_cancellation_flag(job_id)
+                    self.clear_active_worker_pool(job_id)
+                    self._persist_job(job)
+                    log_msg = (
+                        f"Job {job_id} dispatch finished but chain is active; "
+                        f"skipping worker completion update (chain drives lifecycle)"
+                    )
+                else:
+                    job.completed_at = datetime.now(timezone.utc).isoformat()
+                    if error:
+                        job.status = JobStatus.FAILED
+                        job.error = error
+                        job.paused = False
+                        self._emit_event("job_failed", job.to_dict())
+                        log_msg = f"Job {job_id} failed: {error}"
+                        log_level = "error"
+                    elif warning:
+                        job.status = JobStatus.COMPLETED
+                        job.error = warning
+                        job.paused = False
+                        job.progress.percent = 100.0
+                        self._emit_event("job_completed", job.to_dict())
+                        log_msg = f"Job {job_id} completed with warnings: {warning}"
+                    else:
+                        job.status = JobStatus.COMPLETED
+                        job.paused = False
+                        job.progress.percent = 100.0
+                        self._emit_event("job_completed", job.to_dict())
+                        log_msg = f"Job {job_id} completed successfully"
+
+                    self._running_job_ids.discard(job_id)
+                    self.clear_pause_flag(job_id)
+                    self.clear_cancellation_flag(job_id)
+                    self.clear_active_worker_pool(job_id)
+                    self._persist_job(job)
+
+        if log_msg:
+            getattr(logger, log_level)(log_msg)
+        return job
+
+    def cancel_job(self, job_id: str) -> Job | None:
+        """Cancel a job.
+
+        Leaves the cancellation flag in place whenever there's a live
+        ``run_job`` thread for this id. ``run_job``'s ``finally`` block
+        clears the flag as the thread unwinds — that's the single
+        source of truth for the flag's lifetime. Clearing it here on a
+        PENDING job was a pre-J-pendinglongtail-era shortcut: back
+        when PENDING implied "no thread yet", the clear was free.
+        Now PENDING can also mean "thread running, waiting for the
+        dispatcher to hand us a worker" (see job_runner.py's removal
+        of the premature ``start_job`` call). If we cleared the flag
+        in that case, the orchestrator's ``cancel_check`` lambda would
+        flip back to False mid-loop and the job would finish its
+        enumeration before actually stopping — the exact
+        "cancel-button-does-nothing" UX we're trying to avoid.
+
+        For jobs that truly have no in-flight thread (cancelled before
+        any worker spawned) the stale flag is harmless: IDs are UUIDs
+        so nothing else will ever poll it.
+        """
+        cancelled = False
+        cancel_children_of_chain: str | None = None
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job and job.status in (JobStatus.PENDING, JobStatus.RUNNING):
+                job.status = JobStatus.CANCELLED
+                job.paused = False
+                job.completed_at = datetime.now(timezone.utc).isoformat()
+                self._running_job_ids.discard(job_id)
+                self.clear_pause_flag(job_id)
+                self.clear_active_worker_pool(job_id)
+                self._persist_job(job)
+                self._emit_event("job_cancelled", job.to_dict())
+                cancelled = True
+                # Cascade for retry-chain rows: mark any pending retry
+                # child Jobs (is_retry=true, parent_job_id=chain.id) as
+                # CANCELLED so the chain doesn't continue spawning new
+                # attempts. The retry Job's thread polls
+                # ``is_cancellation_requested`` inside the backoff loop
+                # and bails before acquiring the gate. Captured here for
+                # use outside the lock — request_cancellation flips a
+                # flag the in-flight thread polls.
+                if job.config.get("is_retry_chain"):
+                    cancel_children_of_chain = job.id
+        # Outside the JobManager lock: cancel retry children. They live
+        # on their own threads; setting the cancellation flag is enough
+        # to make the backoff loop bail.
+        if cancel_children_of_chain:
+            child_jobs: list[Job] = []
+            with self._lock:
+                for j in self._jobs.values():
+                    if (
+                        j.config.get("is_retry")
+                        and j.config.get("parent_job_id") == cancel_children_of_chain
+                        and j.status in (JobStatus.PENDING, JobStatus.RUNNING)
+                    ):
+                        child_jobs.append(j)
+            for child in child_jobs:
+                # Signal cancellation first so the in-flight thread's
+                # backoff-wait poller picks it up, then flip the row to
+                # CANCELLED for any thread that's already past the wait.
+                self.request_cancellation(child.id)
+                with self._lock:
+                    if child.status not in (JobStatus.PENDING, JobStatus.RUNNING):
+                        continue
+                    child.status = JobStatus.CANCELLED
+                    child.error = "Parent retry chain was cancelled."
+                    child.completed_at = datetime.now(timezone.utc).isoformat()
+                    self._running_job_ids.discard(child.id)
+                    self.clear_pause_flag(child.id)
+                    self._persist_job(child)
+                    self._emit_event("job_cancelled", child.to_dict())
+        if cancelled:
+            logger.info("Cancelled job {}", job_id)
+        return job
+
+    def delete_job(self, job_id: str) -> bool:
+        """Delete a job."""
+        deleted = False
+        with self._lock:
+            if job_id in self._jobs:
+                if job_id in self._running_job_ids:
+                    return False  # Can't delete running job
+                self._delete_job_log_file(job_id)
+                self._delete_file_results(job_id)
+                if job_id in self._job_logs:
+                    del self._job_logs[job_id]
+                del self._jobs[job_id]
+                self._persist_delete(job_id)
+                self._emit_event("job_deleted", {"job_id": job_id})
+                deleted = True
+        if deleted:
+            logger.info("Deleted job {}", job_id)
+        return deleted
+
+    def clear_completed_jobs(self, statuses: list[str] | None = None) -> int:
+        """Clear jobs by status.
+
+        Args:
+            statuses: List of status strings to clear (e.g. ["completed", "failed"]).
+                Defaults to all terminal statuses: completed, failed, cancelled.
+
+        """
+        valid_terminal = {JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED}
+        if statuses:
+            target = {JobStatus(s) for s in statuses if s in {e.value for e in valid_terminal}}
+        else:
+            target = valid_terminal
+
+        with self._lock:
+            to_delete = [job_id for job_id, job in self._jobs.items() if job.status in target]
+            for job_id in to_delete:
+                self._delete_job_log_file(job_id)
+                self._delete_file_results(job_id)
+                self._job_logs.pop(job_id, None)
+                del self._jobs[job_id]
+                self._persist_delete(job_id)
+            if to_delete:
+                self._emit_event("jobs_cleared", {"count": len(to_delete)})
+            return len(to_delete)
+
+    def get_stats(self) -> dict:
+        """Get job statistics."""
+        with self._lock:
+            stats = {
+                "total": len(self._jobs),
+                "pending": 0,
+                "running": 0,
+                "completed": 0,
+                "failed": 0,
+                "cancelled": 0,
+            }
+            for job in self._jobs.values():
+                stats[job.status.value] += 1
+            return stats
+
+    # ========================================================================
+    # Job Logs Management
+    # ========================================================================
+
+    def add_log(self, job_id: str, message: str) -> None:
+        """Add a log message for a job (in-memory and append to file)."""
+        with self._lock:
+            if job_id not in self._job_logs:
+                self._job_logs[job_id] = deque(maxlen=self._max_log_lines)
+            timestamp = datetime.now(timezone.utc).strftime("%H:%M:%S")
+            line = f"[{timestamp}] {message}"
+            self._job_logs[job_id].append(line)
+            log_path = os.path.join(self._job_logs_dir, f"{job_id}.log")
+            try:
+                with open(log_path, "a") as f:
+                    f.write(line + "\n")
+            except OSError as e:
+                logger.debug("Could not append to job log {}: {}", log_path, e)
+
+    def get_logs(self, job_id: str, last_n: int | None = None) -> list[str]:
+        """Get logs for a job (file-first; falls back to in-memory deque).
+
+        D10 — pre-fix this short-circuited to the in-memory deque (capped
+        at ``_max_log_lines = 500``) when the job was still in memory,
+        only reading from the file once the deque was gone. For an
+        800-item library scan that meant the FIRST 300+ lines (job start,
+        config load, server connect, library enumeration) silently aged
+        out of the deque and the user saw the log starting mid-dispatch.
+        File is authoritative since add_log writes to both — read it
+        first; deque is the fallback for the rare case the file write
+        failed.
+        """
+        with self._lock:
+            log_path = os.path.join(self._job_logs_dir, f"{job_id}.log")
+            if os.path.isfile(log_path):
+                try:
+                    with open(log_path) as f:
+                        logs = [line.rstrip("\n") for line in f if line]
+                    if last_n:
+                        return logs[-last_n:]
+                    return logs
+                except OSError:
+                    pass
+            if job_id in self._job_logs:
+                logs = list(self._job_logs[job_id])
+                if last_n:
+                    return logs[-last_n:]
+                return logs
+            job = self._jobs.get(job_id)
+            if job and job.config.get("is_retry_chain"):
+                # Retry-chain rows are EPHEMERAL UI state — they never write
+                # a per-attempt log file, so pre-fix the retention-fallback
+                # branch below misled users into thinking real logs had
+                # been pruned. Synthesize a chain-status summary instead.
+                logs = _synthesize_retry_chain_log_lines(job)
+                if last_n:
+                    return logs[-last_n:]
+                return logs
+            if job and job.status in (
+                JobStatus.COMPLETED,
+                JobStatus.FAILED,
+                JobStatus.CANCELLED,
+            ):
+                return [LOG_RETENTION_CLEARED_MESSAGE]
+            return []
+
+    def get_logs_paginated(self, job_id: str, offset: int = 0, limit: int | None = None) -> dict[str, Any]:
+        """Get a slice of log lines with total count for pagination.
+
+        D10 — same file-first preference as :meth:`get_logs` so paged
+        readers can scroll back to the actual start of the job, not the
+        deque-cap-truncated version.
+        """
+        with self._lock:
+            log_path = os.path.join(self._job_logs_dir, f"{job_id}.log")
+            if os.path.isfile(log_path):
+                try:
+                    with open(log_path) as f:
+                        all_lines = [line.rstrip("\n") for line in f if line]
+                    total = len(all_lines)
+                    end = offset + limit if limit is not None else total
+                    sliced = all_lines[offset:end]
+                    return {"lines": sliced, "total_lines": total, "offset": offset}
+                except OSError:
+                    pass
+
+            if job_id in self._job_logs:
+                logs = list(self._job_logs[job_id])
+                total = len(logs)
+                sliced = logs[offset : offset + limit] if limit is not None else logs[offset:]
+                return {"lines": sliced, "total_lines": total, "offset": offset}
+
+            job = self._jobs.get(job_id)
+            if job and job.config.get("is_retry_chain"):
+                logs = _synthesize_retry_chain_log_lines(job)
+                total = len(logs)
+                sliced = logs[offset : offset + limit] if limit is not None else logs[offset:]
+                return {"lines": sliced, "total_lines": total, "offset": offset}
+            if job and job.status in (
+                JobStatus.COMPLETED,
+                JobStatus.FAILED,
+                JobStatus.CANCELLED,
+            ):
+                return {
+                    "lines": [LOG_RETENTION_CLEARED_MESSAGE],
+                    "total_lines": 1,
+                    "offset": 0,
+                }
+            return {"lines": [], "total_lines": 0, "offset": 0}
+
+    def clear_logs(self, job_id: str) -> None:
+        """Clear logs for a job (memory and file)."""
+        with self._lock:
+            self._delete_job_log_file(job_id)
+            if job_id in self._job_logs:
+                del self._job_logs[job_id]
+
+    # ========================================================================
+    # Per-File Result Tracking
+    # ========================================================================
+
+    def _file_results_path(self, job_id: str) -> str:
+        """Return the JSONL file path for per-file results of a job."""
+        return os.path.join(self._job_file_results_dir, f"{job_id}.jsonl")
+
+    # Per-job soft cap on the JSONL file. A full-library scan can iterate
+    # 100k+ items; persisting every one would bloat the config volume and
+    # kill the GET /api/jobs/<id>/files endpoint's response time. The cap
+    # is applied at append time — once reached, further calls are dropped
+    # silently (a one-shot truncation marker is written so the UI can
+    # surface "+N more not shown"). 5000 is generous for any single job
+    # while keeping the JSONL well under a few MB.
+    _FILE_RESULTS_PER_JOB_CAP = 5000
+
+    def record_file_result(
+        self,
+        job_id: str,
+        file_path: str,
+        outcome: str,
+        reason: str = "",
+        worker: str = "",
+        servers: list[dict] | None = None,
+    ) -> None:
+        """Append a per-file processing result to the job's JSONL file.
+
+        Args:
+            job_id: Job identifier.
+            file_path: Absolute path of the media file processed.
+            outcome: ProcessingResult value string (e.g. "generated", "failed").
+            reason: Human-readable detail (skip/failure reason).
+            worker: Worker display name (e.g. "GPU Worker 1 (NVIDIA TITAN RTX)").
+            servers: Per-publisher attribution list (D9). Each entry is the
+                flat dict shape Worker._capture_publishers builds. The Jobs
+                UI uses this to show per-server pills on each file row
+                so the user can see which servers received each preview
+                (single-server installs always get one pill; multi-server
+                fan-out gets one per target).
+        """
+        path = self._file_results_path(job_id)
+
+        # Soft-cap check is O(1) via an in-memory per-job counter, lazily
+        # seeded from disk on the first call. The naive approach
+        # (re-scanning the JSONL each call) is O(n) per call and turns a
+        # 100k-item scan past the cap into ~475M file reads.
+        with self._file_result_counts_lock:
+            if job_id not in self._file_result_counts:
+                seeded = 0
+                if os.path.isfile(path):
+                    try:
+                        with open(path, "rb") as f:
+                            seeded = sum(1 for _ in f)
+                    except OSError as e:
+                        logger.debug("Could not seed file-results counter for {}: {}", path, e)
+                self._file_result_counts[job_id] = seeded
+
+            current = self._file_result_counts[job_id]
+            if current >= self._FILE_RESULTS_PER_JOB_CAP:
+                # One-shot truncation marker on the boundary record only;
+                # subsequent calls are silent O(1) returns.
+                if current == self._FILE_RESULTS_PER_JOB_CAP:
+                    marker = {
+                        "file": "",
+                        "outcome": "truncated",
+                        "reason": (
+                            f"per-job file-results cap reached ({self._FILE_RESULTS_PER_JOB_CAP} entries) — "
+                            "later items processed normally but not listed here. Aggregate counts "
+                            "in the job summary remain accurate."
+                        ),
+                        "worker": "",
+                        "ts": datetime.now(timezone.utc).strftime("%H:%M:%S"),
+                    }
+                    try:
+                        with open(path, "a") as f:
+                            f.write(json.dumps(marker, separators=(",", ":")) + "\n")
+                        self._file_result_counts[job_id] = current + 1
+                    except OSError as e:
+                        logger.debug("Could not append truncation marker to {}: {}", path, e)
+                return
+
+        # D8 — when no explicit reason was supplied (the worker's
+        # success/skip path), synthesise one from the publisher messages
+        # so the UI doesn't show a column of "(no reason)" rows. Picks
+        # the first non-empty message; on multi-server fan-out the
+        # full per-server list is in the `servers` field below.
+        derived_reason = reason
+        if not derived_reason and servers:
+            for s in servers:
+                msg = (s or {}).get("message") or ""
+                if msg:
+                    derived_reason = msg
+                    break
+
+        record = {
+            "file": file_path,
+            "outcome": outcome,
+            "reason": derived_reason,
+            "worker": worker,
+            "ts": datetime.now(timezone.utc).strftime("%H:%M:%S"),
+        }
+        # Slim per-server attribution — keep the JSONL compact (no
+        # canonical_path duplication, no frame_source unless it differs
+        # from the boring "extracted" default). One entry per
+        # (server, adapter) the file fanned out to.
+        bif_path = ""
+        if servers:
+            slim = []
+            for s in servers:
+                if not isinstance(s, dict):
+                    continue
+                entry = {
+                    "id": s.get("server_id") or "",
+                    "name": s.get("server_name") or "",
+                    "type": (s.get("server_type") or "").lower(),
+                    "status": s.get("status") or "",
+                }
+                fs = s.get("frame_source") or ""
+                if fs and fs != "extracted":
+                    entry["frame_source"] = fs
+                slim.append(entry)
+                # First publisher with a .bif output wins. We surface this
+                # at the top level (not on each server entry) because the
+                # Files-panel inspector button is per-file, not per-server,
+                # and the BIF viewer only needs one valid path. Plex bundle
+                # outputs are always single-file `index-sd.bif`; Jellyfin
+                # trickplay manifests have a sidecar that's not openable
+                # here so we filter to .bif explicitly.
+                if not bif_path:
+                    for op in s.get("output_paths") or []:
+                        if isinstance(op, str) and op.endswith(".bif"):
+                            bif_path = op
+                            break
+            if slim:
+                record["servers"] = slim
+        if bif_path:
+            # Surfaced as a top-level field so the Files panel's inspector
+            # link can deep-link to /bif-viewer?bif=<path> and skip the
+            # Plex title-search heuristic entirely (which fails on episodes
+            # whose release-group suffix collides with the SxxExx regex).
+            record["bif_path"] = bif_path
+
+        try:
+            with open(path, "a") as f:
+                f.write(json.dumps(record, separators=(",", ":")) + "\n")
+            with self._file_result_counts_lock:
+                self._file_result_counts[job_id] = self._file_result_counts.get(job_id, 0) + 1
+        except OSError as e:
+            logger.debug("Could not append file result to {}: {}", path, e)
+
+    def get_file_results(
+        self,
+        job_id: str,
+        outcome_filter: str = "",
+        search: str = "",
+        dedup_by_path: bool = True,
+    ) -> list[dict]:
+        """Read per-file results for a job from its JSONL file.
+
+        Args:
+            job_id: Job identifier.
+            outcome_filter: If set, only return records matching this outcome.
+            search: If set, only return records whose file path contains this substring (case-insensitive).
+            dedup_by_path: When True (default), the JSONL is collapsed to one
+                record per file path — the LAST row written wins. Retry
+                attempts append a new row per re-attempted path, so without
+                dedup the Files panel would show duplicate entries for the
+                same file. Existing callers that need the raw append-only
+                stream (e.g. audit-log style consumers) can opt out with
+                ``dedup_by_path=False``.
+
+        Returns:
+            List of result dicts, each with keys: file, outcome, reason, worker, ts.
+        """
+        path = self._file_results_path(job_id)
+        if not os.path.isfile(path):
+            return []
+        results: list[dict] = []
+        search_lower = search.lower() if search else ""
+        try:
+            with open(path) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if outcome_filter and record.get("outcome") != outcome_filter:
+                        continue
+                    if search_lower and search_lower not in record.get("file", "").lower():
+                        continue
+                    results.append(record)
+        except OSError as e:
+            logger.debug("Could not read file results from {}: {}", path, e)
+
+        if not dedup_by_path:
+            return results
+
+        # Collapse to last-write-wins per file path so retry-attempt rows
+        # (appended on top of the initial dispatch's rows) supersede the
+        # earlier state in the Files panel. Truncation markers (empty
+        # ``file``) are preserved as-is.
+        seen_by_path: dict[str, int] = {}
+        for idx, record in enumerate(results):
+            file_path = record.get("file") or ""
+            if not file_path:
+                continue
+            seen_by_path[file_path] = idx
+        keep_indices = set(seen_by_path.values())
+        deduped: list[dict] = []
+        for idx, record in enumerate(results):
+            file_path = record.get("file") or ""
+            if not file_path or idx in keep_indices:
+                deduped.append(record)
+        return deduped
+
+    def _delete_file_results(self, job_id: str) -> None:
+        """Remove the per-file results JSONL file for a job. Caller must hold _lock."""
+        path = self._file_results_path(job_id)
+        try:
+            if os.path.isfile(path):
+                os.remove(path)
+        except OSError as e:
+            logger.debug("Could not remove file results {}: {}", path, e)
+        # Drop the in-memory counter so a future job that reuses this id
+        # (or a fresh fixture) doesn't inherit a stale "saturated" state.
+        with self._file_result_counts_lock:
+            self._file_result_counts.pop(job_id, None)
+
+    # ========================================================================
+    # Worker Status Management
+    # ========================================================================
+
+    def update_worker_status(self, worker_key: str, status: WorkerStatus) -> None:
+        """Update status for a worker."""
+        with self._lock:
+            self._worker_statuses[worker_key] = status
+
+    def get_worker_statuses(self) -> list[WorkerStatus]:
+        """Get all worker statuses."""
+        with self._lock:
+            return list(self._worker_statuses.values())
+
+    def clear_worker_statuses(self) -> None:
+        """Clear all worker statuses."""
+        with self._lock:
+            self._worker_statuses.clear()
+
+    def prune_worker_statuses(self, valid_keys: set[str]) -> None:
+        """Remove stale worker statuses not present in the latest snapshot."""
+        with self._lock:
+            for key in list(self._worker_statuses.keys()):
+                if key not in valid_keys:
+                    del self._worker_statuses[key]
+
+    def emit_worker_statuses(self) -> None:
+        """Emit current worker statuses to connected clients via SocketIO."""
+        workers = self.get_worker_statuses()
+        self._emit_event(
+            "worker_update",
+            {"workers": [w.to_dict() for w in workers]},
+        )
+
+    # ========================================================================
+    # Cancellation Management
+    # ========================================================================
+
+    def request_cancellation(self, job_id: str) -> bool:
+        """Request cancellation of a job."""
+        with self._lock:
+            if job_id in self._jobs:
+                self._cancellation_flags[job_id] = True
+                return True
+            return False
+
+    def is_cancellation_requested(self, job_id: str) -> bool:
+        """Check if cancellation has been requested for a job."""
+        with self._lock:
+            return self._cancellation_flags.get(job_id, False)
+
+    def clear_cancellation_flag(self, job_id: str) -> None:
+        """Clear the cancellation flag for a job."""
+        with self._lock:
+            if job_id in self._cancellation_flags:
+                del self._cancellation_flags[job_id]
+
+    # ========================================================================
+    # Pause / Resume Management
+    # ========================================================================
+
+    def request_pause(self, job_id: str) -> bool:
+        """Request pause for a running job."""
+        paused = False
+        status_val = ""
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job or job.status != JobStatus.RUNNING:
+                return False
+            self._pause_flags[job_id] = True
+            event = self._pause_events.get(job_id)
+            if event is None:
+                event = threading.Event()
+                self._pause_events[job_id] = event
+            event.clear()
+            job.paused = True
+            status_val = job.status.value
+            self._persist_job(job)
+            self._emit_event("job_paused", {"job_id": job_id, "paused": True})
+            paused = True
+        if paused:
+            logger.info("Pause audit: job_id={}, status={}, paused=True", job_id, status_val)
+            self.add_log(
+                job_id,
+                "INFO - Pause requested; no new tasks will be dispatched until resume.",
+            )
+        return paused
+
+    def request_resume(self, job_id: str) -> bool:
+        """Request resume for a paused job."""
+        resumed = False
+        status_val = ""
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job or job.status != JobStatus.RUNNING:
+                return False
+            self._pause_flags[job_id] = False
+            event = self._pause_events.get(job_id)
+            if event is None:
+                event = threading.Event()
+                self._pause_events[job_id] = event
+            event.set()
+            job.paused = False
+            status_val = job.status.value
+            self._persist_job(job)
+            self._emit_event("job_resumed", {"job_id": job_id, "paused": False})
+            resumed = True
+        if resumed:
+            logger.info("Resume audit: job_id={}, status={}, paused=False", job_id, status_val)
+            self.add_log(job_id, "INFO - Resume requested; dispatch will continue.")
+        return resumed
+
+    def is_pause_requested(self, job_id: str) -> bool:
+        """Check if pause has been requested for a job."""
+        with self._lock:
+            return self._pause_flags.get(job_id, False)
+
+    def clear_pause_flag(self, job_id: str) -> None:
+        """Clear pause state for a job."""
+        with self._lock:
+            self._pause_flags.pop(job_id, None)
+            self._pause_events.pop(job_id, None)
+            job = self._jobs.get(job_id)
+            if job:
+                job.paused = False
+
+    # ========================================================================
+    # Active Worker Pool Management
+    # ========================================================================
+
+    def set_active_worker_pool(self, job_id: str, worker_pool: Any) -> None:
+        """Store the active worker pool for a running job."""
+        with self._lock:
+            self._active_worker_pools[job_id] = worker_pool
+
+    def get_active_worker_pool(self, job_id: str = "") -> Any | None:
+        """Get active worker pool for a job, or any running pool.
+
+        Args:
+            job_id: Specific job ID, or empty string to return any active pool.
+
+        """
+        with self._lock:
+            if job_id:
+                return self._active_worker_pools.get(job_id)
+            # Return the first available pool (shared pool model)
+            for pool in self._active_worker_pools.values():
+                if pool is not None:
+                    return pool
+            return None
+
+    def clear_active_worker_pool(self, job_id: str) -> None:
+        """Clear active worker pool reference for a job."""
+        with self._lock:
+            self._active_worker_pools.pop(job_id, None)
+
+
+# Global job manager instance
+_job_manager: JobManager | None = None
+_job_lock = threading.Lock()
+
+# Default config directory from environment. Kept as a module-level
+# constant for backwards compatibility — any caller already importing
+# this name keeps the import working. The actual resolution inside
+# ``get_job_manager`` uses ``_resolve_default_config_dir()`` below so
+# tests that do ``monkeypatch.setenv("CONFIG_DIR", ...)`` get the
+# right path. (Frozen-at-import-time was causing CI's ``test`` job to
+# fail with ``PermissionError: '/config'`` because the env var was
+# set AFTER the module loaded; ``DEFAULT_CONFIG_DIR`` captured the
+# pre-fixture value.)
+DEFAULT_CONFIG_DIR = os.environ.get("CONFIG_DIR", "/config")
+
+
+def _resolve_default_config_dir() -> str:
+    """Re-read ``CONFIG_DIR`` on every call.
+
+    Lazy resolution so pytest fixtures that set ``CONFIG_DIR`` via
+    ``monkeypatch.setenv`` after the module is loaded still take
+    effect. The frozen ``DEFAULT_CONFIG_DIR`` constant above is kept
+    only as a backwards-compatible export.
+    """
+    return os.environ.get("CONFIG_DIR", "/config")
+
+
+def get_job_manager(config_dir: str | None = None, socketio=None) -> JobManager:
+    """Get or create the global JobManager instance (thread-safe).
+
+    When ``config_dir`` is explicitly provided and differs from the
+    current singleton's directory, the singleton is recreated so that
+    all derived paths (jobs file, log directory) stay consistent.
+    In production this never happens; it guards against race conditions
+    in tests where background threads can recreate the singleton with
+    the module-level default between fixture resets.
+
+    Args:
+        config_dir: Configuration directory path, or ``None`` to use
+            the existing singleton / module default.
+        socketio: Optional SocketIO instance for real-time events.
+
+    Returns:
+        The global ``JobManager`` singleton.
+
+    """
+    global _job_manager
+    with _job_lock:
+        if _job_manager is None:
+            _job_manager = JobManager(config_dir=config_dir or _resolve_default_config_dir(), socketio=socketio)
+        else:
+            if config_dir and _job_manager.config_dir != config_dir:
+                _job_manager = JobManager(config_dir=config_dir, socketio=socketio)
+            elif socketio and _job_manager.socketio is None:
+                _job_manager.set_socketio(socketio)
+        return _job_manager

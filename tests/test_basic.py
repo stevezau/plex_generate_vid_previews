@@ -1,5 +1,5 @@
 """
-Basic functionality tests for plex_generate_previews.
+Basic functionality tests for media_preview_generator.
 """
 
 from unittest.mock import MagicMock, patch
@@ -14,32 +14,85 @@ class TestBasicFunctionality:
         """Test that the package can be imported."""
         import re
 
-        import plex_generate_previews
+        import media_preview_generator
 
-        assert hasattr(plex_generate_previews, "__version__")
+        assert hasattr(media_preview_generator, "__version__")
         # Version should be in PEP 440 format (e.g., "2.0.0", "2.1.2.post0", "0.0.0+unknown", "2.3.1.dev5+g1234abc")
         # Pattern matches setuptools-scm generated versions
         version_pattern = r"^\d+\.\d+\.\d+(?:\.(?:post|dev)\d+)?(?:\+[a-zA-Z0-9.-]+)?$"
-        assert re.match(version_pattern, plex_generate_previews.__version__), (
-            f"Version '{plex_generate_previews.__version__}' doesn't match PEP 440 format"
+        assert re.match(version_pattern, media_preview_generator.__version__), (
+            f"Version '{media_preview_generator.__version__}' doesn't match PEP 440 format"
         )
 
-    def test_web_module_importable(self):
-        """Test that the web module can be imported."""
-        from plex_generate_previews.web.app import create_app
+    def test_web_module_importable(self, tmp_path, monkeypatch):
+        """create_app() returns a real Flask app with registered routes (not just a callable).
 
-        assert callable(create_app)
+        CI gotcha: ``auth.py`` evaluates ``CONFIG_DIR`` and ``AUTH_FILE`` at
+        module-import time from the env var, defaulting to ``/config``.
+        Passing ``config_dir=tmp_path`` to create_app doesn't redirect those
+        constants. On CI runners (no /config write access), create_app's
+        ``log_token_on_startup()`` chain hits PermissionError.
+
+        Override AUTH_FILE before calling create_app — that's the only path
+        that touches /config in the no-config code path. The rest of
+        create_app respects the explicit config_dir we pass in.
+        """
+        import flask
+
+        from media_preview_generator.web import auth as _auth
+        from media_preview_generator.web.app import create_app
+
+        monkeypatch.setattr(_auth, "AUTH_FILE", str(tmp_path / "auth.json"))
+        monkeypatch.setattr(_auth, "CONFIG_DIR", str(tmp_path))
+
+        app = create_app(config_dir=str(tmp_path))
+        assert isinstance(app, flask.Flask)
+        # The app must have registered URL rules — guards against the failure
+        # mode where blueprint registration silently raises on import and
+        # leaves an empty Flask app behind.
+        rules = [r.rule for r in app.url_map.iter_rules()]
+        assert len(rules) > 0
+        # /api endpoints are mandatory — the dashboard depends on them.
+        assert any(r.startswith("/api/") for r in rules), f"No /api/ routes registered: {rules[:5]}"
+
+    def test_socketio_polling_only(self, tmp_path, monkeypatch):
+        """Regression: SocketIO must refuse WebSocket upgrades.
+
+        With ``async_mode="threading"``, every accepted WebSocket connection
+        pins one gunicorn thread for its lifetime. Page refreshes leave
+        CLOSE_WAIT sockets and the 8-thread pool quickly exhausts —
+        producing the user-visible "Failed to fetch" toast on Pause and
+        a frozen UI under heavy emit load.
+
+        Commit 59d862a fixed this with ``allow_upgrades=False`` + a
+        polling-only client transport. The setting was lost during the
+        ``plex_generate_previews → media_preview_generator`` package
+        rename and the freeze regressed. Lock it in here so the next
+        rename or refactor doesn't silently re-introduce it.
+        """
+        from media_preview_generator.web import auth as _auth
+        from media_preview_generator.web.app import create_app, socketio
+
+        monkeypatch.setattr(_auth, "AUTH_FILE", str(tmp_path / "auth.json"))
+        monkeypatch.setattr(_auth, "CONFIG_DIR", str(tmp_path))
+
+        create_app(config_dir=str(tmp_path))
+        eio_server = socketio.server.eio
+        assert eio_server.allow_upgrades is False, (
+            "SocketIO must refuse WebSocket upgrades — see commit 59d862a "
+            "and create_app()'s socketio.init_app() docstring."
+        )
 
     def test_no_cli_module(self):
         """Test that CLI module has been removed."""
         import importlib
 
         with pytest.raises(ModuleNotFoundError):
-            importlib.import_module("plex_generate_previews.cli")
+            importlib.import_module("media_preview_generator.cli")
 
     def test_config_validation_error_class(self):
         """Test that ConfigValidationError can be raised."""
-        from plex_generate_previews.config import ConfigValidationError
+        from media_preview_generator.config import ConfigValidationError
 
         with pytest.raises(ConfigValidationError) as exc_info:
             raise ConfigValidationError(["Missing PLEX_URL", "Missing PLEX_TOKEN"])
@@ -52,7 +105,7 @@ class TestConfigFunctions:
 
     def test_get_config_value_cli_precedence(self):
         """Test that CLI args take precedence over env vars."""
-        from plex_generate_previews.config import get_config_value
+        from media_preview_generator.config import get_config_value
 
         cli_args = MagicMock()
         cli_args.test_field = "cli_value"
@@ -63,7 +116,7 @@ class TestConfigFunctions:
 
     def test_get_config_value_env_fallback(self):
         """Test that env vars are used when CLI args are None."""
-        from plex_generate_previews.config import get_config_value
+        from media_preview_generator.config import get_config_value
 
         cli_args = MagicMock()
         cli_args.test_field = None
@@ -74,7 +127,7 @@ class TestConfigFunctions:
 
     def test_get_config_value_default_fallback(self):
         """Test that defaults are used when neither CLI nor env are set."""
-        from plex_generate_previews.config import get_config_value
+        from media_preview_generator.config import get_config_value
 
         cli_args = MagicMock()
         cli_args.test_field = None
@@ -88,24 +141,24 @@ class TestGPUDetection:
     """Test GPU detection functionality."""
 
     def test_format_gpu_info(self):
-        """Test GPU info formatting."""
-        from plex_generate_previews.gpu import format_gpu_info
+        """Test GPU info formatting using the real (gpu_type, gpu_device, gpu_name, acceleration?) signature."""
+        from media_preview_generator.gpu import format_gpu_info
 
-        # Test NVIDIA formatting
-        nvidia_info = format_gpu_info("cuda", 0, "NVIDIA GeForce RTX 3080")
-        assert "NVIDIA" in nvidia_info
-        assert "RTX 3080" in nvidia_info
-        assert "cuda" in nvidia_info.lower()
+        # NVIDIA via the explicit-acceleration path
+        nvidia_info = format_gpu_info("NVIDIA", "0", "NVIDIA GeForce RTX 3080", "CUDA")
+        assert nvidia_info == "NVIDIA GeForce RTX 3080 (CUDA)"
 
-        # Test AMD formatting
-        amd_info = format_gpu_info("vaapi", "/dev/dri/renderD128", "AMD Radeon RX 6800 XT")
-        assert "AMD" in amd_info
-        assert "RX 6800 XT" in amd_info
-        assert "vaapi" in amd_info.lower()
+        # AMD via VAAPI on a DRM render node
+        amd_info = format_gpu_info("AMD", "/dev/dri/renderD128", "AMD Radeon RX 6800 XT", "VAAPI")
+        assert amd_info == "AMD Radeon RX 6800 XT (VAAPI - /dev/dri/renderD128)"
+
+        # Backward-compat path (no acceleration arg) still resolves NVIDIA -> CUDA
+        nvidia_legacy = format_gpu_info("NVIDIA", "0", "NVIDIA GeForce RTX 3080")
+        assert nvidia_legacy == "NVIDIA GeForce RTX 3080 (CUDA)"
 
     def test_ffmpeg_version_check(self):
         """Test FFmpeg version checking."""
-        from plex_generate_previews.gpu import (
+        from media_preview_generator.gpu import (
             _check_ffmpeg_version,
             _get_ffmpeg_version,
         )
@@ -117,19 +170,9 @@ class TestGPUDetection:
             assert version == (7, 1, 1)
 
         # Test version checking
-        with patch("plex_generate_previews.gpu.ffmpeg_capabilities._get_ffmpeg_version") as mock_get_version:
+        with patch("media_preview_generator.gpu.ffmpeg_capabilities._get_ffmpeg_version") as mock_get_version:
             mock_get_version.return_value = (7, 1, 0)
             assert _check_ffmpeg_version() is True
 
             mock_get_version.return_value = (6, 9, 0)
             assert _check_ffmpeg_version() is False
-
-
-class TestProcessingModule:
-    """Test processing module exists and is importable."""
-
-    def test_run_processing_importable(self):
-        """Test that run_processing can be imported from job_orchestrator module."""
-        from plex_generate_previews.jobs.orchestrator import run_processing
-
-        assert callable(run_processing)

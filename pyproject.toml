@@ -3,12 +3,12 @@ requires = ["setuptools>=64", "wheel", "setuptools-scm[toml]>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "plex-generate-previews"
+name = "media-preview-generator"
 dynamic = ["version"]
 authors = [
     {name = "Steve Adams", email = "stevezau@gmail.com"},
 ]
-description = "Generate video preview thumbnails for Plex Media Server"
+description = "GPU-accelerated video preview thumbnail generation for Plex, Emby, and Jellyfin media servers"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
@@ -25,7 +25,7 @@ classifiers = [
     "Topic :: Multimedia :: Video",
     "Topic :: System :: Archiving",
 ]
-keywords = ["plex", "media", "server", "video", "thumbnails", "previews", "ffmpeg", "gpu", "acceleration"]
+keywords = ["plex", "emby", "jellyfin", "media-server", "video", "thumbnails", "previews", "trickplay", "bif", "ffmpeg", "gpu", "acceleration"]
 dependencies = [
     "requests==2.33.0",
     # urllib3 >=2.6.3 covers CVE-2025-50181/50182 (redirect-handling),
@@ -33,7 +33,8 @@ dependencies = [
     # (proxy-auth). python>=3.10 is already required so dropping 1.x
     # support is safe.
     "urllib3>=2.6.3,<3.0.0",
-    "python-dotenv==1.1.1",
+    # python-dotenv >=1.2.2 covers CVE-2026-28684.
+    "python-dotenv>=1.2.2,<2",
     "plexapi==4.17.1",
     "loguru==0.7.3",
     "rich>=13.9,<14",
@@ -47,6 +48,10 @@ dependencies = [
     "apscheduler>=3.10.0,<4",
     "gunicorn>=22.0.0,<24",
     "sqlalchemy>=2.0.0,<3",
+    # Pillow is used by JellyfinTrickplayAdapter to pack frame JPGs into
+    # 10x10 tile sheets (Jellyfin 10.9+ native trickplay format).
+    # >=12.2.0 covers CVE-2026-25990 and CVE-2026-40192.
+    "pillow>=12.2.0,<14",
 ]
 
 [project.optional-dependencies]
@@ -59,30 +64,55 @@ test = [
     "pytest-xdist>=3.0.0",
     "pytest-timeout>=2.3.0",
     "pytest-playwright>=0.4.0",
+    # Auto-retry Chromium-and-runner-induced flakes on CI. Sharding
+    # (see pytest-shard below) handles the Chromium SIGSEGV-class
+    # accumulation flakes by giving each shard a fresh runner. But
+    # a separate flake class — "element is not stable" wizard
+    # transitions on GH's slow CPU — needs up to 3 attempts to
+    # clear. ``--reruns 2`` (set in ci.yml) covers both classes;
+    # 3 consecutive failures still flag real regressions. Local
+    # runs (32-core box) pass without reruns.
+    "pytest-rerunfailures>=14.0",
+    # Shard the e2e suite across multiple GH Actions jobs. Each
+    # shard runs an independent ubuntu-latest runner = fresh
+    # Chromium, fresh memory budget, so no cross-test state
+    # accumulation can trigger the known Playwright-on-small-CI
+    # Chromium crash pattern (playwright#34075). 4-shard split
+    # gives 30-42 tests/shard (151 ÷ 4); the largest shards sit
+    # just above the empirical ~30-test threshold, so the
+    # ``--reruns 1`` safety net in ci.yml covers residual risk.
+    "pytest-shard>=0.1.2",
     "playwright>=1.40.0",
     "flask-cors>=6.0.0,<7",
+    # vcrpy + pytest-recording for vendor-API contract cassettes.
+    # Records real HTTP request/response shapes against live Plex / Emby /
+    # Jellyfin to YAML cassettes; replays in CI so tests run offline AND
+    # catch contract drift (missing query params, response shape changes,
+    # status code regressions). Caught the production "Plex 500s when
+    # type= is omitted" bug that the mock-based unit test missed.
+    "pytest-recording>=0.13.0",
+    "vcrpy>=6.0.0",
 ]
 dev = [
-    "plex-generate-previews[test]",
+    "media-preview-generator[test]",
     "ruff>=0.6.0",
     "pre-commit>=3.6.0",
-    "locust>=2.20.0",
     "httpie>=3.2.0",
 ]
 
 [project.urls]
-Homepage = "https://github.com/stevezau/plex_generate_vid_previews"
-Repository = "https://github.com/stevezau/plex_generate_vid_previews"
-Issues = "https://github.com/stevezau/plex_generate_vid_previews/issues"
+Homepage = "https://github.com/stevezau/media_preview_generator"
+Repository = "https://github.com/stevezau/media_preview_generator"
+Issues = "https://github.com/stevezau/media_preview_generator/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["plex_generate_previews*"]
+include = ["media_preview_generator*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = [
-    "--cov=plex_generate_previews",
+    "--cov=media_preview_generator",
     "--cov-report=term-missing",
     "--cov-fail-under=70",
     "--tb=short",
@@ -90,7 +120,7 @@ addopts = [
     "--disable-warnings",
     "-n", "auto",
     "--dist", "load",
-    "-m", "not gpu and not e2e",
+    "-m", "not gpu and not e2e and not integration",
     "--timeout=30",
     "--timeout-method=thread",
 ]
@@ -99,6 +129,8 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 markers = [
     "integration: marks tests as integration tests",
+    "real_plex_server: tests that require a live Plex server (opt out of the global Plex mock)",
+    "real_gpu_detection: tests that require real GPU detection (opt out of the global GPU mock)",
     "gpu: marks tests that require GPU hardware",
     "plex: marks tests that require Plex server connection",
     "slow: marks tests as slow running",
@@ -107,10 +139,13 @@ markers = [
     "real_prewarm: opt out of the autouse _prewarm_caches no-op in conftest",
     "real_logging: opt out of the autouse setup_logging no-op in conftest",
     "real_job_async: opt out of the autouse _start_job_async no-op in conftest",
+    "journey: cross-module integration journey tests (light unit-of-the-seam style)",
+    "vcr: vendor-API contract tests that replay recorded HTTP cassettes (no live server needed)",
+    "vcr_record: tests that re-record cassettes against a live server when run with --record-mode=once (skipped by default in CI)",
 ]
 
 [tool.coverage.run]
-source = ["plex_generate_previews"]
+source = ["media_preview_generator"]
 omit = [
     "*/tests/*",
     "*/__pycache__/*",
@@ -124,15 +159,20 @@ show_missing = true
 skip_covered = false
 
 [tool.setuptools_scm]
-write_to = "plex_generate_previews/_version.py"
+write_to = "media_preview_generator/_version.py"
 local_scheme = "no-local-version"
 fallback_version = "0.0.0+unknown"
+# Only consider semver release tags (e.g. 3.7.5) when computing the Python
+# package version. Without this, setuptools-scm picks up unrelated tags like
+# `plugin-v10.11.0.1` (the Jellyfin plugin's own version stream) and ends up
+# producing 4-segment versions that fail the PEP 440 regex.
+git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--match", "[0-9]*.[0-9]*.[0-9]*"]
 
 [tool.ruff]
 line-length = 120
 target-version = "py310"
 extend-exclude = [
-    "plex_generate_previews/_version.py",
+    "media_preview_generator/_version.py",
     ".venv",
     ".venv-test",
     "htmlcov",
@@ -155,8 +195,8 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["B011"]  # assert False is fine in tests
-"plex_generate_previews/gpu/__init__.py" = ["F401"]  # public-API re-export
-"plex_generate_previews/processing/__init__.py" = ["F401"]  # public-API re-export
+"media_preview_generator/gpu/__init__.py" = ["F401"]  # public-API re-export
+"media_preview_generator/processing/__init__.py" = ["F401"]  # public-API re-export
 
 [tool.ruff.format]
 quote-style = "double"

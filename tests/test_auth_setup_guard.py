@@ -4,19 +4,19 @@ import json
 
 import pytest
 
-from plex_generate_previews.web.settings_manager import get_settings_manager
+from media_preview_generator.web.settings_manager import get_settings_manager
 
 
 @pytest.fixture
 def mock_auth_config(tmp_path, monkeypatch):
     """Mock auth module to use temp directory."""
     auth_file = str(tmp_path / "auth.json")
-    monkeypatch.setattr("plex_generate_previews.web.auth.AUTH_FILE", auth_file)
-    monkeypatch.setattr("plex_generate_previews.web.auth.get_config_dir", lambda: str(tmp_path))
-    from plex_generate_previews.web.settings_manager import reset_settings_manager
+    monkeypatch.setattr("media_preview_generator.web.auth.AUTH_FILE", auth_file)
+    monkeypatch.setattr("media_preview_generator.web.auth.get_config_dir", lambda: str(tmp_path))
+    from media_preview_generator.web.settings_manager import reset_settings_manager
 
     reset_settings_manager()
-    from plex_generate_previews.web.routes import clear_gpu_cache
+    from media_preview_generator.web.routes import clear_gpu_cache
 
     clear_gpu_cache()
     return str(tmp_path)
@@ -25,7 +25,7 @@ def mock_auth_config(tmp_path, monkeypatch):
 @pytest.fixture
 def flask_app(tmp_path, mock_auth_config):
     """Create Flask test app with temp directory."""
-    from plex_generate_previews.web.app import create_app
+    from media_preview_generator.web.app import create_app
 
     app = create_app(config_dir=str(tmp_path))
     app.config["TESTING"] = True
@@ -41,7 +41,7 @@ def client(flask_app):
 @pytest.fixture
 def auth_headers():
     """Generate valid auth headers with token."""
-    from plex_generate_previews.web.auth import get_auth_token
+    from media_preview_generator.web.auth import get_auth_token
 
     token = get_auth_token()
     return {"X-Auth-Token": token}
@@ -69,7 +69,18 @@ class TestSetupNotComplete:
             data=json.dumps(data),
             content_type="application/json",
         )
+        # Audit fix — original asserted only the status code. A regression
+        # where the endpoint accepted the call but silently DIDN'T set the
+        # token (returned 200 with success=False) would have passed.
         assert response.status_code == 200
+        body = response.get_json() or {}
+        assert body.get("success") is True, f"set-token must report success=True on success, got {body!r}"
+        # Verify the token actually changed.
+        from media_preview_generator.web.auth import get_auth_token
+
+        assert get_auth_token() == "test-tok-12345678", (
+            "set-token returned 200 with success=True but the token wasn't actually changed"
+        )
 
     def test_unauthenticated_get_plex_servers(self, client):
         """Test unauthenticated GET /api/plex/servers when setup incomplete.
@@ -82,11 +93,18 @@ class TestSetupNotComplete:
         assert not settings.is_setup_complete()
 
         response = client.get("/api/plex/servers")
-        # The endpoint itself may return 401 for "No Plex token available" —
-        # that is NOT from the auth decorator.  Check the error message.
-        if response.status_code == 401:
-            data = response.get_json()
-            assert data.get("error") != "Authentication required"
+        # In the no-plex-token-configured fixture state, the endpoint returns
+        # 401 from its OWN body check (api_plex.py: "No Plex token available")
+        # — not from @setup_or_auth_required. Wrapping in `if status_code == 401`
+        # let the test pass even if the auth decorator fired its own 401, which
+        # is the exact bug class this test is supposed to guard. Pin to 401
+        # AND assert the error string proves it came from the body check.
+        assert response.status_code == 401
+        data = response.get_json()
+        assert data.get("error") != "Authentication required", (
+            "401 here MUST be the body-level 'No Plex token' error, not the auth decorator"
+        )
+        assert "token" in (data.get("error") or "").lower()
 
     def test_unauthenticated_get_system_status(self, client):
         """Test unauthenticated GET /api/system/status when setup incomplete."""

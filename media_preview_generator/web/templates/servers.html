@@ -1,0 +1,731 @@
+{% extends "base.html" %}
+
+{% block title %}Servers · Media Preview Generator{% endblock %}
+
+{% block content %}
+<div class="container py-4">
+    <header class="page-header">
+        <div>
+            <h1 class="page-title"><i class="bi bi-hdd-stack me-2"></i>Media Servers</h1>
+            <p class="page-subtitle mb-0">Plex, Emby, and Jellyfin servers this app publishes previews to.</p>
+        </div>
+        <div class="page-actions">
+            <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addServerModal">
+                <i class="bi bi-plus-lg me-1"></i>Add Server
+            </button>
+        </div>
+    </header>
+
+    <div id="serverList" class="row g-3">
+        <div class="col-12 text-center text-muted py-5">
+            <div class="spinner-border" role="status"></div>
+            <div class="mt-2">Loading servers…</div>
+        </div>
+    </div>
+
+</div>
+
+<!-- Add Server Modal — shared partial, also included from /setup so the
+     wizard's vendor picker can open the same connection flow inline
+     instead of redirecting users away to /servers. -->
+{% include "_add_server_modal.html" %}
+
+<!-- Edit Server Modal — per-server config editor for an already-saved server.
+     Submits via PUT /api/servers/<id>; the Add wizard above stays focused on
+     first-time onboarding. -->
+<div class="modal fade" id="editServerModal" tabindex="-1" aria-hidden="true">
+    <!-- modal-xl + a generous custom max-width because "Webhook & Scanner"
+         used to wrap onto two lines at modal-lg. Wider also gives the
+         readiness card more horizontal room for the Current → Recommended
+         pill pair. -->
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title d-flex align-items-center gap-2 flex-grow-1" style="min-width: 0;">
+                    <i class="bi bi-pencil flex-shrink-0"></i>
+                    <img id="editServerVendorLogo" src="" alt="" width="20" height="20" class="d-none flex-shrink-0">
+                    <span class="text-truncate" style="min-width: 0;" id="editServerNameWrap">Edit <span id="editServerName"></span></span>
+                </h5>
+                <button type="button" class="btn-close flex-shrink-0" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="editServerId">
+                <input type="hidden" id="editServerType">
+
+                <ul class="nav nav-tabs mb-3" role="tablist">
+                    <li class="nav-item">
+                        <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#edit-tab-general" type="button">
+                            <i class="bi bi-sliders me-1"></i>General
+                        </button>
+                    </li>
+                    <li class="nav-item">
+                        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#edit-tab-health" type="button">
+                            <i class="bi bi-clipboard-check me-1"></i>Setup Health
+                            <!-- Inline attention marker (⚠/❗/✓) stamped by runReadinessProbe
+                                 so a red/amber tab shouts for attention even when the user
+                                 lands on General first. Hidden by default; populated after
+                                 the probe resolves. -->
+                            <span class="ms-1 d-none" id="editHealthTabMarker" aria-hidden="true"></span>
+                        </button>
+                    </li>
+                    <li class="nav-item">
+                        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#edit-tab-libraries" type="button">
+                            <i class="bi bi-collection-play me-1"></i>Libraries
+                        </button>
+                    </li>
+                    <li class="nav-item">
+                        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#edit-tab-paths" type="button">
+                            <i class="bi bi-signpost-split me-1"></i>Path mappings
+                        </button>
+                    </li>
+                    <li class="nav-item">
+                        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#edit-tab-excludes" type="button">
+                            <i class="bi bi-slash-circle me-1"></i>Exclude paths
+                        </button>
+                    </li>
+                    <!-- Plex-only: hidden via JS for non-Plex servers. Surfaces the
+                         existing global Plex Direct webhook + Recently Added Scanner
+                         controls without duplicating their full implementation. -->
+                    <li class="nav-item d-none" id="editTabAutomationLi">
+                        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#edit-tab-automation" type="button">
+                            <i class="bi bi-lightning-charge me-1"></i>Webhook &amp; Scanner
+                        </button>
+                    </li>
+                </ul>
+
+                <div class="tab-content">
+                    <!-- General -->
+                    <div class="tab-pane fade show active" id="edit-tab-general">
+                        <div class="mb-3">
+                            <label class="form-label">Display name
+                                <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="What this server is called in the UI. Cosmetic only — pick anything memorable (e.g. 'Living Room Plex', 'NAS Jellyfin')."><i class="bi bi-info-circle"></i></button>
+                            </label>
+                            <input type="text" id="editServerDisplayName" class="form-control">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Server URL
+                                <button type="button" class="info-icon info-icon-more ms-1" tabindex="0"
+                                        data-bs-toggle="tooltip" data-bs-placement="top"
+                                        title="How this app reaches your media server — click for details"
+                                        data-explain-title="Server URL — Docker &amp; networking"
+                                        data-explain-template="infoServerUrlTpl"
+                                        aria-label="Explain Server URL">
+                                    <i class="bi bi-info-circle"></i>
+                                </button>
+                            </label>
+                            <input type="text" id="editServerUrl" class="form-control" autocomplete="off">
+                        </div>
+                        <div class="form-check mb-3">
+                            <input type="checkbox" id="editServerVerifySsl" class="form-check-input">
+                            <label class="form-check-label" for="editServerVerifySsl">Verify SSL certificate
+                                <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Check the server's HTTPS certificate against trusted CAs. Turn off only when using a self-signed certificate (e.g. local Jellyfin behind your own reverse proxy). Leave on for any plain HTTP URL — it's a no-op there."><i class="bi bi-info-circle"></i></button>
+                            </label>
+                        </div>
+                        <div class="form-check mb-3">
+                            <input type="checkbox" id="editServerEnabled" class="form-check-input">
+                            <label class="form-check-label" for="editServerEnabled">Server enabled
+                                <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Off = this server is ignored entirely (no webhooks, no scans, no publishes). Use to pause one server without deleting it from your config."><i class="bi bi-info-circle"></i></button>
+                            </label>
+                            <div class="form-text">Uncheck to pause publishing to this server.</div>
+                        </div>
+
+                        <!-- Test Connection — verify URL + credentials right here in
+                             the modal, especially after a Re-authenticate flow. The
+                             result pill below shows the last probe outcome. -->
+                        <div class="mb-3 d-flex align-items-center gap-2 flex-wrap">
+                            <button type="button" class="btn btn-sm btn-outline-primary" id="editTestConnectionBtn">
+                                <i class="bi bi-broadcast me-1"></i>Test Connection
+                            </button>
+                            <span id="editTestConnectionResult" class="small text-muted"></span>
+                        </div>
+
+                        <!-- Plex-only: config folder -->
+                        <div id="editPlexConfigGroup" class="mb-3 d-none">
+                            <label class="form-label">Plex config folder
+                                <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top"
+                                        title="Path inside this container to Plex's data folder (where this app writes preview bundles). Same value as Setup → Step 3."><i class="bi bi-info-circle"></i></button>
+                            </label>
+                            <div class="input-group">
+                                <input type="text" id="editPlexConfigFolder" class="form-control">
+                                <button type="button" class="btn btn-outline-secondary"
+                                        id="editPlexConfigBrowseBtn"
+                                        title="Browse folders">
+                                    <i class="bi bi-folder2-open"></i>
+                                </button>
+                                <div class="invalid-feedback small"></div>
+                                <div class="valid-feedback small">Path exists</div>
+                            </div>
+                            <div class="form-text">Where this Plex server's preview bundles will be written. Mirrors the <a href="{{ url_for('main.setup_wizard') }}">Setup wizard</a> &rarr; Step 3 field.</div>
+                        </div>
+
+                        <details class="mb-3">
+                            <summary class="text-muted small">Re-authenticate (only if needed)</summary>
+                            <div class="mt-3" id="editReauthSection">
+                                <p class="small text-muted mb-2">
+                                    Existing credentials are kept until you confirm a new one. Each vendor has its own auth options;
+                                    click <strong>Save changes</strong> at the bottom of the modal once you've chosen one.
+                                </p>
+
+                                <!-- Plex re-auth (token paste). Plex OAuth re-flow lives in the Add Server wizard;
+                                     to switch accounts, delete the server and re-add it. -->
+                                <div id="editReauthPlex" class="d-none">
+                                    <label class="form-label">Plex token</label>
+                                    <input type="password" id="editReauthPlexToken" class="form-control" placeholder="paste a new X-Plex-Token to rotate" autocomplete="off">
+                                    <div class="form-text">
+                                        Find it via <a href="https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/" target="_blank">Plex's docs</a>.
+                                        To switch Plex accounts entirely, delete this server and re-add via the Plex sign-in flow.
+                                    </div>
+                                </div>
+
+                                <!-- Jellyfin re-auth: Quick Connect / Password / API Key -->
+                                <div id="editReauthJellyfin" class="d-none">
+                                    <label class="form-label">Method</label>
+                                    <div class="btn-group w-100 mb-2" role="group">
+                                        <input type="radio" class="btn-check" name="editReauthJfMethod" id="editReauthJfQc" value="quick_connect" autocomplete="off" checked>
+                                        <label class="btn btn-outline-primary" for="editReauthJfQc">Quick Connect</label>
+                                        <input type="radio" class="btn-check" name="editReauthJfMethod" id="editReauthJfPw" value="password" autocomplete="off">
+                                        <label class="btn btn-outline-primary" for="editReauthJfPw">Username + Password</label>
+                                        <input type="radio" class="btn-check" name="editReauthJfMethod" id="editReauthJfKey" value="api_key" autocomplete="off">
+                                        <label class="btn btn-outline-primary" for="editReauthJfKey">API Key</label>
+                                    </div>
+                                    <div id="editReauthJfFieldsQc" class="">
+                                        <button type="button" class="btn btn-primary mb-2" id="editReauthJfQcStart"><i class="bi bi-magic me-1"></i>Start Quick Connect</button>
+                                        <div id="editReauthJfQcStatus" class="alert alert-info d-none"></div>
+                                    </div>
+                                    <div id="editReauthJfFieldsPw" class="d-none">
+                                        <label class="form-label">Username</label>
+                                        <input type="text" id="editReauthJfUsername" class="form-control mb-2" autocomplete="username">
+                                        <label class="form-label">Password</label>
+                                        <input type="password" id="editReauthJfPassword" class="form-control" autocomplete="current-password">
+                                        <button type="button" class="btn btn-outline-primary mt-2" id="editReauthJfPwSubmit">Verify password</button>
+                                        <div id="editReauthJfPwStatus" class="alert alert-info d-none mt-2"></div>
+                                    </div>
+                                    <div id="editReauthJfFieldsKey" class="d-none">
+                                        <label class="form-label">API key</label>
+                                        <input type="password" id="editReauthJfApiKey" class="form-control" autocomplete="off">
+                                    </div>
+                                </div>
+
+                                <!-- Emby re-auth: Password / API Key -->
+                                <div id="editReauthEmby" class="d-none">
+                                    <label class="form-label">Method</label>
+                                    <div class="btn-group w-100 mb-2" role="group">
+                                        <input type="radio" class="btn-check" name="editReauthEmbyMethod" id="editReauthEmbyPw" value="password" autocomplete="off" checked>
+                                        <label class="btn btn-outline-primary" for="editReauthEmbyPw">Username + Password</label>
+                                        <input type="radio" class="btn-check" name="editReauthEmbyMethod" id="editReauthEmbyKey" value="api_key" autocomplete="off">
+                                        <label class="btn btn-outline-primary" for="editReauthEmbyKey">API Key</label>
+                                    </div>
+                                    <div id="editReauthEmbyFieldsPw" class="">
+                                        <label class="form-label">Username</label>
+                                        <input type="text" id="editReauthEmbyUsername" class="form-control mb-2" autocomplete="username">
+                                        <label class="form-label">Password</label>
+                                        <input type="password" id="editReauthEmbyPassword" class="form-control" autocomplete="current-password">
+                                        <button type="button" class="btn btn-outline-primary mt-2" id="editReauthEmbyPwSubmit">Verify password</button>
+                                        <div id="editReauthEmbyPwStatus" class="alert alert-info d-none mt-2"></div>
+                                    </div>
+                                    <div id="editReauthEmbyFieldsKey" class="d-none">
+                                        <label class="form-label">API key</label>
+                                        <input type="password" id="editReauthEmbyApiKey" class="form-control" autocomplete="off">
+                                    </div>
+                                </div>
+
+                                <!-- Hidden state field — JS writes the validated auth payload here (when applicable)
+                                     and saveEditedServer reads it on submit. -->
+                                <input type="hidden" id="editReauthPending" value="">
+                            </div>
+                        </details>
+                    </div>
+
+                    <!-- Setup Health — dedicated tab so users aren't hunting under
+                         General for the one set of controls that matters when
+                         something's wrong. The tab label carries a per-state
+                         marker (⚠ / ❗) stamped by runReadinessProbe whenever
+                         the probe finds issues, so the tab shouts for attention
+                         even while the user is looking at General first.
+
+                         The card body is the v3 unified readiness card — one
+                         probe, one fix-and-enable button, replacing the
+                         separate Vendor-extraction / Health-check / Plugin
+                         panels that lived here in v2. -->
+                    <div class="tab-pane fade" id="edit-tab-health">
+                        <div id="editReadinessGroup" class="card bg-body-tertiary mb-3 d-none">
+                            <div class="card-body p-3">
+                                <h6 class="mb-1 d-flex align-items-center gap-2 flex-wrap">
+                                    <i class="bi bi-clipboard-check me-1"></i>Setup Health
+                                    <span id="editReadinessBadge" class="badge ms-1">checking…</span>
+                                    <button type="button" class="btn btn-sm btn-link p-0 ms-1"
+                                            id="editReadinessRecheckBtn"
+                                            data-bs-toggle="tooltip"
+                                            title="Re-probe the server (e.g. after you've changed something in Jellyfin/Emby admin)">
+                                        <i class="bi bi-arrow-clockwise"></i>
+                                    </button>
+                                    <button type="button" class="info-icon info-icon-more ms-1" tabindex="0"
+                                            data-bs-toggle="tooltip" data-bs-placement="top"
+                                            title="What Setup Health checks + how the toggles work — click for details"
+                                            data-explain-title="Setup Health overview"
+                                            data-explain-template="infoSetupHealthTpl"
+                                            aria-label="Explain Setup Health overview">
+                                        <i class="bi bi-info-circle"></i>
+                                    </button>
+                                </h6>
+
+                                <!-- Rich explanation for the Setup Health overview ⓘ. -->
+                                <template id="infoSetupHealthTpl">
+                                    <p><strong>What it checks:</strong> everything on
+                                    your media server that affects whether this app's
+                                    previews generate correctly, get activated, and
+                                    stay visible over time. The card groups checks
+                                    into sections:</p>
+
+                                    <ul>
+                                        <li><strong>Connection</strong> — can this
+                                            app reach the server? If not, every
+                                            other check is meaningless.</li>
+                                        <li><strong>Server version</strong> —
+                                            Jellyfin 10.10+ is required; Plex / Emby
+                                            are informational.</li>
+                                        <li><strong>Plugin</strong> (Jellyfin only) —
+                                            Media Preview Bridge plugin for instant
+                                            preview activation, vs. waiting for the
+                                            next library scan when absent.</li>
+                                        <li><strong>Library settings</strong> — per-
+                                            library flags that gate whether published
+                                            previews are actually served to clients.</li>
+                                        <li><strong>Server trickplay options</strong>
+                                            (Jellyfin only) — tile geometry the
+                                            server uses for scrubber rendering must
+                                            match what this app writes.</li>
+                                        <li><strong>Vendor-side preview generation</strong>
+                                            — whether the media server is ALSO
+                                            generating its own previews on top of
+                                            this app's (wasteful; disable recommended).</li>
+                                        <li><strong>Plex config folder / Path mappings</strong>
+                                            (Plex only) — filesystem state the BIF
+                                            publisher depends on.</li>
+                                    </ul>
+
+                                    <p><strong>Badge colour at the top:</strong></p>
+                                    <ul>
+                                        <li><strong>Green "ready (instant)" / "ready
+                                            (next scan)" / "ready"</strong> —
+                                            everything's fine; sub-label reflects
+                                            Jellyfin plugin state.</li>
+                                        <li><strong>Amber "recommendations"</strong>
+                                            — only non-critical issues (e.g. a
+                                            real-time-monitor flag that's off but
+                                            doesn't break anything).</li>
+                                        <li><strong>Red "action needed"</strong> —
+                                            at least one critical issue blocking
+                                            previews from working correctly.</li>
+                                    </ul>
+
+                                    <p><strong>Per-row tier badges:</strong> each
+                                    check is tagged so you know whether to act on it:</p>
+                                    <ul>
+                                        <li><span class="badge bg-success-subtle text-success-emphasis border border-success-subtle">Required</span>
+                                            (green ✓) — required for the server
+                                            to work; currently passing.</li>
+                                        <li><span class="badge bg-danger-subtle text-danger-emphasis border border-danger-subtle">Required — fix to enable</span>
+                                            (red ✗) — required and currently failing;
+                                            previews won't work until you fix this.</li>
+                                        <li><span class="badge bg-secondary-subtle text-secondary-emphasis border border-secondary-subtle">Recommended</span>
+                                            (grey ✓) — a recommended optimisation
+                                            that's already on; nothing to do.</li>
+                                        <li><span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle">Recommended — server still works</span>
+                                            (amber ⚠) — a recommended optimisation
+                                            that's not on. The server still works
+                                            without it; flip it on if you want the
+                                            recommended setup.</li>
+                                    </ul>
+
+                                    <p><strong>Per-row toggles:</strong> each check
+                                    that has a toggleable state shows <em>Enable</em>
+                                    or <em>Disable</em> inline. Clicking opens a
+                                    confirmation explaining exactly what the flip
+                                    will do. Destructive flips (the one case on
+                                    Jellyfin that deletes published preview tiles)
+                                    require typing a phrase to confirm — the UI
+                                    guard and the backend enforcement are both
+                                    in place, so there's no way to accidentally
+                                    destroy data.</p>
+
+                                    <p><strong>ⓘ icons</strong> next to each
+                                    check row open a detailed explanation of that
+                                    specific setting — hover for the one-liner,
+                                    click for the what/why/impact walk-through
+                                    plus a link to the full docs page.</p>
+
+                                    <p><strong>The refresh icon 🔄</strong> re-runs
+                                    the probe. Useful after changing something in
+                                    the media server's own admin UI — the card
+                                    caches state for the duration of the modal
+                                    open, so a manual re-probe picks up external
+                                    changes.</p>
+                                </template>
+
+                                <!-- Rendered list of checks. Each row is a ✓ / ⚠ / ✗ line. -->
+                                <div id="editReadinessBody" class="d-flex flex-column gap-2 mb-2 small"></div>
+
+                                <!-- Jellyfin-only: plugin install toggle (default ticked).
+                                     Renders inside editReadinessBody when relevant; JS
+                                     injects the checkbox + warning copy when unticked. -->
+                                <div id="editReadinessPluginControls" class="d-none small mb-2">
+                                    <div class="form-check">
+                                        <input type="checkbox" class="form-check-input" id="editReadinessPluginOptIn" checked>
+                                        <label class="form-check-label" for="editReadinessPluginOptIn">
+                                            Install Media Preview Bridge plugin (recommended — instant previews, no races)
+                                            <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="With the plugin: previews appear in Jellyfin the moment this app finishes generating them. Without it: Jellyfin picks up our previews on its next scan (usually within seconds), or at worst on the 3 AM scheduled task. Installing requires a Jellyfin restart."><i class="bi bi-info-circle"></i></button>
+                                        </label>
+                                    </div>
+                                    <div id="editReadinessPluginOptOutWarning" class="alert alert-warning small mt-2 mb-0 d-none">
+                                        <i class="bi bi-exclamation-triangle me-1"></i>
+                                        Without the plugin, Jellyfin may briefly generate its own previews
+                                        in parallel when new files arrive. This wastes CPU but won't corrupt
+                                        output. Recommended: leave this ticked.
+                                    </div>
+                                </div>
+
+                                <!-- Fix-all controls: critical-only and full
+                                     buttons. Both open a confirm modal that
+                                     lists the exact changes about to be applied
+                                     so the user can scan-and-cancel before
+                                     anything mutates the server. -->
+                                <div id="editReadinessFixControls" class="d-flex align-items-center gap-2 flex-wrap d-none">
+                                    <button type="button" class="btn btn-sm btn-danger d-none" id="editReadinessFixCriticalBtn">
+                                        <i class="bi bi-shield-exclamation me-1"></i>Fix critical
+                                    </button>
+                                    <button type="button" class="btn btn-sm btn-warning" id="editReadinessFixAllBtn">
+                                        <i class="bi bi-magic me-1"></i>Fix all
+                                    </button>
+                                    <span id="editReadinessFixResult" class="small text-muted"></span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Libraries -->
+                    <div class="tab-pane fade" id="edit-tab-libraries">
+                        <div class="d-flex justify-content-between align-items-center mb-2 gap-2 flex-wrap">
+                            <p class="small text-muted mb-0">
+                                <strong>Libraries to monitor</strong> — applies to every job type for this server (webhooks, scheduled scans, Recently Added).
+                                <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top"
+                                        title="Server-level scope. Untick a library to make this app ignore everything in it. For a one-off run against a different subset, use the New Job button on the Dashboard — that picker is per-run only."><i class="bi bi-info-circle"></i></button>
+                            </p>
+                            <button type="button" class="btn btn-sm btn-outline-secondary" id="editRefreshLibrariesBtn">
+                                <i class="bi bi-arrow-clockwise me-1"></i>Refresh libraries
+                            </button>
+                        </div>
+                        <div id="editLibraryList" class="list-group small"></div>
+                    </div>
+
+                    <!-- Path mappings — restructured Apr 2026: leads with a 1-line
+                         summary + worked example; the union-mount edge case moved
+                         into a "More details" expander so it doesn't drown out
+                         the simple case. -->
+                    <div class="tab-pane fade" id="edit-tab-paths">
+                        <p class="small text-muted mb-2">
+                            <strong>Use this when your media server and this app see the same files at different paths.</strong>
+                            Most installs don't need any rows here — leave the table empty if the server and this app mount media at the same paths.
+                        </p>
+                        <details class="mb-3">
+                            <summary class="small text-muted">Worked example + when you'd need this</summary>
+                            <div class="small text-muted mt-2">
+                                <p class="mb-2">
+                                    Suppose your server stores a file at <code>/data_16tb/movies/Inception.mkv</code> but this app's container mounts that disk as <code>/mnt/plex/movies/Inception.mkv</code> — the server tells this app "the file is at /data_16tb/...", but this app can't open that path because it doesn't exist inside the container. Add a row:
+                                </p>
+                                <ul class="mb-2">
+                                    <li><strong>Path on media server:</strong> <code>/data_16tb/movies</code></li>
+                                    <li><strong>Local path on this app:</strong> <code>/mnt/plex/movies</code></li>
+                                </ul>
+                                <p class="mb-1">
+                                    <strong>Path the webhook sends</strong> (third column) is for the rare case where Sonarr / Radarr / Plex Direct sends yet a third path because the media is behind a union mount (MergerFS or similar). Leave blank if your webhooks already send the same paths the server uses.
+                                </p>
+                            </div>
+                        </details>
+                        <table class="table table-sm" id="editPathMappingsTable">
+                            <thead><tr>
+                                <th>Path on Media Server
+                                    <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="The path your media server reports (what's stored in its database / shown in its admin UI)."><i class="bi bi-info-circle"></i></button>
+                                </th>
+                                <th>Local path on this app
+                                    <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="The path the same file appears at INSIDE this app's container — i.e. the volume mount target."><i class="bi bi-info-circle"></i></button>
+                                </th>
+                                <th>Path the webhook sends
+                                    <button type="button" class="info-icon info-icon-more ms-1" tabindex="0"
+                                            data-bs-toggle="tooltip" data-bs-placement="top"
+                                            title="Only for union mounts / multi-source webhooks — click for details"
+                                            data-explain-title="Webhook path mapping"
+                                            data-explain-template="infoWebhookPathTpl"
+                                            aria-label="Explain webhook path mapping">
+                                        <i class="bi bi-info-circle"></i>
+                                    </button>
+                                </th>
+                                <th></th>
+                            </tr></thead>
+                            <tbody></tbody>
+                        </table>
+                        <div class="d-flex justify-content-between mb-3">
+                            <button type="button" class="btn btn-sm btn-outline-secondary" id="editAddPathMapping">
+                                <i class="bi bi-plus-lg me-1"></i>Add row
+                            </button>
+                            <button type="button" class="btn btn-sm btn-outline-primary" id="editApplyPathMappingsAll" title="Copy these mappings to every other configured server">
+                                <i class="bi bi-arrow-left-right me-1"></i>Apply to all servers
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Exclude paths -->
+                    <div class="tab-pane fade" id="edit-tab-excludes">
+                        <p class="small text-muted mb-2">
+                            <strong>Skip preview generation for files matching these rules.</strong> Useful for things like trailer folders or sample videos.
+                        </p>
+                        <table class="table table-sm" id="editExcludePathsTable">
+                            <thead><tr>
+                                <th>Value</th>
+                                <th>Type
+                                    <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Path prefix: skips anything under that folder (e.g. '/Trailers' skips every file under any folder called Trailers). Regex: matches the full file path against a regular expression — for advanced patterns."><i class="bi bi-info-circle"></i></button>
+                                </th>
+                                <th></th>
+                            </tr></thead>
+                            <tbody></tbody>
+                        </table>
+                        <div class="d-flex justify-content-between mb-3">
+                            <button type="button" class="btn btn-sm btn-outline-secondary" id="editAddExcludePath">
+                                <i class="bi bi-plus-lg me-1"></i>Add row
+                            </button>
+                            <button type="button" class="btn btn-sm btn-outline-primary" id="editApplyExcludePathsAll" title="Copy these rules to every other configured server">
+                                <i class="bi bi-arrow-left-right me-1"></i>Apply to all servers
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Webhook & Scanner: Plex shows the registration controls;
+                         Emby/Jellyfin show plugin-install instructions + the URL the
+                         user needs to paste into their server's webhook plugin (the
+                         #editVendorWebhookCard below, populated by JS at modal-open
+                         time). Pre-fix this tab was Plex-only and Emby/Jellyfin users
+                         had no place to find the webhook URL. -->
+                    <div class="tab-pane fade" id="edit-tab-automation">
+                        <div id="editPlexWebhookServerCaption" class="small text-muted mb-3"></div>
+
+                        <!-- Emby / Jellyfin Webhook info card (shown by JS for non-Plex servers). -->
+                        <div id="editVendorWebhookCard" class="card mb-3 d-none">
+                            <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+                                <div>
+                                    <i class="bi bi-broadcast me-2"></i>
+                                    <span id="editVendorWebhookHeader">Webhook</span>
+                                </div>
+                                <span class="badge bg-secondary" id="editVendorWebhookPluginBadge">Plugin required</span>
+                            </div>
+                            <div class="card-body">
+                                <p class="mb-2">
+                                    Configure your media server's webhook plugin to POST events to this URL.
+                                    Each server has its own URL so payloads can be routed to the right server
+                                    even when you have multiple Emby or Jellyfin installs.
+                                </p>
+                                <label class="form-label small text-muted">
+                                    Webhook URL
+                                    <i class="bi bi-info-circle text-muted ms-1" data-bs-toggle="tooltip"
+                                       title="Pinned to this server's ID. The router dispatches previews only to this server, even if a sibling server owns the same path."></i>
+                                </label>
+                                <div class="input-group input-group-sm mb-3">
+                                    <input type="text" class="form-control font-monospace" id="editVendorWebhookUrl" readonly>
+                                    <button class="btn btn-outline-secondary" type="button" id="editVendorWebhookCopyBtn" title="Copy URL to clipboard">
+                                        <i class="bi bi-clipboard"></i>
+                                    </button>
+                                </div>
+                                <div id="editVendorWebhookAuthBlock" class="alert alert-warning small mb-3">
+                                    <div class="fw-semibold mb-1">
+                                        <i class="bi bi-shield-lock me-1"></i>Auth header (required)
+                                    </div>
+                                    <div>
+                                        In your plugin's <strong>Headers</strong> / <strong>Request Headers</strong> section, add a custom header:
+                                    </div>
+                                    <ul class="mb-1 mt-1" style="margin-bottom:0;">
+                                        <li>Name: <code id="editVendorWebhookHeaderName">X-Auth-Token</code></li>
+                                        <li>Value: <code id="editVendorWebhookHeaderValuePlaceholder">[THIS APP'S TOKEN]</code></li>
+                                    </ul>
+                                    <div class="small text-muted">
+                                        Use this app's web-auth token as the value. You can find or rotate it under
+                                        <a href="/settings#section-auth">Settings → Authentication</a>.
+                                        Sending the token as a header keeps it out of access logs, screenshots, and clipboard history.
+                                    </div>
+                                </div>
+                                <div id="editVendorWebhookPluginHint" class="alert alert-info small mb-2"></div>
+                                <ol id="editVendorWebhookSteps" class="mb-3 small"></ol>
+                            </div>
+                        </div>
+
+                        <!-- Plex Direct Webhook -->
+                        <div class="card mb-3" id="editPlexWebhookCard">
+                            <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+                                <div>
+                                    <i class="bi bi-lightning-charge me-2"></i>Plex Direct Webhook
+                                    <span class="badge bg-info ms-2">Instant</span>
+                                    <span class="badge bg-warning text-dark ms-1">Plex Pass required</span>
+                                </div>
+                                <span class="badge badge-status bg-secondary" id="plexWebhookStatusBadge">Checking…</span>
+                            </div>
+                            <div class="card-body">
+                                <p class="mb-3">Instant: Plex pings this app the moment it adds a library item.</p>
+
+                                <h6 class="mb-2">Prerequisites</h6>
+                                <ul class="mb-3">
+                                    <li><strong>Plex Pass</strong> active on your server-owner account.</li>
+                                    <li>
+                                        <strong>Mobile Push Notifications enabled</strong> in Plex Web → Settings → General.
+                                        <div class="text-muted small mt-1">
+                                            Plex quirk: the <code>library.new</code> webhook only fires when push notifications are on. The toggle just needs to be enabled — you don't actually need to send pushes anywhere.
+                                        </div>
+                                    </li>
+                                </ul>
+
+                                <div id="plexWebhookNoPlexPass" class="alert alert-warning small d-none">
+                                    <i class="bi bi-exclamation-circle me-1"></i>
+                                    Your Plex account doesn't appear to have an active Plex Pass subscription. Plex's webhook feature is Plex-Pass-only — use the Recently Added Scanner below instead.
+                                </div>
+                                <div id="plexWebhookError" class="alert alert-danger small d-none"></div>
+                                <div id="plexWebhookWarning" class="alert alert-warning small d-none"></div>
+
+                                <h6 class="mb-2">Setup</h6>
+                                <ol class="mb-3">
+                                    <li class="mb-3">
+                                        Confirm the URL Plex will POST to. The default is the URL you're using right now, which works for most same-host setups. Override it if Plex is on a different machine or behind a different network/proxy.
+                                        <div class="input-group input-group-sm mt-2">
+                                            <input type="text" class="form-control" id="plexWebhookPublicUrl" placeholder="http://your-host:8080/api/webhooks/server/&lt;this-server-id&gt;">
+                                            <button class="btn btn-outline-secondary" type="button" id="plexWebhookResetUrlBtn" title="Reset to detected URL">
+                                                <i class="bi bi-arrow-counterclockwise"></i>
+                                            </button>
+                                        </div>
+                                        <div class="form-text">Must be reachable from your <strong>Plex Media Server</strong>, not just your browser.</div>
+                                    </li>
+                                    <li>
+                                        Click <strong>Register with Plex</strong> below. The global webhook secret (set under <a href="/automation#section-webhooks-settings">Triggers &rarr; Settings</a>) is embedded in the registered URL so Plex can authenticate. <strong>If you change the secret later</strong>, click Register again to push the new value.
+                                    </li>
+                                </ol>
+
+                                <div class="d-flex gap-2 flex-wrap">
+                                    <button class="btn btn-sm btn-primary" type="button" id="plexWebhookRegisterBtn">
+                                        <i class="bi bi-plus-circle me-1"></i><span>Register with Plex</span>
+                                    </button>
+                                    <button class="btn btn-sm btn-outline-danger d-none" type="button" id="plexWebhookUnregisterBtn">
+                                        <i class="bi bi-x-circle me-1"></i>Remove from Plex
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Recently Added Scanner — universal across vendors,
+                             but the full config (intervals, lookback windows,
+                             per-server libraries) lives on the dedicated
+                             Schedules page. This card surfaces the status +
+                             a deep-link so users land in the right place
+                             instead of seeing two competing forms (modal vs.
+                             Schedules page) for the same setting. -->
+                        <div class="card mb-3" id="editRecentlyAddedCard">
+                            <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+                                <div>
+                                    <i class="bi bi-arrow-repeat me-2"></i>Recently Added Scanner
+                                    <span class="badge bg-success ms-2" id="editRecentlyAddedSafetyNetBadge">Safety net</span>
+                                </div>
+                                <span class="badge badge-status bg-secondary" id="recentlyAddedStatusBadge">Loading…</span>
+                            </div>
+                            <div class="card-body">
+                                <p class="mb-2" id="editRecentlyAddedBlurb">
+                                    Polls this server's recently-added list on a schedule so files the live webhook missed (server down, plugin not configured) still get picked up.
+                                </p>
+                                <div id="recentlyAddedScannerSummary" class="small text-muted mb-3">
+                                    <span class="spinner-border spinner-border-sm me-1"></span>Loading scanners…
+                                </div>
+                                <div class="d-flex gap-2 flex-wrap align-items-center">
+                                    <a href="{{ url_for('main.automation_page') }}#section-schedules-list"
+                                       class="btn btn-sm btn-primary" id="recentlyAddedManageLink">
+                                        <i class="bi bi-sliders me-1"></i>Configure on Schedules page
+                                    </a>
+                                    <button class="btn btn-sm btn-outline-primary d-none" type="button" id="recentlyAddedScanNowBtn">
+                                        <i class="bi bi-play-circle me-1"></i>Scan all now
+                                    </button>
+                                </div>
+                                <div id="recentlyAddedScanResult" class="small mt-2"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="editServerResult" class="d-none"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-success" id="editServerSave">
+                    <i class="bi bi-save me-1"></i>Save changes
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Readiness-card destructive-toggle confirm modal. Driven by the
+     server-side ``confirm`` payload on check actions — `kind` decides
+     whether plain confirm or type-to-confirm is required. -->
+<div class="modal fade" id="readinessConfirmModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">
+                    <i class="bi bi-exclamation-triangle-fill text-warning me-2"></i>
+                    <span id="readinessConfirmTitle">Confirm action</span>
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p id="readinessConfirmBody" class="mb-3"></p>
+                <div id="readinessConfirmTypeWrap" class="d-none">
+                    <label class="form-label small">
+                        To confirm, type <code id="readinessConfirmPhrase"></code>:
+                    </label>
+                    <input type="text" class="form-control" id="readinessConfirmInput" autocomplete="off">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-danger" id="readinessConfirmSubmit" disabled>
+                    Confirm
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Bulk fix-plan preview modal: opens before "Fix all" / "Fix critical"
+     run so the user can see the exact list of changes ABOUT to be
+     applied. Pre-existing UX shipped a single one-click button that
+     silently flipped everything; users had no way to scan-and-cancel. -->
+<div class="modal fade" id="readinessFixPlanModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">
+                    <i class="bi bi-list-check text-warning me-2"></i>
+                    <span id="readinessFixPlanTitle">Apply fixes</span>
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p class="mb-2"><span id="readinessFixPlanIntro" class="text-body-secondary"></span></p>
+                <ul id="readinessFixPlanList" class="list-group small mb-3"></ul>
+                <div id="readinessFixPlanResults" class="small d-none"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal" id="readinessFixPlanCancelBtn">Cancel</button>
+                <button type="button" class="btn btn-warning" id="readinessFixPlanApplyBtn">
+                    <i class="bi bi-magic me-1"></i>Apply
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="{{ url_for('static', filename='js/plex-auth.js') }}"></script>
+<script src="{{ url_for('static', filename='js/plex_webhook_panel.js') }}"></script>
+<script src="{{ url_for('static', filename='js/servers.js') }}"></script>
+{% endblock %}

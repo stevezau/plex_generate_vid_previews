@@ -12,11 +12,16 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 import requests
 
-from plex_generate_previews.plex_client import (
+from media_preview_generator.config.paths import (
+    expand_path_mapping_candidates,
+    plex_path_to_local,
+)
+from media_preview_generator.plex_client import (
     VIDEO_EXTENSIONS,
     WebhookResolutionResult,
     _detect_path_prefix_mismatches,
     _expand_directory_to_media_files,
+    _map_plex_path_to_local,
     _mismatch_covered_by_mappings,
     filter_duplicate_locations,
     get_library_sections,
@@ -33,14 +38,26 @@ class TestPlexServerConnection:
     @patch("plexapi.server.PlexServer")
     @patch("requests.Session")
     def test_plex_server_connection_success(self, mock_session, mock_plex_server, mock_config):
-        """Test successful connection to Plex server."""
+        """Test successful connection to Plex server.
+
+        Pin the kwargs the SUT controls: URL/token (positional), timeout, and the
+        configured session. A regression that flipped any of these to a default
+        (e.g. dropping the timeout, or constructing a fresh session that bypasses
+        retry/SSL config) would still satisfy a bare ``assert_called_once``.
+        """
         mock_plex = MagicMock()
         mock_plex_server.return_value = mock_plex
+        session_instance = mock_session.return_value
 
         result = plex_server(mock_config)
 
-        assert result == mock_plex
-        mock_plex_server.assert_called_once()
+        assert result is mock_plex
+        mock_plex_server.assert_called_once_with(
+            mock_config.plex_url,
+            mock_config.plex_token,
+            timeout=mock_config.plex_timeout,
+            session=session_instance,
+        )
 
     @patch("plexapi.server.PlexServer")
     @patch("requests.Session")
@@ -61,16 +78,39 @@ class TestPlexServerConnection:
             plex_server(mock_config)
 
     @patch("plexapi.server.PlexServer")
-    @patch("requests.Session")
-    def test_plex_server_retry_strategy(self, mock_session, mock_plex_server, mock_config):
-        """Test that retry strategy is configured."""
-        mock_plex = MagicMock()
-        mock_plex_server.return_value = mock_plex
+    def test_plex_server_retry_strategy(self, mock_plex_server, mock_config):
+        """Verify the Session is mounted with an HTTPAdapter whose Retry config
+        matches what plex_client wants — total=3, backoff_factor=0.3, and
+        the 5xx status_forcelist. Just asserting "Session was called" let
+        a regression where retries are silently disabled slip through.
+        """
+        from requests.adapters import HTTPAdapter
 
-        plex_server(mock_config)
+        mock_plex_server.return_value = MagicMock()
 
-        # Verify session was configured with retry
-        assert mock_session.called
+        with patch("media_preview_generator.plex_client.requests.Session") as mock_session_cls:
+            session_instance = MagicMock()
+            mock_session_cls.return_value = session_instance
+
+            plex_server(mock_config)
+
+        # Session.mount should be called for both http and https with the
+        # SAME HTTPAdapter instance.
+        mount_calls = session_instance.mount.call_args_list
+        schemes = sorted(call.args[0] for call in mount_calls)
+        assert schemes == ["http://", "https://"], f"expected both http:// and https:// mounted; got {schemes}"
+
+        adapters = [call.args[1] for call in mount_calls]
+        assert all(isinstance(a, HTTPAdapter) for a in adapters), "non-HTTPAdapter mounted on session"
+        # Same adapter instance used for both schemes (single Retry config).
+        assert adapters[0] is adapters[1]
+
+        retry = adapters[0].max_retries
+        assert retry.total == 3, f"Retry.total expected 3, got {retry.total}"
+        assert retry.backoff_factor == 0.3, f"Retry.backoff_factor expected 0.3, got {retry.backoff_factor}"
+        assert sorted(retry.status_forcelist) == [500, 502, 503, 504], (
+            f"Retry.status_forcelist expected [500,502,503,504], got {sorted(retry.status_forcelist)}"
+        )
 
     @patch("plexapi.server.PlexServer")
     @patch("requests.Session")
@@ -428,7 +468,13 @@ class TestGetLibrarySections:
     """Test library section retrieval."""
 
     def test_get_library_sections_movies(self, mock_config):
-        """Test getting movie libraries."""
+        """Test getting movie libraries.
+
+        D31 — assert the BARE ratingKey is stored, not the URL form. Production
+        code now mirrors the webhook resolver's behaviour (uses ratingKey, falls
+        back to parsing the trailing segment of m.key). Mocks set BOTH attributes
+        so this test fails loudly if production ever picks .key again.
+        """
         mock_plex = MagicMock()
 
         # Mock section
@@ -436,8 +482,9 @@ class TestGetLibrarySections:
         mock_section.title = "Movies"
         mock_section.METADATA_TYPE = "movie"
 
-        # Mock movie
+        # Mock movie — real plexapi populates both attrs.
         mock_movie = MagicMock()
+        mock_movie.ratingKey = 1
         mock_movie.key = "/library/metadata/1"
         mock_movie.title = "Test Movie"
 
@@ -450,7 +497,12 @@ class TestGetLibrarySections:
         section, media = sections[0]
         assert section == mock_section
         assert len(media) == 1
-        assert media[0][0] == "/library/metadata/1"
+        # BARE ratingKey, NOT the URL form — anything else doubles the prefix
+        # downstream when PlexBundleAdapter builds f"/library/metadata/{id}/tree".
+        assert media[0][0] == "1"
+        assert "/" not in media[0][0], (
+            f"item id contains '/' ({media[0][0]!r}) — would double the URL prefix in /tree query"
+        )
         assert media[0][1] == "Test Movie"
         assert media[0][2] == "movie"
 
@@ -464,6 +516,7 @@ class TestGetLibrarySections:
         mock_section.METADATA_TYPE = "movie"
 
         mock_movie = MagicMock()
+        mock_movie.ratingKey = 1
         mock_movie.key = "/library/metadata/1"
         mock_movie.title = "Test Movie"
         mock_section.search.return_value = [mock_movie]
@@ -485,6 +538,7 @@ class TestGetLibrarySections:
         mock_section.METADATA_TYPE = "movie"
 
         mock_movie = MagicMock()
+        mock_movie.ratingKey = 1
         mock_movie.key = "/library/metadata/1"
         mock_movie.title = "Test Movie"
         mock_section.search.return_value = [mock_movie]
@@ -496,158 +550,127 @@ class TestGetLibrarySections:
         assert kwargs.get("sort") == "addedAt:desc"
 
 
-class TestPathMapping:
-    """Test path mapping/translation for Docker/Unraid deployments.
+class TestPathMappingProduction:
+    """Tests against the real path-mapping helpers in ``config.paths``.
 
-    Path mapping is essential for Docker containers where the Plex server
-    sees media files at one path (e.g., /data/media) while the container
-    sees them at another path (e.g., /media).
-
-    These tests validate that path translation works correctly for common
-    Unraid/Docker path mapping scenarios.
+    The previous ``TestPathMapping`` class only exercised ``str.replace`` —
+    it never invoked any project code, and one case actively bug-locked the
+    wrong behaviour (``/database`` -> ``/mediabase``). These tests pin the
+    contract of the production helpers (``plex_path_to_local``,
+    ``expand_path_mapping_candidates``) and the ``_map_plex_path_to_local``
+    wrapper used by ``plex_client``.
     """
 
-    def test_path_mapping_unraid_standard(self):
-        """Test standard Unraid path mapping (Plex path -> container path)."""
-        # Plex sees: /data/Movies/movie.mkv
-        # Container sees: /media/Movies/movie.mkv
-        plex_path = "/data/Movies/movie.mkv"
-        plex_videos_path_mapping = "/data"
-        plex_local_videos_path_mapping = "/media"
+    def _row(self, plex_prefix: str, local_prefix: str, webhook_prefixes=None) -> dict:
+        """Build a single normalised path-mapping row."""
+        return {
+            "plex_prefix": plex_prefix,
+            "local_prefix": local_prefix,
+            "webhook_prefixes": list(webhook_prefixes or []),
+        }
 
-        mapped_path = plex_path.replace(plex_videos_path_mapping, plex_local_videos_path_mapping)
+    def test_plex_path_to_local_basic_mapping(self):
+        """Standard Plex prefix -> local prefix substitution."""
+        mappings = [self._row("/data", "/media")]
+        assert plex_path_to_local("/data/Movies/x.mkv", mappings) == "/media/Movies/x.mkv"
 
-        assert mapped_path == "/media/Movies/movie.mkv"
+    def test_plex_path_to_local_partial_prefix_avoidance(self):
+        """``/database`` must NOT be mapped by a ``/data`` rule.
 
-    def test_path_mapping_nested_paths(self):
-        """Test path mapping with nested directory structures."""
-        # Plex sees: /mnt/user/media/tv/Show/Season 1/Episode.mkv
-        # Container sees: /media/tv/Show/Season 1/Episode.mkv
-        plex_path = "/mnt/user/media/tv/Show/Season 1/Episode.mkv"
-        plex_videos_path_mapping = "/mnt/user/media"
-        plex_local_videos_path_mapping = "/media"
+        Pins the production fix to the bug-locking case the deleted
+        ``test_path_mapping_partial_match_avoided`` froze in place. If
+        ``_path_matches_prefix`` regresses to a substring check this fails.
+        """
+        mappings = [self._row("/data", "/media")]
+        assert plex_path_to_local("/database/x.mkv", mappings) == "/database/x.mkv"
 
-        mapped_path = plex_path.replace(plex_videos_path_mapping, plex_local_videos_path_mapping)
+    def test_plex_path_to_local_trailing_slash_equivalence(self):
+        """``/data`` and ``/data/`` in the prefix produce the same output."""
+        without_slash = [self._row("/data", "/media")]
+        with_slash = [self._row("/data/", "/media/")]
+        assert plex_path_to_local("/data/Movies/x.mkv", without_slash) == "/media/Movies/x.mkv"
+        assert plex_path_to_local("/data/Movies/x.mkv", with_slash) == "/media/Movies/x.mkv"
+        assert plex_path_to_local("/data/Movies/x.mkv", without_slash) == plex_path_to_local(
+            "/data/Movies/x.mkv", with_slash
+        )
 
-        assert mapped_path == "/media/tv/Show/Season 1/Episode.mkv"
+    def test_plex_path_to_local_no_mappings_returns_input(self):
+        """Empty mapping list returns the path unchanged."""
+        assert plex_path_to_local("/anywhere/x.mkv", []) == "/anywhere/x.mkv"
 
-    def test_path_mapping_with_spaces(self):
-        """Test path mapping handles spaces in paths correctly."""
-        plex_path = "/mnt/user/My Media/Movies/A Movie Title (2024)/movie.mkv"
-        plex_videos_path_mapping = "/mnt/user/My Media"
-        plex_local_videos_path_mapping = "/media"
+    def test_plex_path_to_local_nested_paths_preserved(self):
+        """Deeply nested suffix is preserved verbatim after the prefix swap."""
+        mappings = [self._row("/mnt/user/media", "/media")]
+        actual = plex_path_to_local("/mnt/user/media/tv/show/Episode.mkv", mappings)
+        assert actual == "/media/tv/show/Episode.mkv"
 
-        mapped_path = plex_path.replace(plex_videos_path_mapping, plex_local_videos_path_mapping)
+    def test_plex_path_to_local_case_sensitivity_preserved(self):
+        """Linux semantics: case mismatch means no mapping is applied."""
+        mappings = [self._row("/data", "/media")]
+        # ``/Data`` differs from ``/data`` by case — no mapping should fire.
+        assert plex_path_to_local("/Data/x.mkv", mappings) == "/Data/x.mkv"
 
-        assert mapped_path == "/media/Movies/A Movie Title (2024)/movie.mkv"
+    def test_map_plex_path_to_local_wrapper_forwards_to_helper(self, mock_config):
+        """``_map_plex_path_to_local`` reads ``config.path_mappings`` and delegates.
 
-    def test_path_mapping_trailing_slash_consistency(self):
-        """Test that trailing slashes are handled consistently."""
-        plex_path = "/data/Movies/movie.mkv"
+        Smoke-tests the plex_client wrapper at lines 415-418 — confirms the
+        wrapper actually forwards the configured mappings instead of swallowing
+        them. With no mappings, returns input unchanged.
+        """
+        mock_config.path_mappings = [self._row("/data", "/media")]
+        assert _map_plex_path_to_local("/data/Movies/x.mkv", mock_config) == "/media/Movies/x.mkv"
 
-        # Without trailing slashes - this works correctly
-        plex_mapping = "/data"
-        local_mapping = "/media"
-        mapped = plex_path.replace(plex_mapping, local_mapping)
-        assert mapped == "/media/Movies/movie.mkv"
+        mock_config.path_mappings = []
+        assert _map_plex_path_to_local("/data/Movies/x.mkv", mock_config) == "/data/Movies/x.mkv"
 
-        # With trailing slashes - also works, but more specific
-        plex_mapping_slash = "/data/"
-        local_mapping_slash = "/media/"
-        mapped_slash = plex_path.replace(plex_mapping_slash, local_mapping_slash)
-        assert mapped_slash == "/media/Movies/movie.mkv"
+    def test_expand_path_mapping_candidates_bidirectional_fanout(self):
+        """A mapping row fans out a path into both Plex and local equivalents.
 
-        # Demonstrating that path starts with /data/ (with slash)
-        assert plex_path.startswith("/data/")  # True - starts with /data/
+        Whichever side of the mapping the input path matches, the helper must
+        produce the equivalent on the other side. The original input is always
+        first, and duplicates are de-duplicated.
+        """
+        mappings = [self._row("/data", "/media")]
 
-    def test_path_mapping_no_mapping_needed(self):
-        """Test when no path mapping is configured (same paths)."""
-        plex_path = "/media/Movies/movie.mkv"
-        # Empty mappings mean no transformation needed
-        plex_videos_path_mapping = ""
-        plex_local_videos_path_mapping = ""
+        from_plex = expand_path_mapping_candidates("/data/Movies/x.mkv", mappings)
+        assert from_plex[0] == "/data/Movies/x.mkv"
+        assert "/media/Movies/x.mkv" in from_plex
 
-        # When both are empty, no replacement should occur
-        if plex_videos_path_mapping and plex_local_videos_path_mapping:
-            mapped_path = plex_path.replace(plex_videos_path_mapping, plex_local_videos_path_mapping)
-        else:
-            mapped_path = plex_path
+        from_local = expand_path_mapping_candidates("/media/Movies/x.mkv", mappings)
+        assert from_local[0] == "/media/Movies/x.mkv"
+        assert "/data/Movies/x.mkv" in from_local
 
-        assert mapped_path == "/media/Movies/movie.mkv"
+        # No duplicates introduced.
+        assert len(from_plex) == len(set(from_plex))
+        assert len(from_local) == len(set(from_local))
 
-    def test_path_mapping_unraid_smb_share(self):
-        """Test mapping SMB/network share paths in Unraid."""
-        # Plex container using SMB path
-        plex_path = "//server/media/Movies/movie.mkv"
-        plex_videos_path_mapping = "//server/media"
-        plex_local_videos_path_mapping = "/mnt/media"
+    def test_expand_path_mapping_candidates_webhook_alias(self):
+        """Webhook prefix should expand into the local-prefix equivalent.
 
-        mapped_path = plex_path.replace(plex_videos_path_mapping, plex_local_videos_path_mapping)
-
-        assert mapped_path == "/mnt/media/Movies/movie.mkv"
-
-    def test_path_mapping_case_sensitivity(self):
-        """Test that path mapping is case-sensitive (Linux filesystems)."""
-        plex_path = "/Data/Movies/movie.mkv"
-        plex_videos_path_mapping = "/data"  # lowercase
-        plex_local_videos_path_mapping = "/media"
-
-        # Should NOT replace because case doesn't match
-        mapped_path = plex_path.replace(plex_videos_path_mapping, plex_local_videos_path_mapping)
-
-        # Path unchanged because /data != /Data
-        assert mapped_path == "/Data/Movies/movie.mkv"
-
-    def test_path_mapping_partial_match_avoided(self):
-        """Test that partial path matches are handled correctly."""
-        # Ensure /data doesn't match /database
-        plex_path = "/database/Movies/movie.mkv"
-        plex_videos_path_mapping = "/data"
-        plex_local_videos_path_mapping = "/media"
-
-        mapped_path = plex_path.replace(plex_videos_path_mapping, plex_local_videos_path_mapping)
-
-        # This demonstrates a limitation - str.replace will match prefix of /database
-        # Real implementation should use startswith() or proper path prefix matching
-        # For now, document this behavior - /database becomes /mediabase
-        assert mapped_path == "/mediabase/Movies/movie.mkv"
-
-    def test_path_mapping_docker_volume_mounts(self):
-        """Test common Docker volume mount scenarios."""
-        # Scenario: linuxserver/plex mounts media at /data/media
-        # This container mounts same media at /media
-        test_cases = [
-            # (plex_path, plex_mapping, local_mapping, expected)
-            (
-                "/data/media/movies/film.mkv",
-                "/data/media",
-                "/media",
-                "/media/movies/film.mkv",
-            ),
-            (
-                "/data/media/tv/show/s01e01.mkv",
-                "/data/media",
-                "/media",
-                "/media/tv/show/s01e01.mkv",
-            ),
-            (
-                "/config/media/Movies/film.mkv",
-                "/config/media",
-                "/media",
-                "/media/Movies/film.mkv",
-            ),
+        Row: webhook ``/data`` aliases the on-disk ``/data_16tb`` mount. A
+        webhook payload of ``/data/x.mkv`` must produce a ``/data_16tb/x.mkv``
+        candidate so we can match it against the actual file.
+        """
+        mappings = [
+            self._row("/plex_data", "/data_16tb", webhook_prefixes=["/data"]),
         ]
-
-        for plex_path, plex_mapping, local_mapping, expected in test_cases:
-            mapped = plex_path.replace(plex_mapping, local_mapping)
-            assert mapped == expected, f"Failed for {plex_path}"
+        candidates = expand_path_mapping_candidates("/data/x.mkv", mappings)
+        assert candidates[0] == "/data/x.mkv"
+        assert "/data_16tb/x.mkv" in candidates
+        # Webhook -> Plex form also fans out (used for cross-matching against
+        # Plex-reported locations).
+        assert "/plex_data/x.mkv" in candidates
 
 
 class TestGetLibrarySectionsExtended:
     """Extended tests for library section retrieval."""
 
     def test_get_library_sections_episodes(self, mock_config):
-        """Test getting TV show libraries."""
+        """Test getting TV show libraries.
+
+        D31 — assert the BARE ratingKey is stored, not the URL form (see
+        ``test_get_library_sections_movies`` for the rationale).
+        """
         mock_plex = MagicMock()
 
         # Mock section
@@ -655,8 +678,9 @@ class TestGetLibrarySectionsExtended:
         mock_section.title = "TV Shows"
         mock_section.METADATA_TYPE = "episode"
 
-        # Mock episode
+        # Mock episode — real plexapi populates both attrs.
         mock_episode = MagicMock()
+        mock_episode.ratingKey = 123
         mock_episode.key = "/library/metadata/123"
         mock_episode.grandparentTitle = "Test Show"
         mock_episode.seasonEpisode = "s01e01"
@@ -671,7 +695,9 @@ class TestGetLibrarySectionsExtended:
         section, media = sections[0]
         assert section == mock_section
         assert len(media) == 1
-        assert media[0][0] == "/library/metadata/123"
+        # BARE ratingKey, NOT the URL form — see test_get_library_sections_movies.
+        assert media[0][0] == "123"
+        assert "/" not in media[0][0]
         assert "Test Show" in media[0][1]
         assert "S01E01" in media[0][1]
         assert media[0][2] == "episode"
@@ -752,14 +778,17 @@ class TestGetLibrarySectionsExtended:
         mock_section.title = "TV Shows"
         mock_section.METADATA_TYPE = "episode"
 
-        # Two episodes pointing to same file (multi-part episode)
+        # Two episodes pointing to same file (multi-part episode).
+        # Mocks set both .ratingKey and .key (real plexapi shape).
         mock_episode1 = MagicMock()
+        mock_episode1.ratingKey = 1
         mock_episode1.key = "/library/metadata/1"
         mock_episode1.grandparentTitle = "Show"
         mock_episode1.seasonEpisode = "s01e01"
         mock_episode1.locations = ["/path/to/episode.mkv"]
 
         mock_episode2 = MagicMock()
+        mock_episode2.ratingKey = 2
         mock_episode2.key = "/library/metadata/2"
         mock_episode2.grandparentTitle = "Show"
         mock_episode2.seasonEpisode = "s01e02"
@@ -800,6 +829,7 @@ class TestGetLibrarySectionsExtended:
         mock_section1.key = "1"
         mock_section1.METADATA_TYPE = "movie"
         mock_movie = MagicMock()
+        mock_movie.ratingKey = 1
         mock_movie.key = "/library/metadata/1"
         mock_movie.title = "Test Movie"
         mock_section1.search.return_value = [mock_movie]
@@ -836,6 +866,7 @@ class TestGetLibrarySectionsExtended:
         mock_section.title = "Movies"
         mock_section.METADATA_TYPE = "movie"
         mock_movie = MagicMock()
+        mock_movie.ratingKey = 1
         mock_movie.key = "/library/metadata/1"
         mock_movie.title = "Test Movie"
         mock_section.search.return_value = [mock_movie]
@@ -887,9 +918,16 @@ class TestGetMediaItemsByPaths:
         assert result.unresolved_paths == []
         assert result.skipped_paths == []
 
-    @patch("plex_generate_previews.plex_client.logger.info")
+    @patch("media_preview_generator.plex_client.logger.info")
     def test_get_media_items_by_paths_logs_received_and_file_path_query(self, mock_info, mock_config):
-        """Webhook resolution logs received file count and file-path query."""
+        """Webhook resolution logs received file count and file-path query.
+
+        Audit fix — pin BOTH the canonical phrase via word-boundary regex AND
+        the call_count for each phrase so a regression that emits only one of
+        the two phrases or doubles either log line fails loudly.
+        """
+        import re
+
         mock_plex = MagicMock()
         mock_section = MagicMock()
         mock_section.key = "1"
@@ -899,12 +937,28 @@ class TestGetMediaItemsByPaths:
         mock_plex.fetchItems.return_value = []
 
         get_media_items_by_paths(mock_plex, mock_config, ["/data/movies/Some Movie (2024)/movie.mkv"])
-        assert any(
-            "Received" in str(call) and "webhook input file" in str(call).lower() for call in mock_info.call_args_list
-        )
-        assert any("Querying Plex by file path" in str(call) for call in mock_info.call_args_list)
 
-    @patch("plex_generate_previews.plex_client.logger.warning")
+        # Production emits exactly: 'Received {N} webhook input file(s) to resolve'
+        received_re = re.compile(r"\bReceived\b.*\bwebhook input file\(s\) to resolve\b")
+        received_calls = [c for c in mock_info.call_args_list if received_re.search(str(c))]
+        assert len(received_calls) == 1, (
+            f"Expected exactly 1 'Received N webhook input file(s)' log; got {len(received_calls)}: "
+            f"{[str(c) for c in received_calls]}"
+        )
+        # And the placeholder count value must be the input length (1).
+        assert any(c.args[1:] == (1,) for c in received_calls), (
+            f"'Received' log did not carry the input count of 1: {[str(c) for c in received_calls]}"
+        )
+
+        # Production emits: 'Querying Plex by file path...' once per resolution batch.
+        query_re = re.compile(r"\bQuerying Plex by file path\b")
+        query_calls = [c for c in mock_info.call_args_list if query_re.search(str(c))]
+        assert len(query_calls) == 1, (
+            f"Expected exactly 1 'Querying Plex by file path' log; got {len(query_calls)}: "
+            f"{[str(c) for c in query_calls]}"
+        )
+
+    @patch("media_preview_generator.plex_client.logger.warning")
     def test_get_media_items_by_paths_non_string_path_skipped(self, mock_warning, mock_config):
         """Non-string webhook paths are skipped without raising."""
         mock_plex = MagicMock()
@@ -922,6 +976,8 @@ class TestGetMediaItemsByPaths:
         mock_section.METADATA_TYPE = "movie"
 
         mock_movie = MagicMock()
+        # D31 — set both attrs so we exercise the canonical (ratingKey) branch.
+        mock_movie.ratingKey = 100
         mock_movie.key = "/library/metadata/100"
         mock_movie.title = "Test Movie"
         mock_movie.locations = ["/data/movies/Test Movie (2024)/Test Movie.mkv"]
@@ -931,7 +987,8 @@ class TestGetMediaItemsByPaths:
 
         result = get_media_items_by_paths(mock_plex, mock_config, ["/data/movies/Test Movie (2024)/Test Movie.mkv"])
         assert len(result.items) == 1
-        assert result.items[0][0] == "/library/metadata/100"
+        assert result.items[0][0] == "100"  # D31 — bare ratingKey, not URL
+        assert "/" not in result.items[0][0]
         assert result.items[0][1] == "Test Movie"
         assert result.items[0][2] == "movie"
         assert mock_plex.fetchItems.called
@@ -939,7 +996,7 @@ class TestGetMediaItemsByPaths:
         assert "type=1" in call_ekey
         assert "Test Movie.mkv" in call_ekey or "Test%20Movie.mkv" in call_ekey
 
-    @patch("plex_generate_previews.plex_client.logger.info")
+    @patch("media_preview_generator.plex_client.logger.info")
     def test_get_media_items_by_paths_logs_per_path_resolved_status(self, mock_info, mock_config):
         """Resolved path emits a per-path diagnostic status line."""
         mock_plex = MagicMock()
@@ -949,6 +1006,7 @@ class TestGetMediaItemsByPaths:
         mock_section.METADATA_TYPE = "movie"
 
         mock_movie = MagicMock()
+        mock_movie.ratingKey = 100
         mock_movie.key = "/library/metadata/100"
         mock_movie.title = "Test Movie"
         mock_movie.locations = ["/data/movies/Test Movie (2024)/Test Movie.mkv"]
@@ -958,8 +1016,22 @@ class TestGetMediaItemsByPaths:
 
         result = get_media_items_by_paths(mock_plex, mock_config, ["/data/movies/Test Movie (2024)/Test Movie.mkv"])
         assert len(result.items) == 1
-        assert any("resolved" in str(call) for call in mock_info.call_args_list)
-        assert any("[1/1]" in str(call) for call in mock_info.call_args_list)
+
+        # Audit fix — assert the resolved Loguru placeholder log was emitted with
+        # the right (file_index, total) tuple via call.args, not loose substring
+        # scan. Production format: "  [{}/{}] {}" with args (1, 1, input_path).
+        per_path_calls = [
+            c for c in mock_info.call_args_list if c.args and c.args[0] == "  [{}/{}] {}" and len(c.args) >= 3
+        ]
+        assert any(c.args[1:3] == (1, 1) for c in per_path_calls), (
+            f"Expected per-path log with args (1, 1, ...); got: {[c.args for c in per_path_calls]}"
+        )
+
+        # And the 'Result: resolved' line must follow.
+        resolved_calls = [c for c in mock_info.call_args_list if c.args and "Result: resolved" in str(c.args[0])]
+        assert len(resolved_calls) == 1, (
+            f"Expected exactly 1 'Result: resolved' log; got {len(resolved_calls)}: {[c.args for c in resolved_calls]}"
+        )
 
     def test_get_media_items_by_paths_no_match(self, mock_config):
         """Paths that match no Plex item return empty list."""
@@ -976,9 +1048,14 @@ class TestGetMediaItemsByPaths:
         assert result.items == []
         assert result.unresolved_paths == ["/nonexistent/path.mkv"]
 
-    @patch("plex_generate_previews.plex_client.logger.warning")
-    def test_get_media_items_by_paths_logs_per_path_unresolved_reason(self, mock_warning, mock_config):
-        """Unresolved path emits a per-path diagnostic with explicit reason."""
+    @patch("media_preview_generator.plex_client.logger.info")
+    def test_get_media_items_by_paths_logs_per_path_unresolved_reason(self, mock_info, mock_config):
+        """Unresolved path emits a per-path diagnostic with explicit reason.
+
+        These per-file lines are info-level diagnostics (the aggregate
+        ``Unresolved`` warning at the end of the run is the actionable
+        summary).
+        """
         mock_plex = MagicMock()
         mock_section = MagicMock()
         mock_section.key = "1"
@@ -990,8 +1067,8 @@ class TestGetMediaItemsByPaths:
 
         result = get_media_items_by_paths(mock_plex, mock_config, ["/nonexistent/path.mkv"])
         assert result.items == []
-        assert any("not found" in str(call) for call in mock_warning.call_args_list)
-        assert any("Direct path not found in Plex" in str(call) for call in mock_warning.call_args_list)
+        assert any("not found" in str(call) for call in mock_info.call_args_list)
+        assert any("Direct path not found in Plex" in str(call) for call in mock_info.call_args_list)
 
     def test_get_media_items_by_paths_episode_match(self, mock_config):
         """Path matching an episode location returns episode tuple."""
@@ -1002,6 +1079,7 @@ class TestGetMediaItemsByPaths:
         mock_section.METADATA_TYPE = "episode"
 
         mock_episode = MagicMock()
+        mock_episode.ratingKey = 200
         mock_episode.key = "/library/metadata/200"
         mock_episode.grandparentTitle = "Test Show"
         mock_episode.seasonEpisode = "s01e01"
@@ -1016,7 +1094,8 @@ class TestGetMediaItemsByPaths:
             ["/data/tv/Test Show/Season 01/S01E01.mkv"],
         )
         assert len(result.items) == 1
-        assert result.items[0][0] == "/library/metadata/200"
+        assert result.items[0][0] == "200"  # D31 — bare ratingKey, not URL
+        assert "/" not in result.items[0][0]
         assert "Test Show" in result.items[0][1]
         assert "S01E01" in result.items[0][1]
         assert result.items[0][2] == "episode"
@@ -1041,6 +1120,7 @@ class TestGetMediaItemsByPaths:
         mock_section.METADATA_TYPE = "episode"
 
         mock_episode = MagicMock()
+        mock_episode.ratingKey = 481077
         mock_episode.key = "/library/metadata/481077"
         mock_episode.grandparentTitle = "The Mind, Explained"
         mock_episode.seasonEpisode = "s02e02"
@@ -1059,10 +1139,18 @@ class TestGetMediaItemsByPaths:
         result = get_media_items_by_paths(mock_plex, mock_config, [webhook_path])
 
         assert len(result.items) == 1
-        assert result.items[0][0] == "/library/metadata/481077"
+        assert result.items[0][0] == "481077"  # D31 — bare ratingKey, not URL
+        assert "/" not in result.items[0][0]
         assert "The Mind, Explained" in result.items[0][1]
         assert result.items[0][2] == "episode"
+        # Audit fix — was bare ``mock_plex.fetchItems.called``. Tighten to
+        # assert the file= filter is in the ekey so a regression that called
+        # fetchItems with the WRONG filter (e.g. addedAt= or no filter) fails.
         assert mock_plex.fetchItems.called
+        all_ekeys = " | ".join(str(c.args[0]) if c.args else "" for c in mock_plex.fetchItems.call_args_list)
+        assert "file=" in all_ekeys, (
+            f"fetchItems was called but with no file= filter — would silently full-scan. ekeys: {all_ekeys!r}"
+        )
 
     def test_get_media_items_by_paths_file_path_search_resolves_match(self, mock_config):
         """Targeted file-path search resolves path to Plex item."""
@@ -1073,6 +1161,7 @@ class TestGetMediaItemsByPaths:
         mock_section.METADATA_TYPE = "movie"
 
         mock_movie = MagicMock()
+        mock_movie.ratingKey = 999
         mock_movie.key = "/library/metadata/999"
         mock_movie.title = "Late Match"
         mock_movie.locations = ["/data/movies/Late Match/Late Match.mkv"]
@@ -1083,28 +1172,92 @@ class TestGetMediaItemsByPaths:
         result = get_media_items_by_paths(mock_plex, mock_config, ["/data/movies/Late Match/Late Match.mkv"])
 
         assert len(result.items) == 1
-        assert result.items[0][0] == "/library/metadata/999"
+        assert result.items[0][0] == "999"  # D31 — bare ratingKey, not URL
+        assert "/" not in result.items[0][0]
+        # Audit fix — assert the file= filter is in the ekey, not bare called().
         assert mock_plex.fetchItems.called
+        all_ekeys = " | ".join(str(c.args[0]) if c.args else "" for c in mock_plex.fetchItems.call_args_list)
+        assert "file=" in all_ekeys, (
+            f"fetchItems was called but with no file= filter — would silently full-scan. ekeys: {all_ekeys!r}"
+        )
 
-    @patch("plex_generate_previews.plex_client.logger.info")
+    def test_get_media_items_by_paths_prefers_explicit_ratingKey_over_url_key(self, mock_config):
+        """D31 — when plexapi populates BOTH .ratingKey (the canonical bare
+        id, e.g. ``999``) AND .key (the URL form ``/library/metadata/999``),
+        we MUST pick ratingKey. Picking .key was the silent root cause of
+        every Sonarr/Radarr → Plex webhook returning ``skipped_not_indexed``
+        for months — downstream code built ``f"/library/metadata/{item_id}/tree"``
+        which doubled the prefix, 404'd, and lied about the cause.
+
+        Mocks here mirror real plexapi shape (both attrs present) so the
+        test can't be silently falsified by an unconfigured MagicMock."""
+        mock_plex = MagicMock()
+        mock_section = MagicMock()
+        mock_section.key = "1"
+        mock_section.title = "Movies"
+        mock_section.METADATA_TYPE = "movie"
+
+        mock_movie = MagicMock()
+        # plexapi populates both — ratingKey is the bare canonical id (int
+        # in real responses), .key is the API path. Setting both makes the
+        # test fail loudly if production ever picks .key again.
+        mock_movie.ratingKey = 999
+        mock_movie.key = "/library/metadata/999"
+        mock_movie.title = "Late Match"
+        mock_movie.locations = ["/data/movies/Late Match/Late Match.mkv"]
+
+        mock_plex.library.sections.return_value = [mock_section]
+        mock_plex.fetchItems.return_value = [mock_movie]
+
+        result = get_media_items_by_paths(mock_plex, mock_config, ["/data/movies/Late Match/Late Match.mkv"])
+
+        assert len(result.items) == 1
+        item_id = result.items[0][0]
+        # Bare ratingKey, NOT the URL form — anything else doubles the prefix
+        # downstream when PlexBundleAdapter builds f"/library/metadata/{id}/tree".
+        assert item_id == "999"
+        assert "/" not in item_id, f"item_id contains '/' ({item_id!r}) — would double the URL prefix in /tree query"
+
+    @patch("media_preview_generator.plex_client.logger.info")
     def test_get_media_items_by_paths_logs_file_path_query(self, mock_info, mock_config):
-        """File-path resolution logs the query step."""
+        """File-path resolution logs the query step.
+
+        Audit fix — was a bare `any(...)` presence check that would survive a
+        regression that logged only the FIRST file's query (silent drop for
+        batches). Now batches 2 paths and asserts the query log fires once per
+        resolution batch (not once per path — the production behavior).
+        """
+        import re
+
         mock_plex = MagicMock()
         mock_section = MagicMock()
         mock_section.key = "1"
         mock_section.title = "Movies"
         mock_section.METADATA_TYPE = "movie"
         mock_movie = MagicMock()
+        mock_movie.ratingKey = 999
         mock_movie.key = "/library/metadata/999"
         mock_movie.title = "Late Match"
         mock_movie.locations = ["/data/movies/Late Match/Late Match.mkv"]
         mock_plex.library.sections.return_value = [mock_section]
         mock_plex.fetchItems.return_value = [mock_movie]
 
-        get_media_items_by_paths(mock_plex, mock_config, ["/data/movies/Late Match/Late Match.mkv"])
-        assert any("Querying Plex by file path" in str(call) for call in mock_info.call_args_list)
+        get_media_items_by_paths(
+            mock_plex,
+            mock_config,
+            ["/data/movies/Late Match/Late Match.mkv", "/data/movies/Other.mkv"],
+        )
 
-    @patch("plex_generate_previews.plex_client.logger.warning")
+        query_re = re.compile(r"\bQuerying Plex by file path\b")
+        query_calls = [c for c in mock_info.call_args_list if query_re.search(str(c))]
+        # Production logs this once per batch (it's a single fetchItems call
+        # with the OR'd file= filter). Pinning == 1 catches a regression that
+        # double-logged or per-pathed the query.
+        assert len(query_calls) == 1, (
+            f"Expected exactly 1 'Querying Plex by file path' log per batch; got {len(query_calls)}"
+        )
+
+    @patch("media_preview_generator.plex_client.logger.warning")
     def test_get_media_items_by_paths_item_without_key_is_skipped(self, mock_warning, mock_config):
         """Matched items missing a Plex key are ignored safely."""
         mock_plex = MagicMock()
@@ -1114,6 +1267,8 @@ class TestGetMediaItemsByPaths:
         mock_section.METADATA_TYPE = "movie"
 
         mock_movie = MagicMock()
+        # Both ratingKey AND key absent — production must skip with a warning.
+        mock_movie.ratingKey = None
         mock_movie.key = None
         mock_movie.title = "No Key Movie"
         mock_movie.locations = ["/data/movies/No Key Movie/No Key Movie.mkv"]
@@ -1144,6 +1299,7 @@ class TestGetMediaItemsByPaths:
         mock_section.METADATA_TYPE = "movie"
 
         mock_movie = MagicMock()
+        mock_movie.ratingKey = 100
         mock_movie.key = "/library/metadata/100"
         mock_movie.title = "Test Movie"
         mock_movie.locations = ["/data_16tb1/movies/Test Movie (2024)/Test Movie.mkv"]
@@ -1157,7 +1313,7 @@ class TestGetMediaItemsByPaths:
             ["/data/movies/Test Movie (2024)/Test Movie.mkv"],
         )
         assert len(result.items) == 1
-        assert result.items[0][0] == "/library/metadata/100"
+        assert result.items[0][0] == "100"  # D31 — bare ratingKey, not URL
         assert result.items[0][2] == "movie"
 
     def test_get_media_items_by_paths_plex_form_path_matches_with_mapping(self, mock_config):
@@ -1176,6 +1332,7 @@ class TestGetMediaItemsByPaths:
         mock_section.METADATA_TYPE = "movie"
 
         mock_movie = MagicMock()
+        mock_movie.ratingKey = 101
         mock_movie.key = "/library/metadata/101"
         mock_movie.title = "Other Movie"
         mock_movie.locations = ["/data_16tb1/Movies/Other Movie.mkv"]
@@ -1189,7 +1346,7 @@ class TestGetMediaItemsByPaths:
             ["/data_16tb1/Movies/Other Movie.mkv"],
         )
         assert len(result.items) == 1
-        assert result.items[0][0] == "/library/metadata/101"
+        assert result.items[0][0] == "101"  # D31 — bare ratingKey, not URL
 
     def test_get_media_items_by_paths_no_mapping_path_unchanged(self, mock_config):
         """With path_mappings empty, raw webhook path used for matching only."""
@@ -1201,6 +1358,7 @@ class TestGetMediaItemsByPaths:
         mock_section.METADATA_TYPE = "movie"
 
         mock_movie = MagicMock()
+        mock_movie.ratingKey = 102
         mock_movie.key = "/library/metadata/102"
         mock_movie.title = "Direct Match"
         mock_movie.locations = ["/data/movies/Direct Match.mkv"]
@@ -1210,7 +1368,7 @@ class TestGetMediaItemsByPaths:
 
         result = get_media_items_by_paths(mock_plex, mock_config, ["/data/movies/Direct Match.mkv"])
         assert len(result.items) == 1
-        assert result.items[0][0] == "/library/metadata/102"
+        assert result.items[0][0] == "102"  # D31 — bare ratingKey, not URL
 
     def test_get_media_items_by_paths_multi_row_same_webhook_alias(self, mock_config):
         """Two rows with same webhook_prefix; webhook path /data/... matches item on either plex root."""
@@ -1233,6 +1391,7 @@ class TestGetMediaItemsByPaths:
         mock_section.METADATA_TYPE = "movie"
 
         mock_movie = MagicMock()
+        mock_movie.ratingKey = 200
         mock_movie.key = "/library/metadata/200"
         mock_movie.title = "Multi Disk Movie"
         mock_movie.locations = ["/data_disk2/movies/Multi Disk Movie.mkv"]
@@ -1247,7 +1406,7 @@ class TestGetMediaItemsByPaths:
             ["/data/movies/Multi Disk Movie.mkv"],
         )
         assert len(result.items) == 1
-        assert result.items[0][0] == "/library/metadata/200"
+        assert result.items[0][0] == "200"  # D31 — bare ratingKey, not URL
 
     def test_get_media_items_by_paths_fans_out_local_path_across_plex_roots(self, mock_config):
         """Webhook /data path should fan out to multiple Plex roots and match first hit."""
@@ -1270,6 +1429,7 @@ class TestGetMediaItemsByPaths:
         mock_section.METADATA_TYPE = "episode"
 
         mock_episode = MagicMock()
+        mock_episode.ratingKey = 300
         mock_episode.key = "/library/metadata/300"
         mock_episode.grandparentTitle = "Test Show"
         mock_episode.seasonEpisode = "s01e03"
@@ -1284,11 +1444,19 @@ class TestGetMediaItemsByPaths:
             ["/data/tv/Test Show/Season 01/S01E03.mkv"],
         )
         assert len(result.items) == 1
-        assert result.items[0][0] == "/library/metadata/300"
+        assert result.items[0][0] == "300"  # D31 — bare ratingKey, not URL
 
-    @patch("plex_generate_previews.plex_client.logger.warning")
-    def test_get_media_items_by_paths_logs_skipped_unselected_library(self, mock_warning, mock_config):
-        """Log a clear reason when webhook path matches only excluded libraries."""
+    @patch("media_preview_generator.plex_client.logger.info")
+    @patch("media_preview_generator.plex_client.logger.warning")
+    def test_get_media_items_by_paths_logs_skipped_unselected_library(self, mock_warning, mock_info, mock_config):
+        """Log a clear reason when webhook path matches only excluded libraries.
+
+        The aggregate "Skipped N input file(s): matched Plex items in
+        unselected libraries" stays at warning level (it's the
+        actionable summary). The per-file "Found in excluded library /
+        Result: skipped (excluded library: ...)" detail lines are
+        info-level diagnostics.
+        """
         mock_config.plex_libraries = ["movies"]
 
         mock_plex = MagicMock()
@@ -1321,12 +1489,34 @@ class TestGetMediaItemsByPaths:
 
         result = get_media_items_by_paths(mock_plex, mock_config, ["/data/anime/Anime Movie.mkv"])
         assert result.items == []
-        assert any("unselected libraries" in str(call).lower() for call in mock_warning.call_args_list)
-        assert any(
-            "skipped" in str(call).lower() and "excluded" in str(call).lower() for call in mock_warning.call_args_list
+
+        # Audit fix — pin the library name ("Anime") in the warning so a
+        # regression that conflated paths/libraries (e.g. logged "Movies"
+        # instead of the library that actually contained the skipped file)
+        # would fail. Production format includes "(found in: {names})".
+        warn_calls_with_anime = [
+            c for c in mock_warning.call_args_list if "haven't" in str(c).lower() and "Anime" in str(c)
+        ]
+        assert len(warn_calls_with_anime) == 1, (
+            f"Expected exactly 1 'haven't selected' warning naming the 'Anime' library; "
+            f"got {len(warn_calls_with_anime)}: {[str(c) for c in mock_warning.call_args_list]}"
+        )
+        # And the skipped-file count placeholder argument must be 1.
+        assert warn_calls_with_anime[0].args[1] == 1, (
+            f"Skipped-count placeholder mismatch: {warn_calls_with_anime[0].args!r}"
+        )
+        # Pin the per-file info diagnostic on the same input path.
+        excluded_info_calls = [
+            c
+            for c in mock_info.call_args_list
+            if c.args and "Result: skipped (excluded library" in str(c.args[0]) and "Anime" in str(c)
+        ]
+        assert len(excluded_info_calls) == 1, (
+            f"Expected exactly 1 per-file 'Result: skipped (excluded library: Anime)' info log; "
+            f"got {len(excluded_info_calls)}"
         )
 
-    @patch("plex_generate_previews.plex_client.logger.warning")
+    @patch("media_preview_generator.plex_client.logger.warning")
     def test_get_media_items_by_paths_logs_unselected_library_file_path_search(self, mock_warning, mock_config):
         """Excluded-library diagnostics when file-path search finds item there."""
         mock_config.plex_libraries = ["movies"]
@@ -1361,7 +1551,19 @@ class TestGetMediaItemsByPaths:
         result = get_media_items_by_paths(mock_plex, mock_config, ["/data/anime/Fallback Anime Movie.mkv"])
 
         assert result.items == []
-        assert any("unselected libraries" in str(call).lower() for call in mock_warning.call_args_list)
+        # Audit fix — pin the "Anime" library name in the warning so a
+        # regression that conflated which library was responsible for the
+        # skip would fail.
+        warn_calls_with_anime = [
+            c for c in mock_warning.call_args_list if "haven't" in str(c).lower() and "Anime" in str(c)
+        ]
+        assert len(warn_calls_with_anime) == 1, (
+            f"Expected exactly 1 'haven't selected' warning naming the 'Anime' library; "
+            f"got {len(warn_calls_with_anime)}: {[str(c) for c in mock_warning.call_args_list]}"
+        )
+        assert warn_calls_with_anime[0].args[1] == 1, (
+            f"Skipped-count placeholder mismatch: {warn_calls_with_anime[0].args!r}"
+        )
 
 
 class TestExpandDirectoryToMediaFiles:
@@ -1575,13 +1777,27 @@ class TestDetectPathPrefixMismatches:
         assert result[0] == ("/data/media", "/media")
 
     def test_case_insensitive_matching(self):
-        """Detection is case-insensitive for cross-platform compatibility."""
+        """Detection is case-insensitive for cross-platform compatibility.
+
+        Audit fix — was `len == 1` only; a regression that picked the wrong
+        webhook prefix (e.g. raw `/Data/Media` vs lower-cased `/data/media`)
+        or the wrong plex prefix would pass. Now pin the exact tuple.
+        """
         unresolved = ["/Data/Media/TV/Show/S01E01.mkv"]
         plex_locations = ["/media/tv"]
 
         result = _detect_path_prefix_mismatches(unresolved, plex_locations)
 
         assert len(result) == 1
+        # Production preserves the original webhook casing in the suggestion
+        # (matching is case-insensitive but the reported prefix uses the raw
+        # input casing of the bytes BEFORE the matched plex location, then
+        # appends the plex parent). For input '/Data/Media/TV/Show/S01E01.mkv'
+        # matching against '/media/tv', extra='/Data' (chars 0..5), plex
+        # parent='/media' → webhook='/Data/media', plex='/media'.
+        assert result[0] == ("/Data/media", "/media"), (
+            f"Expected exact tuple ('/Data/media', '/media'); got {result[0]!r}"
+        )
 
     def test_longest_location_wins(self):
         """More-specific Plex locations are preferred over shorter ones."""

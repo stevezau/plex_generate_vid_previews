@@ -5,7 +5,7 @@ These tests use mocking to verify GPU detection logic without requiring actual h
 
 from unittest.mock import MagicMock, patch
 
-from plex_generate_previews.gpu import (
+from media_preview_generator.gpu import (
     _check_ffmpeg_version,
     _get_ffmpeg_version,
     format_gpu_info,
@@ -34,7 +34,7 @@ class TestFFmpegVersionCI:
         version = _get_ffmpeg_version()
         assert version is None
 
-    @patch("plex_generate_previews.gpu.ffmpeg_capabilities._get_ffmpeg_version")
+    @patch("media_preview_generator.gpu.ffmpeg_capabilities._get_ffmpeg_version")
     def test_check_ffmpeg_version_sufficient(self, mock_get_version):
         """Test FFmpeg version check with sufficient version."""
         mock_get_version.return_value = (7, 1, 0)
@@ -42,7 +42,7 @@ class TestFFmpegVersionCI:
         result = _check_ffmpeg_version()
         assert result is True
 
-    @patch("plex_generate_previews.gpu.ffmpeg_capabilities._get_ffmpeg_version")
+    @patch("media_preview_generator.gpu.ffmpeg_capabilities._get_ffmpeg_version")
     def test_check_ffmpeg_version_insufficient(self, mock_get_version):
         """Test FFmpeg version check with insufficient version."""
         mock_get_version.return_value = (6, 9, 0)
@@ -55,22 +55,16 @@ class TestGPUFormattingCI:
     """Test GPU information formatting in CI."""
 
     def test_format_gpu_info_nvidia(self):
-        """Test NVIDIA GPU info formatting."""
+        """NVIDIA + CUDA renders as ``<name> (CUDA)``."""
         info = format_gpu_info("NVIDIA", "cuda", "NVIDIA GeForce RTX 3080", "CUDA")
-        assert "NVIDIA" in info
-        assert "RTX 3080" in info
-        assert "CUDA" in info
+        assert info == "NVIDIA GeForce RTX 3080 (CUDA)"
 
     def test_format_gpu_info_amd(self):
-        """Test AMD GPU info formatting."""
+        """AMD + VAAPI on a DRM render node renders as ``<name> (VAAPI - <device>)``."""
         info = format_gpu_info("AMD", "/dev/dri/renderD128", "AMD Radeon RX 6800 XT", "VAAPI")
-        assert "AMD" in info
-        assert "RX 6800 XT" in info
-        assert "VAAPI" in info
+        assert info == "AMD Radeon RX 6800 XT (VAAPI - /dev/dri/renderD128)"
 
     def test_format_gpu_info_intel(self):
-        """Test Intel GPU info formatting."""
+        """Intel + VAAPI on a DRM render node renders as ``<name> (VAAPI - <device>)``."""
         info = format_gpu_info("INTEL", "/dev/dri/renderD128", "Intel UHD Graphics 770", "VAAPI")
-        assert "Intel" in info
-        assert "UHD Graphics 770" in info
-        assert "VAAPI" in info
+        assert info == "Intel UHD Graphics 770 (VAAPI - /dev/dri/renderD128)"

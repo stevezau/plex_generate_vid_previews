@@ -8,7 +8,14 @@ Tests core functionality:
 """
 
 import pytest
+import requests
 from playwright.sync_api import Page, expect
+
+# Use the requests library for API-contract checks rather than
+# Playwright's page.request — the Python↔Node IPC stalls under
+# pytest-xdist `-n auto` (playwright#26739). Same pattern as the
+# canary fix in test_journey_schedule_lifecycle.py.
+_API_TIMEOUT = 30
 
 
 @pytest.mark.e2e
@@ -27,8 +34,8 @@ class TestLoginPage:
         submit_btn = page.locator('button[type="submit"]')
         expect(submit_btn).to_be_visible()
 
-    def test_login_page_has_title(self, page: Page, app_url: str):
-        """Verify login page has a title."""
+    def test_login_page_has_heading(self, page: Page, app_url: str):
+        """Verify login page has a heading element."""
         page.goto(f"{app_url}/login")
 
         # Page should have some heading
@@ -48,14 +55,13 @@ class TestAuthentication:
         token_input = page.locator('input[name="token"], input[type="password"]')
         token_input.fill(auth_token)
 
-        # Submit the form
-        submit_btn = page.locator('button[type="submit"]')
-        submit_btn.click()
-
-        # Should redirect away from login (may go to setup or dashboard)
-        page.wait_for_timeout(2000)
-        current_url = page.url
-        assert "/login" not in current_url, f"Should redirect away from login, got: {current_url}"
+        # Submit the form, then deterministically wait for the
+        # redirect to land via wait_for_url. The redirect may go to
+        # /, /setup, or /servers depending on setup-complete state —
+        # use a regex that matches any non-/login destination.
+        page.locator('button[type="submit"]').click()
+        page.wait_for_url(lambda url: "/login" not in url, timeout=10000)
+        assert "/login" not in page.url, f"Should redirect away from login, got: {page.url}"
 
     def test_authenticated_user_can_access_protected_pages(self, page: Page, app_url: str, auth_token: str):
         """Verify authenticated user can access the app."""
@@ -64,15 +70,19 @@ class TestAuthentication:
         token_input = page.locator('input[name="token"], input[type="password"]')
         token_input.fill(auth_token)
         page.locator('button[type="submit"]').click()
-        page.wait_for_timeout(2000)
+        # Wait for the login redirect to land before navigating away.
+        page.wait_for_url(lambda url: "/login" not in url, timeout=10000)
 
-        # After login, navigate to settings
+        # After login, navigate to settings.
         page.goto(f"{app_url}/settings")
-        page.wait_for_timeout(1000)
-
-        # Should be on settings page (not redirected to login)
-        current_url = page.url
-        assert "/login" not in current_url, f"Should access settings, got: {current_url}"
+        # Pin the actual destination — accept either /settings (setup
+        # complete) or /setup (the redirect when setup isn't done).
+        # A regression returning 500 or 404 would fall through neither
+        # branch and fail visibly.
+        page.wait_for_load_state("domcontentloaded")
+        assert page.url.endswith("/settings") or page.url.endswith("/setup"), (
+            f"Expected /settings or /setup after login; got {page.url!r}"
+        )
 
 
 @pytest.mark.e2e
@@ -86,38 +96,45 @@ class TestSetupWizard:
         token_input = page.locator('input[name="token"], input[type="password"]')
         token_input.fill(auth_token)
         page.locator('button[type="submit"]').click()
-        page.wait_for_timeout(2000)
+        page.wait_for_url(lambda url: "/login" not in url, timeout=10000)
 
-        # Navigate to setup
+        # Navigate to setup.
         page.goto(f"{app_url}/setup")
-        page.wait_for_timeout(1000)
+        page.wait_for_load_state("domcontentloaded")
 
-        # Should load setup page (not error)
-        current_url = page.url
-        assert "/login" not in current_url or "/setup" in current_url, f"Should access setup, got: {current_url}"
+        # Setup page either renders the wizard (when setup isn't
+        # complete) or 302s elsewhere. Pin: the destination URL must
+        # NOT be /login. A regression that 500'd or auth-bounced
+        # would land back on /login and fail here.
+        assert "/login" not in page.url, f"Should access setup, got: {page.url}"
 
 
 @pytest.mark.e2e
 class TestAPIEndpoints:
     """Test API endpoint accessibility."""
 
-    def test_health_check_endpoint(self, page: Page, app_url: str):
+    def test_health_check_endpoint(self, app_url: str):
         """Verify health check endpoint is accessible without auth."""
-        response = page.request.get(f"{app_url}/api/health")
+        # Use requests (not page.request) to avoid the Playwright
+        # Python↔Node IPC stall under -n auto.
+        response = requests.get(f"{app_url}/api/health", timeout=_API_TIMEOUT)
 
-        # Health check should return 200
-        assert response.status == 200
+        # Health check should return 200.
+        assert response.status_code == 200
 
-        # Should return JSON with status
+        # Pin the actual response shape: {"status": "healthy"} (the
+        # documented contract). Earlier accepted either "status" in
+        # data OR "ok" in str(data) — too permissive; a regression
+        # that swapped the field name would have silently passed.
         data = response.json()
-        assert "status" in data or "ok" in str(data).lower()
+        assert data.get("status") == "healthy", f"Health check body must be {{'status': 'healthy'}}; got {data!r}"
 
-    def test_auth_status_endpoint(self, page: Page, app_url: str):
+    def test_auth_status_endpoint(self, app_url: str):
         """Verify auth status endpoint is accessible."""
-        response = page.request.get(f"{app_url}/api/auth/status")
+        response = requests.get(f"{app_url}/api/auth/status", timeout=_API_TIMEOUT)
 
-        # Should return 200 (even if not authenticated)
-        assert response.status == 200
+        # Endpoint reachable without auth (200 even when unauthenticated).
+        assert response.status_code == 200
 
 
 @pytest.mark.e2e
@@ -129,7 +146,9 @@ class TestSetupWizardStep5:
         # Setup page is accessible without login and avoids auth/session state
         # leakage from prior E2E tests.
         page.goto(f"{app_url}/setup")
-        page.wait_for_timeout(1000)
+        # Deterministic: wait for the first progress step to render
+        # instead of a hardcoded sleep.
+        expect(page.locator(".progress-step").first).to_be_visible(timeout=5000)
 
         # Should have 5 progress steps
         progress_steps = page.locator(".progress-step")
@@ -140,41 +159,32 @@ class TestSetupWizardStep5:
         # Setup page is accessible without login and avoids auth/session state
         # leakage from prior E2E tests.
         page.goto(f"{app_url}/setup")
-        page.wait_for_timeout(1000)
-
-        # Step 5 should have 'Security' text
+        # Step 5 should have 'Security' text — to_contain_text auto-retries.
         step5 = page.locator('.progress-step[data-step="5"]')
-        expect(step5).to_contain_text("Security")
+        expect(step5).to_contain_text("Security", timeout=5000)
 
-    def test_step5_shows_token_display(self, page: Page, app_url: str, auth_token: str):
-        """Verify Step 5 shows the current token input."""
+    def test_step5_has_new_token_inputs(self, page: Page, app_url: str, auth_token: str):
+        """Verify Step 5 offers the set-new-token form (new + confirm)."""
         # Setup page is accessible without login and avoids auth/session state
         # leakage from prior E2E tests.
         page.goto(f"{app_url}/setup")
-        page.wait_for_timeout(1000)
+        expect(page.locator(".progress-step").first).to_be_visible(timeout=5000)
 
-        # Go directly to step 5 by clicking through (or check element exists)
-        current_token_input = page.locator("#currentToken")
-        # Element should exist in the DOM (even if not visible yet)
-        assert current_token_input.count() == 1
-
-    def test_step5_has_custom_token_checkbox(self, page: Page, app_url: str, auth_token: str):
-        """Verify Step 5 has the custom token checkbox."""
-        # Setup page is accessible without login and avoids auth/session state
-        # leakage from prior E2E tests.
-        page.goto(f"{app_url}/setup")
-        page.wait_for_timeout(1000)
-
-        # Custom token checkbox should exist
-        custom_checkbox = page.locator("#useCustomToken")
-        assert custom_checkbox.count() == 1
+        # Step 5 mirrors /settings → Web Authentication: no current-token
+        # display, just two password fields the user fills (or skips blank).
+        assert page.locator("#newToken").count() == 1
+        assert page.locator("#confirmToken").count() == 1
+        # The old "Current Access Token" display + "use custom" checkbox are
+        # gone — the form is the primary action now.
+        assert page.locator("#currentToken").count() == 0
+        assert page.locator("#useCustomToken").count() == 0
 
     def test_step5_has_finish_button(self, page: Page, app_url: str, auth_token: str):
         """Verify Step 5 has the Complete Setup button."""
         # Setup page is accessible without login and avoids auth/session state
         # leakage from prior E2E tests.
         page.goto(f"{app_url}/setup")
-        page.wait_for_timeout(1000)
+        expect(page.locator(".progress-step").first).to_be_visible(timeout=5000)
 
         # Finish button should exist
         finish_btn = page.locator("#finishSetup")

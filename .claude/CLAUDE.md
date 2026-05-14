@@ -1,4 +1,4 @@
-# Plex Generate Previews
+# Media Preview Generator
 
 GPU-accelerated video preview thumbnail (BIF) generation for Plex Media Server. Uses FFmpeg hardware decoding (CUDA, VAAPI, QSV, VideoToolbox) and parallel workers. Docker-only deployment with a web UI as the sole interface (no CLI).
 
@@ -9,13 +9,31 @@ GPU-accelerated video preview thumbnail (BIF) generation for Plex Media Server. 
 pip install -e ".[dev]"
 
 # Run (web UI)
-gunicorn plex_generate_previews.web.wsgi:app --bind 0.0.0.0:8080 --worker-class gthread --workers 1
+gunicorn media_preview_generator.web.wsgi:app --bind 0.0.0.0:8080 --worker-class gthread --workers 1
 
 # Test — default runs parallel (xdist), excludes gpu + e2e, keeps coverage
 pytest                                          # ~5s, 1321 tests, ~79% cov
 pytest --no-cov tests/test_config.py            # Single file, skip coverage
-pytest -m e2e -n 0 --no-cov                     # Run Playwright e2e serially
+pytest -m e2e -n 8 --no-cov                     # E2E: cap at 8 workers, NOT -n auto (see below)
+pytest -m e2e -n 0 --no-cov                     # E2E serial (also fine)
 pytest -n 0                                     # Serial mode (for debugging)
+```
+
+**E2E parallelism cap:** Do NOT run `pytest -m e2e -n auto` on a multi-core box.
+Each xdist worker spawns ~5 chromium processes; each chrome process reserves
+~1.4 TB virtual memory (chrome's normal V8 heap reservation). With 24 workers
+× 5 = ~120 chrome processes, the system's virtual-memory commit ceiling
+(set by `vm.overcommit_memory=0` to ~50% of physical RAM) is exceeded. The
+kernel OOM killer fires and picks chrome-headless (oom_score_adj=300) as
+victim, killing browser processes mid-test → "Not properly terminated"
+xdist failures. Verified via journalctl kernel logs during diagnostic runs
+in commit f856944 follow-up.
+
+The CI ships a different pattern: pytest-shard splits the e2e suite across
+4 GitHub Actions runners, each running `-n 0` (serial) on its own ~30-test
+slice. Locally, `-n 8` is empirically stable (verified 33/33 pass).
+
+```bash
 
 # Lint and format
 ruff check . --fix
@@ -28,7 +46,7 @@ docker build -t plex-previews:dev .
 ## Architecture
 
 ```
-plex_generate_previews/
+media_preview_generator/
 ├── config.py              # @dataclass Config, loads from settings.json
 ├── plex_client.py         # Plex API: library queries, path resolution, retry
 ├── worker.py              # ThreadPool workers, GPU task assignment
@@ -69,7 +87,7 @@ plex_generate_previews/
 - **Configuration**: `settings.json` is the sole source of truth. Env vars are one-time seed values migrated on first start. Infrastructure vars (`CONFIG_DIR`, `WEB_PORT`, `PUID`, `PGID`, `TZ`, `CORS_ORIGINS`) remain active.
 - **GPU config**: Per-GPU in settings (`gpu_config`: enabled, workers, ffmpeg_threads per device).
 - **Error handling**: Custom exceptions + `retry_plex_call()` with backoff for Plex API. `CodecNotSupportedError` for FFmpeg fallback.
-- **Commits**: Follow Conventional Commits (`feat:`, `fix:`, `docs:`, `test:`, `chore:`).
+- **Commits**: Follow Conventional Commits (`feat:`, `fix:`, `docs:`, `test:`, `chore:`). **Before creating any commit, dispatch the `Architecture Review` agent** (`.claude/agents/architecture-review.md`) against the staged diff. Block on HIGH severity findings; discuss MED before committing; LOW is informational. This catches the eight production-bug shapes that have shipped before — bug-blind tests, un-wrapped failure_scope, lazy-init races, vestigial blocking work, comments-vs-code drift.
 - **Docker awareness**: Check `utils.is_docker_environment()` for container-specific behavior.
 
 ## Security

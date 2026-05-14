@@ -1,0 +1,893 @@
+"""Flask application factory for the web interface.
+
+Creates and configures the Flask application with SocketIO support.
+"""
+
+import atexit
+import hashlib
+import hmac
+import json
+import logging  # stdlib logging only — required to mute werkzeug's own logger; app code must use loguru
+import os
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+from flask import Flask
+from flask_cors import CORS
+from flask_socketio import SocketIO
+from flask_wtf.csrf import CSRFProtect
+from loguru import logger
+from werkzeug.middleware.proxy_fix import ProxyFix
+
+from .auth import log_token_on_startup
+from .jobs import JobStatus, get_job_manager
+from .scheduler import get_schedule_manager
+
+# Global SocketIO instance
+socketio = SocketIO()
+
+# Global CSRF instance
+csrf = CSRFProtect()
+
+
+def run_scheduled_job(
+    library_id=None,
+    library_name="",
+    config=None,
+    priority=None,
+    server_id=None,
+    parent_schedule_id="",
+):
+    """Callback for running scheduled jobs.
+
+    Must be at module level (not inside create_app) so APScheduler
+    can pickle it for the SQLAlchemy jobstore.
+
+    Args:
+        library_id: Library section ID (vendor-agnostic)
+        library_name: Human-readable library name
+        config: Job configuration dict
+        priority: Dispatch priority (1=high, 2=normal, 3=low)
+        server_id: Optional configured-server id to pin the job to.
+        parent_schedule_id: id of the schedule that spawned this job
+            (D20). Threaded onto the Job so the schedule's stop_time
+            cron can later find this job to pause it, and the next
+            start tick can find it to resume it.
+
+    """
+    from .jobs import PRIORITY_NORMAL
+
+    job_manager = get_job_manager()
+
+    # Resolve server context once so the job UI shows the originating server.
+    # When the schedule didn't pin a server explicitly but DID specify a
+    # library, infer the server from the library — without this, a
+    # scheduled "TV Shows on Plex" job fans out to every configured
+    # publisher (Emby/Jellyfin), which costs ~5s/item in not-in-library
+    # lookups for files those servers don't have. The manual /api/jobs
+    # POST path does the same inference (api_jobs.py); we mirror it
+    # here so the schedule path matches.
+    server_name = None
+    server_type = None
+    if not server_id and library_id:
+        try:
+            from .routes.api_jobs import _infer_server_from_library_id
+
+            server_id, server_name, server_type = _infer_server_from_library_id(library_id)
+        except Exception:
+            pass
+    if server_id and not server_name:
+        try:
+            from .settings_manager import get_settings_manager
+
+            raw = get_settings_manager().get("media_servers") or []
+            entry = next((e for e in raw if isinstance(e, dict) and e.get("id") == server_id), None)
+            if entry:
+                server_name = entry.get("name") or entry.get("id")
+                server_type = (entry.get("type") or "").lower() or None
+        except Exception:
+            pass
+
+    job = job_manager.create_job(
+        library_id=library_id,
+        library_name=library_name,
+        config=config or {},
+        priority=priority if priority is not None else PRIORITY_NORMAL,
+        server_id=server_id,
+        server_name=server_name,
+        server_type=server_type,
+        parent_schedule_id=parent_schedule_id or "",
+    )
+
+    job_config = dict(config) if config else {}
+    if library_id:
+        job_config["selected_libraries"] = [library_id]
+    else:
+        job_config["selected_libraries"] = []
+    if server_id:
+        job_config["server_id"] = server_id
+
+    from .routes import _start_job_async
+
+    _start_job_async(job.id, job_config)
+
+
+def get_cors_origins() -> tuple[str, bool]:
+    """Get CORS allowed origins from environment.
+
+    Defaults to ``"*"`` (allow all) because this tool is typically accessed
+    over a LAN via IP address, Docker bridge, or hostname — not just
+    ``localhost``. Restricting to ``localhost`` breaks WebSocket upgrades
+    from any other origin and causes SocketIO 400 errors.
+
+    Set ``CORS_ORIGINS`` to a comma-separated list to lock it down, e.g.
+    ``CORS_ORIGINS=http://192.168.1.10:8080,http://mynas:8080``.
+
+    Returns:
+        Tuple of ``(origins, is_default_wildcard)``. The second field is
+        ``True`` when the wide-open default is in use; callers should warn.
+    """
+    explicit = os.environ.get("CORS_ORIGINS")
+    if explicit:
+        return explicit, False
+    return "*", True
+
+
+def _derive_secret(seed: bytes, config_dir: str) -> str:
+    """Derive a Flask secret key from a stored seed and deployment-specific salt.
+
+    Uses HMAC-SHA256 so the actual secret is never stored on disk.
+
+    Args:
+        seed: Random bytes read from (or generated for) the seed file.
+        config_dir: Configuration directory used as an additional salt.
+
+    Returns:
+        Hex-encoded derived secret key.
+
+    """
+    return hmac.new(seed, config_dir.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def get_or_create_flask_secret(config_dir: str) -> str:
+    """Get Flask secret key from environment or persistent seed file.
+
+    The seed file stores random bytes — *not* the secret itself.
+    The actual secret is derived at runtime via HMAC-SHA256(seed, config_dir)
+    so that sensitive key material is never written to disk in clear text.
+
+    Priority:
+    1. FLASK_SECRET_KEY environment variable
+    2. Derived from /config/flask_secret.key seed file
+    3. Generate new seed, save it, and derive secret
+
+    Args:
+        config_dir: Configuration directory path
+
+    Returns:
+        Flask secret key string
+
+    """
+    # Check environment variable first
+    env_secret = os.environ.get("FLASK_SECRET_KEY")
+    if env_secret:
+        logger.debug("Using Flask secret from FLASK_SECRET_KEY environment variable")
+        return env_secret
+
+    # Check for persistent seed file
+    seed_file = Path(config_dir) / "flask_secret.key"
+
+    if seed_file.exists():
+        try:
+            seed = seed_file.read_bytes()
+            if seed:
+                logger.debug("Using Flask secret derived from seed in {}", seed_file)
+                return _derive_secret(seed, config_dir)
+        except OSError as e:
+            logger.warning(
+                "Could not read the saved Flask secret seed file at {} ({}: {}). "
+                "We'll generate a new one and keep going — the only side effect is that "
+                "any active web sessions will be signed out and need to log in again. "
+                "Check the file's permissions if you'd like to preserve sessions across restarts.",
+                seed_file,
+                type(e).__name__,
+                e,
+            )
+
+    # Generate new random seed and persist it with restrictive permissions.
+    # os.open with 0o600 creates the file atomically with the correct mode
+    # to avoid a TOCTOU race between creation and chmod.
+    random_seed = os.urandom(32)
+    try:
+        seed_file.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(seed_file), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, random_seed)
+        finally:
+            os.close(fd)
+        logger.info("Generated new Flask secret seed and saved to {}", seed_file)
+    except OSError as e:
+        logger.warning(
+            "Could not save the Flask secret seed to {} ({}: {}). "
+            "The web app will keep running with an in-memory secret, but every restart will sign all "
+            "users out (because the secret will be different each time). "
+            "Check the config directory is writable (Docker: confirm the volume mount permissions and PUID/PGID).",
+            seed_file,
+            type(e).__name__,
+            e,
+        )
+
+    return _derive_secret(random_seed, config_dir)
+
+
+def _prewarm_caches() -> None:
+    """Pre-warm GPU detection, Vulkan probe, and version caches at startup.
+
+    GPU detection and the Vulkan probe both run FFmpeg subprocess tests
+    and can take a second or two each.  Version checks hit the GitHub
+    API with network timeouts.  Pre-warming them means the first page
+    load returns instantly instead of blocking on these slow operations.
+
+    The Vulkan probe is pre-warmed **synchronously in this thread** (not
+    as a daemon thread like the others) because its cached env-override
+    dict is read from :func:`media_processing._run_ffmpeg` on the
+    libplacebo DV Profile 5 path. If a worker thread picks up a pending
+    job before the probe has run, it would see an empty override dict
+    and FFmpeg would fall back to software Vulkan — even when
+    Strategy 2 would have succeeded. Blocking startup by ~300 ms here
+    guarantees any worker thread started after create_app() returns
+    reads a populated cache. The probe result is module-level and
+    idempotent, so subsequent calls from HTTP endpoints are no-ops.
+    """
+    import threading
+
+    def _warm_gpu() -> None:
+        try:
+            from .routes._helpers import _ensure_gpu_cache
+
+            _ensure_gpu_cache()
+            logger.debug("GPU cache pre-warmed")
+        except Exception as exc:
+            logger.debug("GPU cache pre-warm failed (non-fatal): {}", exc)
+
+    def _warm_version() -> None:
+        try:
+            from .routes.api_system import _get_version_info
+
+            _get_version_info()
+            logger.debug("Version cache pre-warmed")
+        except Exception as exc:
+            logger.debug("Version cache pre-warm failed (non-fatal): {}", exc)
+
+    # Synchronous: must complete before worker threads start processing
+    # jobs on the libplacebo path (see docstring).
+    try:
+        from ..gpu.vulkan_probe import get_vulkan_device_info
+
+        get_vulkan_device_info()
+    except Exception as exc:
+        logger.debug("Vulkan probe pre-warm failed (non-fatal): {}", exc)
+
+    threading.Thread(target=_warm_gpu, name="prewarm-gpu", daemon=True).start()
+    threading.Thread(target=_warm_version, name="prewarm-version", daemon=True).start()
+
+
+# Chains whose `retry_started_at` is older than this at boot time are
+# NOT auto-resumed. Re-firing days-old webhook context risks publishing
+# against media that's been moved/deleted upstream. Users can manually
+# re-trigger the source webhook to recover.
+_MAX_CHAIN_AGE_FOR_RESUME = timedelta(hours=24)
+
+
+def _resume_interrupted_retry_chains_on_startup(config_dir: str) -> None:
+    """Reconcile retry-chain Jobs at boot.
+
+    The 2026-05-13 refactor moved chain timing from in-process
+    ``threading.Timer`` to real child Jobs (``is_retry=true``,
+    ``parent_job_id=<chain>``). Those retry child Jobs are persisted to
+    ``jobs.db`` and revived by the generic
+    :func:`_requeue_interrupted_on_startup` path — their backoff wait
+    re-runs from the top, then they acquire the gate and dispatch
+    normally.
+
+    This function handles the residual case: a chain head that was
+    PENDING/RUNNING at restart but has NO living retry child (e.g.
+    a window between ``_spawn_retry_job`` creating the chain mutation
+    and ``_start_job_async`` actually persisting the child). Without
+    a child to drive the chain forward, the head would sit PENDING
+    forever. Mark such chains FAILED with a clear restart message;
+    the user can re-trigger via the source webhook or the manual
+    ``/reprocess`` endpoint.
+
+    Age cap: chains older than 24h aren't auto-recovered. Re-firing
+    days-old webhook context risks publishing against media that has
+    been moved or deleted upstream.
+    """
+    try:
+        job_manager = get_job_manager()
+        chains = job_manager.consume_interrupted_retry_chains()
+        if not chains:
+            return
+
+        now = datetime.now(timezone.utc)
+        max_chain_age = _MAX_CHAIN_AGE_FOR_RESUME
+        all_jobs = job_manager.get_all_jobs()
+        revived = 0
+        orphaned = 0
+        for chain in chains:
+            # Age check — chains older than 24h shouldn't suddenly spring
+            # back to life. The original webhook context is likely stale;
+            # better to surface the failure than re-fire against
+            # potentially-deleted media.
+            try:
+                started_str = chain.config.get("retry_started_at") or chain.created_at
+                started = datetime.fromisoformat(started_str.replace("Z", "+00:00")) if started_str else now
+                if started.tzinfo is None:
+                    started = started.replace(tzinfo=timezone.utc)
+            except (ValueError, AttributeError):
+                started = now
+            if now - started > max_chain_age:
+                chain.status = JobStatus.FAILED
+                chain.error = (
+                    "Chain resume: skipped — chain has been pending for >24h. "
+                    "Re-trigger the source webhook if you still want these files processed."
+                )
+                chain.completed_at = now.isoformat()
+                job_manager._persist_job(chain)  # noqa: SLF001
+                orphaned += 1
+                continue
+
+            # Look for a living retry child. PENDING children will be
+            # revived by the generic requeue; RUNNING children… well,
+            # the generic load path marks RUNNING jobs FAILED, so by
+            # the time we get here a "running at restart" retry child
+            # has already been demoted to FAILED — its status here
+            # would be FAILED, not RUNNING.
+            has_living_child = any(
+                (j.config.get("is_retry"))
+                and (j.config.get("parent_job_id") == chain.id)
+                and (j.status in (JobStatus.PENDING, JobStatus.RUNNING))
+                for j in all_jobs
+            )
+            if has_living_child:
+                revived += 1
+                continue
+
+            chain.status = JobStatus.FAILED
+            chain.error = (
+                "Retry chain interrupted by restart — no pending child Job survived. "
+                "Re-trigger the source webhook (or use the Reprocess action) to "
+                "resume processing of the remaining files."
+            )
+            chain.completed_at = now.isoformat()
+            job_manager._persist_job(chain)  # noqa: SLF001
+            orphaned += 1
+
+        if revived:
+            logger.info(
+                "Found {} interrupted retry chain(s) with living children — generic requeue will resume them",
+                revived,
+            )
+        if orphaned:
+            logger.info(
+                "Marked {} retry chain(s) FAILED at restart (stale or no living child)",
+                orphaned,
+            )
+    except Exception as e:
+        logger.warning(
+            "Retry chain reconciliation hit an unexpected error ({}: {}) — "
+            "chains may remain PENDING. Re-trigger the source webhook to resume them.",
+            type(e).__name__,
+            e,
+        )
+
+
+def _get_media_servers_from_settings(config_dir: str) -> list:
+    """Helper used by the chain-resume path. Mirrors the same source
+    the per-request handlers read from."""
+    from .settings_manager import get_settings_manager
+
+    settings = get_settings_manager(config_dir)
+    servers = settings.get("media_servers", []) or []
+    return servers if isinstance(servers, list) else []
+
+
+def _requeue_interrupted_on_startup(config_dir: str) -> None:
+    """Revive jobs that were running or pending when the server last stopped.
+
+    Reads the ``auto_requeue_on_restart`` and ``requeue_max_age_minutes``
+    settings to decide whether and which jobs to revive.  Revived jobs
+    keep their original ID and ``created_at`` and are started via the
+    normal async path.
+    """
+    try:
+        from .settings_manager import get_settings_manager
+
+        settings = get_settings_manager(config_dir)
+        raw_enabled = settings.get("auto_requeue_on_restart", True)
+        auto_requeue_enabled = (
+            raw_enabled if isinstance(raw_enabled, bool) else str(raw_enabled).strip().lower() in ("true", "1", "yes")
+        )
+        if not auto_requeue_enabled:
+            logger.info("Auto-requeue on restart is disabled")
+            return
+
+        # A pause from the previous session should not block requeued
+        # jobs — the restart itself signals intent to resume work.
+        if settings.processing_paused:
+            settings.processing_paused = False
+            logger.info("Cleared processing_paused on startup — pausing does not survive restarts")
+
+        max_age = int(settings.get("requeue_max_age_minutes", 720))
+        job_manager = get_job_manager()
+        revived = job_manager.requeue_interrupted_jobs(max_age_minutes=max_age)
+
+        if not revived:
+            return
+
+        from .routes import _start_job_async
+
+        for job in revived:
+            _start_job_async(job.id, job.config)
+
+        logger.info("Revived {} interrupted job(s) on startup", len(revived))
+    except Exception as e:
+        logger.warning(
+            "Could not resume jobs that were running when the app last shut down ({}: {}). "
+            "Those jobs are still recorded in the database but won't restart automatically — "
+            "you can re-run them manually from the Jobs page when ready.",
+            type(e).__name__,
+            e,
+        )
+
+
+def _log_build_provenance() -> None:
+    """Log the running build's branch / SHA / build date at INFO.
+
+    Designed to make tag-drift incidents grep-able from `docker logs`. The
+    Dockerfile writes /app/build_info.json (preferred) and also exposes
+    GIT_BRANCH / GIT_SHA / BUILD_DATE env vars (fallback). Either source is
+    fine; the file wins when both are present so a re-tagged image can't
+    inherit env from elsewhere.
+    """
+    branch = sha = built = "unknown"
+    try:
+        with open("/app/build_info.json") as f:
+            info = json.load(f) or {}
+            branch = info.get("branch") or branch
+            sha = info.get("sha") or sha
+            built = info.get("built") or built
+    except (OSError, ValueError):
+        branch = os.environ.get("GIT_BRANCH") or branch
+        sha = os.environ.get("GIT_SHA") or sha
+        built = os.environ.get("BUILD_DATE") or built
+    logger.info("Build: {} @ {}, built {}", branch, sha, built)
+    _log_image_deprecation_warning()
+
+
+def _log_image_deprecation_warning() -> None:
+    """Emit a startup warning when the running image is the deprecated name.
+
+    Mirrors the in-app notification card surfaced by
+    ``notifications._build_deprecated_image_notification`` so the same
+    information shows up in ``docker logs`` for ops who tail the log
+    rather than open the dashboard. Silent when the env var is unset
+    (local dev) or set to the canonical name.
+    """
+    from .notifications import (
+        CANONICAL_IMAGE_NAME,
+        DEPRECATED_IMAGE_NAME,
+        DEPRECATED_IMAGE_SUNSET_DATE,
+    )
+
+    image_name = (os.environ.get("DOCKER_IMAGE_NAME") or "").strip()
+    if image_name != DEPRECATED_IMAGE_NAME:
+        return
+    logger.warning(
+        "Running deprecated Docker image {!r} — switch your compose to {!r} "
+        "before {} to keep getting updates. (Both image names mirror the same "
+        "builds until then; only the canonical name receives updates after.)",
+        DEPRECATED_IMAGE_NAME,
+        CANONICAL_IMAGE_NAME,
+        DEPRECATED_IMAGE_SUNSET_DATE,
+    )
+
+
+def create_app(config_dir: str | None = None) -> Flask:
+    """Create and configure the Flask application.
+
+    Args:
+        config_dir: Configuration directory path (default: /config or CONFIG_DIR env)
+
+    Returns:
+        Configured Flask application
+
+    """
+    _log_build_provenance()
+
+    if config_dir is None:
+        config_dir = os.environ.get("CONFIG_DIR", "/config")
+
+    # Create Flask app
+    app = Flask(__name__, template_folder="templates", static_folder="static")
+
+    # Configuration with persistent secret key
+    app.config["SECRET_KEY"] = get_or_create_flask_secret(config_dir)
+    app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=7)
+    # SESSION_COOKIE_SECURE is set dynamically via ProxyFix + Talisman or per-request.
+    # ProxyFix below trusts X-Forwarded-Proto so request.scheme == 'https' works.
+    # SESSION_COOKIE_SECURE marks the cookie with the Secure flag so the
+    # browser only sends it over HTTPS. Set HTTPS=true when deploying
+    # behind a TLS-terminating proxy (nginx, traefik, Caddy, Cloudflare).
+    # Defaults to False to keep plain-HTTP LAN deployments working.
+    https_secure = os.environ.get("HTTPS", "false").lower() in ("true", "1", "yes", "on")
+    app.config["SESSION_COOKIE_SECURE"] = https_secure
+    app.config["SESSION_COOKIE_HTTPONLY"] = True
+    app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+    app.config["CONFIG_DIR"] = config_dir
+    app.config["WTF_CSRF_CHECK_DEFAULT"] = False  # We apply CSRF selectively
+    # Cap inbound request bodies to 1 MiB. Webhook payloads from
+    # Plex/Emby/Jellyfin/Sonarr/Radarr are kilobytes at most; anything
+    # larger is either misconfiguration or a DoS attempt. Flask returns
+    # 413 Payload Too Large automatically when this is exceeded.
+    app.config["MAX_CONTENT_LENGTH"] = 1 * 1024 * 1024
+
+    # Trust reverse-proxy headers (X-Forwarded-For, X-Forwarded-Proto, X-Forwarded-Host)
+    # so request.scheme and request.remote_addr are correct behind nginx/traefik/etc.
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
+
+    # Get CORS configuration
+    cors_origins, cors_is_default_wildcard = get_cors_origins()
+    if cors_is_default_wildcard:
+        logger.warning(
+            "CORS is allowing all origins ('*') — fine for LAN-only deployments, "
+            "but set CORS_ORIGINS=http://your-host:8080 (comma-separated for "
+            "multiple) when the web UI is reachable from the public internet."
+        )
+
+    # Allow cross-origin requests on all routes (token-auth, not cookie-based)
+    CORS(app, origins=cors_origins)
+
+    # Initialize CSRF protection
+    csrf.init_app(app)
+
+    # CSRF exemptions are applied selectively per-endpoint after
+    # blueprint registration.  See the loop below register_blueprint().
+
+    # Threading mode + polling-only transport. The two design constraints:
+    #   1. Eventlet/gevent monkey-patches threading.Thread into green threads
+    #      and breaks worker.py subprocess.* calls (GitHub #154).
+    #   2. With async_mode="threading", every WebSocket connection pins one
+    #      gunicorn thread for its lifetime. Page refreshes leave CLOSE_WAIT
+    #      sockets that exhaust the 8-thread pool — the entire UI then
+    #      freezes and Pause/Refresh fetches fail with "Failed to fetch".
+    # HTTP long-polling sidesteps both: short-lived requests release threads
+    # naturally; dead clients simply stop polling. allow_upgrades=False
+    # explicitly refuses any WebSocket upgrade so a stray client transport
+    # config can't sneak the persistent-socket failure mode back in. See
+    # commit 59d862a for the original validation; the setting was lost in
+    # the plex_generate_previews → media_preview_generator rename.
+    socketio.init_app(
+        app,
+        async_mode="threading",
+        cors_allowed_origins=cors_origins,
+        ping_timeout=20,
+        ping_interval=10,
+        allow_upgrades=False,
+    )
+
+    # Initialize settings manager with the config_dir FIRST
+    from .settings_manager import get_settings_manager
+
+    sm = get_settings_manager(config_dir)
+
+    # Run all pending settings migrations (env vars, schema upgrades)
+    from ..upgrade import run_migrations
+
+    run_migrations(sm)
+
+    # Create the SocketIO log broadcaster so the live /logs page can stream
+    # log messages in real time.  Must be registered before setup_logging().
+    from ..logging_config import (
+        SocketIOLogBroadcaster,
+        set_log_broadcaster,
+        setup_logging,
+    )
+
+    set_log_broadcaster(SocketIOLogBroadcaster(socketio))
+
+    setup_logging(
+        log_level=sm.get("log_level", "INFO"),
+        rotation=sm.get("log_rotation_size", "10 MB"),
+        retention=sm.get("log_retention_count", 5),
+    )
+
+    # Silence Werkzeug's per-request HTTP logs (method, path, status) to avoid log noise.
+    # Real errors from Werkzeug still log at WARNING+.
+    logging.getLogger("werkzeug").setLevel(logging.WARNING)
+
+    # Initialize job manager with SocketIO
+    get_job_manager(config_dir=config_dir, socketio=socketio)
+
+    # Initialize schedule manager
+    schedule_manager = get_schedule_manager(config_dir=config_dir)
+
+    # Set up scheduled job callback (uses module-level function for pickling)
+    schedule_manager.set_run_job_callback(run_scheduled_job)
+
+    # D21 / D26 — apply multi-window quiet-hours config (registers per-
+    # window pause+resume crons that flip processing_paused) and gate
+    # startup so a restart that lands inside any active window is paused
+    # immediately, not silently active until the next boundary cron fires.
+    try:
+        from .scheduler import is_now_in_any_quiet_window
+
+        qh = sm.get("quiet_hours") or {}
+        schedule_manager.apply_quiet_hours(qh)
+        if is_now_in_any_quiet_window(qh) and not sm.processing_paused:
+            sm.processing_paused = True
+            from .jobs import get_job_manager as _gjm
+
+            try:
+                _gjm().emit_processing_paused_changed(True)
+            except Exception:
+                pass
+            from loguru import logger as _qh_logger
+
+            _qh_logger.info("Quiet hours: started inside an active window — processing paused on startup")
+    except Exception:
+        from loguru import logger as _qh_logger
+
+        _qh_logger.exception("Could not apply quiet-hours config on startup")
+
+    # Register blueprints
+    # Importing webhook_router registers its routes onto webhooks_bp.
+    # Side-effect import is intentional and matches the pattern routes/__init__.py
+    # uses for its sub-modules.
+    from . import webhook_router  # noqa: F401  (module side effects)
+    from .routes import api, limiter, main, register_socketio_handlers
+    from .webhooks import _load_history_from_disk, webhooks_bp
+
+    app.register_blueprint(main)
+    app.register_blueprint(api)
+    app.register_blueprint(webhooks_bp)
+
+    _load_history_from_disk()
+
+    # Selectively exempt API endpoints that use Bearer/X-Auth-Token
+    # (external API calls, not browser-initiated).  Browser-initiated
+    # POST endpoints remain CSRF-protected.
+    _csrf_exempt_endpoints = [
+        # Jobs — @api_token_required, called by external API / dashboard
+        "api.get_jobs",
+        "api.get_job",
+        "api.create_job",
+        "api.cancel_job",
+        "api.get_job_logs",
+        "api.get_worker_statuses",
+        "api.delete_job",
+        "api.clear_jobs",
+        "api.get_job_stats",
+        # Schedules — @api_token_required
+        "api.get_schedules",
+        "api.get_schedule",
+        "api.create_schedule",
+        "api.update_schedule",
+        "api.delete_schedule",
+        "api.enable_schedule",
+        "api.disable_schedule",
+        "api.run_schedule_now",
+        "api.get_quiet_hours",
+        "api.update_quiet_hours",
+        # Token management
+        "api.api_regenerate_token",
+        # System config
+        "api.get_config",
+        "api.rescan_gpus",
+        # Libraries
+        "api.get_libraries",
+        # Webhooks — external POST from Radarr/Sonarr/Custom/Plex
+        "webhooks_bp.radarr_webhook",
+        "webhooks_bp.sonarr_webhook",
+        "webhooks_bp.sportarr_webhook",
+        "webhooks_bp.custom_webhook",
+        "webhooks_bp.plex_webhook",
+        "webhooks_bp.get_webhook_history",
+        "webhooks_bp.clear_webhook_history",
+        "webhooks_bp.get_pending_webhooks",
+        # Multi-server router — auto-detects vendor by payload shape
+        "webhooks_bp.webhook_incoming",
+        "webhooks_bp.webhook_per_server",
+    ]
+    for _ep in _csrf_exempt_endpoints:
+        _view = app.view_functions.get(_ep)
+        if _view:
+            csrf.exempt(_view)
+
+    # Initialize rate limiter with app
+    limiter.init_app(app)
+
+    # Custom 429 handler — for the login page render the template with a
+    # friendly rate-limit banner instead of Flask's default text response.
+    @app.errorhandler(429)
+    def _rate_limited(e):
+        from flask import render_template, request
+
+        if request.endpoint == "main.login":
+            return (
+                render_template("login.html", rate_limited=True),
+                429,
+            )
+        return e, 429
+
+    # Register SocketIO handlers
+    register_socketio_handlers(socketio)
+
+    # Setup redirect middleware - redirect to setup wizard if not configured
+    @app.before_request
+    def check_setup():
+        """Redirect to setup wizard if not configured."""
+        from flask import redirect, request, url_for
+
+        from .auth import is_authenticated
+        from .settings_manager import get_settings_manager
+
+        # Skip for static files, API, login, setup, and logout
+        exempt_endpoints = [
+            "static",
+            "main.login",
+            "main.logout",
+            "main.setup_wizard",
+            # Auth endpoints
+            "api.auth_status",
+            "api.api_login",
+            "api.health_check",
+            # Setup wizard endpoints
+            "api.get_setup_status",
+            "api.get_setup_state",
+            "api.save_setup_state",
+            "api.complete_setup",
+            "api.get_setup_token_info",
+            "api.set_setup_token",
+            "api.validate_paths",
+            # Skip-setup is the wizard's escape hatch — has to work for
+            # both unauthed (typical fresh install) AND authed users
+            # (e.g. multi-vendor pivot from a half-completed wizard).
+            # Without this exemption an authed user POST'ing /api/setup/skip
+            # gets 302'd back to /setup before the route runs, so setup
+            # never gets marked complete and the user appears stuck.
+            "api.skip_setup",
+            # Plex OAuth + server discovery (needed during setup)
+            "api.create_plex_pin",
+            "api.check_plex_pin",
+            "api.get_plex_servers",
+            "api.get_plex_libraries",
+            "api.test_plex_connection",
+            # Multi-media-server registry endpoints used by the Add Server
+            # wizard before setup is complete. Without these, the
+            # before_request middleware 302s the JS-side fetch back to
+            # /setup, the frontend follows the redirect, gets HTML, fails
+            # to JSON-parse and surfaces a misleading "Authentication
+            # failed (HTTP 200)" / "Connection failed" message instead of
+            # the real backend reason.
+            "api.list_servers",
+            "api.get_server",
+            "api.create_server",
+            "api.test_server_connection",
+            "api.refresh_server_libraries",
+            "api.fix_jellyfin_trickplay",
+            "api.get_jellyfin_trickplay_status",
+            # Vendor auth-flow helpers (Emby/Jellyfin password exchange,
+            # Jellyfin Quick Connect ceremony) — same exemption rationale.
+            "api.emby_password_auth",
+            "api.jellyfin_password_auth",
+            "api.jellyfin_quick_connect_initiate",
+            "api.jellyfin_quick_connect_poll",
+            "api.jellyfin_quick_connect_exchange",
+            # Settings (read/write during setup)
+            "api.get_settings",
+            "api.save_settings",
+            # System status (GPU detection during setup)
+            "api.get_system_status",
+            # Webhooks work pre-setup (return "disabled" gracefully)
+            "webhooks_bp.radarr_webhook",
+            "webhooks_bp.sonarr_webhook",
+        ]
+
+        # Only exempt specific setup-related API endpoints, not all api.*
+        if request.endpoint and (request.endpoint in exempt_endpoints):
+            return None
+
+        # Skip static files
+        if request.endpoint == "static" or request.path.startswith("/static"):
+            return None
+
+        # Check if setup is needed
+        try:
+            settings = get_settings_manager()
+            if not settings.is_setup_complete() and not settings.is_configured():
+                # Not configured and setup not complete - redirect to setup
+                if request.endpoint not in ["main.login", "main.setup_wizard"] and is_authenticated():
+                    return redirect(url_for("main.setup_wizard"))
+        except Exception as e:
+            logger.debug("Setup check error: {}", e)
+
+        return None
+
+    @app.after_request
+    def set_security_headers(response):
+        """Add standard security headers to every response."""
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        return response
+
+    # Start scheduler
+    schedule_manager.start()
+
+    # Ensure the scheduler is shut down when the process exits to prevent
+    # orphaned threads from lingering after gunicorn/Flask stops.
+    # Call scheduler.shutdown() directly instead of schedule_manager.stop()
+    # to avoid logger.info() writing to a closed stream during atexit.
+    def _shutdown_scheduler() -> None:
+        try:
+            if schedule_manager.scheduler.running:
+                schedule_manager.scheduler.shutdown(wait=False)
+        except Exception:
+            logger.debug("Scheduler shutdown error during exit", exc_info=True)
+
+    atexit.register(_shutdown_scheduler)
+
+    # Log token on startup
+    log_token_on_startup()
+
+    # Auto-requeue jobs that were interrupted by the server restart
+    _requeue_interrupted_on_startup(config_dir)
+
+    # Re-arm Timers for retry-chain Jobs that were mid-backoff at restart.
+    # Must run AFTER settings/config are accessible (load_config + registry
+    # are both read by this function). Order doesn't matter relative to
+    # _requeue_interrupted_on_startup — they touch disjoint Job sets.
+    _resume_interrupted_retry_chains_on_startup(config_dir)
+
+    # Pre-warm GPU and version caches in background threads so the first
+    # page load doesn't block on GPU detection or GitHub API calls.
+    _prewarm_caches()
+
+    logger.info("Flask app created with config_dir: {}", config_dir)
+
+    return app
+
+
+# Dev helper binds to all interfaces so Docker / LAN access works;
+# production uses gunicorn via wrapper.sh.
+def run_server(host: str = "0.0.0.0", port: int = 8080, debug: bool = False):  # nosec B104
+    """Run the web server with SocketIO.
+
+    In production (Docker), use gunicorn via ``wrapper.sh`` instead.
+    This function is kept for local development and tests.
+
+    Args:
+        host: Host to bind to
+        port: Port to listen on
+        debug: Enable debug mode
+
+    """
+    app = create_app()
+
+    logger.info("Starting web server on {}:{}", host, port)
+    logger.info("Access the dashboard at: http://{}:{}", host, port)
+
+    socketio.run(
+        app,
+        host=host,
+        port=port,
+        debug=debug,
+        use_reloader=False,  # Disable reloader to prevent issues with scheduler
+        log_output=True,
+        allow_unsafe_werkzeug=True,
+    )
+
+
+if __name__ == "__main__":
+    run_server(debug=True)

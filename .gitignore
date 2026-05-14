@@ -39,12 +39,16 @@ coverage.xml
 .coverage
 .coverage.*
 .pytest_cache/
+.ruff_cache/
 .tox/
 test_env/
 tmp_migration_test/
 
 # Local planning files
 plan.md
+
+# Superpowers skill artifacts (plans, audits, brainstorms) — local-only working notes
+docs/superpowers/
 
 # Claude Code local overrides (not for source control)
 CLAUDE.local.md
@@ -56,3 +60,13 @@ CLAUDE.local.md
 
 # setuptools-scm auto-generated version file
 plex_generate_previews/_version.py
+
+# CI-generated release-notes bundle. Source of truth is GitHub Releases;
+# CI fetches and bakes into the docker image at build time. Local
+# checkouts can run `python3 scripts/refresh_release_notes.py` to
+# populate it for offline dev, but the file is never committed.
+media_preview_generator/release_notes.json
+# Ad-hoc screenshots from Playwright UI verification — keep local only.
+# Real docs screenshots should live under docs/ and be added explicitly.
+*.png
+!docs/**/*.png

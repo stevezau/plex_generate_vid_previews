@@ -1,0 +1,51 @@
+interactions:
+- request:
+    body: null
+    headers:
+      Accept:
+      - application/json
+      Accept-Encoding:
+      - gzip, deflate, br
+      Connection:
+      - keep-alive
+      User-Agent:
+      - python-requests/2.33.0
+      X-Emby-Token:
+      - FAKE_EMBY_TOKEN
+    method: GET
+    uri: http://fake-server/Library/VirtualFolders
+  response:
+    body:
+      string: '[{"Name":"Movies","Locations":["/em-media/Movies"],"CollectionType":"movies","LibraryOptions":{"EnableArchiveMediaFiles":false,"EnablePhotos":true,"EnableRealtimeMonitor":true,"EnableMarkerDetection":false,"EnableMarkerDetectionDuringLibraryScan":false,"IntroDetectionFingerprintLength":10,"EnableChapterImageExtraction":true,"ExtractChapterImagesDuringLibraryScan":false,"DownloadImagesInAdvance":false,"CacheImages":false,"ExcludeFromSearch":false,"EnablePlexIgnore":false,"PathInfos":[{"Path":"/em-media/Movies"}],"IgnoreHiddenFiles":false,"IgnoreFileExtensions":[],"SaveLocalMetadata":false,"SaveMetadataHidden":false,"SaveLocalThumbnailSets":false,"ImportPlaylists":true,"EnableAutomaticSeriesGrouping":true,"ShareEmbeddedMusicAlbumImages":true,"EnableEmbeddedTitles":false,"EnableAudioResume":false,"AutoGenerateChapters":true,"MergeTopLevelFolders":false,"AutoGenerateChapterIntervalMinutes":5,"AutomaticRefreshIntervalDays":0,"PlaceholderMetadataRefreshIntervalDays":0,"ContentType":"movies","MetadataSavers":[],"DisabledLocalMetadataReaders":[],"DisabledLyricsFetchers":[],"SaveLyricsWithMedia":true,"LyricsDownloadMaxAgeDays":180,"LyricsFetcherOrder":[],"LyricsDownloadLanguages":[],"DisabledSubtitleFetchers":[],"SubtitleFetcherOrder":[],"SkipSubtitlesIfEmbeddedSubtitlesPresent":false,"SkipSubtitlesIfAudioTrackMatches":false,"SubtitleDownloadLanguages":[],"SubtitleDownloadMaxAgeDays":180,"RequirePerfectSubtitleMatch":true,"SaveSubtitlesWithMedia":true,"ForcedSubtitlesOnly":false,"HearingImpairedSubtitlesOnly":false,"TypeOptions":[],"CollapseSingleItemFolders":false,"ForceCollapseSingleItemFolders":false,"EnableAdultMetadata":false,"ImportCollections":false,"EnableMultiVersionByFiles":true,"EnableMultiVersionByMetadata":true,"EnableMultiPartItems":true,"MinCollectionItems":2,"MinResumePct":2,"MaxResumePct":90,"MinResumeDurationSeconds":120,"ThumbnailImagesIntervalSeconds":5,"SampleIgnoreSize":314572800},"ItemId":"3","Id":"3","Guid":"7c48bab992894f89a89b19158bfd2a60"}]'
+    headers:
+      Access-Control-Allow-Headers:
+      - Accept, Accept-Language, Authorization, Cache-Control, Content-Disposition,
+        Content-Encoding, Content-Language, Content-Length, Content-MD5, Content-Range,
+        Content-Type, Date, Host, If-Match, If-Modified-Since, If-None-Match, If-Unmodified-Since,
+        Origin, OriginToken, Pragma, Range, Slug, Transfer-Encoding, Want-Digest,
+        X-MediaBrowser-Token, X-Emby-Token, X-Emby-Client, X-Emby-Client-Version,
+        X-Emby-Device-Id, X-Emby-Device-Name, X-Emby-Authorization
+      Access-Control-Allow-Methods:
+      - GET, POST, PUT, DELETE, PATCH, OPTIONS
+      Access-Control-Allow-Origin:
+      - '*'
+      Access-Control-Allow-Private-Network:
+      - 'true'
+      Content-Length:
+      - '1992'
+      Content-Type:
+      - application/json; charset=utf-8
+      Cross-Origin-Resource-Policy:
+      - cross-origin
+      Date:
+      - Wed, 06 May 2026 03:44:31 GMT
+      Private-Network-Access-Id:
+      - FAKE_PNA_ID
+      Private-Network-Access-Name:
+      - FAKE_PNA_NAME
+      Server:
+      - UPnP/1.0 DLNADOC/1.50
+    status:
+      code: 200
+      message: OK
+version: 1

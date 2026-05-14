@@ -1,5 +1,5 @@
 #!/bin/bash
-# Wrapper script to run plex-generate-previews web server.
+# Wrapper script to run media-preview-generator web server.
 # Executed by s6-overlay after user/group setup.
 set -euo pipefail
 
@@ -25,7 +25,7 @@ if [ ! -d "/run/s6" ] && ps -p 1 -o comm= 2>/dev/null | grep -qE '(tini|docker-i
     echo "  Docker Compose: Remove the 'init: true' line from your compose file"
     echo "  Docker CLI: Remove the '--init' flag from your docker run command"
     echo ""
-    echo "More info: https://github.com/stevezau/plex_generate_vid_previews#troubleshooting"
+    echo "More info: https://github.com/stevezau/media_preview_generator#troubleshooting"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     exit 1
 fi
@@ -58,4 +58,4 @@ run_as_user gunicorn \
     --error-logfile - \
     --log-level info \
     $RELOAD_FLAG \
-    "plex_generate_previews.web.wsgi:app"
+    "media_preview_generator.web.wsgi:app"

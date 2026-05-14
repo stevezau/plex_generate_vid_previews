@@ -1,4 +1,4 @@
-# Docker Compose Examples for Plex Generate Previews
+# Docker Compose Examples for Media Preview Generator
 #
 # Copy this file to docker-compose.yml and modify as needed.
 # Choose ONE of the configurations below based on your setup.
@@ -17,8 +17,8 @@
 
 services:
   plex-previews-gpu:
-    image: stevezzau/plex_generate_vid_previews:latest
-    container_name: plex-generate-previews
+    image: stevezzau/media_preview_generator:latest
+    container_name: media-preview-generator
     restart: unless-stopped
     ports:
       - "8080:8080"
@@ -80,8 +80,8 @@ services:
 # =============================================================================
 
   plex-previews-cpu:
-    image: stevezzau/plex_generate_vid_previews:latest
-    container_name: plex-generate-previews
+    image: stevezzau/media_preview_generator:latest
+    container_name: media-preview-generator
     restart: unless-stopped
     ports:
       - "8080:8080"
@@ -106,8 +106,8 @@ services:
 # =============================================================================
 
   plex-previews-unraid:
-    image: stevezzau/plex_generate_vid_previews:latest
-    container_name: plex-generate-previews
+    image: stevezzau/media_preview_generator:latest
+    container_name: media-preview-generator
     restart: unless-stopped
     # For NVIDIA on Unraid, uncomment the next line and remove the devices block:
     # runtime: nvidia
@@ -140,6 +140,6 @@ services:
       # Plex appdata (read-write for BIF files)
       - /mnt/user/appdata/plex/Library/Application Support/Plex Media Server:/plex:rw
       # App config storage
-      - /mnt/user/appdata/plex-generate-previews:/config:rw
+      - /mnt/user/appdata/media-preview-generator:/config:rw
       # Host timezone (works on all Linux variants)
       - /etc/localtime:/etc/localtime:ro

@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" role="img" aria-label="Plex">
+  <title>Plex</title>
+  <!-- Plex-inspired chevron: orange-yellow play triangle. -->
+  <path fill="#e5a00d" d="M5 2h6l8 10-8 10H5l8-10z"/>
+</svg>

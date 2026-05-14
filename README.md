@@ -14,21 +14,21 @@
 
 <!-- PROJECT LOGO -->
 <div align="center">
-  <img src="docs/images/icon.svg" alt="Logo" width="120" height="120">
+  <img src="docs/images/icon.svg" alt="Media Preview Generator logo" width="120" height="120">
 
-  <h1 align="center">Plex Generate Previews</h1>
+  <h1 align="center">Media Preview Generator</h1>
 
   <p align="center">
-    GPU-accelerated video preview thumbnail generation for Plex Media Server
+    GPU-accelerated video preview thumbnail generation for <strong>Plex, Emby, and Jellyfin</strong>
     <br />
     <a href="docs/README.md"><strong>Explore the docs</strong></a>
     <br />
     <br />
     <a href="#quick-start">Quick Start</a>
     &middot;
-    <a href="https://github.com/stevezau/plex_generate_vid_previews/issues/new?labels=bug">Report Bug</a>
+    <a href="https://github.com/stevezau/media_preview_generator/issues/new?labels=bug">Report Bug</a>
     &middot;
-    <a href="https://github.com/stevezau/plex_generate_vid_previews/issues/new?labels=enhancement">Request Feature</a>
+    <a href="https://github.com/stevezau/media_preview_generator/issues/new?labels=enhancement">Request Feature</a>
   </p>
 </div>
 
@@ -36,11 +36,15 @@
 
 ## About
 
-Generates video preview thumbnails (BIF files) for Plex Media Server. These are the small images you see when scrubbing through videos in Plex.
+Generates video preview thumbnails for **Plex, Emby, and Jellyfin**. These are the small images you see when scrubbing through videos in any of those servers.
 
-**The Problem:** Plex's built-in preview generation is painfully slow.
+**The Problem:** Built-in preview generation has gaps depending on the server you run:
 
-**The Solution:** This tool uses GPU acceleration and parallel processing to generate previews **5-10x faster**.
+- **Plex** generates thumbnails single-threaded on the CPU (no GPU support).
+- **Emby** has no GPU support for thumbnail generation at all.
+- **Jellyfin** does support hardware-accelerated trickplay, but it shares CPU/GPU with playback — and on a busy server that's resources you'd rather give to the player.
+
+**The Solution:** This tool runs preview generation **off the media server** on a machine of your choosing, uses every GPU it finds, and processes files in parallel. When two or more servers contain the same file, FFmpeg runs only once — the result is then written out in each server's own expected format, automatically.
 
 > [!NOTE]
 > This project was originally hand-written. Recent development is AI-assisted (Cursor + Claude). All changes are reviewed and tested.
@@ -49,31 +53,36 @@ Generates video preview thumbnails (BIF files) for Plex Media Server. These are 
 
 ## Features
 
-| Feature | Description |
-|---------|-------------|
-| **Multi-GPU** | NVIDIA, AMD, Intel, and Windows GPUs |
-| **Parallel Processing** | Configurable GPU and CPU worker threads |
-| **GPU to CPU Fallback** | Automatic in-place CPU retry when a GPU worker hits an unsupported codec |
-| **Hardware Acceleration** | CUDA, VAAPI, D3D11VA, VideoToolbox |
-| **Library Filtering** | Process specific Plex libraries |
-| **Quality Control** | Adjustable thumbnail quality (1-10) |
-| **Docker Ready** | Pre-built images with GPU support |
-| **Web Dashboard** | Manage jobs, schedules, and status |
-| **Scheduling** | Cron and interval-based automation |
-| **Smart Skipping** | Automatically skips files that already have thumbnails |
-| **Radarr/Sonarr** | Webhook integration for auto-processing on import |
-| **Plex direct webhook** | Auto-trigger on `library.new` (Plex Pass) for media added without Sonarr/Radarr |
-| **Recently Added scanner** | Polling fallback that catches manually-added items without Plex Pass |
+**One FFmpeg pass, every server.** Point it at Plex, Emby, Jellyfin — any mix,
+any number — and a single generation run writes the right output format to each
+(Plex BIF bundle, Emby sidecar BIF, Jellyfin trickplay tiles). See the
+[multi-server guide](docs/multi-server.md) for how the dispatcher routes one
+file to every server that owns it.
+
+**Automation that just works.** Radarr / Sonarr / Tdarr / FileFlows webhooks,
+Plex direct (Plex Pass), Recently Added polling, cron & interval schedules —
+all share one universal inbound URL with vendor auto-detection. A 5-step
+backoff retry (30 s → 2 m → 5 m → 15 m → 60 m) handles files your server
+hasn't indexed yet. Source-aware dedup re-runs automatically when a file is
+swapped (e.g. a Sonarr/Radarr quality upgrade) and skips when nothing changed.
+
+**Hardware you already have.** NVIDIA, AMD, Intel — per-GPU worker counts and
+FFmpeg threads, automatic in-place CPU retry if a codec fails on the GPU, and
+HDR / Dolby Vision tone mapping (including Profile 5 via libplacebo). A
+**Previews Readiness** panel on each server audits every flag that affects
+whether your previews actually show up, with one-click toggles and typed
+confirmation for destructive changes.
 
 ---
 
 ## Screenshots
 
-| Home | Settings | Webhooks |
-|:----:|:--------:|:--------:|
-| [![Home](docs/images/home.png)](docs/images/home.png) | [![Settings](docs/images/settings.png)](docs/images/settings.png) | [![Webhooks](docs/images/webhooks.png)](docs/images/webhooks.png) |
-
-*Web UI: dashboard and job management, configuration and GPU detection, Radarr/Sonarr webhook setup.*
+<table><tr>
+<td><a href="docs/images/home.png"><img src="docs/images/home.png" alt="Dashboard showing connected Plex / Jellyfin / Emby servers, GPU workers, and job statistics" width="380"></a></td>
+<td><a href="docs/images/servers.png"><img src="docs/images/servers.png" alt="Servers page with one card per Plex / Jellyfin / Emby server, each showing connection status and library count" width="380"></a></td>
+<td><a href="docs/images/settings.png"><img src="docs/images/settings.png" alt="Settings — Processing Options card with per-GPU configuration for an NVIDIA TITAN RTX and Intel UHD 770, CPU workers, and thumbnail quality" width="380"></a></td>
+<td><a href="docs/images/automation.png"><img src="docs/images/automation.png" alt="Automation page Triggers tab listing trigger sources for Sonarr / Radarr / Tdarr / per-vendor manual imports" width="380"></a></td>
+</tr></table>
 
 ---
 
@@ -83,7 +92,7 @@ Generates video preview thumbnails (BIF files) for Plex Media Server. These are 
 
 ```bash
 docker run -d \
-  --name plex-generate-previews \
+  --name media-preview-generator \
   --restart unless-stopped \
   -p 8080:8080 \
   --device /dev/dri:/dev/dri \
@@ -93,7 +102,7 @@ docker run -d \
   -v /path/to/plex/config:/plex:rw \
   -v /path/to/app/config:/config:rw \
   -v /etc/localtime:/etc/localtime:ro \
-  stevezzau/plex_generate_vid_previews:latest
+  stevezzau/media_preview_generator:latest
 ```
 
 Replace `/path/to/media`, `/path/to/plex/config`, and `/path/to/app/config` with your actual paths.
@@ -121,8 +130,8 @@ For Docker Compose, Unraid, and GPU-specific setup:
 - **PyPI:** The package is no longer published on PyPI; use Docker or install from source.
 
 > [!IMPORTANT]
-> The Docker Hub image is published as `stevezzau/plex_generate_vid_previews` (double-`z`):
-> [stevezzau/plex_generate_vid_previews](https://hub.docker.com/r/stevezzau/plex_generate_vid_previews).
+> The Docker Hub image is published as `stevezzau/media_preview_generator` — the **double `z`** is the author's Docker Hub username (not a typo).
+> [stevezzau/media_preview_generator on Docker Hub](https://hub.docker.com/r/stevezzau/media_preview_generator).
 
 ---
 
@@ -141,7 +150,7 @@ See [Getting Started — GPU Acceleration](docs/getting-started.md#gpu-accelerat
 
 ### GPU + CPU Fallback
 
-CPU fallback is automatic and built into every GPU worker — there is no separate "fallback" pool to configure. If FFmpeg fails on the GPU (unsupported codec, hardware-accelerator error, driver crash), the same worker retries the file on CPU in-place and the dashboard shows a yellow **CPU fallback** badge.
+CPU fallback is automatic and built into every GPU worker — there is no separate "fallback" pool to configure. If a file fails on the GPU for any reason (unsupported codec, hardware error, driver crash), the same worker automatically retries it on the CPU and the dashboard shows a yellow **CPU fallback** badge so you know it happened.
 
 If you have a lot of content that never decodes on the GPU, raise **CPU Workers** above `0` so that those files route straight to dedicated CPU workers instead of blocking a GPU worker each time.
 
@@ -206,20 +215,20 @@ Star this repo if you find it useful!
 </div>
 
 <!-- MARKDOWN LINKS & IMAGES -->
-[contributors-shield]: https://img.shields.io/github/contributors/stevezau/plex_generate_vid_previews.svg?style=for-the-badge
-[contributors-url]: https://github.com/stevezau/plex_generate_vid_previews/graphs/contributors
-[forks-shield]: https://img.shields.io/github/forks/stevezau/plex_generate_vid_previews.svg?style=for-the-badge
-[forks-url]: https://github.com/stevezau/plex_generate_vid_previews/network/members
-[stars-shield]: https://img.shields.io/github/stars/stevezau/plex_generate_vid_previews.svg?style=for-the-badge
-[stars-url]: https://github.com/stevezau/plex_generate_vid_previews/stargazers
-[issues-shield]: https://img.shields.io/github/issues/stevezau/plex_generate_vid_previews.svg?style=for-the-badge
-[issues-url]: https://github.com/stevezau/plex_generate_vid_previews/issues
-[license-shield]: https://img.shields.io/github/license/stevezau/plex_generate_vid_previews.svg?style=for-the-badge
-[license-url]: https://github.com/stevezau/plex_generate_vid_previews/blob/main/LICENSE
-[docker-shield]: https://img.shields.io/docker/pulls/stevezzau/plex_generate_vid_previews?style=for-the-badge
-[docker-url]: https://hub.docker.com/r/stevezzau/plex_generate_vid_previews
-[codecov-shield]: https://img.shields.io/codecov/c/github/stevezau/plex_generate_vid_previews?style=for-the-badge
-[codecov-url]: https://codecov.io/gh/stevezau/plex_generate_vid_previews
+[contributors-shield]: https://img.shields.io/github/contributors/stevezau/media_preview_generator.svg?style=for-the-badge
+[contributors-url]: https://github.com/stevezau/media_preview_generator/graphs/contributors
+[forks-shield]: https://img.shields.io/github/forks/stevezau/media_preview_generator.svg?style=for-the-badge
+[forks-url]: https://github.com/stevezau/media_preview_generator/network/members
+[stars-shield]: https://img.shields.io/github/stars/stevezau/media_preview_generator.svg?style=for-the-badge
+[stars-url]: https://github.com/stevezau/media_preview_generator/stargazers
+[issues-shield]: https://img.shields.io/github/issues/stevezau/media_preview_generator.svg?style=for-the-badge
+[issues-url]: https://github.com/stevezau/media_preview_generator/issues
+[license-shield]: https://img.shields.io/github/license/stevezau/media_preview_generator.svg?style=for-the-badge
+[license-url]: https://github.com/stevezau/media_preview_generator/blob/main/LICENSE
+[docker-shield]: https://img.shields.io/docker/pulls/stevezzau/media_preview_generator?style=for-the-badge
+[docker-url]: https://hub.docker.com/r/stevezzau/media_preview_generator
+[codecov-shield]: https://img.shields.io/codecov/c/github/stevezau/media_preview_generator?style=for-the-badge
+[codecov-url]: https://codecov.io/gh/stevezau/media_preview_generator
 
 [ai-shield]: https://img.shields.io/badge/AI--Assisted-Cursor%20%2B%20Claude-blue?style=for-the-badge&logo=openai&logoColor=white
 [ai-url]: #about

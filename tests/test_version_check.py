@@ -2,15 +2,22 @@
 Tests for version_check.py module.
 
 Tests version parsing, GitHub API interaction, and update checking.
+
+Tests for ``check_for_updates`` capture loguru output and assert on the
+specific log lines emitted, since that's the only observable side effect
+of the function (it has no return value). A ``_caplog_loguru`` helper
+fixture wires loguru to pytest's caplog so we can inspect the messages.
 """
 
+import logging
 import os
 from unittest.mock import MagicMock, patch
 
 import pytest
 import requests
+from loguru import logger
 
-from plex_generate_previews.version_check import (
+from media_preview_generator.version_check import (
     check_for_updates,
     get_current_version,
     get_latest_github_release,
@@ -18,27 +25,71 @@ from plex_generate_previews.version_check import (
 )
 
 
+@pytest.fixture
+def loguru_caplog(caplog):
+    """Forward loguru records into pytest's caplog so tests can assert on them.
+
+    ``check_for_updates`` only signals its outcome via loguru — adding a
+    propagating handler at WARNING/INFO level is the boundary-respecting
+    way to verify the message without monkey-patching the function under
+    test or its module-level dependencies.
+    """
+
+    class _PropagateHandler(logging.Handler):
+        def emit(self, record):  # pragma: no cover — handler glue
+            logging.getLogger(record.name).handle(record)
+
+    handler_id = logger.add(_PropagateHandler(), level="DEBUG", format="{message}")
+    caplog.set_level(logging.DEBUG)
+    try:
+        yield caplog
+    finally:
+        logger.remove(handler_id)
+
+
 class TestGetCurrentVersion:
-    """Test getting current version."""
+    """Test getting current version.
 
-    def test_get_current_version_from_local(self):
-        """Test getting version from local _version.py (priority 1)."""
-        # When running from source, should get version from _version.py
-        version = get_current_version()
-        # Should be a valid version string (either real or placeholder)
-        assert isinstance(version, str)
-        assert len(version) > 0
+    The function tries 3 sources in order:
+      1. ``from . import __version__`` (set by setuptools-scm at build time)
+      2. ``importlib.metadata.version("media-preview-generator")``
+      3. Fallback ``"0.0.0"``
 
-    def test_get_current_version_priority_order(self):
-        """Test that local _version.py takes priority over installed metadata."""
-        # This test verifies the priority: local _version.py is checked first
-        # We can't easily mock importlib.metadata since it's imported locally
-        # So we just verify that get_current_version() returns something valid
-        version = get_current_version()
-        assert isinstance(version, str)
-        assert len(version) > 0
-        # The version should come from local _version.py when running from source
-        # (not from any installed package metadata)
+    These tests force each branch and assert the return value, instead of
+    just asserting a string came back (which would pass even on a complete
+    breakage of all 3 sources).
+    """
+
+    def test_returns_package_version_when_dunder_version_present(self, monkeypatch):
+        """Branch 1: __version__ attribute exists ⇒ returned verbatim."""
+        import media_preview_generator as pkg
+
+        monkeypatch.setattr(pkg, "__version__", "9.9.9-test", raising=False)
+        assert get_current_version() == "9.9.9-test"
+
+    def test_falls_back_to_importlib_metadata_when_dunder_missing(self, monkeypatch):
+        """Branch 2: __version__ missing ⇒ importlib.metadata.version() used."""
+        import importlib.metadata
+
+        import media_preview_generator as pkg
+
+        monkeypatch.delattr(pkg, "__version__", raising=False)
+        monkeypatch.setattr(importlib.metadata, "version", lambda name: "5.4.3")
+        assert get_current_version() == "5.4.3"
+
+    def test_falls_back_to_zero_zero_zero_when_all_sources_fail(self, monkeypatch):
+        """Branch 3: both sources fail ⇒ "0.0.0" sentinel returned."""
+        import importlib.metadata
+
+        import media_preview_generator as pkg
+
+        monkeypatch.delattr(pkg, "__version__", raising=False)
+
+        def boom(_name):
+            raise importlib.metadata.PackageNotFoundError("not installed")
+
+        monkeypatch.setattr(importlib.metadata, "version", boom)
+        assert get_current_version() == "0.0.0"
 
 
 class TestParseVersion:
@@ -146,128 +197,194 @@ class TestGetLatestGitHubRelease:
 class TestCheckForUpdates:
     """Test update checking logic."""
 
-    @patch("plex_generate_previews.version_check.get_latest_github_release")
-    @patch("plex_generate_previews.version_check.get_current_version")
-    def test_check_for_updates_newer_available(self, mock_current, mock_latest):
-        """Test showing update message when newer version available."""
+    @patch("media_preview_generator.version_check.get_git_commit_sha", return_value=None)
+    @patch("media_preview_generator.version_check.get_git_branch", return_value=None)
+    @patch("media_preview_generator.version_check.get_latest_github_release")
+    @patch("media_preview_generator.version_check.get_current_version")
+    def test_check_for_updates_newer_available(self, mock_current, mock_latest, _mock_branch, _mock_sha, loguru_caplog):
+        """Newer GitHub release is announced with both versions visible to the user."""
         mock_current.return_value = "2.0.0"
         mock_latest.return_value = "v2.1.0"
 
-        # Should not raise, just log
         check_for_updates()
+        text = loguru_caplog.text
+        assert "newer version is available" in text
+        assert "v2.1.0" in text
+        assert "2.0.0" in text
 
-    @patch("plex_generate_previews.version_check.get_latest_github_release")
-    @patch("plex_generate_previews.version_check.get_current_version")
-    def test_check_for_updates_up_to_date(self, mock_current, mock_latest):
-        """Test no message when current version is latest."""
+    @patch("media_preview_generator.version_check.get_git_commit_sha", return_value=None)
+    @patch("media_preview_generator.version_check.get_git_branch", return_value=None)
+    @patch("media_preview_generator.version_check.get_latest_github_release")
+    @patch("media_preview_generator.version_check.get_current_version")
+    def test_check_for_updates_up_to_date(self, mock_current, mock_latest, _mock_branch, _mock_sha, loguru_caplog):
+        """When current == latest, no 'newer version' warning is emitted."""
         mock_current.return_value = "2.0.0"
         mock_latest.return_value = "v2.0.0"
 
-        # Should not raise, just log
         check_for_updates()
+        # No warning to upgrade should fire on the up-to-date path.
+        assert "newer version is available" not in loguru_caplog.text
+        assert "Update:" not in loguru_caplog.text
 
-    @patch("plex_generate_previews.version_check.get_latest_github_release")
-    @patch("plex_generate_previews.version_check.get_current_version")
-    def test_check_for_updates_current_newer(self, mock_current, mock_latest):
-        """Test when current version is newer than latest (dev version)."""
+    @patch("media_preview_generator.version_check.get_git_commit_sha", return_value=None)
+    @patch("media_preview_generator.version_check.get_git_branch", return_value=None)
+    @patch("media_preview_generator.version_check.get_latest_github_release")
+    @patch("media_preview_generator.version_check.get_current_version")
+    def test_check_for_updates_current_newer(self, mock_current, mock_latest, _mock_branch, _mock_sha, loguru_caplog):
+        """Local version > GitHub latest (developer build) — no upgrade nag.
+
+        Stub git_commit_sha + git_branch so the test isn't skewed by the
+        real git checkout on CI runners (where get_git_branch() returns
+        'dev' and the git-mode update path emits "🔄 Update: git pull
+        origin dev" — leaking the "Update:" string the test asserts is
+        absent).
+        """
         mock_current.return_value = "2.1.0"
         mock_latest.return_value = "v2.0.0"
 
-        # Should not raise or show update message
         check_for_updates()
+        assert "newer version is available" not in loguru_caplog.text
+        # Must not falsely advertise a downgrade.
+        assert "Update:" not in loguru_caplog.text
 
-    @patch("plex_generate_previews.version_check.get_latest_github_release")
-    @patch("plex_generate_previews.version_check.get_current_version")
-    def test_check_for_updates_api_failure(self, mock_current, mock_latest):
-        """Test handling of API failure."""
+    @patch("media_preview_generator.version_check.get_git_commit_sha", return_value=None)
+    @patch("media_preview_generator.version_check.get_git_branch", return_value=None)
+    @patch("media_preview_generator.version_check.get_latest_github_release")
+    @patch("media_preview_generator.version_check.get_current_version")
+    def test_check_for_updates_api_failure(self, mock_current, mock_latest, _mock_branch, _mock_sha, loguru_caplog):
+        """When latest can't be fetched the function returns silently — no upgrade msg."""
         mock_current.return_value = "2.0.0"
-        mock_latest.return_value = None  # API failed
+        mock_latest.return_value = None
 
-        # Should handle gracefully
         check_for_updates()
+        assert "newer version is available" not in loguru_caplog.text
 
-    @patch("plex_generate_previews.utils.is_docker_environment")
-    @patch("plex_generate_previews.version_check.get_latest_github_release")
-    @patch("plex_generate_previews.version_check.get_current_version")
-    def test_check_for_updates_docker_message(self, mock_current, mock_latest, mock_docker):
-        """Test Docker-specific update instructions."""
+    @patch("media_preview_generator.version_check.get_git_commit_sha", return_value=None)
+    @patch("media_preview_generator.version_check.get_git_branch", return_value=None)
+    @patch("media_preview_generator.version_check.is_docker_environment")
+    @patch("media_preview_generator.version_check.get_latest_github_release")
+    @patch("media_preview_generator.version_check.get_current_version")
+    def test_check_for_updates_docker_message(
+        self, mock_current, mock_latest, mock_docker, _mock_branch, _mock_sha, loguru_caplog
+    ):
+        """Docker installs receive the docker pull instruction."""
         mock_docker.return_value = True
         mock_current.return_value = "2.0.0"
         mock_latest.return_value = "v2.1.0"
 
-        # Should show Docker-specific instructions
         check_for_updates()
+        text = loguru_caplog.text
+        assert "docker pull" in text
+        assert "stevezzau/media_preview_generator" in text
 
-    @patch("plex_generate_previews.utils.is_docker_environment")
-    @patch("plex_generate_previews.version_check.get_latest_github_release")
-    @patch("plex_generate_previews.version_check.get_current_version")
-    def test_check_for_updates_non_docker_message(self, mock_current, mock_latest, mock_docker):
-        """Test non-Docker update instructions."""
+    @patch("media_preview_generator.version_check.get_git_commit_sha", return_value=None)
+    @patch("media_preview_generator.version_check.get_git_branch", return_value=None)
+    @patch("media_preview_generator.version_check.is_docker_environment")
+    @patch("media_preview_generator.version_check.get_latest_github_release")
+    @patch("media_preview_generator.version_check.get_current_version")
+    def test_check_for_updates_non_docker_message(
+        self, mock_current, mock_latest, mock_docker, _mock_branch, _mock_sha, loguru_caplog
+    ):
+        """Non-Docker installs receive the pip install instruction (not docker pull)."""
         mock_docker.return_value = False
         mock_current.return_value = "2.0.0"
         mock_latest.return_value = "v2.1.0"
 
-        # Should show update instructions (from source or Docker)
         check_for_updates()
+        text = loguru_caplog.text
+        assert "pip install" in text
+        assert "git+https://github.com/stevezau/media_preview_generator.git" in text
 
-    @patch("plex_generate_previews.version_check.get_latest_github_release")
-    @patch("plex_generate_previews.version_check.get_current_version")
-    def test_check_for_updates_dev_snapshot(self, mock_current, mock_latest):
-        """Running from dev snapshot (0.0.0) shows appropriate message."""
+    @patch("media_preview_generator.version_check.get_git_commit_sha", return_value=None)
+    @patch("media_preview_generator.version_check.get_git_branch", return_value=None)
+    @patch("media_preview_generator.version_check.get_latest_github_release")
+    @patch("media_preview_generator.version_check.get_current_version")
+    def test_check_for_updates_dev_snapshot(self, mock_current, mock_latest, _mock_branch, _mock_sha, loguru_caplog):
+        """0.0.0+unknown emits the dev-snapshot guidance, not the regular upgrade msg."""
         mock_current.return_value = "0.0.0+unknown"
         mock_latest.return_value = "v2.1.0"
         check_for_updates()
+        text = loguru_caplog.text
+        assert "development snapshot" in text
+        assert "v2.1.0" in text
+        assert "Latest stable release" in text
 
-    @patch("plex_generate_previews.version_check.get_latest_github_release")
-    @patch("plex_generate_previews.version_check.get_current_version")
-    def test_check_for_updates_invalid_version_handled(self, mock_current, mock_latest):
-        """Invalid current version is handled gracefully."""
+    @patch("media_preview_generator.version_check.get_latest_github_release")
+    @patch("media_preview_generator.version_check.get_current_version")
+    def test_check_for_updates_invalid_version_handled(self, mock_current, mock_latest, loguru_caplog):
+        """Garbage current version: no nag fires.
+
+        Pinned to the actual contract. Note: ``check_for_updates`` does
+        currently swallow the parse failure silently (no log line) — that's
+        a product-quality TODO (operator-debuggability gap) tracked
+        separately, not a test contract to enforce here. For now this
+        test pins what the production code actually does.
+        """
         mock_current.return_value = "invalid"
         mock_latest.return_value = "v2.1.0"
         check_for_updates()
+        assert "newer version is available" not in loguru_caplog.text
 
-    @patch.dict(os.environ, {"GIT_BRANCH": "dev", "GIT_SHA": "abc1234"})
-    @patch("plex_generate_previews.version_check.get_branch_head_sha")
-    def test_check_for_updates_dev_docker_up_to_date(self, mock_head):
-        """Dev Docker image at latest commit."""
+    @patch.dict(os.environ, {"GIT_BRANCH": "dev", "GIT_SHA": "abc1234567"})
+    @patch("media_preview_generator.version_check.get_branch_head_sha")
+    def test_check_for_updates_dev_docker_up_to_date(self, mock_head, loguru_caplog):
+        """Dev Docker at latest commit logs the up-to-date message and skips upgrade nag."""
         mock_head.return_value = "abc1234567890abcdef1234567890abcdef123456"
         check_for_updates()
+        text = loguru_caplog.text
+        assert "Dev build up to date" in text
+        assert "dev" in text
+        assert "Newer dev commit" not in text
 
     @patch.dict(os.environ, {"GIT_BRANCH": "dev", "GIT_SHA": "abc1234"})
-    @patch("plex_generate_previews.version_check.get_branch_head_sha")
-    def test_check_for_updates_dev_docker_behind(self, mock_head):
-        """Dev Docker image behind remote branch."""
+    @patch("media_preview_generator.version_check.get_branch_head_sha")
+    def test_check_for_updates_dev_docker_behind(self, mock_head, loguru_caplog):
+        """Dev Docker behind remote branch nags about a newer dev commit."""
         mock_head.return_value = "def5678567890abcdef1234567890abcdef123456"
         check_for_updates()
+        text = loguru_caplog.text
+        assert "Newer dev commit" in text
+        # Must point users at the dev tag specifically, not :latest.
+        assert ":dev" in text
 
     @patch.dict(os.environ, {"GIT_BRANCH": "dev", "GIT_SHA": "abc1234"})
-    @patch("plex_generate_previews.version_check.get_branch_head_sha")
-    def test_check_for_updates_dev_docker_api_failure(self, mock_head):
-        """Dev Docker image with API failure falls through."""
+    @patch("media_preview_generator.version_check.get_branch_head_sha")
+    def test_check_for_updates_dev_docker_api_failure(self, mock_head, loguru_caplog):
+        """Dev Docker + GitHub API failure: no fake "up to date" or "behind" claim."""
         mock_head.return_value = None
         check_for_updates()
+        text = loguru_caplog.text
+        assert "Dev build up to date" not in text
+        assert "Newer dev commit" not in text
 
     @patch.dict(os.environ, {"GIT_BRANCH": "", "GIT_SHA": ""}, clear=False)
-    @patch("plex_generate_previews.version_check.get_git_branch")
-    @patch("plex_generate_previews.version_check.get_git_commit_sha")
-    @patch("plex_generate_previews.version_check.get_branch_head_sha")
-    def test_check_for_updates_git_checkout_up_to_date(self, mock_head, mock_sha, mock_branch):
-        """Git checkout up to date with remote."""
+    @patch("media_preview_generator.version_check.get_git_branch")
+    @patch("media_preview_generator.version_check.get_git_commit_sha")
+    @patch("media_preview_generator.version_check.get_branch_head_sha")
+    def test_check_for_updates_git_checkout_up_to_date(self, mock_head, mock_sha, mock_branch, loguru_caplog):
+        """Local git checkout matches remote: emits the up-to-date message, no nag."""
         mock_sha.return_value = "abc1234567890abcdef1234567890abcdef123456"
         mock_branch.return_value = "main"
         mock_head.return_value = "abc1234567890abcdef1234567890abcdef123456"
         check_for_updates()
+        text = loguru_caplog.text
+        assert "Git checkout up to date" in text
+        assert "main" in text
+        assert "Newer commit on" not in text
 
     @patch.dict(os.environ, {"GIT_BRANCH": "", "GIT_SHA": ""}, clear=False)
-    @patch("plex_generate_previews.version_check.get_git_branch")
-    @patch("plex_generate_previews.version_check.get_git_commit_sha")
-    @patch("plex_generate_previews.version_check.get_branch_head_sha")
-    def test_check_for_updates_git_checkout_behind(self, mock_head, mock_sha, mock_branch):
-        """Git checkout behind remote."""
+    @patch("media_preview_generator.version_check.get_git_branch")
+    @patch("media_preview_generator.version_check.get_git_commit_sha")
+    @patch("media_preview_generator.version_check.get_branch_head_sha")
+    def test_check_for_updates_git_checkout_behind(self, mock_head, mock_sha, mock_branch, loguru_caplog):
+        """Local git checkout behind remote: emits 'git pull' instruction with branch."""
         mock_sha.return_value = "abc1234567890abcdef1234567890abcdef123456"
         mock_branch.return_value = "main"
         mock_head.return_value = "def5678567890abcdef1234567890abcdef123456"
         check_for_updates()
+        text = loguru_caplog.text
+        assert "Newer commit on" in text
+        assert "git pull origin main" in text
 
 
 class TestGetGitCommitSha:
@@ -275,7 +392,7 @@ class TestGetGitCommitSha:
 
     @patch("subprocess.run")
     def test_returns_sha_when_in_repo(self, mock_run):
-        from plex_generate_previews.version_check import get_git_commit_sha
+        from media_preview_generator.version_check import get_git_commit_sha
 
         mock_result = MagicMock()
         mock_result.returncode = 0
@@ -287,7 +404,7 @@ class TestGetGitCommitSha:
 
     @patch("subprocess.run")
     def test_returns_none_when_not_in_repo(self, mock_run):
-        from plex_generate_previews.version_check import get_git_commit_sha
+        from media_preview_generator.version_check import get_git_commit_sha
 
         mock_result = MagicMock()
         mock_result.returncode = 128
@@ -299,7 +416,7 @@ class TestGetGitCommitSha:
 
     @patch("subprocess.run")
     def test_handles_file_not_found(self, mock_run):
-        from plex_generate_previews.version_check import get_git_commit_sha
+        from media_preview_generator.version_check import get_git_commit_sha
 
         mock_run.side_effect = FileNotFoundError("git not found")
         sha = get_git_commit_sha()
@@ -311,7 +428,7 @@ class TestGetGitBranch:
 
     @patch("subprocess.run")
     def test_returns_branch_name(self, mock_run):
-        from plex_generate_previews.version_check import get_git_branch
+        from media_preview_generator.version_check import get_git_branch
 
         mock_result = MagicMock()
         mock_result.returncode = 0
@@ -323,7 +440,7 @@ class TestGetGitBranch:
 
     @patch("subprocess.run")
     def test_returns_none_for_detached_head(self, mock_run):
-        from plex_generate_previews.version_check import get_git_branch
+        from media_preview_generator.version_check import get_git_branch
 
         mock_result = MagicMock()
         mock_result.returncode = 0
@@ -335,7 +452,7 @@ class TestGetGitBranch:
 
     @patch("subprocess.run")
     def test_returns_none_on_failure(self, mock_run):
-        from plex_generate_previews.version_check import get_git_branch
+        from media_preview_generator.version_check import get_git_branch
 
         mock_result = MagicMock()
         mock_result.returncode = 128
@@ -351,7 +468,7 @@ class TestGetBranchHeadSha:
 
     @patch("requests.get")
     def test_returns_sha_on_success(self, mock_get):
-        from plex_generate_previews.version_check import get_branch_head_sha
+        from media_preview_generator.version_check import get_branch_head_sha
 
         mock_response = MagicMock()
         mock_response.json.return_value = {"commit": {"sha": "abc1234567890abcdef1234567890abcdef123456"}}
@@ -363,21 +480,21 @@ class TestGetBranchHeadSha:
 
     @patch("requests.get")
     def test_returns_none_on_timeout(self, mock_get):
-        from plex_generate_previews.version_check import get_branch_head_sha
+        from media_preview_generator.version_check import get_branch_head_sha
 
         mock_get.side_effect = requests.exceptions.Timeout("Timeout")
         assert get_branch_head_sha("dev") is None
 
     @patch("requests.get")
     def test_returns_none_on_connection_error(self, mock_get):
-        from plex_generate_previews.version_check import get_branch_head_sha
+        from media_preview_generator.version_check import get_branch_head_sha
 
         mock_get.side_effect = requests.exceptions.ConnectionError("fail")
         assert get_branch_head_sha("dev") is None
 
     @patch("requests.get")
     def test_returns_none_on_http_error(self, mock_get):
-        from plex_generate_previews.version_check import get_branch_head_sha
+        from media_preview_generator.version_check import get_branch_head_sha
 
         mock_response = MagicMock()
         mock_response.status_code = 404
@@ -386,7 +503,7 @@ class TestGetBranchHeadSha:
 
     @patch("requests.get")
     def test_returns_none_on_empty_sha(self, mock_get):
-        from plex_generate_previews.version_check import get_branch_head_sha
+        from media_preview_generator.version_check import get_branch_head_sha
 
         mock_response = MagicMock()
         mock_response.json.return_value = {"commit": {"sha": ""}}
@@ -396,14 +513,14 @@ class TestGetBranchHeadSha:
 
     @patch("requests.get")
     def test_returns_none_on_request_exception(self, mock_get):
-        from plex_generate_previews.version_check import get_branch_head_sha
+        from media_preview_generator.version_check import get_branch_head_sha
 
         mock_get.side_effect = requests.exceptions.RequestException("fail")
         assert get_branch_head_sha("dev") is None
 
     @patch("requests.get")
     def test_returns_none_on_unexpected_error(self, mock_get):
-        from plex_generate_previews.version_check import get_branch_head_sha
+        from media_preview_generator.version_check import get_branch_head_sha
 
         mock_get.side_effect = RuntimeError("unexpected")
         assert get_branch_head_sha("dev") is None

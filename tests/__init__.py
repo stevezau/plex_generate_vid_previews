@@ -1,1 +1,1 @@
-# Test package for plex_generate_previews
+# Test package for media_preview_generator

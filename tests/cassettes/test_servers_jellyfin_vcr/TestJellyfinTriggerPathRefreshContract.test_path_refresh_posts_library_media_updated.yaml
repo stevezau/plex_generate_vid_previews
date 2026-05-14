@@ -1,0 +1,35 @@
+interactions:
+- request:
+    body: '{"Updates": [{"Path": "/jf-media/Movies/Test Movie H264 (2024)/Test Movie
+      H264 (2024).mkv", "UpdateType": "Created"}]}'
+    headers:
+      Accept:
+      - application/json
+      Accept-Encoding:
+      - gzip, deflate, br
+      Connection:
+      - keep-alive
+      Content-Length:
+      - '118'
+      Content-Type:
+      - application/json
+      User-Agent:
+      - python-requests/2.33.0
+      X-Emby-Token:
+      - FAKE_EMBY_TOKEN
+    method: POST
+    uri: http://fake-server/Library/Media/Updated
+  response:
+    body:
+      string: ''
+    headers:
+      Date:
+      - Wed, 06 May 2026 03:32:05 GMT
+      Server:
+      - Kestrel
+      X-Response-Time-ms:
+      - '1.2829'
+    status:
+      code: 204
+      message: No Content
+version: 1

@@ -1,0 +1,3056 @@
+"""Tests for ``_run_full_scan_multi_server`` (Phase D).
+
+Verifies the multi-server full-library scan dispatcher:
+* enumerates items via the per-vendor :class:`VendorProcessor`
+* fans them out through ``process_canonical_path`` in parallel
+* respects ``server_id_filter`` (single server) and the no-filter case
+  (every enabled server)
+* aggregates per-publisher outcomes back into the legacy
+  ProcessingResult counts shape
+"""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+from requests.exceptions import ReadTimeout as requests_ReadTimeout
+
+from media_preview_generator.jobs.orchestrator import _run_full_scan_multi_server
+from media_preview_generator.processing import ProcessingResult
+from media_preview_generator.processing.types import ProcessableItem
+from media_preview_generator.servers.base import ServerConfig, ServerType
+
+MODULE = "media_preview_generator.jobs.orchestrator"
+
+
+def _config(cpu_threads: int = 1):
+    return SimpleNamespace(
+        gpu_threads=0,
+        cpu_threads=cpu_threads,
+        working_tmp_folder="/tmp/work",
+        plex_url="",
+        plex_token="",
+        webhook_paths=None,
+        server_id_filter=None,
+    )
+
+
+def _server_config(server_id, server_type=ServerType.JELLYFIN):
+    return ServerConfig(
+        id=server_id,
+        type=server_type,
+        name=f"Test {server_type.value}",
+        enabled=True,
+        url="http://test",
+        auth={"access_token": "t"},
+    )
+
+
+class TestMultiServerFullScan:
+    def test_no_servers_configured_returns_zero_counts(self, tmp_path):
+        """No servers → zero counts AND no dispatch attempts.
+
+        Audit fix — original asserted only the counts. A regression that
+        called process_canonical_path with an empty registry would still
+        produce zero counts (because no items to dispatch) but represents
+        broken behaviour. Patch and assert no dispatch.
+        """
+        with (
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+            patch(f"{MODULE}.ProcessingResult", ProcessingResult),
+            patch("media_preview_generator.processing.multi_server.process_canonical_path") as mock_pcp,
+        ):
+            mock_sm.return_value.get.return_value = []
+            counts = _run_full_scan_multi_server(_config(), selected_gpus=[])
+        assert all(v == 0 for v in counts.values())
+        mock_pcp.assert_not_called(), ("with zero servers configured, process_canonical_path must NOT be called")
+
+    def test_pinned_to_server_only_walks_that_server(self, tmp_path):
+        cfg_a = _server_config("srv-a", ServerType.JELLYFIN)
+        cfg_b = _server_config("srv-b", ServerType.EMBY)
+
+        registry_mock = MagicMock()
+        registry_mock.configs.return_value = [cfg_a, cfg_b]
+
+        proc_a = MagicMock()
+        proc_a.list_canonical_paths.return_value = iter(
+            [
+                ProcessableItem(canonical_path="/data/a.mkv", server_id="srv-a"),
+            ]
+        )
+        proc_b = MagicMock()
+        proc_b.list_canonical_paths.return_value = iter([])
+
+        def _get_proc(stype):
+            return {ServerType.JELLYFIN: proc_a, ServerType.EMBY: proc_b}[stype]
+
+        with (
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+            patch("media_preview_generator.servers.ServerRegistry") as mock_registry,
+            patch("media_preview_generator.processing.get_processor_for", side_effect=_get_proc),
+            patch("media_preview_generator.processing.multi_server.process_canonical_path") as mock_process,
+        ):
+            mock_sm.return_value.get.return_value = [
+                {"id": "srv-a", "type": "jellyfin", "enabled": True},
+                {"id": "srv-b", "type": "emby", "enabled": True},
+            ]
+            mock_registry.from_settings.return_value = registry_mock
+            mock_process.return_value = MagicMock(publishers=[])
+
+            _run_full_scan_multi_server(
+                _config(),
+                selected_gpus=[],
+                server_id_filter="srv-a",
+            )
+
+        # Only the pinned server's processor was used; the other one's
+        # list_canonical_paths must never have been called.
+        proc_a.list_canonical_paths.assert_called_once()
+        proc_b.list_canonical_paths.assert_not_called()
+        # process_canonical_path fired exactly once for the single item.
+        mock_process.assert_called_once()
+        kwargs = mock_process.call_args.kwargs
+        assert kwargs["canonical_path"] == "/data/a.mkv"
+
+    def test_no_pin_walks_every_enabled_server(self, tmp_path):
+        cfg_a = _server_config("srv-a", ServerType.JELLYFIN)
+        cfg_b = _server_config("srv-b", ServerType.EMBY)
+        cfg_c = _server_config("srv-c", ServerType.JELLYFIN)
+        cfg_c = ServerConfig(
+            id=cfg_c.id, type=cfg_c.type, name=cfg_c.name, enabled=False, url=cfg_c.url, auth=cfg_c.auth
+        )
+
+        registry_mock = MagicMock()
+        registry_mock.configs.return_value = [cfg_a, cfg_b, cfg_c]
+
+        items_a = [ProcessableItem(canonical_path="/a/1.mkv", server_id="srv-a")]
+        items_b = [ProcessableItem(canonical_path="/b/2.mkv", server_id="srv-b")]
+        proc_a = MagicMock()
+        proc_a.list_canonical_paths.return_value = iter(items_a)
+        proc_b = MagicMock()
+        proc_b.list_canonical_paths.return_value = iter(items_b)
+
+        def _get_proc(stype):
+            return {ServerType.JELLYFIN: proc_a, ServerType.EMBY: proc_b}[stype]
+
+        with (
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+            patch("media_preview_generator.servers.ServerRegistry") as mock_registry,
+            patch("media_preview_generator.processing.get_processor_for", side_effect=_get_proc),
+            patch("media_preview_generator.processing.multi_server.process_canonical_path") as mock_process,
+        ):
+            mock_sm.return_value.get.return_value = [
+                {"id": "srv-a", "type": "jellyfin", "enabled": True},
+                {"id": "srv-b", "type": "emby", "enabled": True},
+                {"id": "srv-c", "type": "jellyfin", "enabled": False},
+            ]
+            mock_registry.from_settings.return_value = registry_mock
+            mock_process.return_value = MagicMock(publishers=[])
+
+            _run_full_scan_multi_server(_config(), selected_gpus=[])
+
+        # Both enabled servers walked; the disabled one was skipped at
+        # the candidate-collection step (so its processor was never
+        # invoked at all).
+        proc_a.list_canonical_paths.assert_called_once()
+        proc_b.list_canonical_paths.assert_called_once()
+        # process_canonical_path fired for both items.
+        assert mock_process.call_count == 2
+
+    def test_aggregates_per_publisher_outcomes_into_processing_result_counts(self, tmp_path):
+        cfg = _server_config("srv-a", ServerType.JELLYFIN)
+        registry_mock = MagicMock()
+        registry_mock.configs.return_value = [cfg]
+
+        proc = MagicMock()
+        proc.list_canonical_paths.return_value = iter(
+            [
+                ProcessableItem(canonical_path="/x.mkv", server_id="srv-a"),
+                ProcessableItem(canonical_path="/y.mkv", server_id="srv-a"),
+            ]
+        )
+
+        # Two items, each producing different publish outcomes.
+        result_x = MagicMock(publishers=[MagicMock(status=MagicMock(value="published"))])
+        result_y = MagicMock(publishers=[MagicMock(status=MagicMock(value="failed"))])
+
+        with (
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+            patch("media_preview_generator.servers.ServerRegistry") as mock_registry,
+            patch("media_preview_generator.processing.get_processor_for", return_value=proc),
+            patch(
+                "media_preview_generator.processing.multi_server.process_canonical_path",
+                side_effect=[result_x, result_y],
+            ),
+        ):
+            mock_sm.return_value.get.return_value = [
+                {"id": "srv-a", "type": "jellyfin", "enabled": True},
+            ]
+            mock_registry.from_settings.return_value = registry_mock
+
+            counts = _run_full_scan_multi_server(_config(), selected_gpus=[])
+
+        assert counts.get("published", 0) == 1
+        assert counts.get("failed", 0) == 1
+
+    def test_empty_publisher_aggregate_statuses_are_counted(self, tmp_path):
+        """Counter reconciliation regression (job deea99db).
+
+        ``MultiServerResult`` can return ``publishers=[]`` for four aggregate
+        statuses that still represent processed items:
+
+        * ``SKIPPED_FILE_NOT_FOUND`` — source missing on disk (retryable)
+        * ``NO_OWNERS`` — no configured library covers the path
+        * ``NO_FRAMES`` — FFmpeg ran but produced 0 frames
+        * ``FAILED`` — frame generation raised before any publisher ran
+
+        The orchestrator used to fold only per-publisher statuses into
+        ``counts``, so these four categories silently dropped out of the
+        totals. A 128k-item scan produced "128007 processed / 128002 in
+        outcome" divergence because 5 items fell through this gap.
+        """
+        from media_preview_generator.processing.multi_server import MultiServerStatus
+
+        cfg = _server_config("srv-a", ServerType.JELLYFIN)
+        registry_mock = MagicMock()
+        registry_mock.configs.return_value = [cfg]
+
+        items = [ProcessableItem(canonical_path=f"/miss-{i}.mkv", server_id="srv-a") for i in range(4)]
+        proc = MagicMock()
+        proc.list_canonical_paths.return_value = iter(items)
+
+        results_in_order = [
+            SimpleNamespace(
+                publishers=[],
+                canonical_path="/miss-0.mkv",
+                status=MultiServerStatus.SKIPPED_FILE_NOT_FOUND,
+                message="source missing",
+            ),
+            SimpleNamespace(
+                publishers=[],
+                canonical_path="/miss-1.mkv",
+                status=MultiServerStatus.NO_OWNERS,
+                message="no owner",
+            ),
+            SimpleNamespace(
+                publishers=[],
+                canonical_path="/miss-2.mkv",
+                status=MultiServerStatus.NO_FRAMES,
+                message="ffmpeg 0 frames",
+            ),
+            SimpleNamespace(
+                publishers=[],
+                canonical_path="/miss-3.mkv",
+                status=MultiServerStatus.FAILED,
+                message="ffmpeg crashed",
+            ),
+        ]
+
+        with (
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+            patch("media_preview_generator.servers.ServerRegistry") as mock_registry,
+            patch("media_preview_generator.processing.get_processor_for", return_value=proc),
+            patch(
+                "media_preview_generator.processing.multi_server.process_canonical_path",
+                side_effect=results_in_order,
+            ),
+        ):
+            mock_sm.return_value.get.return_value = [
+                {"id": "srv-a", "type": "jellyfin", "enabled": True},
+            ]
+            mock_registry.from_settings.return_value = registry_mock
+
+            counts = _run_full_scan_multi_server(_config(), selected_gpus=[])
+
+        total = sum(counts.values())
+        assert total == 4, (
+            f"Every processed item must land in exactly one counter bucket — "
+            f"got {total} in outcome for 4 processed items. counts={counts!r}"
+        )
+        # SKIPPED_FILE_NOT_FOUND keeps its own key so the retry-scheduling
+        # branch in job_runner (get_file_results(job_id, 'skipped_file_not_found'))
+        # can continue to find these paths.
+        assert counts.get("skipped_file_not_found", 0) == 1, counts
+        # NO_FRAMES and the frame-gen-crash FAILED both represent a failed
+        # item; they must roll into `failed` so the end-of-run summary
+        # matches the failures list.
+        assert counts.get("failed", 0) == 2, counts
+        # NO_OWNERS is neither failure nor success; it gets its own bucket
+        # so the summary can distinguish "couldn't publish" from "didn't try".
+        assert counts.get("no_owners", 0) == 1, counts
+
+    def test_zero_items_logs_warning_not_info(self, tmp_path):
+        """When the scan walks the server but enumerates zero items, the user
+        must see a WARN-level message — silent INFO leaves them puzzled why
+        a "successful" job did no work.
+
+        Regression: the previous behaviour was a single INFO line that didn't
+        survive the user's typical log filter (which sits at WARN by default).
+        Real causes (bad library_ids, scoped auth, vendor mid-index) all
+        ended up looking like a green job that did nothing — exactly the
+        symptom the user reported.
+
+        Project uses loguru — sink-attach to capture, not pytest's caplog.
+        """
+        from loguru import logger as _logger
+
+        cfg = _server_config("srv-a", ServerType.JELLYFIN)
+        registry_mock = MagicMock()
+        registry_mock.configs.return_value = [cfg]
+
+        proc = MagicMock()
+        proc.list_canonical_paths.return_value = iter([])  # 0 items
+
+        captured: list[tuple[str, str]] = []
+
+        sink_id = _logger.add(lambda m: captured.append((m.record["level"].name, m.record["message"])), level="WARNING")
+        try:
+            with (
+                patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+                patch("media_preview_generator.servers.ServerRegistry") as mock_registry,
+                patch("media_preview_generator.processing.get_processor_for", return_value=proc),
+            ):
+                mock_sm.return_value.get.return_value = [
+                    {"id": "srv-a", "type": "jellyfin", "enabled": True},
+                ]
+                mock_registry.from_settings.return_value = registry_mock
+
+                counts = _run_full_scan_multi_server(
+                    _config(),
+                    selected_gpus=[],
+                    library_ids=["bogus-library-id"],
+                )
+        finally:
+            _logger.remove(sink_id)
+
+        # Counts still all zero (no items to process)
+        assert all(v == 0 for v in counts.values())
+        # The warning must mention the library_ids the caller passed so the
+        # user can match it to what they ticked in the UI.
+        warns = [(lvl, msg) for lvl, msg in captured if lvl in ("WARNING", "ERROR", "CRITICAL")]
+        assert any("bogus-library-id" in msg for _, msg in warns), (
+            f"Expected WARN mentioning 'bogus-library-id'; got: {warns}"
+        )
+
+
+class TestPinnedFilterForwardedToProcessCanonicalPath:
+    """Regression for the cross-server contamination bug where a Plex-pinned
+    full scan still attempted to publish to Jellyfin/Emby siblings.
+
+    Live reproducer: job d9918149 was configured with
+    ``server_id: "plex-default"`` (the user picked "scan Movies on plex"
+    from the UI). Enumeration correctly walked only the Plex library, but
+    every per-item dispatch into ``process_canonical_path`` fanned out to
+    every owning server because the Plex-originator branch in
+    ``_dispatch_processable_items._process_one`` unconditionally dropped
+    the caller's ``server_id_filter``. Result: every Plex success row was
+    paired with a JellyTest "failed" row (no item_id available), and
+    FFmpeg was re-extracted for the doomed Jellyfin attempt despite Plex
+    already having the BIF.
+
+    The previous test suite had:
+      * a "pinned to Jellyfin/Emby" test — passes either way because the
+        non-Plex branch happened to forward the filter.
+      * no test asserting the filter is *forwarded* to
+        ``process_canonical_path`` — it only checked which server's
+        enumerator was called.
+
+    Both gaps are fixed here. Every test below asserts the kwargs reaching
+    ``process_canonical_path`` so a future regression in the per-item
+    pin precedence is caught at the boundary.
+    """
+
+    def test_plex_pinned_forwards_filter_to_process_canonical_path(self, tmp_path):
+        """The exact d9918149 reproducer: Plex-pinned full scan must
+        publish ONLY to Plex — never fan out to Jellyfin/Emby siblings."""
+        cfg_plex = _server_config("plex-default", ServerType.PLEX)
+
+        registry_mock = MagicMock()
+        registry_mock.configs.return_value = [cfg_plex]
+
+        proc = MagicMock()
+        proc.list_canonical_paths.return_value = iter(
+            [
+                ProcessableItem(canonical_path="/data/movies/x.mkv", server_id="plex-default"),
+                ProcessableItem(canonical_path="/data/movies/y.mkv", server_id="plex-default"),
+            ]
+        )
+
+        with (
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+            patch("media_preview_generator.servers.ServerRegistry") as mock_registry,
+            patch("media_preview_generator.processing.get_processor_for", return_value=proc),
+            patch("media_preview_generator.processing.multi_server.process_canonical_path") as mock_process,
+        ):
+            mock_sm.return_value.get.return_value = [
+                {"id": "plex-default", "type": "plex", "enabled": True},
+                {"id": "jelly-test", "type": "jellyfin", "enabled": True},
+            ]
+            mock_registry.from_settings.return_value = registry_mock
+            mock_process.return_value = MagicMock(publishers=[])
+
+            _run_full_scan_multi_server(
+                _config(),
+                selected_gpus=[],
+                server_id_filter="plex-default",
+            )
+
+        assert mock_process.call_count == 2
+        # Both items must have the pin forwarded — without this fix the
+        # Plex-originator branch dropped the filter to None and the
+        # downstream resolver fanned out to Jellyfin too.
+        for call in mock_process.call_args_list:
+            assert call.kwargs["server_id_filter"] == "plex-default", (
+                "Plex-pinned dispatch leaked into other servers — "
+                f"got server_id_filter={call.kwargs.get('server_id_filter')!r}"
+            )
+
+    def test_no_pin_plex_originator_fans_out(self, tmp_path):
+        """When no pin is set and the originator is Plex, the dispatcher
+        forwards ``server_id_filter=None`` so every owning server gets a
+        publisher (the multi-vendor fan-out path)."""
+        cfg_plex = _server_config("plex-default", ServerType.PLEX)
+
+        registry_mock = MagicMock()
+        registry_mock.configs.return_value = [cfg_plex]
+
+        proc = MagicMock()
+        proc.list_canonical_paths.return_value = iter(
+            [ProcessableItem(canonical_path="/data/x.mkv", server_id="plex-default")]
+        )
+
+        with (
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+            patch("media_preview_generator.servers.ServerRegistry") as mock_registry,
+            patch("media_preview_generator.processing.get_processor_for", return_value=proc),
+            patch("media_preview_generator.processing.multi_server.process_canonical_path") as mock_process,
+        ):
+            mock_sm.return_value.get.return_value = [
+                {"id": "plex-default", "type": "plex", "enabled": True},
+            ]
+            mock_registry.from_settings.return_value = registry_mock
+            mock_process.return_value = MagicMock(publishers=[])
+
+            _run_full_scan_multi_server(_config(), selected_gpus=[])
+
+        mock_process.assert_called_once()
+        assert mock_process.call_args.kwargs["server_id_filter"] is None
+
+    def test_no_pin_non_plex_originator_scopes_to_originator(self, tmp_path):
+        """No pin + Jellyfin originator → dispatcher pins to that
+        originator so single-server installs don't try to publish to
+        unrelated servers that happen to own the path."""
+        cfg = _server_config("jelly-only", ServerType.JELLYFIN)
+
+        registry_mock = MagicMock()
+        registry_mock.configs.return_value = [cfg]
+
+        proc = MagicMock()
+        proc.list_canonical_paths.return_value = iter(
+            [ProcessableItem(canonical_path="/data/x.mkv", server_id="jelly-only")]
+        )
+
+        with (
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+            patch("media_preview_generator.servers.ServerRegistry") as mock_registry,
+            patch("media_preview_generator.processing.get_processor_for", return_value=proc),
+            patch("media_preview_generator.processing.multi_server.process_canonical_path") as mock_process,
+        ):
+            mock_sm.return_value.get.return_value = [
+                {"id": "jelly-only", "type": "jellyfin", "enabled": True},
+            ]
+            mock_registry.from_settings.return_value = registry_mock
+            mock_process.return_value = MagicMock(publishers=[])
+
+            _run_full_scan_multi_server(_config(), selected_gpus=[])
+
+        mock_process.assert_called_once()
+        assert mock_process.call_args.kwargs["server_id_filter"] == "jelly-only"
+
+    def test_no_pin_emby_originator_scopes_to_originator(self, tmp_path):
+        """No pin + Emby originator → dispatcher pins to that originator.
+
+        Matrix completion: previously only the Jellyfin variant of this
+        contract was tested. Per CLAUDE.md "Cover the matrix, not one
+        cell" — write a test for every distinct value of the branching
+        variable (ServerType). Without this, an Emby-specific bug in
+        the per-originator scoping logic would slip through.
+        """
+        cfg = _server_config("emby-only", ServerType.EMBY)
+
+        registry_mock = MagicMock()
+        registry_mock.configs.return_value = [cfg]
+
+        proc = MagicMock()
+        proc.list_canonical_paths.return_value = iter(
+            [ProcessableItem(canonical_path="/data/x.mkv", server_id="emby-only")]
+        )
+
+        with (
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+            patch("media_preview_generator.servers.ServerRegistry") as mock_registry,
+            patch("media_preview_generator.processing.get_processor_for", return_value=proc),
+            patch("media_preview_generator.processing.multi_server.process_canonical_path") as mock_process,
+        ):
+            mock_sm.return_value.get.return_value = [
+                {"id": "emby-only", "type": "emby", "enabled": True},
+            ]
+            mock_registry.from_settings.return_value = registry_mock
+            mock_process.return_value = MagicMock(publishers=[])
+
+            _run_full_scan_multi_server(_config(), selected_gpus=[])
+
+        mock_process.assert_called_once()
+        assert mock_process.call_args.kwargs["server_id_filter"] == "emby-only"
+
+    def test_jellyfin_pinned_forwards_filter_to_process_canonical_path(self, tmp_path):
+        """Pin=jellyfin must forward the filter to process_canonical_path.
+
+        Matrix gap: prior tests covered Plex-pinned (the d9918149 bug
+        site) but had NO test for Jellyfin-pinned with sibling servers
+        present. A regression that drops the filter on the Jellyfin
+        branch would let publishes leak into the Plex/Emby siblings.
+        """
+        cfg_jelly = _server_config("jelly-pinned", ServerType.JELLYFIN)
+
+        registry_mock = MagicMock()
+        registry_mock.configs.return_value = [cfg_jelly]
+
+        proc = MagicMock()
+        proc.list_canonical_paths.return_value = iter(
+            [
+                ProcessableItem(canonical_path="/data/movies/x.mkv", server_id="jelly-pinned"),
+                ProcessableItem(canonical_path="/data/movies/y.mkv", server_id="jelly-pinned"),
+            ]
+        )
+
+        with (
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+            patch("media_preview_generator.servers.ServerRegistry") as mock_registry,
+            patch("media_preview_generator.processing.get_processor_for", return_value=proc),
+            patch("media_preview_generator.processing.multi_server.process_canonical_path") as mock_process,
+        ):
+            mock_sm.return_value.get.return_value = [
+                {"id": "plex-default", "type": "plex", "enabled": True},
+                {"id": "emby-other", "type": "emby", "enabled": True},
+                {"id": "jelly-pinned", "type": "jellyfin", "enabled": True},
+            ]
+            mock_registry.from_settings.return_value = registry_mock
+            mock_process.return_value = MagicMock(publishers=[])
+
+            _run_full_scan_multi_server(
+                _config(),
+                selected_gpus=[],
+                server_id_filter="jelly-pinned",
+            )
+
+        assert mock_process.call_count == 2
+        for call in mock_process.call_args_list:
+            assert call.kwargs["server_id_filter"] == "jelly-pinned", (
+                "Jellyfin-pinned dispatch leaked into Plex/Emby siblings — "
+                f"got server_id_filter={call.kwargs.get('server_id_filter')!r}"
+            )
+
+    def test_emby_pinned_forwards_filter_to_process_canonical_path(self, tmp_path):
+        """Pin=emby must forward the filter to process_canonical_path.
+
+        Matrix gap: the third leg of (Plex|Jellyfin|Emby) × pinned —
+        prior coverage missed this entirely. Same rationale as the
+        Jellyfin-pinned test above: catches per-vendor regressions in
+        the dispatcher's pin-precedence logic.
+        """
+        cfg_emby = _server_config("emby-pinned", ServerType.EMBY)
+
+        registry_mock = MagicMock()
+        registry_mock.configs.return_value = [cfg_emby]
+
+        proc = MagicMock()
+        proc.list_canonical_paths.return_value = iter(
+            [
+                ProcessableItem(canonical_path="/data/movies/x.mkv", server_id="emby-pinned"),
+                ProcessableItem(canonical_path="/data/movies/y.mkv", server_id="emby-pinned"),
+            ]
+        )
+
+        with (
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+            patch("media_preview_generator.servers.ServerRegistry") as mock_registry,
+            patch("media_preview_generator.processing.get_processor_for", return_value=proc),
+            patch("media_preview_generator.processing.multi_server.process_canonical_path") as mock_process,
+        ):
+            mock_sm.return_value.get.return_value = [
+                {"id": "plex-default", "type": "plex", "enabled": True},
+                {"id": "jelly-other", "type": "jellyfin", "enabled": True},
+                {"id": "emby-pinned", "type": "emby", "enabled": True},
+            ]
+            mock_registry.from_settings.return_value = registry_mock
+            mock_process.return_value = MagicMock(publishers=[])
+
+            _run_full_scan_multi_server(
+                _config(),
+                selected_gpus=[],
+                server_id_filter="emby-pinned",
+            )
+
+        assert mock_process.call_count == 2
+        for call in mock_process.call_args_list:
+            assert call.kwargs["server_id_filter"] == "emby-pinned", (
+                "Emby-pinned dispatch leaked into Plex/Jellyfin siblings — "
+                f"got server_id_filter={call.kwargs.get('server_id_filter')!r}"
+            )
+
+    def test_regenerate_thumbnails_propagates_to_process_canonical_path(self, tmp_path):
+        """TEST_AUDIT P0.10 (commit 0092f8d "silent skip" class).
+
+        When the user toggles "Regenerate" in the scan modal, the chain is:
+        UI → /api/jobs config_overrides["regenerate_thumbnails"]=True →
+        job_runner setattr config.regenerate_thumbnails=True → orchestrator
+        passes ``regenerate=bool(config.regenerate_thumbnails)`` to
+        process_canonical_path.
+
+        Bug class: a regression at the orchestrator boundary (e.g. reading
+        the wrong attribute name, or hard-coding regenerate=False) means
+        the user clicks Regenerate, the job runs, but the dispatcher's
+        freshness short-circuit silently keeps the existing BIF and
+        returns SKIPPED. User sees "completed" but nothing changed —
+        confusing and impossible to diagnose without orchestrator logs.
+
+        This pins the orchestrator → process_canonical_path boundary so
+        any regression that drops the regenerate kwarg, reads the wrong
+        config field, or coerces it to False is caught loudly.
+        """
+        cfg = _server_config("jelly-only", ServerType.JELLYFIN)
+        registry_mock = MagicMock()
+        registry_mock.configs.return_value = [cfg]
+
+        proc = MagicMock()
+        proc.list_canonical_paths.return_value = iter(
+            [ProcessableItem(canonical_path="/data/movies/x.mkv", server_id="jelly-only")]
+        )
+
+        # Build a config that has regenerate_thumbnails=True — exactly
+        # what the job_runner sets after the UI toggle.
+        cfg_with_regen = SimpleNamespace(
+            gpu_threads=0,
+            cpu_threads=1,
+            working_tmp_folder="/tmp/work",
+            plex_url="",
+            plex_token="",
+            webhook_paths=None,
+            server_id_filter=None,
+            regenerate_thumbnails=True,
+        )
+
+        with (
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+            patch("media_preview_generator.servers.ServerRegistry") as mock_registry,
+            patch("media_preview_generator.processing.get_processor_for", return_value=proc),
+            patch("media_preview_generator.processing.multi_server.process_canonical_path") as mock_process,
+        ):
+            mock_sm.return_value.get.return_value = [
+                {"id": "jelly-only", "type": "jellyfin", "enabled": True},
+            ]
+            mock_registry.from_settings.return_value = registry_mock
+            mock_process.return_value = MagicMock(publishers=[])
+
+            _run_full_scan_multi_server(cfg_with_regen, selected_gpus=[])
+
+        mock_process.assert_called_once()
+        assert mock_process.call_args.kwargs.get("regenerate") is True, (
+            "regenerate_thumbnails=True on the config did NOT propagate to "
+            f"process_canonical_path(regenerate=...) — got "
+            f"regenerate={mock_process.call_args.kwargs.get('regenerate')!r}. "
+            "User clicks Regenerate, dispatcher silently keeps existing BIF (0092f8d class)."
+        )
+
+    def test_regenerate_default_false_when_attribute_missing(self, tmp_path):
+        """Mirror test for the contract floor: when config.regenerate_thumbnails
+        is missing/False, process_canonical_path is called with
+        ``regenerate=False`` (NOT True or None). Together with the test
+        above this pins both edges of the boundary.
+        """
+        cfg = _server_config("jelly-only", ServerType.JELLYFIN)
+        registry_mock = MagicMock()
+        registry_mock.configs.return_value = [cfg]
+
+        proc = MagicMock()
+        proc.list_canonical_paths.return_value = iter(
+            [ProcessableItem(canonical_path="/data/movies/x.mkv", server_id="jelly-only")]
+        )
+
+        # Config WITHOUT regenerate_thumbnails attribute — orchestrator's
+        # getattr default kicks in.
+        cfg_no_regen = _config()  # SimpleNamespace without the attr
+
+        with (
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+            patch("media_preview_generator.servers.ServerRegistry") as mock_registry,
+            patch("media_preview_generator.processing.get_processor_for", return_value=proc),
+            patch("media_preview_generator.processing.multi_server.process_canonical_path") as mock_process,
+        ):
+            mock_sm.return_value.get.return_value = [
+                {"id": "jelly-only", "type": "jellyfin", "enabled": True},
+            ]
+            mock_registry.from_settings.return_value = registry_mock
+            mock_process.return_value = MagicMock(publishers=[])
+
+            _run_full_scan_multi_server(cfg_no_regen, selected_gpus=[])
+
+        mock_process.assert_called_once()
+        # Strict equality — `is True` would also pass for some truthy values
+        # we don't want to accept (e.g. 1, "yes"). The orchestrator does
+        # bool(getattr(...)) so the kwarg should be a plain bool False.
+        assert mock_process.call_args.kwargs.get("regenerate") is False, (
+            f"missing regenerate_thumbnails should default to regenerate=False; "
+            f"got {mock_process.call_args.kwargs.get('regenerate')!r}"
+        )
+
+
+class TestEnumerationStatusBanner:
+    """D28 — surface a "Querying {server} library…" status BEFORE each
+    server's enumeration walk and a "Dispatching N item(s)…" status the
+    moment enumeration finishes. Without these the progress bar sits at
+    0/0 with no message for the 10–60s the Emby/Jellyfin library walk
+    takes; users assume the job is stuck and cancel."""
+
+    def test_querying_banner_emitted_per_server_before_enumeration(self, tmp_path):
+        cfg_a = _server_config("srv-a", ServerType.JELLYFIN)
+        cfg_b = _server_config("srv-b", ServerType.EMBY)
+        registry_mock = MagicMock()
+        registry_mock.configs.return_value = [cfg_a, cfg_b]
+
+        proc_a = MagicMock()
+        proc_a.list_canonical_paths.return_value = iter([])
+        proc_b = MagicMock()
+        proc_b.list_canonical_paths.return_value = iter([])
+
+        def _get_proc(stype):
+            return {ServerType.JELLYFIN: proc_a, ServerType.EMBY: proc_b}[stype]
+
+        progress_calls: list[tuple[int, int, str]] = []
+
+        with (
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+            patch("media_preview_generator.servers.ServerRegistry") as mock_registry,
+            patch("media_preview_generator.processing.get_processor_for", side_effect=_get_proc),
+        ):
+            mock_sm.return_value.get.return_value = [
+                {"id": "srv-a", "type": "jellyfin", "enabled": True},
+                {"id": "srv-b", "type": "emby", "enabled": True},
+            ]
+            mock_registry.from_settings.return_value = registry_mock
+
+            _run_full_scan_multi_server(
+                _config(),
+                selected_gpus=[],
+                progress_callback=lambda p, t, m: progress_calls.append((p, t, m)),
+            )
+
+        querying_messages = [m for _, _, m in progress_calls if m.startswith("Querying ")]
+        assert any("Test jellyfin" in m for m in querying_messages), (
+            f"missing per-server Querying banner; got {querying_messages!r}"
+        )
+        assert any("Test emby" in m for m in querying_messages), (
+            f"missing per-server Querying banner; got {querying_messages!r}"
+        )
+
+    def test_querying_banner_is_also_logged_so_it_shows_in_per_job_log(self, tmp_path, caplog):
+        """The banner must reach the per-job log panel, not just the
+        progress bar. Regression from 6901f52: the first version of the
+        banner fix only emitted via ``progress_callback``, so the
+        Querying line updated the progress bar (briefly) but never
+        landed in the per-job log tab — the log just jumped from
+        "Started job ..." to "Multi-server full scan: dispatching N".
+        Users on live job c9253a85 thought the scan was frozen for 60s.
+
+        The ``job_runner`` log_sink captures every ``logger.*`` call
+        whose thread maps to this job_id. Emitting the banner through
+        ``logger.info`` is what makes it show up in the log panel the
+        user is actually watching.
+        """
+        import logging as _std_logging
+
+        from loguru import logger as _loguru_logger
+
+        cfg_a = _server_config("srv-a", ServerType.JELLYFIN)
+        registry_mock = MagicMock()
+        registry_mock.configs.return_value = [cfg_a]
+
+        proc_a = MagicMock()
+        proc_a.list_canonical_paths.return_value = iter([])
+
+        # Bridge loguru → pytest's caplog so we can assert on the
+        # formatted message directly.
+        class _Bridge(_std_logging.Handler):
+            def emit(self, record):
+                pass
+
+        handler_id = _loguru_logger.add(
+            lambda msg: caplog.records.append(
+                _std_logging.LogRecord(
+                    name="loguru",
+                    level=_std_logging.INFO,
+                    pathname="",
+                    lineno=0,
+                    msg=msg.record["message"],
+                    args=(),
+                    exc_info=None,
+                )
+            ),
+            level="INFO",
+        )
+        try:
+            with (
+                patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+                patch("media_preview_generator.servers.ServerRegistry") as mock_registry,
+                patch(
+                    "media_preview_generator.processing.get_processor_for",
+                    return_value=proc_a,
+                ),
+            ):
+                mock_sm.return_value.get.return_value = [
+                    {"id": "srv-a", "type": "jellyfin", "enabled": True},
+                ]
+                mock_registry.from_settings.return_value = registry_mock
+                _run_full_scan_multi_server(_config(), selected_gpus=[], progress_callback=lambda *a: None)
+        finally:
+            _loguru_logger.remove(handler_id)
+
+        logged_messages = [r.msg for r in caplog.records]
+        assert any("Querying Test jellyfin library" in m for m in logged_messages), (
+            f"'Querying … library…' must be logged via logger.info so it reaches the per-job log "
+            f"file (not just the progress_callback stream). Logged messages: {logged_messages!r}"
+        )
+
+    def test_dispatch_banner_emitted_with_total_after_enumeration(self, tmp_path):
+        from media_preview_generator.jobs.orchestrator import _dispatch_processable_items
+
+        cfg = _server_config("srv-a", ServerType.JELLYFIN)
+        items = [
+            (
+                cfg,
+                ProcessableItem(
+                    canonical_path=f"/data/m{i}.mkv",
+                    server_id="srv-a",
+                    item_id_by_server={"srv-a": str(i)},
+                ),
+            )
+            for i in range(4)
+        ]
+
+        progress_calls: list[tuple[int, int, str]] = []
+
+        with patch(
+            "media_preview_generator.processing.multi_server.process_canonical_path",
+            return_value=SimpleNamespace(publishers=[], canonical_path="/x"),
+        ):
+            _dispatch_processable_items(
+                items=items,
+                config=_config(),
+                registry=MagicMock(),
+                selected_gpus=[],
+                progress_callback=lambda p, t, m: progress_calls.append((p, t, m)),
+                label="full scan",
+            )
+
+        # First emit must be the up-front Dispatching banner with (0, total).
+        assert progress_calls, "no progress messages emitted"
+        first = progress_calls[0]
+        assert first[0] == 0
+        assert first[1] == 4
+        assert "Dispatching" in first[2]
+
+
+class TestFileResultEmissionFromMultiServerDispatch:
+    """D34 — the multi-server dispatch path bypasses
+    Worker → _persist → _notify_file_result, so without an explicit
+    notify call the Files panel stays empty for the entire run despite
+    continuous activity in app.log. Live reproducer: job d9918149's
+    Files panel showed 0 rows mid-run; the user thought the job was
+    stuck even though items were completing.
+
+    These tests assert that ``_dispatch_processable_items`` invokes the
+    file-result callback for every item — both happy path and the
+    exception-swallowed branch — so the panel populates as work
+    progresses.
+    """
+
+    def _items(self, n: int):
+        cfg = _server_config("srv-a", ServerType.JELLYFIN)
+        return [(cfg, ProcessableItem(canonical_path=f"/data/m{i}.mkv", server_id="srv-a")) for i in range(n)]
+
+    def test_emits_file_result_per_completed_item(self, tmp_path):
+        from media_preview_generator.jobs.orchestrator import _dispatch_processable_items
+        from media_preview_generator.processing.generator import set_file_result_callback
+        from media_preview_generator.processing.multi_server import MultiServerStatus
+
+        recorded: list[tuple] = []
+
+        def _cb(file_path, outcome_str, reason, worker, servers=None):
+            recorded.append((file_path, outcome_str, reason, worker, servers or []))
+
+        set_file_result_callback(_cb)
+        try:
+            with patch(
+                "media_preview_generator.processing.multi_server.process_canonical_path",
+                side_effect=[
+                    SimpleNamespace(
+                        publishers=[],
+                        canonical_path="/data/m0.mkv",
+                        status=MultiServerStatus.PUBLISHED,
+                        message="",
+                    ),
+                    SimpleNamespace(
+                        publishers=[],
+                        canonical_path="/data/m1.mkv",
+                        status=MultiServerStatus.SKIPPED,
+                        message="cached",
+                    ),
+                ],
+            ):
+                _dispatch_processable_items(
+                    items=self._items(2),
+                    config=_config(),
+                    registry=MagicMock(),
+                    selected_gpus=[],
+                    label="full scan",
+                )
+        finally:
+            set_file_result_callback(None)
+
+        assert len(recorded) == 2, f"Expected 2 file rows, got {len(recorded)}: {recorded!r}"
+        assert recorded[0][0] == "/data/m0.mkv"
+        assert recorded[0][1] == "generated"
+        assert recorded[1][0] == "/data/m1.mkv"
+        assert recorded[1][1] == "skipped_bif_exists"
+        # Worker label is present and non-empty so the Files panel column
+        # never shows a row with no attribution at all.
+        for r in recorded:
+            assert r[3], f"empty worker label on row {r!r}"
+
+    def test_emits_failed_file_result_when_process_canonical_path_raises(self, tmp_path):
+        """The exception-swallowed branch (process_canonical_path raised)
+        used to count toward the failed counter but never produce a
+        Files-panel row, so the user could see "5 failed" on the chip
+        but had no way to know which 5 files."""
+        from media_preview_generator.jobs.orchestrator import _dispatch_processable_items
+        from media_preview_generator.processing.generator import set_file_result_callback
+
+        recorded: list[tuple] = []
+
+        def _cb(file_path, outcome_str, reason, worker, servers=None):
+            recorded.append((file_path, outcome_str, reason, worker, servers or []))
+
+        set_file_result_callback(_cb)
+        try:
+            with patch(
+                "media_preview_generator.processing.multi_server.process_canonical_path",
+                side_effect=RuntimeError("FFmpeg crashed"),
+            ):
+                _dispatch_processable_items(
+                    items=self._items(1),
+                    config=_config(),
+                    registry=MagicMock(),
+                    selected_gpus=[],
+                    label="full scan",
+                )
+        finally:
+            set_file_result_callback(None)
+
+        assert len(recorded) == 1
+        path, outcome, _reason, _worker, _servers = recorded[0]
+        assert path == "/data/m0.mkv"
+        assert outcome == "failed", (
+            "exception-swallowed branch must still produce a per-file row so the user "
+            "can see which file blew up — without this the Files panel was just a counter."
+        )
+
+
+class TestWorkerCallbackEmissionFromMultiServerDispatch:
+    """D34 — multi-server dispatch path used to bypass the WorkerPool's
+    worker_callback so the Workers panel stayed empty for the entire run.
+    Synthetic worker rows derived from the executor's threads now flow
+    through the same callback the legacy path uses.
+    """
+
+    def test_worker_callback_fires_with_active_workers_during_run(self, tmp_path):
+        from media_preview_generator.jobs.orchestrator import _dispatch_processable_items
+        from media_preview_generator.processing.multi_server import MultiServerStatus
+
+        cfg = _server_config("srv-a", ServerType.JELLYFIN)
+        items = [
+            (
+                cfg,
+                ProcessableItem(
+                    canonical_path=f"/data/m{i}.mkv",
+                    server_id="srv-a",
+                    title=f"Movie {i}",
+                ),
+            )
+            for i in range(3)
+        ]
+
+        snapshots: list[list[dict]] = []
+
+        def _wcb(workers_list):
+            snapshots.append(list(workers_list))
+
+        with patch(
+            "media_preview_generator.processing.multi_server.process_canonical_path",
+            return_value=SimpleNamespace(
+                publishers=[],
+                canonical_path="/data/m.mkv",
+                status=MultiServerStatus.PUBLISHED,
+                message="",
+            ),
+        ):
+            _dispatch_processable_items(
+                items=items,
+                config=_config(),
+                registry=MagicMock(),
+                selected_gpus=[],
+                label="full scan",
+                worker_callback=_wcb,
+            )
+
+        # At least one snapshot must show a "processing" row — without
+        # the synthetic worker entries the panel would never have any
+        # rows at all during a multi-server scan.
+        assert any(any(w.get("status") == "processing" for w in snap) for snap in snapshots), (
+            f"no 'processing' worker entry in any snapshot: {snapshots!r}"
+        )
+        # Final state: every slot is back to idle (slots persist across
+        # the whole dispatch — they're not popped between items, that
+        # was the cause of the Workers-panel "flashing" bug). Slot
+        # *count* stays constant; only ``status`` and ``current_title``
+        # change in place.
+        assert snapshots[-1], "final snapshot must still carry the persistent slot rows"
+        assert all(w.get("status") == "idle" for w in snapshots[-1]), (
+            f"some slots ended in non-idle state: {snapshots[-1]!r}"
+        )
+        assert all(w.get("current_title") == "" for w in snapshots[-1]), (
+            "current_title must be cleared on idle so the panel doesn't keep showing a stale title"
+        )
+
+    def test_worker_callback_carries_current_title(self, tmp_path):
+        from media_preview_generator.jobs.orchestrator import _dispatch_processable_items
+        from media_preview_generator.processing.multi_server import MultiServerStatus
+
+        cfg = _server_config("srv-a", ServerType.JELLYFIN)
+        items = [
+            (
+                cfg,
+                ProcessableItem(
+                    canonical_path="/data/named.mkv",
+                    server_id="srv-a",
+                    title="The Named Movie",
+                ),
+            )
+        ]
+
+        captured_titles: list[str] = []
+
+        def _wcb(workers_list):
+            for w in workers_list:
+                if w.get("current_title"):
+                    captured_titles.append(w["current_title"])
+
+        with patch(
+            "media_preview_generator.processing.multi_server.process_canonical_path",
+            return_value=SimpleNamespace(
+                publishers=[],
+                canonical_path="/data/named.mkv",
+                status=MultiServerStatus.PUBLISHED,
+                message="",
+            ),
+        ):
+            _dispatch_processable_items(
+                items=items,
+                config=_config(),
+                registry=MagicMock(),
+                selected_gpus=[],
+                label="full scan",
+                worker_callback=_wcb,
+            )
+
+        assert "The Named Movie" in captured_titles, f"item title missing from worker snapshots: {captured_titles!r}"
+
+
+class TestFriendlyDeviceLabel:
+    """D34 — the raw gpu_info["name"] from lspci-style detection can be
+    extremely verbose (e.g. "Intel Corporation Raptor Lake-S GT1
+    [UHD Graphics 770] (rev 04)") which made the Workers-panel row
+    wrap and pushed the status badge around. The dispatcher's
+    _device_label helper extracts the bracketed user-recognisable
+    identifier when present.
+    """
+
+    def test_intel_long_name_collapses_to_bracketed_marketing_name(self, tmp_path):
+        # Verify by driving an actual dispatch with a synthetic gpu_info
+        # — the helper isn't exposed but we can read the worker_name it
+        # produces from the slot snapshot.
+        from media_preview_generator.jobs.orchestrator import _dispatch_processable_items
+        from media_preview_generator.processing.multi_server import MultiServerStatus
+
+        cfg = _server_config("srv-a", ServerType.JELLYFIN)
+        items = [(cfg, ProcessableItem(canonical_path="/data/m.mkv", server_id="srv-a"))]
+        gpus = [
+            (
+                "INTEL",
+                "/dev/dri/renderD128",
+                {
+                    "workers": 1,
+                    "ffmpeg_threads": 2,
+                    "device": "/dev/dri/renderD128",
+                    "name": "Intel Corporation Raptor Lake-S GT1 [UHD Graphics 770] (rev 04)",
+                },
+            ),
+            (
+                "NVIDIA",
+                "cuda:0",
+                {"workers": 1, "ffmpeg_threads": 2, "device": "cuda:0", "name": "NVIDIA TITAN RTX"},
+            ),
+        ]
+        snapshots: list[list[dict]] = []
+        with patch(
+            "media_preview_generator.processing.multi_server.process_canonical_path",
+            return_value=SimpleNamespace(
+                publishers=[], canonical_path="/data/m.mkv", status=MultiServerStatus.PUBLISHED, message=""
+            ),
+        ):
+            _dispatch_processable_items(
+                items=items,
+                config=_config(cpu_threads=0),
+                registry=MagicMock(),
+                selected_gpus=gpus,
+                label="full scan",
+                worker_callback=lambda w: snapshots.append(list(w)),
+            )
+
+        worker_names = {w["worker_name"] for snap in snapshots for w in snap}
+        # NVIDIA name is short already — pass through unchanged.
+        assert any(n == "GPU Worker 1 (Intel UHD Graphics 770)" for n in worker_names), (
+            f"Intel label must collapse the verbose lspci string to the bracketed marketing name; got {worker_names!r}"
+        )
+        assert any(n == "GPU Worker 2 (NVIDIA TITAN RTX)" for n in worker_names), (
+            f"NVIDIA short label must pass through unchanged; got {worker_names!r}"
+        )
+
+    def test_no_brackets_falls_back_to_full_name(self, tmp_path):
+        from media_preview_generator.jobs.orchestrator import _dispatch_processable_items
+        from media_preview_generator.processing.multi_server import MultiServerStatus
+
+        cfg = _server_config("srv-a", ServerType.JELLYFIN)
+        items = [(cfg, ProcessableItem(canonical_path="/data/m.mkv", server_id="srv-a"))]
+        gpus = [
+            ("NVIDIA", "cuda:0", {"workers": 1, "name": "NVIDIA GeForce RTX 4090"}),
+        ]
+        snapshots: list[list[dict]] = []
+        with patch(
+            "media_preview_generator.processing.multi_server.process_canonical_path",
+            return_value=SimpleNamespace(
+                publishers=[], canonical_path="/data/m.mkv", status=MultiServerStatus.PUBLISHED, message=""
+            ),
+        ):
+            _dispatch_processable_items(
+                items=items,
+                config=_config(cpu_threads=0),
+                registry=MagicMock(),
+                selected_gpus=gpus,
+                label="full scan",
+                worker_callback=lambda w: snapshots.append(list(w)),
+            )
+        worker_names = {w["worker_name"] for snap in snapshots for w in snap}
+        # Audit fix — was loose `"NVIDIA GeForce RTX 4090" in n` which would
+        # pass even if the formatter dropped the "GPU Worker N (...)" prefix.
+        # Mirror the rigour of test_intel_long_name_collapses_to_bracketed_marketing_name
+        # at L933 by pinning the full label format.
+        assert "GPU Worker 1 (NVIDIA GeForce RTX 4090)" in worker_names, (
+            f"NVIDIA fallback label must use full 'GPU Worker N (full name)' format; got {worker_names!r}"
+        )
+
+
+class TestParallelismRespectsPerDeviceWorkerCount:
+    """D34 — the multi-server dispatcher used to read ``workers`` off
+    each gpu_info entry via ``getattr(g[2], 'workers', 1)``. But
+    ``g[2]`` is the dict that ``_build_selected_gpus`` constructs with
+    ``info["workers"] = workers`` — a *key*, not an attribute. ``getattr``
+    on a dict returns the default unless the dict has an attribute with
+    that name (it doesn't), so a user with two GPUs each configured for
+    2 workers got parallelism=2 instead of 4. Live reproducer on the
+    canary: Workers panel only ever showed 2 rows during a Plex Movies
+    scan despite Settings → GPU listing 2+2.
+    """
+
+    @staticmethod
+    def _make_gpu(device: str, workers: int, gpu_type: str = "NVIDIA") -> tuple:
+        # Mirror what _build_selected_gpus produces — a plain dict, not
+        # a SimpleNamespace. The previous test that used SimpleNamespace
+        # inadvertently *worked around* the bug because getattr does
+        # find attributes on SimpleNamespace.
+        return (gpu_type, device, {"workers": workers, "ffmpeg_threads": 2, "device": device})
+
+    def test_per_device_workers_count_expands_into_real_concurrency(self, tmp_path):
+        from media_preview_generator.jobs.orchestrator import _dispatch_processable_items
+        from media_preview_generator.processing.multi_server import MultiServerStatus
+
+        cfg = _server_config("srv-a", ServerType.JELLYFIN)
+        items = [
+            (cfg, ProcessableItem(canonical_path=f"/data/m{i}.mkv", server_id="srv-a", title=f"M{i}")) for i in range(8)
+        ]
+
+        snapshots: list[list[dict]] = []
+
+        def _wcb(workers_list):
+            snapshots.append(list(workers_list))
+
+        # 2 NVIDIA workers + 2 Intel workers — exactly the canary config.
+        gpus = [
+            self._make_gpu("cuda:0", workers=2, gpu_type="NVIDIA"),
+            self._make_gpu("/dev/dri/renderD128", workers=2, gpu_type="INTEL"),
+        ]
+
+        # The mock has to sleep long enough that multiple threads are
+        # alive concurrently — otherwise pool.map serialises by accident
+        # because each item finishes before the next thread is spawned.
+        # 50ms × 8 items = ~100ms wall on parallelism=4.
+        import time as _time
+
+        def _slow(canonical_path, **kwargs):
+            _time.sleep(0.05)
+            return SimpleNamespace(
+                publishers=[],
+                canonical_path=canonical_path,
+                status=MultiServerStatus.PUBLISHED,
+                message="",
+            )
+
+        # Disable the snapshot throttle so per-item transitions are
+        # observable in this 100 ms test (production cadence is 1 Hz
+        # — see ``_WORKER_EMIT_THROTTLE_S``). Throttle is irrelevant
+        # to what this test is checking (peak concurrent slot
+        # transitions); keeping it on would mask the "all 4 active
+        # at once" moment behind the throttle window.
+        with (
+            patch("media_preview_generator.jobs.orchestrator._WORKER_EMIT_THROTTLE_S", 0.0),
+            patch(
+                "media_preview_generator.processing.multi_server.process_canonical_path",
+                side_effect=_slow,
+            ),
+        ):
+            _dispatch_processable_items(
+                items=items,
+                config=_config(cpu_threads=0),
+                registry=MagicMock(),
+                selected_gpus=gpus,
+                label="full scan",
+                worker_callback=_wcb,
+            )
+
+        # Slot count is always 4 (slots persist across the whole
+        # dispatch — they don't pop between items, that was the
+        # "Workers panel flashing" bug). What we actually need to
+        # assert is that all 4 slots transition to "processing"
+        # *concurrently* at some point.
+        peak_processing = max(
+            (sum(1 for w in snap if w.get("status") == "processing") for snap in snapshots),
+            default=0,
+        )
+        assert peak_processing == 4, (
+            f"Configured 2 NVIDIA + 2 Intel = 4 worker slots; observed peak "
+            f"concurrently-processing workers = {peak_processing}. The Workers "
+            f"panel only showed that many active rows on the canary."
+        )
+
+        # Slot rows persist for the whole dispatch — every snapshot
+        # must always carry exactly 4 rows (not 0..4 oscillating).
+        # That's the fix for the "rows flash on/off" bug.
+        slot_counts = sorted({len(s) for s in snapshots})
+        assert slot_counts == [4], (
+            f"Slot rows must persist (always present, only status flips). Observed snapshot lengths: {slot_counts!r}"
+        )
+
+        # Each slot has a stable worker_id (1..N) for the lifetime of
+        # the dispatch — used by the Files panel to attribute each row
+        # to the worker that handled it.
+        all_ids: set[int] = set()
+        for snap in snapshots:
+            for w in snap:
+                all_ids.add(w.get("worker_id"))
+        assert all_ids == {1, 2, 3, 4}, f"slot ids must be the stable 1..N range, got {all_ids!r}"
+
+        # Each slot's friendly name follows the legacy WorkerPool
+        # format ("GPU Worker N (Device)") so the multi-server panel
+        # rows look identical to the legacy panel rows. We used the
+        # device path here ("cuda:0") since the test fixture didn't
+        # set a name; production passes a real device name through
+        # the same formatter.
+        worker_names = sorted({w.get("worker_name", "") for snap in snapshots for w in snap})
+        assert any("GPU Worker" in n and "cuda:0" in n for n in worker_names), (
+            f"NVIDIA slot label missing the 'GPU Worker N (cuda:0)' shape; got {worker_names!r}"
+        )
+        assert any("GPU Worker" in n and "renderD128" in n for n in worker_names), (
+            f"Intel slot label missing the 'GPU Worker N (renderD128)' shape; got {worker_names!r}"
+        )
+
+    def test_workers_zero_treated_as_one(self, tmp_path):
+        """A pathological workers=0 in gpu_config used to silently zero
+        out a device's contribution; clamp to ≥1 so users can't hide a
+        device behind a typo."""
+        from media_preview_generator.jobs.orchestrator import _dispatch_processable_items
+        from media_preview_generator.processing.multi_server import MultiServerStatus
+
+        cfg = _server_config("srv-a", ServerType.JELLYFIN)
+        items = [(cfg, ProcessableItem(canonical_path="/data/x.mkv", server_id="srv-a"))]
+
+        snapshots: list[list[dict]] = []
+        gpus = [self._make_gpu("cuda:0", workers=0)]
+
+        with patch(
+            "media_preview_generator.processing.multi_server.process_canonical_path",
+            return_value=SimpleNamespace(
+                publishers=[],
+                canonical_path="/data/x.mkv",
+                status=MultiServerStatus.PUBLISHED,
+                message="",
+            ),
+        ):
+            _dispatch_processable_items(
+                items=items,
+                config=_config(),
+                registry=MagicMock(),
+                selected_gpus=gpus,
+                label="full scan",
+                worker_callback=lambda w: snapshots.append(list(w)),
+            )
+
+        # Pin the clamp behaviour, not just "something happened". The
+        # orchestrator's _read_workers_count must turn workers=0 into
+        # exactly 1 GPU slot for the cuda:0 device. The previous
+        # ``any(snapshots)`` check would still pass if the clamp were
+        # silently dropped (because the cpu_threads=1 default produces a
+        # CPU slot regardless, masking the missing GPU slot).
+        assert snapshots, "no worker snapshots emitted at all"
+        last_snap = snapshots[-1]
+        gpu_slots_for_device = [
+            w for w in last_snap if w.get("worker_type") == "GPU" and w.get("gpu_device") == "cuda:0"
+        ]
+        assert len(gpu_slots_for_device) == 1, (
+            f"workers=0 must clamp to exactly 1 GPU slot for cuda:0; got {len(gpu_slots_for_device)} "
+            f"(full snapshot={last_snap!r})"
+        )
+
+    def test_slot_rows_persist_across_items_no_flashing(self, tmp_path):
+        """User-reported bug: Workers panel rows flashed on/off as
+        items completed. Root cause was per-item pop-on-finally + add-on-
+        next-pickup. Fix: pre-allocated slots that flip status in place
+        and never pop. This test asserts both invariants:
+        - every snapshot has the same number of rows (no flashing)
+        - the same worker_id keeps the same worker_name across snapshots
+          (no identity churn between items)
+        """
+        from media_preview_generator.jobs.orchestrator import _dispatch_processable_items
+        from media_preview_generator.processing.multi_server import MultiServerStatus
+
+        cfg = _server_config("srv-a", ServerType.JELLYFIN)
+        items = [
+            (cfg, ProcessableItem(canonical_path=f"/d/m{i}.mkv", server_id="srv-a", title=f"M{i}")) for i in range(8)
+        ]
+        snapshots: list[list[dict]] = []
+        gpus = [self._make_gpu("cuda:0", workers=2)]
+
+        import time as _time
+
+        def _slow(canonical_path, **kwargs):
+            _time.sleep(0.03)
+            return SimpleNamespace(
+                publishers=[],
+                canonical_path=canonical_path,
+                status=MultiServerStatus.PUBLISHED,
+                message="",
+            )
+
+        with patch(
+            "media_preview_generator.processing.multi_server.process_canonical_path",
+            side_effect=_slow,
+        ):
+            _dispatch_processable_items(
+                items=items,
+                config=_config(cpu_threads=0),
+                registry=MagicMock(),
+                selected_gpus=gpus,
+                label="full scan",
+                worker_callback=lambda w: snapshots.append(list(w)),
+            )
+
+        # Invariant 1 — slot count never changes during the run.
+        # Pre-fix: lengths oscillated [0, 1, 2, 1, 0, 1, 2, …] as
+        # workers popped in finally blocks and re-added on the next
+        # item pickup; the panel rendered that as rows blinking.
+        sizes = {len(s) for s in snapshots}
+        assert sizes == {2}, (
+            f"Workers panel rows must persist across items (no flashing); observed snapshot sizes: {sorted(sizes)!r}"
+        )
+
+        # Invariant 2 — each stable worker_id keeps the same friendly
+        # name and same gpu_device for the entire job. If a slot's
+        # name changed mid-run the panel would show "row swap" which
+        # is the same UX as a flash.
+        identity_by_id: dict[int, tuple[str, str | None]] = {}
+        for snap in snapshots:
+            for w in snap:
+                wid = w["worker_id"]
+                ident = (w["worker_name"], w.get("gpu_device"))
+                if wid in identity_by_id:
+                    assert identity_by_id[wid] == ident, (
+                        f"Slot {wid} identity changed mid-run from {identity_by_id[wid]!r} to {ident!r}"
+                    )
+                else:
+                    identity_by_id[wid] = ident
+        assert set(identity_by_id) == {1, 2}, identity_by_id
+
+
+class TestHotReloadWorkerCount:
+    """User report: bumped NVIDIA workers 2→3 in Settings while a job
+    was running, only saw the 3rd row after stopping + refreshing.
+    "IT SHould live update workers on changing the number of them even
+    in middle of job. it usef to work" — fix is the periodic settings
+    poller inside ``_dispatch_processable_items``.
+    """
+
+    @staticmethod
+    def _make_gpu(device: str, workers: int, gpu_type: str = "NVIDIA", name: str | None = None) -> tuple:
+        return (
+            gpu_type,
+            device,
+            {
+                "workers": workers,
+                "ffmpeg_threads": 2,
+                "device": device,
+                "name": name or "NVIDIA TITAN RTX",
+            },
+        )
+
+    def test_growing_gpu_workers_mid_job_adds_a_slot(self, tmp_path):
+        """Bumps NVIDIA workers 2→3 mid-job via the settings_manager
+        the poller reads from. Asserts a third slot appears in the
+        snapshots (not just at the end — while items are still
+        processing)."""
+        import time as _time
+
+        from media_preview_generator.jobs.orchestrator import _dispatch_processable_items
+        from media_preview_generator.processing.multi_server import MultiServerStatus
+
+        cfg = _server_config("srv-a", ServerType.JELLYFIN)
+        # Enough items that we definitely have work in flight when we
+        # bump the setting (each item sleeps ~80ms below).
+        # 60 items × 200ms ÷ 2 workers ≈ 6s wall clock, plenty of time
+        # for the 1.5s poller to tick after the bump fires at t=2s.
+        items = [
+            (cfg, ProcessableItem(canonical_path=f"/d/m{i}.mkv", server_id="srv-a", title=f"M{i}")) for i in range(60)
+        ]
+        snapshots: list[list[dict]] = []
+        gpus = [self._make_gpu("cuda:0", workers=2, name="NVIDIA TITAN RTX")]
+
+        def _slow(canonical_path, **kwargs):
+            _time.sleep(0.2)
+            return SimpleNamespace(
+                publishers=[],
+                canonical_path=canonical_path,
+                status=MultiServerStatus.PUBLISHED,
+                message="",
+            )
+
+        # Mutable settings stub so we can flip the worker count after
+        # a delay — same shape the poller reads from
+        # `get_settings_manager()` in production.
+        gpu_config_state = [{"device": "cuda:0", "type": "NVIDIA", "enabled": True, "workers": 2, "ffmpeg_threads": 2}]
+
+        class _FakeSettings:
+            @property
+            def gpu_config(self):
+                return gpu_config_state
+
+            cpu_threads = 0
+
+        def _bump_after_delay():
+            _time.sleep(2.0)  # poll interval is 1.5s; give it a tick to read the original then bump
+            gpu_config_state[0]["workers"] = 3
+
+        import threading as _threading
+
+        bumper = _threading.Thread(target=_bump_after_delay, daemon=True)
+        bumper.start()
+
+        with (
+            patch(
+                "media_preview_generator.processing.multi_server.process_canonical_path",
+                side_effect=_slow,
+            ),
+            patch("media_preview_generator.web.settings_manager.get_settings_manager", return_value=_FakeSettings()),
+        ):
+            _dispatch_processable_items(
+                items=items,
+                config=_config(cpu_threads=0),
+                registry=MagicMock(),
+                selected_gpus=gpus,
+                label="full scan",
+                worker_callback=lambda w: snapshots.append(list(w)),
+            )
+
+        # Snapshot lengths over the run: must include 2 (initial) AND
+        # at least one snapshot with 3 (after the poller picked up the
+        # bump). If hot-reload is broken we'd only ever see 2.
+        max_seen = max(len(s) for s in snapshots)
+        assert max_seen >= 3, (
+            f"Settings bump 2→3 was not picked up mid-job; max concurrent slot count "
+            f"observed = {max_seen}. Snapshot timeline (lengths): {[len(s) for s in snapshots]!r}"
+        )
+        # And at least one of the post-bump snapshots must have 3
+        # slots ALL with the new "GPU Worker N (NVIDIA TITAN RTX)" label
+        # — not just three random slots.
+        big_snapshots = [s for s in snapshots if len(s) >= 3]
+        assert big_snapshots, "no snapshot with ≥3 slots — hot-reload didn't take effect"
+        sample = big_snapshots[-1]
+        names = sorted(s["worker_name"] for s in sample)
+        assert all("NVIDIA TITAN RTX" in n and "GPU Worker" in n for n in names), (
+            f"new slot didn't get the standard 'GPU Worker N (NVIDIA TITAN RTX)' label; got {names!r}"
+        )
+
+
+class TestPerJobLogCapture:
+    """D27 — every executor-pool worker thread MUST register itself
+    under the active job's id so the per-job log handler captures the
+    per-file Dispatch / FFmpeg / Publisher lines.
+
+    Without this, the Emby/Jellyfin full-scan path (which uses a raw
+    ThreadPoolExecutor instead of the JobDispatcher → Worker chain that
+    Plex uses) leaves its worker threads anonymous. The per-job log
+    handler's filter is_job_thread_for(record.thread.id, job_id) drops
+    every record from those threads. Result: per-job log file shows
+    only the lifecycle markers ("Started job", "dispatching N items")
+    while app.log shows continuous activity.
+    """
+
+    def test_dispatch_processable_items_registers_executor_threads(self, tmp_path):
+        from media_preview_generator.jobs.orchestrator import _dispatch_processable_items
+        from media_preview_generator.jobs.worker import (
+            _job_thread_to_job_id,
+            register_job_thread,
+            unregister_job_thread,
+        )
+
+        cfg = _server_config("srv-a", ServerType.JELLYFIN)
+        items = [
+            (
+                cfg,
+                ProcessableItem(
+                    canonical_path=f"/data/m{i}.mkv",
+                    server_id="srv-a",
+                    item_id_by_server={"srv-a": str(i)},
+                    title=f"M{i}",
+                    library_id="lib1",
+                ),
+            )
+            for i in range(3)
+        ]
+
+        # Reset registry. The dispatch-pool's threads should populate it
+        # with the test job_id; without the D27 fix they'd remain absent
+        # (or registered to "" if a previous task on a recycled thread had
+        # left a different mapping).
+        _job_thread_to_job_id.clear()
+        register_job_thread("MAIN")  # the test thread itself
+
+        captured_thread_to_job: dict = {}
+
+        def fake_pcp(canonical_path, **_):
+            import threading as _t
+
+            from media_preview_generator.jobs.worker import _job_thread_to_job_id as _r
+
+            captured_thread_to_job[_t.get_ident()] = _r.get(_t.get_ident())
+            return SimpleNamespace(publishers=[], canonical_path=canonical_path)
+
+        try:
+            with patch(
+                "media_preview_generator.processing.multi_server.process_canonical_path",
+                side_effect=fake_pcp,
+            ):
+                _dispatch_processable_items(
+                    items=items,
+                    config=_config(),
+                    registry=MagicMock(),
+                    selected_gpus=[],
+                    job_id="job-D27-test",
+                    label="full scan",
+                )
+        finally:
+            unregister_job_thread()
+
+        # Every executor thread that ran an item must have been registered
+        # under the test job's id. Empty-string registration (the bug) or
+        # missing registration both fail this.
+        assert captured_thread_to_job, "no items processed?"
+        for tid, mapped_job in captured_thread_to_job.items():
+            assert mapped_job == "job-D27-test", (
+                f"thread {tid} was registered to {mapped_job!r}, expected 'job-D27-test' — "
+                "per-job log filter would drop this thread's logs"
+            )
+
+
+class TestPauseGate:
+    """D32: pause_check on the multi-server full-scan path.
+
+    The dispatcher path (job_runner → JobDispatcher) honours pause via
+    tracker.is_paused() in _get_next_item, but the multi-server
+    ThreadPoolExecutor path used to ignore pause entirely. Pausing only
+    halted in-flight FFmpegs (via SIGSTOP from commit 6d812ad); the
+    executor kept pulling the next item and launching fresh subprocesses
+    until the queue drained. Reproduced as "FFmpegs continued spawning
+    for 6 minutes after I clicked Pause."
+    """
+
+    def test_pause_check_blocks_dispatch_until_unpaused(self, tmp_path):
+        """When pause_check returns True initially then False, items wait
+        and are dispatched only after pause is released. Asserts pause_check
+        is polled (not just consulted once) so the gate actually blocks."""
+        from media_preview_generator.jobs.orchestrator import _dispatch_processable_items
+
+        cfg = _server_config("srv-a", ServerType.JELLYFIN)
+        items = [(cfg, ProcessableItem(canonical_path="/data/m.mkv", server_id="srv-a"))]
+
+        pause_calls = {"count": 0}
+
+        def pause_check():
+            pause_calls["count"] += 1
+            # Block for the first 2 polls (~500ms), then release.
+            return pause_calls["count"] <= 2
+
+        with patch(
+            "media_preview_generator.processing.multi_server.process_canonical_path",
+        ) as mock_process:
+            mock_process.return_value = SimpleNamespace(publishers=[], canonical_path="/data/m.mkv", status=None)
+            _dispatch_processable_items(
+                items=items,
+                config=_config(),
+                registry=MagicMock(),
+                selected_gpus=[],
+                pause_check=pause_check,
+                label="full scan",
+            )
+
+        # Polled at least 2 times before being released, then dispatched.
+        assert pause_calls["count"] >= 2, (
+            f"pause_check polled only {pause_calls['count']} time(s) — "
+            "the gate must spin-wait on pause, not consult once and bail"
+        )
+        mock_process.assert_called_once()
+
+    def test_pause_then_cancel_aborts_without_dispatch(self, tmp_path):
+        """When the user pauses then cancels, the item must abort without
+        ever calling process_canonical_path — otherwise Cancel-after-Pause
+        is stuck waiting for the unpause that never comes."""
+        from media_preview_generator.jobs.orchestrator import _dispatch_processable_items
+
+        cfg = _server_config("srv-a", ServerType.JELLYFIN)
+        items = [(cfg, ProcessableItem(canonical_path="/data/m.mkv", server_id="srv-a"))]
+
+        cancel_state = {"cancelled": False}
+
+        def pause_check():
+            # First pause poll: arm the cancellation, then keep paused.
+            cancel_state["cancelled"] = True
+            return True
+
+        def cancel_check():
+            return cancel_state["cancelled"]
+
+        with patch(
+            "media_preview_generator.processing.multi_server.process_canonical_path",
+        ) as mock_process:
+            _dispatch_processable_items(
+                items=items,
+                config=_config(),
+                registry=MagicMock(),
+                selected_gpus=[],
+                pause_check=pause_check,
+                cancel_check=cancel_check,
+                label="full scan",
+            )
+
+        # FFmpeg / canonical-path dispatch must not have fired — pause
+        # was holding the thread, then cancel released it without work.
+        mock_process.assert_not_called()
+
+
+class TestMultiPlexDeduping:
+    """Phase P4: when the same canonical_path appears on more than one
+    enabled server (e.g. two Plex servers sharing storage, or Plex+Jellyfin
+    over the same media), the dispatcher dedups by canonical_path and
+    merges every server's vendor item-id into a single ProcessableItem
+    so each adapter still finds its target."""
+
+    def test_two_plex_servers_sharing_media_dispatches_once_per_path(self, tmp_path):
+        cfg_plex_a = _server_config("plex-a", ServerType.PLEX)
+        cfg_plex_b = _server_config("plex-b", ServerType.PLEX)
+        registry_mock = MagicMock()
+        registry_mock.configs.return_value = [cfg_plex_a, cfg_plex_b]
+
+        # Same canonical_path enumerated by both Plex servers, each with
+        # its own vendor item-id.
+        proc_a = MagicMock()
+        proc_a.list_canonical_paths.return_value = iter(
+            [
+                ProcessableItem(
+                    canonical_path="/data/Movies/Foo.mkv",
+                    server_id="plex-a",
+                    item_id_by_server={"plex-a": "rk-A"},
+                ),
+            ]
+        )
+        proc_b = MagicMock()
+        proc_b.list_canonical_paths.return_value = iter(
+            [
+                ProcessableItem(
+                    canonical_path="/data/Movies/Foo.mkv",
+                    server_id="plex-b",
+                    item_id_by_server={"plex-b": "rk-B"},
+                ),
+            ]
+        )
+
+        with (
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+            patch("media_preview_generator.servers.ServerRegistry") as mock_registry,
+            patch("media_preview_generator.processing.get_processor_for", return_value=proc_a),
+            patch("media_preview_generator.processing.multi_server.process_canonical_path") as mock_process,
+        ):
+            mock_sm.return_value.get.return_value = [
+                {"id": "plex-a", "type": "plex", "enabled": True},
+                {"id": "plex-b", "type": "plex", "enabled": True},
+            ]
+            mock_registry.from_settings.return_value = registry_mock
+
+            # Both processors return the same path — proc_a is returned
+            # by get_processor_for(plex), so we hand-feed proc_b's items
+            # by chaining the iterator.
+            chained_iter = iter(
+                [
+                    *list(proc_a.list_canonical_paths.return_value),
+                    *list(proc_b.list_canonical_paths.return_value),
+                ]
+            )
+            proc_a.list_canonical_paths.return_value = chained_iter
+            mock_process.return_value = MagicMock(publishers=[])
+
+            _run_full_scan_multi_server(_config(), selected_gpus=[])
+
+        # process_canonical_path fired EXACTLY once despite the path
+        # appearing twice in enumeration — Phase P4 dedup.
+        assert mock_process.call_count == 1
+        # And the merged hint includes BOTH servers' item-ids so each
+        # PlexBundleAdapter call (plex-a's and plex-b's) can resolve
+        # its own bundle hash.
+        kwargs = mock_process.call_args.kwargs
+        merged = kwargs.get("item_id_by_server") or {}
+        assert merged.get("plex-a") == "rk-A", merged
+        assert merged.get("plex-b") == "rk-B", merged
+
+    def test_plex_plus_jellyfin_sharing_media_dispatches_once(self, tmp_path):
+        """Cross-vendor variant of the above — Plex + Jellyfin both own
+        the same canonical_path. Single dispatch, item-id hints carry
+        both vendor identifiers."""
+        cfg_plex = _server_config("plex-1", ServerType.PLEX)
+        cfg_jf = _server_config("jf-1", ServerType.JELLYFIN)
+        registry_mock = MagicMock()
+        registry_mock.configs.return_value = [cfg_plex, cfg_jf]
+
+        proc_plex = MagicMock()
+        proc_plex.list_canonical_paths.return_value = iter(
+            [
+                ProcessableItem(
+                    canonical_path="/data/Show/S01E01.mkv",
+                    server_id="plex-1",
+                    item_id_by_server={"plex-1": "rk-1"},
+                ),
+            ]
+        )
+        proc_jf = MagicMock()
+        proc_jf.list_canonical_paths.return_value = iter(
+            [
+                ProcessableItem(
+                    canonical_path="/data/Show/S01E01.mkv",
+                    server_id="jf-1",
+                    item_id_by_server={"jf-1": "jf-id"},
+                ),
+            ]
+        )
+
+        def _get_proc(stype):
+            return {ServerType.PLEX: proc_plex, ServerType.JELLYFIN: proc_jf}[stype]
+
+        with (
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+            patch("media_preview_generator.servers.ServerRegistry") as mock_registry,
+            patch("media_preview_generator.processing.get_processor_for", side_effect=_get_proc),
+            patch("media_preview_generator.processing.multi_server.process_canonical_path") as mock_process,
+        ):
+            mock_sm.return_value.get.return_value = [
+                {"id": "plex-1", "type": "plex", "enabled": True},
+                {"id": "jf-1", "type": "jellyfin", "enabled": True},
+            ]
+            mock_registry.from_settings.return_value = registry_mock
+            mock_process.return_value = MagicMock(publishers=[])
+
+            _run_full_scan_multi_server(_config(), selected_gpus=[])
+
+        assert mock_process.call_count == 1
+        merged = mock_process.call_args.kwargs.get("item_id_by_server") or {}
+        assert merged.get("plex-1") == "rk-1", merged
+        assert merged.get("jf-1") == "jf-id", merged
+
+
+class TestRealEndToEndMultiServerFullScan:
+    """Boundary-only end-to-end test: real ``_run_full_scan_multi_server`` →
+    real ``_dispatch_processable_items`` → real ``process_canonical_path`` →
+    real ``_publish_one``, with mocks at only:
+
+      * the per-vendor processor's enumeration (replaces network-backed
+        library walk),
+      * ``generate_images`` (FFmpeg subprocess),
+      * the adapter's ``compute_output_paths`` / ``publish`` so we don't
+        write to a real Plex bundle directory but DO capture every call
+        the real publisher path makes,
+      * ``os.path.isfile`` / ``os.listdir`` filesystem boundary.
+
+    The point: D31 shipped because every test stubbed the function with
+    the bug. This test is the canary — if any future change reshapes the
+    canonical-path or item-id flow, this assertion fires.
+    """
+
+    def test_full_scan_drives_real_publish_with_well_formed_inputs(self, tmp_path):
+        cfg = _server_config("srv-real", ServerType.JELLYFIN)
+        registry_real = MagicMock()
+        registry_real.configs.return_value = [cfg]
+
+        # The real _resolve_publishers (in multi_server.py) calls
+        # registry.find_owning_servers(canonical_path) — wire that up to
+        # return the same server + adapter the dispatcher must publish to.
+        server_obj = MagicMock(id="srv-real", name="Test jellyfin")
+        adapter = MagicMock()
+        adapter.name = "test_adapter"
+        adapter.compute_output_paths.return_value = [tmp_path / "out" / "trickplay.bif"]
+        adapter.publish.return_value = None
+
+        # Capture every call the real publisher path makes — these are
+        # the "URLs hit" the audit asks for. The adapter is the boundary
+        # where we'd see a doubled prefix or a leaked URL-form id.
+        captured_compute_calls: list = []
+        captured_publish_calls: list = []
+
+        def _capture_compute(bundle, srv, item_id):
+            captured_compute_calls.append({"canonical_path": bundle.canonical_path, "item_id": item_id, "server": srv})
+            return [tmp_path / "out" / "trickplay.bif"]
+
+        def _capture_publish(bundle, output_paths, item_id=None):
+            captured_publish_calls.append(
+                {
+                    "canonical_path": bundle.canonical_path,
+                    "frame_count": bundle.frame_count,
+                    "item_id": item_id,
+                    "output_paths": output_paths,
+                }
+            )
+
+        adapter.compute_output_paths.side_effect = _capture_compute
+        adapter.publish.side_effect = _capture_publish
+
+        # The vendor processor enumerates one item; we drive it with a
+        # bare ratingKey-style id (the production canonical form).
+        proc = MagicMock()
+        proc.list_canonical_paths.return_value = iter(
+            [
+                ProcessableItem(
+                    canonical_path="/data/movies/Real (2024)/Real (2024).mkv",
+                    server_id="srv-real",
+                    item_id_by_server={"srv-real": "12345"},
+                    title="Real (2024)",
+                    library_id="lib-real",
+                )
+            ]
+        )
+
+        cfg_obj = SimpleNamespace(
+            gpu_threads=0,
+            cpu_threads=1,
+            working_tmp_folder=str(tmp_path / "work"),
+            tmp_folder=str(tmp_path / "frames"),
+            plex_url="",
+            plex_token="",
+            webhook_paths=None,
+            server_id_filter=None,
+            plex_bif_frame_interval=5,
+            thumbnail_interval=5,
+            server_display_name="srv-real",
+        )
+
+        with (
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+            patch("media_preview_generator.servers.ServerRegistry") as mock_registry,
+            patch("media_preview_generator.processing.get_processor_for", return_value=proc),
+            # Only the *boundary* mocks — the real process_canonical_path
+            # body runs from here down.
+            patch(
+                "media_preview_generator.processing.multi_server._resolve_publishers",
+                return_value=[(server_obj, adapter, "12345")],
+            ),
+            patch(
+                "media_preview_generator.processing.multi_server._resolve_item_id_for",
+                return_value="12345",
+            ),
+            patch(
+                "media_preview_generator.processing.multi_server.outputs_fresh_for_source",
+                return_value=False,
+            ),
+            patch(
+                "media_preview_generator.processing.multi_server.os.path.isfile",
+                return_value=True,
+            ),
+            patch(
+                "media_preview_generator.processing.multi_server.generate_images",
+                return_value=(True, 8, "h264", 320, 30.0, 320),
+            ),
+            patch(
+                "media_preview_generator.processing.multi_server.os.listdir",
+                return_value=[f"{i:05d}.jpg" for i in range(1, 9)],
+            ),
+            patch(
+                "media_preview_generator.processing.multi_server.write_meta",
+            ),
+        ):
+            mock_sm.return_value.get.return_value = [{"id": "srv-real", "type": "jellyfin", "enabled": True}]
+            mock_registry.from_settings.return_value = registry_real
+
+            counts = _run_full_scan_multi_server(cfg_obj, selected_gpus=[])
+
+        # The real pipeline ran end-to-end and recorded one publish.
+        assert counts.get("published", 0) == 1, counts
+        # compute_output_paths is called twice in the real flow: once by
+        # the pre-FFmpeg "are outputs fresh?" probe, once inside
+        # _publish_one for the publish path. Both must see the same
+        # canonical path and the same bare item id — that's the D31 contract.
+        assert len(captured_compute_calls) == 2
+        assert len(captured_publish_calls) == 1
+
+        for call in captured_compute_calls:
+            assert call["canonical_path"] == "/data/movies/Real (2024)/Real (2024).mkv"
+            assert call["item_id"] == "12345"
+            assert not str(call["item_id"]).startswith("/library/metadata/"), (
+                f"D31 regression: URL-form item id leaked to compute_output_paths: {call['item_id']!r}"
+            )
+
+        publish_call = captured_publish_calls[0]
+        assert publish_call["canonical_path"] == "/data/movies/Real (2024)/Real (2024).mkv"
+        assert publish_call["item_id"] == "12345"
+        assert not str(publish_call["item_id"]).startswith("/library/metadata/"), (
+            f"D31 regression: URL-form item id leaked to publish: {publish_call['item_id']!r}"
+        )
+        # Frame count from generate_images flowed through to the bundle.
+        assert publish_call["frame_count"] == 8
+
+
+class TestFoldPublisherRowsIntoAggregate:
+    """Unit tests for the per-server aggregate helper that backs both
+    the dispatcher's ``_merge_worker_outcome`` and the full-scan
+    ``_dispatch_processable_items``. The dispatcher path was patched to
+    aggregate-then-set in commit 1ecf099; the full-scan path was missed
+    and kept ``append_publishers``-ing per file × server, which on a
+    117k-item library scan grew publishers_json to 11.8 MB and
+    re-encoded + UPSERTed it after every item. This helper is the
+    single source of truth so the next refactor can't drift them apart
+    again.
+    """
+
+    def test_single_row_creates_one_entry_with_count_one(self):
+        from media_preview_generator.jobs.orchestrator import fold_publisher_rows_into_aggregate
+
+        agg: dict[str, dict] = {}
+        fold_publisher_rows_into_aggregate(
+            agg,
+            [{"server_id": "p1", "server_name": "Plex", "server_type": "plex", "status": "published"}],
+        )
+        assert agg == {
+            "p1": {
+                "server_id": "p1",
+                "server_name": "Plex",
+                "server_type": "plex",
+                "counts": {"published": 1},
+            }
+        }
+
+    def test_repeated_status_increments_count(self):
+        """The whole point — many calls don't grow the dict, only the counts."""
+        from media_preview_generator.jobs.orchestrator import fold_publisher_rows_into_aggregate
+
+        agg: dict[str, dict] = {}
+        for _ in range(50):
+            fold_publisher_rows_into_aggregate(
+                agg,
+                [{"server_id": "p1", "server_name": "Plex", "server_type": "plex", "status": "published"}],
+            )
+        assert list(agg.keys()) == ["p1"]
+        assert agg["p1"]["counts"] == {"published": 50}
+
+    def test_mixed_statuses_for_same_server_track_separately(self):
+        from media_preview_generator.jobs.orchestrator import fold_publisher_rows_into_aggregate
+
+        agg: dict[str, dict] = {}
+        rows = [
+            {"server_id": "e1", "server_name": "Emby", "server_type": "emby", "status": "published"},
+            {"server_id": "e1", "server_name": "Emby", "server_type": "emby", "status": "failed"},
+            {"server_id": "e1", "server_name": "Emby", "server_type": "emby", "status": "failed"},
+        ]
+        for row in rows:
+            fold_publisher_rows_into_aggregate(agg, [row])
+        assert agg["e1"]["counts"] == {"published": 1, "failed": 2}
+
+    def test_multi_server_rows_keep_one_entry_per_server(self):
+        from media_preview_generator.jobs.orchestrator import fold_publisher_rows_into_aggregate
+
+        agg: dict[str, dict] = {}
+        fold_publisher_rows_into_aggregate(
+            agg,
+            [
+                {"server_id": "p1", "server_name": "Plex", "server_type": "plex", "status": "published"},
+                {"server_id": "e1", "server_name": "Emby", "server_type": "emby", "status": "published"},
+            ],
+        )
+        fold_publisher_rows_into_aggregate(
+            agg,
+            [
+                {"server_id": "p1", "server_name": "Plex", "server_type": "plex", "status": "published"},
+                {"server_id": "e1", "server_name": "Emby", "server_type": "emby", "status": "failed"},
+            ],
+        )
+        assert set(agg.keys()) == {"p1", "e1"}
+        assert agg["p1"]["counts"] == {"published": 2}
+        assert agg["e1"]["counts"] == {"published": 1, "failed": 1}
+
+    def test_row_with_blank_server_id_is_dropped(self):
+        """Rows missing a server_id can't be attributed and must not
+        create a phantom empty-key entry that pollutes the dashboard."""
+        from media_preview_generator.jobs.orchestrator import fold_publisher_rows_into_aggregate
+
+        agg: dict[str, dict] = {}
+        fold_publisher_rows_into_aggregate(
+            agg,
+            [
+                {"server_id": "", "server_name": "?", "status": "published"},
+                {"server_id": None, "server_name": "?", "status": "published"},
+            ],
+        )
+        assert agg == {}
+
+    def test_late_arriving_name_and_type_fill_in_an_empty_first_row(self):
+        """If the first row for a server has only the id (e.g. before
+        settings_manager has populated names), a later row with the
+        proper name/type should fill those fields in."""
+        from media_preview_generator.jobs.orchestrator import fold_publisher_rows_into_aggregate
+
+        agg: dict[str, dict] = {}
+        fold_publisher_rows_into_aggregate(
+            agg,
+            [{"server_id": "p1", "server_name": "", "server_type": "", "status": "published"}],
+        )
+        fold_publisher_rows_into_aggregate(
+            agg,
+            [{"server_id": "p1", "server_name": "Plex", "server_type": "PLEX", "status": "failed"}],
+        )
+        assert agg["p1"]["server_name"] == "Plex"
+        assert agg["p1"]["server_type"] == "plex", "server_type must be lowercased for badge palette"
+        assert agg["p1"]["counts"] == {"published": 1, "failed": 1}
+
+    def test_missing_status_falls_back_to_unknown(self):
+        from media_preview_generator.jobs.orchestrator import fold_publisher_rows_into_aggregate
+
+        agg: dict[str, dict] = {}
+        fold_publisher_rows_into_aggregate(
+            agg,
+            [{"server_id": "p1", "server_name": "Plex", "server_type": "plex"}],
+        )
+        assert agg["p1"]["counts"] == {"unknown": 1}
+
+
+class TestMergeChainPublishersBestPerPath:
+    """Per-(server, path) "best status wins" aggregation that backs the
+    chain head's publishers_json snapshot.
+
+    Production bug (job ``9fef1fa1`` — a file upgrade): chain head
+    showed ``skipped_output_exists`` for every server in the modal even
+    though the head freshly generated previews. Root cause: the
+    aggregation used ``dedup_by_path=True`` and took the LATEST status,
+    which let the retry's no-op rerun ("BIF already on disk → skipped")
+    overwrite the head's actual ``published``.
+
+    The replacement walks every attempt and picks the most informative
+    status per (server, path) using a precedence table. The two
+    contracts this class pins:
+
+    * Plex/Emby ``published → skipped_output_exists`` keeps
+      ``published``. The retry's "BIF already there" is a no-op
+      observation, not new truth.
+    * Jellyfin ``published_pending_registration → skipped_output_exists``
+      keeps ``skipped_output_exists``. The bridge plugin registering
+      the trickplay row IS an upgrade — same behavior the existing
+      ``test_completed_outcome_refreshes_publishers_from_attempt``
+      defends, just achieved via merge precedence rather than blind
+      overwrite.
+    """
+
+    def test_published_then_skipped_keeps_published_fixes_user_facing_bug(self):
+        """The exact production case: head published Plex+Emby, retry
+        ran a no-op pass because BIFs were already on disk. The chain
+        head's display MUST preserve "published × 1" — pre-fix it was
+        overwriting to ``skipped_output_exists × 1`` and the modal
+        lied about whether the job did any work."""
+        from media_preview_generator.jobs.orchestrator import merge_chain_publishers_best_per_path
+
+        head_attempt = {
+            "file": "/data/x.mkv",
+            "servers": [
+                {"id": "plex", "name": "Plex", "type": "plex", "status": "published"},
+                {"id": "emby", "name": "Emby", "type": "emby", "status": "published"},
+                {"id": "jelly", "name": "Jelly", "type": "jellyfin", "status": "published_pending_registration"},
+            ],
+        }
+        retry_attempt = {
+            "file": "/data/x.mkv",
+            "servers": [
+                {"id": "plex", "name": "Plex", "type": "plex", "status": "skipped_output_exists"},
+                {"id": "emby", "name": "Emby", "type": "emby", "status": "skipped_output_exists"},
+                {"id": "jelly", "name": "Jelly", "type": "jellyfin", "status": "skipped_output_exists"},
+            ],
+        }
+
+        rows = merge_chain_publishers_best_per_path([head_attempt, retry_attempt])
+        by_sid = {r["server_id"]: r for r in rows}
+
+        # CRITICAL: a regression here means the modal goes back to
+        # showing "already existed" for freshly-generated previews.
+        assert by_sid["plex"]["counts"] == {"published": 1}, (
+            f"Plex head=published + retry=skipped should display 'published'; "
+            f"got {by_sid['plex']['counts']!r}. The retry's no-op skipped is "
+            "NOT post-retry truth for Plex/Emby — head already did the work."
+        )
+        assert by_sid["emby"]["counts"] == {"published": 1}, (
+            f"Emby head=published + retry=skipped should display 'published'; got {by_sid['emby']['counts']!r}"
+        )
+        # Jellyfin upgrade path — pending → skipped means the bridge
+        # plugin registered the trickplay row, so the chain's outcome
+        # IS the retry's "skipped". This is the case the original
+        # post-retry-truth refresh was written for.
+        assert by_sid["jelly"]["counts"] == {"skipped_output_exists": 1}, (
+            f"Jellyfin pending → skipped should display 'skipped_output_exists' "
+            f"(registration completed); got {by_sid['jelly']['counts']!r}"
+        )
+
+    def test_jellyfin_exhausted_pending_keeps_pending(self):
+        """Negative-side companion to the registration-upgrade case:
+        when every attempt for Jellyfin stays at pending_registration
+        (chain exhausted retries without the bridge plugin indexing),
+        the display must surface that — the user needs to know the
+        file never registered."""
+        from media_preview_generator.jobs.orchestrator import merge_chain_publishers_best_per_path
+
+        attempts = [
+            {
+                "file": "/data/x.mkv",
+                "servers": [
+                    {"id": "jelly", "name": "Jelly", "type": "jellyfin", "status": "published_pending_registration"},
+                ],
+            }
+            for _ in range(4)  # head + 3 retries
+        ]
+        rows = merge_chain_publishers_best_per_path(attempts)
+        assert rows[0]["counts"] == {"published_pending_registration": 1}
+
+    def test_precedence_published_beats_failed(self):
+        """If a server failed on the first attempt then published on
+        retry, the chain succeeded — show ``published``, not ``failed``.
+        Pre-fix this was already correct (dedup took the latest), but
+        the new merge must preserve it."""
+        from media_preview_generator.jobs.orchestrator import merge_chain_publishers_best_per_path
+
+        rows = merge_chain_publishers_best_per_path(
+            [
+                {
+                    "file": "/data/x.mkv",
+                    "servers": [{"id": "plex", "name": "Plex", "type": "plex", "status": "failed"}],
+                },
+                {
+                    "file": "/data/x.mkv",
+                    "servers": [{"id": "plex", "name": "Plex", "type": "plex", "status": "published"}],
+                },
+            ]
+        )
+        assert rows[0]["counts"] == {"published": 1}
+
+    def test_published_then_failed_keeps_published_documents_assumption(self):
+        """Pins the precedence's intentional asymmetry: ``published → failed``
+        keeps ``published``, hiding the trailing failure.
+
+        This is correct IFF retries can never re-emit ``failed`` for a
+        server that already returned ``published`` — which is the case
+        today because retries fire only for paths whose head had a
+        PENDING publisher status (see
+        ``retry_queue.PENDING_PUBLISHER_STATUSES``). A ``published``
+        publisher doesn't qualify, so its row isn't re-evaluated in a
+        way that could legitimately downgrade.
+
+        If a future refactor lets a retry's pass re-emit ``failed`` for
+        an already-published server (e.g., a periodic re-validation
+        feature), this test should start failing — that's the signal
+        to flip ``published`` and ``failed`` in
+        ``_PUBLISHER_STATUS_PRECEDENCE`` so the late failure surfaces."""
+        from media_preview_generator.jobs.orchestrator import merge_chain_publishers_best_per_path
+
+        rows = merge_chain_publishers_best_per_path(
+            [
+                {
+                    "file": "/data/x.mkv",
+                    "servers": [{"id": "plex", "name": "Plex", "type": "plex", "status": "published"}],
+                },
+                {
+                    "file": "/data/x.mkv",
+                    "servers": [{"id": "plex", "name": "Plex", "type": "plex", "status": "failed"}],
+                },
+            ]
+        )
+        assert rows[0]["counts"] == {"published": 1}, (
+            "If this assertion ever fails, read the docstring on "
+            "_PUBLISHER_STATUS_PRECEDENCE before flipping the precedence — "
+            "the retry pipeline may have grown a new re-evaluation path."
+        )
+
+    def test_unknown_status_only_wins_when_nothing_else_seen(self):
+        """Future publisher statuses not present in the precedence table
+        should sort to rank 99 — i.e., a known status always wins over
+        an unknown one. Guards against silent breakage when somebody
+        adds a new PublisherStatus and forgets to update the precedence."""
+        from media_preview_generator.jobs.orchestrator import merge_chain_publishers_best_per_path
+
+        rows = merge_chain_publishers_best_per_path(
+            [
+                {
+                    "file": "/data/x.mkv",
+                    "servers": [
+                        {"id": "plex", "name": "Plex", "type": "plex", "status": "some_future_status"},
+                        {"id": "plex", "name": "Plex", "type": "plex", "status": "published"},
+                    ],
+                }
+            ]
+        )
+        # 'published' (rank 0) beats 'some_future_status' (rank 99) even
+        # though the future status is structurally a single observation.
+        # Path-key here is the same so both statuses contribute to one
+        # (server, path) bucket.
+        assert rows[0]["counts"] == {"published": 1}
+
+    def test_per_server_per_path_counts(self):
+        """Multi-file chain: each (server, path) collapses to one best
+        status, then counts aggregate per server. Two files both ending
+        at ``published`` produces ``{published: 2}``."""
+        from media_preview_generator.jobs.orchestrator import merge_chain_publishers_best_per_path
+
+        rows = merge_chain_publishers_best_per_path(
+            [
+                {
+                    "file": "/data/a.mkv",
+                    "servers": [{"id": "plex", "name": "Plex", "type": "plex", "status": "published"}],
+                },
+                {
+                    "file": "/data/b.mkv",
+                    "servers": [{"id": "plex", "name": "Plex", "type": "plex", "status": "published"}],
+                },
+                # Retry pass for a.mkv only — should not inflate Plex's count.
+                {
+                    "file": "/data/a.mkv",
+                    "servers": [{"id": "plex", "name": "Plex", "type": "plex", "status": "skipped_output_exists"}],
+                },
+            ]
+        )
+        assert rows[0]["counts"] == {"published": 2}, (
+            f"Two distinct (server, path) keys each best=published should give "
+            f"published × 2; got {rows[0]['counts']!r}. A retry's no-op observation "
+            "must NOT add to the count."
+        )
+
+    def test_row_with_blank_server_id_is_dropped(self):
+        """Same invariant as the sibling fold helper — rows that can't
+        be attributed must not produce an empty-id phantom entry."""
+        from media_preview_generator.jobs.orchestrator import merge_chain_publishers_best_per_path
+
+        rows = merge_chain_publishers_best_per_path(
+            [
+                {
+                    "file": "/data/x.mkv",
+                    "servers": [
+                        {"id": "", "status": "published"},
+                        {"id": None, "status": "published"},
+                    ],
+                }
+            ]
+        )
+        assert rows == []
+
+    def test_empty_file_results_returns_empty_list(self):
+        from media_preview_generator.jobs.orchestrator import merge_chain_publishers_best_per_path
+
+        assert merge_chain_publishers_best_per_path([]) == []
+
+    def test_late_name_and_type_fill_in_an_empty_first_row(self):
+        """If the first attempt only has the server id (e.g., the metadata
+        cache hadn't populated yet), a later attempt with the proper
+        name/type must fill those fields in — same defense as the sibling
+        helper."""
+        from media_preview_generator.jobs.orchestrator import merge_chain_publishers_best_per_path
+
+        rows = merge_chain_publishers_best_per_path(
+            [
+                {
+                    "file": "/data/x.mkv",
+                    "servers": [{"id": "plex", "name": "", "type": "", "status": "published_pending_registration"}],
+                },
+                {
+                    "file": "/data/x.mkv",
+                    "servers": [{"id": "plex", "name": "Plex", "type": "PLEX", "status": "skipped_output_exists"}],
+                },
+            ]
+        )
+        # Jellyfin upgrade case: pending → skipped picks 'skipped'.
+        assert rows[0]["server_name"] == "Plex"
+        assert rows[0]["server_type"] == "plex", "server_type must be lowercased for the badge palette"
+        assert rows[0]["counts"] == {"skipped_output_exists": 1}
+
+
+class TestFullScanUsesSetPublishersNotAppend:
+    """Performance regression — the full-scan path must aggregate
+    per-server (fixed-size) and ``set_publishers`` it, NEVER call
+    ``append_publishers`` per file.
+
+    Live reproducer (job 41d19f28, 117963 items):
+    * ``publishers_json`` reached 11.8 MB and was re-encoded + SQLite
+      UPSERTed after every item.
+    * Sustained throughput dropped from ~30 items/sec (small list)
+      to <8 items/sec (20k+ items in list) — pure O(N²) bookkeeping
+      cost, no FFmpeg or Plex API involvement.
+
+    These tests pin the contract so a future "let me also persist X
+    per-file" change can't quietly bring the regression back.
+    """
+
+    def _items(self, n: int):
+        cfg = _server_config("srv-a", ServerType.JELLYFIN)
+        return [(cfg, ProcessableItem(canonical_path=f"/data/m{i}.mkv", server_id="srv-a")) for i in range(n)]
+
+    def test_dispatch_calls_set_publishers_and_never_append(self, tmp_path):
+        from media_preview_generator.jobs.orchestrator import _dispatch_processable_items
+        from media_preview_generator.processing.multi_server import MultiServerStatus
+
+        # publishers list with a single Jellyfin row per item — what
+        # _publisher_rows_from_result would build for a real dispatch.
+        pub = SimpleNamespace(
+            server_id="srv-a",
+            server_name="Test jellyfin",
+            adapter_name="jellyfin_trickplay",
+            status=SimpleNamespace(value="published"),
+            message="",
+            frame_source="extracted",
+            output_paths=[],
+        )
+        results = [
+            SimpleNamespace(
+                publishers=[pub],
+                canonical_path=f"/data/m{i}.mkv",
+                status=MultiServerStatus.PUBLISHED,
+                message="",
+            )
+            for i in range(5)
+        ]
+
+        fake_jm = MagicMock()
+        # An empty ``settings_manager.get("media_servers")`` is fine —
+        # _publisher_rows_from_result tolerates a missing type lookup.
+        with (
+            patch("media_preview_generator.web.jobs.get_job_manager", return_value=fake_jm),
+            patch(
+                "media_preview_generator.processing.multi_server.process_canonical_path",
+                side_effect=results,
+            ),
+        ):
+            _dispatch_processable_items(
+                items=self._items(5),
+                config=_config(),
+                registry=MagicMock(),
+                selected_gpus=[],
+                label="full scan",
+                job_id="job-perf",
+            )
+
+        # Pin the contract: never call the linear-growth API.
+        assert fake_jm.append_publishers.call_count == 0, (
+            f"append_publishers must not be called on the full-scan path "
+            f"(grows publishers_json O(items × servers)) — got "
+            f"{fake_jm.append_publishers.call_count} call(s)"
+        )
+
+        # And we DO call set_publishers per item — the bounded variant.
+        assert fake_jm.set_publishers.call_count >= 1, "set_publishers was never called"
+
+        # Final payload is a single per-server entry with counts == 5
+        # (NOT a list of 5 per-file rows). This is the fixed-size shape
+        # the Active Jobs / History UI now expects.
+        last_args, _last_kwargs = fake_jm.set_publishers.call_args
+        job_id_arg, payload = last_args
+        assert job_id_arg == "job-perf"
+        assert isinstance(payload, list) and len(payload) == 1, (
+            f"set_publishers payload must collapse to one entry per server — got {payload!r}"
+        )
+        entry = payload[0]
+        assert entry["server_id"] == "srv-a"
+        assert entry["counts"] == {"published": 5}, (
+            f"per-server counts must accumulate across items, got {entry['counts']!r}"
+        )
+
+    def test_payload_size_is_bounded_by_server_count_not_item_count(self, tmp_path):
+        """The killer test: dispatch 50 items, observe that the largest
+        ``set_publishers`` payload is bounded by the number of servers
+        (here 1), not items. If someone reverts to ``append_publishers``
+        or grows the payload per-file again, this fails with the
+        observed payload size."""
+        from media_preview_generator.jobs.orchestrator import _dispatch_processable_items
+        from media_preview_generator.processing.multi_server import MultiServerStatus
+
+        N = 50
+        pub = SimpleNamespace(
+            server_id="srv-a",
+            server_name="Test jellyfin",
+            adapter_name="jellyfin_trickplay",
+            status=SimpleNamespace(value="published"),
+            message="",
+            frame_source="extracted",
+            output_paths=[],
+        )
+        results = [
+            SimpleNamespace(
+                publishers=[pub],
+                canonical_path=f"/data/m{i}.mkv",
+                status=MultiServerStatus.PUBLISHED,
+                message="",
+            )
+            for i in range(N)
+        ]
+
+        observed_payload_lengths: list[int] = []
+
+        def _capture(_job_id, payload):
+            observed_payload_lengths.append(len(payload))
+
+        fake_jm = MagicMock()
+        fake_jm.set_publishers.side_effect = _capture
+
+        with (
+            patch("media_preview_generator.web.jobs.get_job_manager", return_value=fake_jm),
+            patch(
+                "media_preview_generator.processing.multi_server.process_canonical_path",
+                side_effect=results,
+            ),
+        ):
+            _dispatch_processable_items(
+                items=self._items(N),
+                config=_config(),
+                registry=MagicMock(),
+                selected_gpus=[],
+                label="full scan",
+                job_id="job-bounded",
+            )
+
+        # All payloads carry exactly one entry — the single server. With
+        # the old append_publishers path, persisted size grew with item
+        # count and would have hit N entries by the end.
+        assert observed_payload_lengths, "set_publishers was never called"
+        assert max(observed_payload_lengths) == 1, (
+            f"set_publishers payload must stay bounded by server count — "
+            f"observed lengths {observed_payload_lengths!r} (max {max(observed_payload_lengths)}) "
+            f"on a {N}-item dispatch with 1 server"
+        )
+
+
+class TestProgressEmissionInCompletionOrder:
+    """Job 9eb79d9c regression — progress numerator stuck at low values
+    while items completed in the background, then jumped to the final
+    count the moment the user stopped the job.
+
+    Root cause: ``_dispatch_processable_items`` consumed worker results
+    via ``ThreadPoolExecutor.map``, which yields results in **submission
+    order**. A slow item near the front of the queue blocked the
+    progress increment for every faster item behind it — workers were
+    completing in parallel but the for-loop sat on the head of the
+    iterator, so the ``progress_callback`` (and its SocketIO emit) never
+    fired until the slow item completed.
+
+    Fix: switch to ``submit`` + ``as_completed`` so progress reflects
+    actual completion order, with the same single-thread consumption
+    semantics the existing publisher fold relies on.
+    """
+
+    def test_fast_items_report_progress_before_slow_head_item_completes(self, tmp_path):
+        import threading
+        import time as _time
+
+        from media_preview_generator.jobs.orchestrator import _dispatch_processable_items
+        from media_preview_generator.processing.multi_server import MultiServerStatus
+
+        cfg = _server_config("srv-a", ServerType.JELLYFIN)
+        # 5 items; item 0 will block, items 1-4 return instantly. With
+        # 5 CPU worker slots all five run in parallel so the head item
+        # cannot starve out the rest.
+        items = [
+            (cfg, ProcessableItem(canonical_path=f"/data/m{i}.mkv", server_id="srv-a", title=f"M{i}")) for i in range(5)
+        ]
+
+        release_head = threading.Event()
+        progress_lock = threading.Lock()
+        progress_calls: list[tuple[int, int, str]] = []
+        four_fast_done = threading.Event()
+
+        def _record_progress(processed: int, total: int, msg: str) -> None:
+            with progress_lock:
+                progress_calls.append((processed, total, msg))
+                # Banner is (0, 5); fast items push processed up to 4.
+                if processed >= 4:
+                    four_fast_done.set()
+
+        def _fake_pcp(*, canonical_path, **kwargs):
+            if canonical_path == "/data/m0.mkv":
+                # Block until the test confirms the four fast items
+                # have already reported progress. If the dispatcher
+                # serialises on submission order, this wait times out
+                # and the test fails before the event is released.
+                if not release_head.wait(timeout=5.0):
+                    # Test will fail below; let the dispatcher return.
+                    pass
+            return SimpleNamespace(
+                publishers=[],
+                canonical_path=canonical_path,
+                status=MultiServerStatus.PUBLISHED,
+                message="",
+            )
+
+        dispatch_done = threading.Event()
+        dispatch_result: dict = {}
+
+        def _run_dispatch():
+            try:
+                with patch(
+                    "media_preview_generator.processing.multi_server.process_canonical_path",
+                    side_effect=_fake_pcp,
+                ):
+                    dispatch_result["counts"] = _dispatch_processable_items(
+                        items=items,
+                        config=_config(cpu_threads=5),
+                        registry=MagicMock(),
+                        selected_gpus=[],
+                        progress_callback=_record_progress,
+                        label="full scan",
+                    )
+            finally:
+                dispatch_done.set()
+
+        runner = threading.Thread(target=_run_dispatch, name="dispatch-under-test", daemon=True)
+        runner.start()
+        try:
+            # Give the four fast items up to 2.5 s to report progress
+            # while item 0 is still parked on the event. With pool.map
+            # this never happens — the for-loop is stuck at submission
+            # index 0 waiting on the slow item. With as_completed,
+            # fast items reach the consumer immediately and the
+            # callback fires for each one in well under a second.
+            assert four_fast_done.wait(timeout=2.5), (
+                f"Expected progress_callback to fire for the four fast items while item 0 was "
+                f"still blocked. Observed progress events so far: {progress_calls!r}. "
+                f"Submission-order consumption (pool.map) starves the progress counter when an "
+                f"early item is slow — the symptom job 9eb79d9c reported."
+            )
+
+            # Sanity: confirm there is at least one fast-item progress
+            # entry with processed in (1..4) — i.e. the assert above
+            # didn't get satisfied by some other emit path.
+            with progress_lock:
+                fast_progress = [p for p, _t, _m in progress_calls if 1 <= p <= 4]
+            assert fast_progress, (
+                f"No 'processed in 1..4' events observed before item 0 unblocked. Calls so far: {progress_calls!r}"
+            )
+        finally:
+            release_head.set()
+            runner.join(timeout=5.0)
+            assert dispatch_done.is_set(), "dispatch thread did not finish within timeout"
+
+        # Final progress should reflect every item.
+        with progress_lock:
+            final_processed = max((p for p, _t, _m in progress_calls), default=0)
+        assert final_processed == 5, (
+            f"Final progress count must equal total items (5); got {final_processed}. All calls: {progress_calls!r}"
+        )
+
+        # And the dispatcher returned a successful counts dict — no
+        # exception swallowed by the background thread.
+        assert dispatch_result.get("counts") is not None
+        _time.sleep(0)  # let any daemon poller threads finish their tick
+
+
+class TestEnumerationFailurePropagatesAsWarning:
+    """Job b6deeac3 regression: Jellyfin's /Items query timed out on a
+    118k-item Shows library (transient — same query ran in 0.2s minutes
+    later), ``list_items`` exhausted its retries, the library was
+    skipped, and the job was marked "completed successfully" with a
+    green checkmark despite zero items being processed. The user is
+    misled into thinking nothing's wrong.
+
+    Contract:
+    * When ``_run_full_scan_multi_server`` finds zero items because
+      enumeration FAILED (HTTP error, timeout, etc.), the result must
+      surface a warning string the upstream caller can pipe into
+      ``complete_job(warning=...)`` so the job ends with an amber
+      badge instead of green.
+    * The empty-but-legitimately-empty case (library exists and is
+      empty) still ends as plain success — the difference is whether
+      ``_enumerate_items_for_servers`` saw any exceptions while
+      iterating.
+    """
+
+    def test_run_full_scan_multi_server_surfaces_warning_when_enumeration_fails(self, tmp_path):
+        """The function appends a human-readable error to the caller's
+        ``warnings_out`` list when enumeration fails for every
+        candidate server AND no items were yielded. The caller
+        (``run_processing`` → ``job_runner``) pipes the joined warnings
+        into ``complete_job(warning=...)`` so the job ends with an
+        amber badge instead of green.
+        """
+        from media_preview_generator.jobs.orchestrator import _run_full_scan_multi_server
+
+        cfg_a = _server_config("srv-a", ServerType.JELLYFIN)
+
+        registry_mock = MagicMock()
+        registry_mock.configs.return_value = [cfg_a]
+
+        proc_a = MagicMock()
+
+        def _failing_enumeration():
+            raise requests_ReadTimeout("simulated transient timeout, retries exhausted")
+            yield  # pragma: no cover  # makes Python treat this as a generator
+
+        proc_a.list_canonical_paths.return_value = _failing_enumeration()
+
+        warnings: list[str] = []
+        with (
+            patch("media_preview_generator.processing.get_processor_for", return_value=proc_a),
+            patch("media_preview_generator.web.settings_manager.get_settings_manager") as mock_sm,
+            patch("media_preview_generator.servers.ServerRegistry.from_settings", return_value=registry_mock),
+        ):
+            mock_sm.return_value.get.return_value = [
+                {
+                    "id": "srv-a",
+                    "type": "jellyfin",
+                    "name": "JellyTest",
+                    "enabled": True,
+                    "url": "http://test",
+                    "auth": {"access_token": "t"},
+                    "libraries": [],
+                }
+            ]
+            counts = _run_full_scan_multi_server(_config(), selected_gpus=[], warnings_out=warnings)
+
+        # Counts return shape is unchanged — backward compatible with
+        # every other test that just reads counts.values().
+        assert isinstance(counts, dict)
+        assert "generated" in counts
+        # The new contract: when enumeration fails for all candidates
+        # AND no items were processed, the warnings_out list is
+        # populated. The user-visible content is a docstring-quality
+        # concern; what we pin is "present and non-empty."
+        assert warnings, (
+            f"_run_full_scan_multi_server appended no warning despite a failing "
+            f"list_canonical_paths. The user sees 'completed' in the UI even though zero "
+            f"items were processed and the library couldn't be reached — that's exactly "
+            f"the misleading green badge job b6deeac3 reproduced. counts={counts!r}"
+        )
+        # Pin the SUT's contract: the warning must name the failing
+        # server so the user knows WHICH server timed out, and must
+        # name the exception class so the warning text gives them
+        # something to grep for / paste into a support thread.
+        # Without these the test passes for any non-empty list,
+        # including "server foo enumerated 0 items" — bug-blind on
+        # the actual UX contract.
+        joined = " | ".join(warnings)
+        # ``_server_config`` builds the name "Test jellyfin" via
+        # ``f"Test {server_type.value}"`` — pin against THAT so the
+        # test isn't fooled by a generic "unknown server" string.
+        assert "Test jellyfin" in joined, (
+            f"warning must name the failing server (expected 'Test jellyfin' in: {joined!r})"
+        )
+        assert "ReadTimeout" in joined, (
+            f"warning must include the exception class so the user has something concrete "
+            f"to investigate (expected 'ReadTimeout' in: {joined!r})"
+        )
+
+
+class TestWorkerFFmpegStartedFlag:
+    """Job 2395774d regression: the dashboard Workers panel rendered
+    "Working…" for every multi-server worker instead of the real
+    speed/ETA/progress bar, even while the API was returning live
+    values like ``speed='28.5x', eta='3m 58s', progress_percent=3.2``.
+
+    Direct browser inspection confirmed app.js:2393-2438 gates the
+    progress-bar / speed / ETA rendering on ``worker.ffmpeg_started``;
+    when it's ``False`` the renderer hides those elements and replaces
+    the percent text with ``"Working…"`` or the (also-absent)
+    ``current_phase``. The legacy ``WorkerPool`` flips
+    ``worker.ffmpeg_started = True`` the first time
+    ``_update_worker_progress`` is called (``worker.py:1624``).
+    The multi-server dispatcher's ``_slot_progress_callback``
+    updated ``progress_percent`` / ``speed`` / ``remaining_time``
+    in place but never flipped the flag, so the UI stayed in the
+    pre-FFmpeg "Working…" branch for the entire run.
+    """
+
+    def test_slot_marks_ffmpeg_started_when_progress_callback_fires(self, tmp_path):
+        """Pins BOTH edges of the contract:
+
+        * before the progress callback fires, processing snapshots must
+          carry ``ffmpeg_started=False`` so the renderer stays on the
+          "Working…" branch — guards against an accidental
+          ``ffmpeg_started=True`` default in ``_build_*_slot`` that
+          would silently break the pre-FFmpeg fallback;
+        * after the progress callback fires, the snapshot flips to
+          ``ffmpeg_started=True`` so the UI swaps in the live
+          progress/speed/ETA — the fix this test exists to enforce.
+        """
+        import time as _time
+
+        from media_preview_generator.jobs.orchestrator import _dispatch_processable_items
+        from media_preview_generator.processing.multi_server import MultiServerStatus
+
+        cfg = _server_config("srv-a", ServerType.JELLYFIN)
+        items = [(cfg, ProcessableItem(canonical_path="/data/x.mkv", server_id="srv-a", title="X"))]
+
+        snapshots: list = []
+
+        def _wcb(workers_list):
+            snapshots.append(list(workers_list))
+
+        def _pcp_two_phase(*, canonical_path, progress_callback=None, **kwargs):
+            # Phase 1 — pre-FFmpeg setup (no progress yet). The poller
+            # heartbeat fires every 1.5 s, so 1.7 s here guarantees at
+            # least one snapshot lands with ffmpeg_started=False.
+            _time.sleep(1.7)
+            # Phase 2 — FFmpeg progress starts flowing; positional
+            # signature mirrors what ``ffmpeg_runner`` actually sends.
+            if progress_callback:
+                progress_callback(42.0, 100.0, 200.0, "5.2x", 50.0)
+            # Phase 3 — FFmpeg keeps running long enough for a second
+            # poller tick to capture the post-flip state.
+            _time.sleep(1.7)
+            return SimpleNamespace(
+                publishers=[],
+                canonical_path=canonical_path,
+                status=MultiServerStatus.PUBLISHED,
+                message="",
+            )
+
+        with patch(
+            "media_preview_generator.processing.multi_server.process_canonical_path",
+            side_effect=_pcp_two_phase,
+        ):
+            _dispatch_processable_items(
+                items=items,
+                config=_config(cpu_threads=1),
+                registry=MagicMock(),
+                selected_gpus=[],
+                label="full scan",
+                worker_callback=_wcb,
+            )
+
+        processing_snapshots = [snap for snap in snapshots if any(w.get("status") == "processing" for w in snap)]
+        pre_ffmpeg_processing = [
+            snap
+            for snap in processing_snapshots
+            if any(w.get("status") == "processing" and not w.get("ffmpeg_started") for w in snap)
+        ]
+        post_ffmpeg_processing = [
+            snap
+            for snap in processing_snapshots
+            if any(w.get("status") == "processing" and w.get("ffmpeg_started") for w in snap)
+        ]
+        assert pre_ffmpeg_processing, (
+            f"No 'processing & ffmpeg_started=False' snapshot observed BEFORE the progress "
+            f"callback fired. If ``_build_*_slot`` defaulted the flag to True the UI would "
+            f"skip its pre-FFmpeg 'Working…' branch and show '0% @ 0.0x' instead. "
+            f"All processing snapshots: {processing_snapshots!r}"
+        )
+        assert post_ffmpeg_processing, (
+            f"No 'processing & ffmpeg_started=True' snapshot observed AFTER the progress "
+            f"callback fired. The renderer gates speed/ETA/progress on this flag "
+            f"(app.js:2393-2438); without the flip the panel renders 'Working…' despite "
+            f"real FFmpeg progress — job 2395774d's symptom. All snapshots: {snapshots!r}"
+        )
+
+    def test_slot_resets_ffmpeg_started_between_items(self, tmp_path):
+        """Two items back-to-back through a single slot:
+
+        * item 1 fires a progress callback (slot flips ``ffmpeg_started=True``);
+        * item 2 is a cache-hit / skipped-FFmpeg path that never fires
+          a progress callback;
+        * ``_release_slot`` between them MUST reset the flag, otherwise
+          item 2's in-flight snapshot inherits item 1's stale ``True``
+          and the UI shows the previous item's speed/ETA on a brand
+          new (pre-FFmpeg) item. Pin this directly — without the test
+          a future refactor could drop the reset line and no other
+          test would notice.
+        """
+        import time as _time
+
+        from media_preview_generator.jobs.orchestrator import _dispatch_processable_items
+        from media_preview_generator.processing.multi_server import MultiServerStatus
+
+        cfg = _server_config("srv-a", ServerType.JELLYFIN)
+        items = [
+            (cfg, ProcessableItem(canonical_path="/data/item1.mkv", server_id="srv-a", title="Item1")),
+            (cfg, ProcessableItem(canonical_path="/data/item2.mkv", server_id="srv-a", title="Item2")),
+        ]
+
+        snapshots: list = []
+
+        def _wcb(workers_list):
+            snapshots.append(list(workers_list))
+
+        call_count = {"n": 0}
+
+        def _pcp(*, canonical_path, progress_callback=None, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                # Item 1 — real FFmpeg pass; flips the flag True.
+                if progress_callback:
+                    progress_callback(80.0, 160.0, 200.0, "7.1x", 20.0)
+                _time.sleep(1.7)
+            else:
+                # Item 2 — cache-hit / skipped-FFmpeg; no progress
+                # callback. Hold open long enough for the poller to
+                # capture an in-flight snapshot of the (reset) state.
+                _time.sleep(1.7)
+            return SimpleNamespace(
+                publishers=[],
+                canonical_path=canonical_path,
+                status=MultiServerStatus.PUBLISHED,
+                message="",
+            )
+
+        with patch(
+            "media_preview_generator.processing.multi_server.process_canonical_path",
+            side_effect=_pcp,
+        ):
+            _dispatch_processable_items(
+                items=items,
+                config=_config(cpu_threads=1),
+                registry=MagicMock(),
+                selected_gpus=[],
+                label="full scan",
+                worker_callback=_wcb,
+            )
+
+        item1_processing = [
+            snap
+            for snap in snapshots
+            if any(w.get("status") == "processing" and w.get("current_title") == "Item1" for w in snap)
+        ]
+        item2_processing = [
+            snap
+            for snap in snapshots
+            if any(w.get("status") == "processing" and w.get("current_title") == "Item2" for w in snap)
+        ]
+        assert item1_processing, f"no 'processing' snapshot for item 1: {snapshots!r}"
+        assert any(
+            w.get("current_title") == "Item1" and w.get("ffmpeg_started") for snap in item1_processing for w in snap
+        ), (
+            f"Item 1 fired its progress callback but no snapshot ever observed "
+            f"ffmpeg_started=True for it. Item-1 processing snapshots: {item1_processing!r}"
+        )
+        assert item2_processing, f"no 'processing' snapshot for item 2: {snapshots!r}"
+        for snap in item2_processing:
+            for w in snap:
+                if w.get("current_title") == "Item2":
+                    assert not w.get("ffmpeg_started"), (
+                        f"Item 2 is a cache-hit / no-FFmpeg item and never fired a progress "
+                        f"callback, but its in-flight snapshot has ffmpeg_started=True — "
+                        f"_release_slot must reset the flag between items so item 2 doesn't "
+                        f"inherit item 1's flipped state. Snapshot: {w!r}"
+                    )
+
+
+class TestWorkerSnapshotEmitThrottle:
+    """Job 8cd02fa6 regression: a 10k-item Jellyfin full scan with mostly
+    "already fresh — skip FFmpeg" no-op items completes each item in ~50 ms.
+    With 4 workers that's ~80 items/sec × 2 transitions (claim + release) =
+    ~160 ``worker_update`` SocketIO emits per second. The browser event
+    loop can't keep up, the dashboard Workers panel never renders cleanly,
+    and the user sees an empty panel despite the backend having full
+    per-worker speed/eta data.
+
+    Plex's legacy ``WorkerPool`` already throttles emits to ≈1 Hz
+    (``worker.py:1245`` — ``if current_time - last_worker_update >= 1.0``).
+    The multi-server dispatcher should do the same. The original
+    intent is even documented in ``orchestrator.py``'s comment block
+    claiming the path is ``1Hz throttled`` — but the actual code only
+    throttles the periodic poller, not per-item transitions.
+    """
+
+    def test_snapshot_emits_are_throttled_under_fast_item_flood(self, tmp_path):
+        import time as _time
+
+        from media_preview_generator.jobs.orchestrator import _dispatch_processable_items
+        from media_preview_generator.processing.multi_server import MultiServerStatus
+
+        cfg = _server_config("srv-a", ServerType.JELLYFIN)
+        N = 200
+        items = [
+            (cfg, ProcessableItem(canonical_path=f"/data/m{i}.mkv", server_id="srv-a", title=f"M{i}")) for i in range(N)
+        ]
+
+        snapshots: list = []
+        start = _time.monotonic()
+
+        def _wcb(workers_list):
+            snapshots.append((_time.monotonic() - start, list(workers_list)))
+
+        with patch(
+            "media_preview_generator.processing.multi_server.process_canonical_path",
+            return_value=SimpleNamespace(
+                publishers=[],
+                canonical_path="/x",
+                status=MultiServerStatus.PUBLISHED,
+                message="",
+            ),
+        ):
+            _dispatch_processable_items(
+                items=items,
+                config=_config(cpu_threads=4),
+                registry=MagicMock(),
+                selected_gpus=[],
+                label="full scan",
+                worker_callback=_wcb,
+            )
+
+        elapsed = _time.monotonic() - start
+        # Budget: ~1 emit/sec on the throttled path, plus the forced
+        # leading emit at dispatch start and the forced final emit at
+        # dispatch end. A 200-no-op-item run completes in well under
+        # 1 second on any modern box, so the realistic ceiling is
+        # leading + trailing-on-close + slack = ~5.
+        expected_max = max(6, int(elapsed) + 4)
+        assert len(snapshots) <= expected_max, (
+            f"Expected ≤{expected_max} worker snapshots in {elapsed:.2f}s under 1 Hz throttle; "
+            f"got {len(snapshots)}. Without throttle a 200-item fast-no-op dispatch fires "
+            f"~400+ emits — that's the flood pattern job 8cd02fa6 reproduced "
+            f"(dashboard Workers panel never settled long enough to render)."
+        )
+        # And the throttle must not be so aggressive it suppresses everything —
+        # the user still needs to see SOMETHING in the panel.
+        non_empty_snapshots = [snap for _, snap in snapshots if snap]
+        assert non_empty_snapshots, (
+            f"Throttle suppressed every emit. Got {len(snapshots)} snapshot(s), "
+            f"all empty. The leading-edge emit at dispatch start must always fire."
+        )
+
+    def test_snapshot_emits_continue_during_long_running_items(self, tmp_path):
+        """A scan with slow items (4K FFmpeg passes that take 30s+) must still
+        produce periodic snapshots so the user sees speed/ETA tick forward. The
+        throttle limits cadence but cannot starve the user — the
+        ``_poller_loop``'s 1.5 s heartbeat passes the 1 Hz throttle naturally.
+
+        Asserts via timestamps so the test would actually fail if someone
+        removed the poller's ``_emit_worker_snapshot()`` call — the
+        initial force emit and the leading-edge claim emit both land in
+        the first ~100 ms, so counting "snapshots so far" can't tell
+        the difference between "poller fired" and "only initial fired."
+        """
+        import threading as _threading
+        import time as _time
+
+        from media_preview_generator.jobs.orchestrator import _dispatch_processable_items
+        from media_preview_generator.processing.multi_server import MultiServerStatus
+
+        cfg = _server_config("srv-a", ServerType.JELLYFIN)
+        items = [
+            (cfg, ProcessableItem(canonical_path=f"/data/m{i}.mkv", server_id="srv-a", title=f"M{i}")) for i in range(2)
+        ]
+
+        snapshots: list[tuple[float, list[dict]]] = []
+        release = _threading.Event()
+
+        start = _time.monotonic()
+
+        def _wcb(workers_list):
+            snapshots.append((_time.monotonic() - start, list(workers_list)))
+
+        def _slow(canonical_path, **kwargs):
+            release.wait(timeout=6.0)
+            return SimpleNamespace(
+                publishers=[],
+                canonical_path=canonical_path,
+                status=MultiServerStatus.PUBLISHED,
+                message="",
+            )
+
+        done = _threading.Event()
+
+        def _run():
+            try:
+                with patch(
+                    "media_preview_generator.processing.multi_server.process_canonical_path",
+                    side_effect=_slow,
+                ):
+                    _dispatch_processable_items(
+                        items=items,
+                        config=_config(cpu_threads=2),
+                        registry=MagicMock(),
+                        selected_gpus=[],
+                        label="full scan",
+                        worker_callback=_wcb,
+                    )
+            finally:
+                done.set()
+
+        runner = _threading.Thread(target=_run, daemon=True)
+        runner.start()
+        try:
+            # Capture snapshots arriving AFTER t=2.0 — past the initial
+            # force emit (t≈0) and the leading-edge claim emit (t≈0).
+            # Only the 1.5 s poller heartbeat can populate that window
+            # while items are blocked.
+            _time.sleep(3.2)
+            late_snapshots = [snap for ts, snap in snapshots if ts >= 2.0]
+        finally:
+            release.set()
+            assert done.wait(timeout=5.0)
+            runner.join(timeout=5.0)
+
+        assert late_snapshots, (
+            f"No snapshots arrived between t=2.0 s and t=3.2 s while both items "
+            f"were blocked. Only the poller's 1.5 s heartbeat can produce them "
+            f"in that window — if this assertion ever regresses, the poller's "
+            f"``_emit_worker_snapshot()`` call has been removed. All observed "
+            f"snapshots (ts, slot_count): "
+            f"{[(round(ts, 2), len(snap)) for ts, snap in snapshots]}"
+        )
