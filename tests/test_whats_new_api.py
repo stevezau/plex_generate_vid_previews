@@ -149,3 +149,78 @@ class TestDismissWhatsNewWriteback:
             )
         assert resp.status_code == 200
         assert _settings_manager().get("last_seen_version") == "3.7.5.post14"
+
+
+class TestWhatsNewReadPathPoisonedLastSeen:
+    """The dismiss endpoint guards against writing non-semver values, but
+    older builds (pre-fix) and direct settings.json edits could leave a
+    poisoned ``last_seen_version`` like ``dev@SHA`` already in place.
+
+    On the read path, ``parse_version("dev@SHA")`` raises ``ValueError``,
+    which the wrapping ``except ValueError: continue`` silently swallows —
+    the user upgrading from dev → release never sees the modal. Treat any
+    unparseable baseline as the "very old" sentinel so all known releases
+    qualify as unseen.
+    """
+
+    _RELEASES = [
+        {"version": "4.0.0", "name": "Multi-Server Support", "date": "2026-05-14", "body": "headline"},
+        {"version": "3.7.5", "name": "Multi-GPU + Webhook Polish", "date": "2026-04-22", "body": "older"},
+    ]
+
+    def _get(self, client, current_version: str, last_seen: str):
+        _settings_manager().update({"last_seen_version": last_seen})
+        with (
+            patch(
+                "media_preview_generator.web.routes.api_system._get_version_info",
+                return_value={"current_version": current_version, "install_type": "docker"},
+            ),
+            patch(
+                "media_preview_generator.web.routes.api_system._fetch_github_releases",
+                return_value=self._RELEASES,
+            ),
+        ):
+            return client.get(
+                "/api/system/whats-new",
+                headers={"Authorization": "Bearer test-token-12345678"},
+            )
+
+    def test_dev_sha_baseline_shows_releases(self, client):
+        """last_seen="dev@abc1234" should treat as "very old" → all releases unseen."""
+        resp = self._get(client, current_version="4.0.0", last_seen="dev@abc1234")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["has_new"] is True
+        assert [e["version"] for e in body["entries"]] == ["4.0.0", "3.7.5"]
+
+    def test_pr_build_baseline_shows_releases(self, client):
+        """last_seen="PR-42" should treat as "very old" → all releases unseen."""
+        resp = self._get(client, current_version="4.0.0", last_seen="PR-42")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["has_new"] is True
+        assert "4.0.0" in [e["version"] for e in body["entries"]]
+
+    def test_local_build_baseline_shows_releases(self, client):
+        """last_seen="local build" should treat as "very old" → all releases unseen."""
+        resp = self._get(client, current_version="4.0.0", last_seen="local build")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["has_new"] is True
+        assert "4.0.0" in [e["version"] for e in body["entries"]]
+
+    def test_semver_baseline_still_filters_correctly(self, client):
+        """Sanity check: valid semver baseline still filters releases > baseline only."""
+        resp = self._get(client, current_version="4.0.0", last_seen="3.7.5")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["has_new"] is True
+        assert [e["version"] for e in body["entries"]] == ["4.0.0"]
+
+    def test_baseline_equals_current_returns_empty(self, client):
+        """Sanity check: nothing new when last_seen == current."""
+        resp = self._get(client, current_version="4.0.0", last_seen="4.0.0")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["has_new"] is False
+        assert body["entries"] == []

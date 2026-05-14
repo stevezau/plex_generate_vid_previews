@@ -746,6 +746,17 @@ def get_whats_new():
 
     from ...version_check import parse_version
 
+    # Pre-fix dev/PR-build images and direct settings.json edits could leave
+    # an unparseable ``last_seen_version`` (``dev@SHA``, ``PR-42``,
+    # ``local build``). Treat that as the "very old" baseline so the user
+    # actually sees the modal after upgrading to a real release — the prior
+    # behaviour was to silently swallow the ValueError per-entry and return
+    # an empty list every time.
+    try:
+        last_seen_parsed = parse_version(last_seen)
+    except ValueError:
+        last_seen_parsed = parse_version("0.0.0")
+
     releases = _fetch_github_releases(limit=10)
     unseen = []
     for entry in releases:
@@ -753,7 +764,7 @@ def get_whats_new():
         if not v:
             continue
         try:
-            if parse_version(v) > parse_version(last_seen):
+            if parse_version(v) > last_seen_parsed:
                 unseen.append(entry)
         except ValueError:
             continue
