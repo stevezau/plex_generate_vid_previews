@@ -214,6 +214,63 @@ class TestComputeOutputPaths:
         assert paths[0].name == "index-sd.bif"
         assert "zzzzzzzzz.bundle" in str(paths[0])
 
+    def test_tied_suffix_with_unrelated_part_first_picks_a_tied_part(self, tmp_path, mock_config):
+        """Tie-breaker bug: when multiple parts tie at the deepest suffix,
+        the selector must pick from the TIED parts — not from the head of
+        the parts list, which may be an unrelated part with a usable hash.
+
+        Pre-fix tier 3 iterates ``parts`` from index 0 and returns the
+        first hash with len>=2, ignoring whether that part actually
+        matched the target. With Plex's multi-version libraries the
+        tied parts share basename + parents while an unrelated multi-disc
+        part can sit ahead of them in iteration order — and Plex's /tree
+        XML order isn't a contract we control. Result: BIF written to a
+        bundle hash that has nothing to do with the dispatched file.
+
+        Live trigger 2026-05-14: Bandi (2026) S01E05/E06/E08 — three
+        items each warned "multiple MediaParts tied at the deepest path
+        suffix; picking the first usable hash". The warning reveals the
+        ambiguity but doesn't promise the picked hash is one of the
+        tied ones — pre-fix it can be any usable hash in the list.
+        """
+        adapter = PlexBundleAdapter(plex_config_folder="/cfg", frame_interval=10)
+        server = PlexServer(mock_config)
+        _wire_plex_query(
+            server,
+            parts=[
+                # Unrelated part FIRST in iteration order — different
+                # basename, different parent. Suffix walk gives 0.
+                ("ffffffffff", "/mnt/other/Documentary/disc1.mkv"),
+                # Two tied parts with identical basename + parent ("Movies/Dune (2021)").
+                # Differ only in mount prefix (4k vs 1080p) — common multi-version layout.
+                ("aaaaaaaaaa", "/mnt/4k/Movies/Dune (2021)/Dune (2021).mkv"),
+                ("bbbbbbbbbb", "/mnt/1080p/Movies/Dune (2021)/Dune (2021).mkv"),
+            ],
+        )
+
+        paths = adapter.compute_output_paths(
+            _make_bundle("/cdn/Movies/Dune (2021)/Dune (2021).mkv", tmp_path),
+            server,
+            item_id="99",
+        )
+
+        # The picked hash MUST be one of the tied parts (a... or b...),
+        # not the unrelated f... — otherwise the BIF lands in a bundle
+        # for a completely different file and the user gets no preview
+        # for either Dune version.
+        bundle_segment = str(paths[0])
+        assert "aaaaaaaaa.bundle" in bundle_segment or "bbbbbbbbb.bundle" in bundle_segment, (
+            f"Tier-3 fallback picked an unrelated hash. Got {paths[0]}. "
+            f"With multiple parts tied at the deepest suffix, the picked hash must come "
+            f"from a tied part (a... or b...), not from the unrelated f... at the head "
+            f"of the parts list. Pre-fix this returned the f... hash because tier 3 "
+            f"iterated ``parts`` from index 0 instead of preferring the tracked "
+            f"``best_match`` hash."
+        )
+        assert "ffffffff.bundle" not in bundle_segment, (
+            f"Picked the unrelated multi-disc part's hash instead of one of the tied parts: {paths[0]}"
+        )
+
     def test_empty_metadata_raises_not_yet_indexed(self, tmp_path, mock_config):
         adapter = PlexBundleAdapter(plex_config_folder="/cfg", frame_interval=10)
         server = PlexServer(mock_config)

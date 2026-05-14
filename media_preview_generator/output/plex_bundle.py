@@ -182,10 +182,17 @@ class PlexBundleAdapter(OutputAdapter):
            parent directory differs (Plex rewrote the path
            post-import via Sonarr-provided instructions, etc.). Only
            fires when no part had a longer suffix match.
-        3. **First-usable-hash fallback** — no matches at any level
-           (completely different path). The hash still belongs to
-           the same Plex item so the BIF ends up where Plex looks,
-           even if we can't confirm the exact MediaPart.
+        3. **Ambiguous-tie or no-match fallback** — two cells:
+           a. tier 1 had multiple parts tied at the deepest suffix
+              (best_is_unique = False) → return the first hash that
+              achieved that suffix length. Guaranteed to be one of
+              the tied parts; fixes a pre-2026-05 wrong-bundle bug
+              where iterating the whole parts list could return an
+              unrelated head-of-list hash.
+           b. no part matched at any suffix → fall back to the first
+              usable hash in the parts list. The hash still belongs
+              to the same Plex item, so the BIF ends up where Plex
+              looks, even if we can't confirm the exact MediaPart.
 
         Raises :class:`LibraryNotYetIndexedError` when the best
         matching MediaPart has no usable hash (analysis still in
@@ -247,26 +254,41 @@ class PlexBundleAdapter(OutputAdapter):
                     "didn't finish writing the bundle. We'll auto-retry."
                 )
 
-        # Tier 3: first usable hash. Plex reported paths we can't
-        # structurally match (or multiple tied at the deepest level
-        # still — rare; pick first to preserve legacy behaviour).
+        # Tier 3: ambiguous-tie or no-match fallback. Two distinct cells:
+        #
+        # * ``best_match`` is set + ``not best_is_unique`` → multiple parts
+        #   tied at the deepest suffix. Use ``best_match[1]`` — the FIRST
+        #   hash that achieved that suffix length — so the BIF lands in
+        #   one of the TIED bundles, not in some unrelated part that
+        #   happens to sit ahead in iteration order. Pre-fix this branch
+        #   iterated ``parts`` from index 0 and returned the first usable
+        #   hash, which on a multi-disc + multi-version mix could pick
+        #   the unrelated disc-1 hash for a Dune (2021).mkv lookup.
+        #   This still doesn't solve the "which tied part is the right
+        #   one" problem (Plex doesn't tell us); writing to all tied
+        #   bundles would, but that's a multi-output-path change
+        #   beyond this fix's scope.
+        # * ``best_match`` is None → no part matched at any suffix length.
+        #   Fall back to "first usable hash from parts" (legacy behaviour).
+        if best_match is not None and not best_is_unique:
+            best_hash = best_match[1]
+            if best_hash and len(best_hash) >= 2:
+                logger.warning(
+                    "Plex item {} has multiple MediaParts tied at the deepest path "
+                    "suffix for {!r}; picking the first tied hash. This can "
+                    "happen when multi-version directory structures are identical "
+                    "after the version-indicating prefix.",
+                    item_id,
+                    target_path,
+                )
+                return best_hash
         for bundle_hash, _remote_path in parts:
             if bundle_hash and len(bundle_hash) >= 2:
-                if best_match is not None and not best_is_unique:
-                    logger.warning(
-                        "Plex item {} has multiple MediaParts tied at the deepest path "
-                        "suffix for {!r}; picking the first usable hash. This can "
-                        "happen when multi-version directory structures are identical "
-                        "after the version-indicating prefix.",
-                        item_id,
-                        target_path,
-                    )
-                else:
-                    logger.debug(
-                        "Plex item {} has no MediaPart matching {!r}; using first hash",
-                        item_id,
-                        target_path,
-                    )
+                logger.debug(
+                    "Plex item {} has no MediaPart matching {!r}; using first hash",
+                    item_id,
+                    target_path,
+                )
                 return bundle_hash
         raise LibraryNotYetIndexedError(
             f"File not yet scanned in Plex (item {item_id}): every MediaPart returned by "
