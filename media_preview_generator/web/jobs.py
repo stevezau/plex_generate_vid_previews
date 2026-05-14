@@ -207,9 +207,16 @@ class Job:
     completed_at: str | None = None
     library_id: str | None = None
     library_name: str = ""
-    # Multi-server attribution: which configured server this job targets.
-    # Optional / nullable for back-compat with jobs created before the
-    # multi-server transition (those render as "All servers" in the UI).
+    # Source attribution: which configured server originated this job
+    # (the webhook sender, or the user-picked server on a manual / scheduled
+    # run). NOT the publish target — that's an explicit pin at
+    # ``config.server_id``. For Plex ``media.added`` fan-out, these point
+    # at Plex (source) even though the dispatch publishes to every owning
+    # server. Optional / nullable for back-compat with jobs created before
+    # the multi-server transition (those render as "All servers" in the UI).
+    # See ``_spawn_retry_job`` in ``web/routes/job_runner.py`` for the
+    # source-vs-pin discrimination logic — getting this wrong has shipped
+    # before (chain ``2f7132d5``, 2026-05-13).
     server_id: str | None = None
     server_name: str | None = None
     server_type: str | None = None  # plex / emby / jellyfin

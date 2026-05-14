@@ -260,11 +260,11 @@ class TestCompleteJobWarning:
         jm = JobManager(config_dir=config_dir)
         job = jm.create_job(library_name="Test")
         jm.start_job(job.id)
-        jm.complete_job(job.id, error="Could not find in Plex after 3 attempt(s)")
+        jm.complete_job(job.id, error="Could not find on any server after 3 attempt(s)")
 
         result = jm.get_job(job.id)
         assert result.status == JobStatus.FAILED
-        assert result.error == "Could not find in Plex after 3 attempt(s)"
+        assert result.error == "Could not find on any server after 3 attempt(s)"
 
     def test_complete_without_args_sets_completed_no_error(self, config_dir):
         """No args marks the job as COMPLETED with no error."""

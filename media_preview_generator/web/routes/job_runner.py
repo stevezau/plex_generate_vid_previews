@@ -67,6 +67,61 @@ def _classify_job_completion(
     return "warning"
 
 
+def _format_retry_wait_server_label(parent_job, run_job_config) -> str:
+    """Return the "({label} may still be indexing)" label for the retry-wait log.
+
+    Pure function so the five fallback cells (1/2/3+ pending publishers,
+    pin-match-source, generic) are testable without spinning up the
+    ``run_job`` closure. Resolution order:
+
+    1. Walk the parent (chain head) ``publishers`` snapshot and name every
+       server with a non-zero pending count. Same source of truth that
+       ``/api/jobs/<id>/attempts``'s ``_pending_servers`` helper uses, so
+       the log copy can't drift from the modal's per-pill vendor chips.
+    2. If no parent publishers data, fall back to an explicit publish-pin
+       (``run_job_config.config["server_id"]``) — but only when it matches
+       the retry's top-level ``server_id``. The top-level fields are
+       source attribution (who fired the webhook), so naming them when
+       they don't match the pin would re-introduce the same source-vs-
+       target conflation that shipped as chain ``2f7132d5`` on 2026-05-13.
+    3. Otherwise, the generic ``"the media server"`` — accurate for both
+       single-server and fan-out topologies.
+    """
+    from media_preview_generator.processing.retry_queue import (
+        PENDING_PUBLISHER_STATUSES as _PENDING_PUBLISHER_STATUSES,
+    )
+
+    pending_labels: list[str] = []
+    for pub in (parent_job.publishers or []) if parent_job else []:
+        if not isinstance(pub, dict):
+            continue
+        counts = pub.get("counts") or {}
+        if not isinstance(counts, dict):
+            continue
+        if sum(counts.get(s, 0) for s in _PENDING_PUBLISHER_STATUSES) > 0:
+            label = pub.get("server_name") or (pub.get("server_type") or "").title() or None
+            if label:
+                pending_labels.append(label)
+
+    if pending_labels:
+        if len(pending_labels) == 1:
+            return pending_labels[0]
+        if len(pending_labels) == 2:
+            return f"{pending_labels[0]} and {pending_labels[1]}"
+        return ", ".join(pending_labels[:-1]) + f", and {pending_labels[-1]}"
+
+    if run_job_config is not None:
+        pin_id = (run_job_config.config or {}).get("server_id")
+        if pin_id and pin_id == run_job_config.server_id:
+            pin_label = run_job_config.server_name or (
+                run_job_config.server_type.title() if run_job_config.server_type else None
+            )
+            if pin_label:
+                return pin_label
+
+    return "the media server"
+
+
 def _format_eta(seconds: float) -> str:
     """Format seconds into a human-readable ETA string.
 
@@ -486,9 +541,17 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
 
                 delay_sec = max(1, int(run_job_config.config.get("retry_delay", 30)))
                 retry_eta = (datetime.now(timezone.utc) + timedelta(seconds=delay_sec)).isoformat()
+                _parent_job_id = (run_job_config.config or {}).get("parent_job_id")
+                _parent_job = job_manager.get_job(_parent_job_id) if _parent_job_id else None
+                _server_label = _format_retry_wait_server_label(_parent_job, run_job_config)
+                if _parent_job is not None and _server_label == "the media server":
+                    logger.debug(
+                        "retry-wait label fell through to generic — parent {} publishers had no pending counts",
+                        _parent_job_id,
+                    )
                 job_manager.add_log(
                     job_id,
-                    f"INFO - Waiting {delay_sec}s before retry (Plex may still be indexing)",
+                    f"INFO - Waiting {delay_sec}s before retry ({_server_label} may still be indexing)",
                 )
                 job_manager.update_progress(
                     job_id,
@@ -1181,7 +1244,7 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                             spawned_retry_id = _spawn_retry_job(retry_paths, 1)
                             reason_parts = []
                             if unresolved_paths:
-                                reason_parts.append(f"{len(unresolved_paths)} not found in Plex")
+                                reason_parts.append(f"{len(unresolved_paths)} not found on any server")
                             if not_found_on_disk:
                                 reason_parts.append(f"{len(not_found_on_disk)} stale path(s)")
                             if pending_by_server:
@@ -1372,9 +1435,9 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                             job_manager.update_job_config(job_id, summary)
                         elif unresolved_paths:
                             if is_retry:
-                                error_parts.append(f"Could not find in Plex after {effective_max} attempt(s)")
+                                error_parts.append(f"Could not find on any server after {effective_max} attempt(s)")
                             else:
-                                error_parts.append(f"{len(unresolved_paths)} item(s) not found in Plex")
+                                error_parts.append(f"{len(unresolved_paths)} item(s) not found on any server")
 
                         if error_parts:
                             if total_paths > 0 and resolved_count < total_paths:

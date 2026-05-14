@@ -1,8 +1,8 @@
 """Webhook endpoints for Radarr/Sonarr/Custom integration.
 
-Receives JSON POST payloads on media import, delays for Plex indexing,
-debounces rapid imports, then triggers a job that processes only the
-file path(s) from the payload(s) — no full-library scan.
+Receives JSON POST payloads on media import, delays for the media server(s)
+to finish indexing, debounces rapid imports, then triggers a job that
+processes only the file path(s) from the payload(s) — no full-library scan.
 """
 
 import base64

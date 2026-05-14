@@ -13,7 +13,110 @@ Partial-failure jobs drop to the warning branch the code already had.
 
 from __future__ import annotations
 
-from media_preview_generator.web.routes.job_runner import _classify_job_completion
+from types import SimpleNamespace
+
+import pytest
+
+from media_preview_generator.web.routes.job_runner import (
+    _classify_job_completion,
+    _format_retry_wait_server_label,
+)
+
+
+def _job(publishers=None, *, server_id=None, server_name=None, server_type=None, config=None):
+    """Stand-in for a ``Job`` row: only the attributes the SUT reads."""
+    return SimpleNamespace(
+        publishers=publishers or [],
+        server_id=server_id,
+        server_name=server_name,
+        server_type=server_type,
+        config=config or {},
+    )
+
+
+def _pending_pub(server_name, server_type, count=1):
+    return {
+        "server_name": server_name,
+        "server_type": server_type,
+        "counts": {"published_pending_registration": count},
+    }
+
+
+class TestFormatRetryWaitServerLabel:
+    """Covers the five branches that produce different retry-wait copy.
+
+    The fix this guards (chain ``2f7132d5``, 2026-05-13) was a label-rendering
+    regression where the source-pill server was conflated with the publish
+    target. Each cell below produces visibly different copy — the matrix
+    must be tested so the conflation can't silently come back.
+    """
+
+    def test_single_pending_publisher_uses_publisher_name(self):
+        parent = _job(publishers=[_pending_pub("Jellyfin NAS", "jellyfin")])
+        retry = _job(server_id="plex-main", server_name="Plex", server_type="plex")
+        assert _format_retry_wait_server_label(parent, retry) == "Jellyfin NAS"
+
+    def test_two_pending_publishers_use_and(self):
+        parent = _job(
+            publishers=[
+                _pending_pub("Plex Living Room", "plex"),
+                _pending_pub("Jellyfin NAS", "jellyfin"),
+            ]
+        )
+        assert _format_retry_wait_server_label(parent, _job()) == "Plex Living Room and Jellyfin NAS"
+
+    def test_three_plus_pending_publishers_use_oxford_comma(self):
+        parent = _job(
+            publishers=[
+                _pending_pub("Plex", "plex"),
+                _pending_pub("Emby", "emby"),
+                _pending_pub("Jellyfin", "jellyfin"),
+            ]
+        )
+        assert _format_retry_wait_server_label(parent, _job()) == "Plex, Emby, and Jellyfin"
+
+    def test_pin_matches_source_when_no_publishers_data(self):
+        """No parent publishers info, but an explicit publish-pin equal to
+        the source attribution → name that server.
+        """
+        retry = _job(
+            server_id="plex-main",
+            server_name="Plex Main",
+            server_type="plex",
+            config={"server_id": "plex-main"},
+        )
+        assert _format_retry_wait_server_label(None, retry) == "Plex Main"
+
+    def test_pin_differs_from_source_falls_back_to_generic(self):
+        """Source attribution (top-level server_id) is Plex, but the explicit
+        publish-pin is something else — naming the source would re-introduce
+        the chain ``2f7132d5`` source-vs-target conflation, so we go generic.
+        """
+        retry = _job(
+            server_id="plex-main",
+            server_name="Plex",
+            server_type="plex",
+            config={"server_id": "jellyfin-nas"},
+        )
+        assert _format_retry_wait_server_label(None, retry) == "the media server"
+
+    def test_no_publishers_no_pin_falls_back_to_generic(self):
+        assert _format_retry_wait_server_label(None, _job()) == "the media server"
+
+    @pytest.mark.parametrize(
+        "publishers",
+        [
+            [{"server_name": "X", "counts": "not-a-dict"}],
+            ["not-a-dict"],
+            [{"server_name": "Y", "counts": {"some_other_status": 5}}],
+        ],
+    )
+    def test_malformed_or_non_pending_publishers_dont_name_a_server(self, publishers):
+        """Defensive: persisted ``publishers`` is JSON-text so a partial write
+        or hand-edited row could surface non-dict entries or unfamiliar status
+        keys. Those must collapse to the generic fallback, not raise.
+        """
+        assert _format_retry_wait_server_label(_job(publishers=publishers), _job()) == "the media server"
 
 
 class TestClassifyJobCompletion:
