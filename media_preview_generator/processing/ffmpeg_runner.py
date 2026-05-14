@@ -531,7 +531,10 @@ def create_ffmpeg_runner(
                         pass
                 if os.path.exists(output_file):
                     try:
-                        with open(output_file, encoding="utf-8") as f:
+                        # errors="replace": FFmpeg can emit non-UTF-8 bytes in stderr (e.g. file
+                        # paths or stream metadata in Latin-1). Strict decode crashed the runner
+                        # mid-loop, surfaced as a misleading "corrupt video file" error to users.
+                        with open(output_file, encoding="utf-8", errors="replace") as f:
                             lines = f.readlines()
                             if len(lines) > line_count:
                                 for i in range(line_count, len(lines)):
@@ -564,7 +567,7 @@ def create_ffmpeg_runner(
             # Process any remaining data
             if os.path.exists(output_file):
                 try:
-                    with open(output_file, encoding="utf-8") as f:
+                    with open(output_file, encoding="utf-8", errors="replace") as f:
                         lines = f.readlines()
                         if len(lines) > line_count:
                             for i in range(line_count, len(lines)):
