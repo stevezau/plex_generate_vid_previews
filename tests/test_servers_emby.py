@@ -429,6 +429,25 @@ class TestListItems:
         assert second_params.get("Limit") == _LIST_ITEMS_PAGE_SIZE
         assert len(items) == _LIST_ITEMS_PAGE_SIZE + 7
 
+    def test_list_items_uses_extended_per_request_timeout(self, emby):
+        """``list_items`` lives in the shared ``_embyish.EmbyApiClient``
+        base — Emby and Jellyfin both inherit it. The extended /Items
+        timeout has to apply to Emby too. Pin the same contract on
+        this side so a future refactor that special-cases one vendor
+        breaks symmetrically.
+        """
+        from media_preview_generator.servers._embyish import _LIST_ITEMS_TIMEOUT_S
+
+        good_response = MagicMock()
+        good_response.json.return_value = {"Items": [], "TotalRecordCount": 0}
+        good_response.raise_for_status.return_value = None
+
+        with patch.object(EmbyServer, "_request", return_value=good_response) as req:
+            list(emby.list_items("lib-1"))
+
+        assert req.call_count >= 1
+        assert req.call_args_list[0].kwargs.get("timeout") == _LIST_ITEMS_TIMEOUT_S
+
 
 class TestResolveItemToRemotePath:
     """The default fixture uses api_key auth (no user_id) → the

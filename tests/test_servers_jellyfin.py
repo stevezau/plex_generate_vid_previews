@@ -297,6 +297,72 @@ class TestListItems:
             items = list(jelly.list_items("lib-1"))
         assert items == []
 
+    def test_list_items_uses_extended_per_request_timeout(self, jelly):
+        """Job b5651c8a regression: cold-cache /Items query on a
+        118k-item Jellyfin Shows library exceeds the default 30s
+        ``_request`` timeout because Jellyfin has to walk the entire
+        library before paginating. Pre-fix the request bailed at 30s
+        and the retry loop just hit the same wall three times.
+
+        Fix: ``list_items`` passes a longer per-request timeout
+        (``_LIST_ITEMS_TIMEOUT_S = 60``) so the cold walk has room
+        to finish. Smaller libraries don't hit this — the user's
+        10k Movies scan worked at the 30s default — but the 118k
+        Shows case needs the headroom.
+
+        Test pins two contracts:
+        * ``_request`` is called with ``timeout=`` set to the
+          ``_LIST_ITEMS_TIMEOUT_S`` constant, not the bare default;
+        * the override is passed on EVERY attempt in the retry
+          loop, so a transient timeout that recovers on retry-2
+          doesn't silently revert to the 30s default.
+        """
+        from media_preview_generator.servers._embyish import _LIST_ITEMS_TIMEOUT_S
+
+        good_response = MagicMock()
+        good_response.json.return_value = {"Items": [], "TotalRecordCount": 0}
+        good_response.raise_for_status.return_value = None
+
+        with patch.object(JellyfinServer, "_request", return_value=good_response) as req:
+            list(jelly.list_items("lib-1"))
+
+        assert req.call_count >= 1
+        call = req.call_args_list[0]
+        assert call.kwargs.get("timeout") == _LIST_ITEMS_TIMEOUT_S, (
+            f"list_items must pass timeout=_LIST_ITEMS_TIMEOUT_S "
+            f"({_LIST_ITEMS_TIMEOUT_S}) to _request so the cold-cache /Items "
+            f"query has room to finish. Got kwargs: {call.kwargs!r}"
+        )
+
+    def test_list_items_keeps_extended_timeout_on_retries(self, jelly):
+        """Retry attempts must inherit the same long timeout — a
+        regression that uses the long timeout only on attempt 1
+        and falls back to 30s on attempts 2/3 would leave the same
+        symptom in place for any sustained slowness.
+        """
+        import requests as _requests
+
+        from media_preview_generator.servers._embyish import _LIST_ITEMS_MAX_ATTEMPTS, _LIST_ITEMS_TIMEOUT_S
+
+        good_response = MagicMock()
+        good_response.json.return_value = {"Items": [], "TotalRecordCount": 0}
+        good_response.raise_for_status.return_value = None
+        side_effect = [_requests.exceptions.ReadTimeout("blip")] * (_LIST_ITEMS_MAX_ATTEMPTS - 1) + [good_response]
+
+        with (
+            patch.object(JellyfinServer, "_request", side_effect=side_effect) as req,
+            patch("media_preview_generator.servers._embyish.time.sleep"),
+        ):
+            list(jelly.list_items("lib-1"))
+
+        assert req.call_count == _LIST_ITEMS_MAX_ATTEMPTS
+        for i, call in enumerate(req.call_args_list, start=1):
+            assert call.kwargs.get("timeout") == _LIST_ITEMS_TIMEOUT_S, (
+                f"Attempt {i}/{_LIST_ITEMS_MAX_ATTEMPTS} dropped the extended timeout — "
+                f"a transient that recovers on retry-2 would still hit the short timeout. "
+                f"Got kwargs: {call.kwargs!r}"
+            )
+
     def test_first_page_retries_on_transient_timeout_then_succeeds(self, jelly):
         """Job b6deeac3 regression: Jellyfin took >30s to respond on a
         118k-item Shows library, ``_request`` raised ``ReadTimeout``,

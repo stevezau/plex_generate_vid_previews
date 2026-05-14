@@ -63,14 +63,22 @@ _LIST_ITEMS_PAGE_SIZE = 1000
 # (transient — the same query ran in 0.2s minutes later), the
 # request timed out, and the library was silently skipped. With
 # 3 attempts and a 2s base wait between, the next two retries
-# almost always catch the server once it's idle again. Total
-# worst-case wait before giving up: ``request_timeout × 3 +
-# backoff_waits`` ≈ ~100s, comfortably under the job-level
-# graceful timeout. Tuned conservatively because every retry
-# costs a fresh HTTP round-trip against a Jellyfin server that's
-# already shown signs of stress.
+# almost always catch the server once it's idle again. Tuned
+# conservatively because every retry costs a fresh HTTP round-trip
+# against a Jellyfin server that's already shown signs of stress.
 _LIST_ITEMS_MAX_ATTEMPTS = 3
 _LIST_ITEMS_RETRY_BASE_WAIT_S = 2.0
+
+# Per-request timeout for the ``/Items`` page query. The default
+# ``_request`` timeout (30s) is fine for small API calls but cold-
+# cache queries on huge libraries (118k items on Jellyfin Shows)
+# blow past it because Jellyfin walks the entire library before
+# returning the first row. Empirically the cold walk completes in
+# ~10-30s on a healthy server; 60s gives us margin for a server
+# that's also doing its own indexing in the background. Combined
+# with the 3-attempt retry budget the ceiling is ``3 × 60s + 2s
+# + 4s`` ≈ ~186s before ``list_items`` gives up on a page.
+_LIST_ITEMS_TIMEOUT_S = 60
 
 
 class EmbyApiClient(MediaServer):
@@ -154,8 +162,16 @@ class EmbyApiClient(MediaServer):
         *,
         params: dict[str, Any] | None = None,
         json_body: Any = None,
+        timeout: int | float | None = None,
     ) -> requests.Response:
-        """Issue an authenticated request against the server's HTTP API."""
+        """Issue an authenticated request against the server's HTTP API.
+
+        ``timeout`` overrides the per-server default (``self._config.timeout``
+        or 30s) for endpoints where the default is too short. Used by
+        ``list_items`` for ``/Items`` page queries on large libraries
+        where Jellyfin's cold-cache walk can take >30s — see
+        ``_LIST_ITEMS_TIMEOUT_S``.
+        """
         url = f"{self._config.url.rstrip('/')}{path}"
         headers = {
             "X-Emby-Token": self._token(),
@@ -164,13 +180,14 @@ class EmbyApiClient(MediaServer):
         verify = bool(self._config.verify_ssl)
         if not verify:
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        effective_timeout = int(timeout) if timeout is not None else int(self._config.timeout or 30)
         return self._get_session().request(
             method,
             url,
             headers=headers,
             params=params,
             json=json_body,
-            timeout=int(self._config.timeout or 30),
+            timeout=effective_timeout,
             verify=verify,
         )
 
@@ -486,7 +503,16 @@ class EmbyApiClient(MediaServer):
             last_exc: Exception | None = None
             for attempt in range(1, _LIST_ITEMS_MAX_ATTEMPTS + 1):
                 try:
-                    response = self._request("GET", "/Items", params=params)
+                    # Pass the extended timeout on EVERY attempt — a
+                    # regression that drops the override on retries
+                    # would silently revert to the 30s default and
+                    # re-introduce the b5651c8a symptom.
+                    response = self._request(
+                        "GET",
+                        "/Items",
+                        params=params,
+                        timeout=_LIST_ITEMS_TIMEOUT_S,
+                    )
                     response.raise_for_status()
                     payload = response.json()
                     last_exc = None
