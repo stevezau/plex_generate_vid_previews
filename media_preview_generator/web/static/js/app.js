@@ -1926,7 +1926,17 @@ function updateJobQueue() {
         new bootstrap.Tooltip(el);
     });
 
-    if (document.querySelector('[data-scheduled-at]')) {
+    // Start the 1Hz ticker when ANY live countdown is on the page —
+    // retry (`data-scheduled-at`) OR webhook debounce
+    // (`data-webhook-fire-at`). Pre-fix the webhook branch was missing
+    // here so a webhook-only queue (no retry rows) left the ticker
+    // un-started — the row's "Webhook firing in Xs" text only
+    // refreshed when ``loadJobs`` re-rendered the table (every 5s),
+    // looking like the countdown was running slow.
+    if (
+        document.querySelector('[data-scheduled-at]')
+        || document.querySelector('[data-webhook-fire-at]')
+    ) {
         _ensureElapsedTimer();
     }
 }
