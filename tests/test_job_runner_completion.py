@@ -20,6 +20,7 @@ import pytest
 from media_preview_generator.web.routes.job_runner import (
     _classify_job_completion,
     _format_retry_wait_server_label,
+    _retry_completion_message,
 )
 
 
@@ -236,3 +237,86 @@ class TestClassifyJobCompletion:
             resolved_count=0,
         )
         assert result == "warning"
+
+
+class TestRetryCompletionMessage:
+    """Cover the matrix that produces the per-job tail log line for retries.
+
+    Live regression (2026-05-14, 15 failed jobs): every exhausted retry
+    chain wrote ``INFO - Retry job completed successfully`` on the child
+    job's tail even though the parent had just been marked FAILED with
+    "Source server did not register N file(s) after 3 retry attempts".
+    The contradiction made per-job logs unreliable for diagnosis.
+
+    The branching variable is ``(retry_paths empty?, spawned_retry_id set?)``.
+    Cell ``(non-empty, None)`` is chain-exhausted — the only cell that
+    must NOT log success. The other live cells route through different
+    code paths (``error_parts`` non-empty), but the helper still has to
+    handle the scheduled-retry case for completeness.
+    """
+
+    def test_chain_exhausted_logs_warning_with_pending_summary(self):
+        """retry_paths non-empty + no spawn = chain exhausted = WARNING."""
+        level, msg = _retry_completion_message(
+            retry_paths=["/data/x.mkv"],
+            spawned_retry_id=None,
+            pending_by_server={"JellyTest": 1},
+            effective_max=3,
+        )
+        assert level == "WARNING", "exhausted chains must NOT log INFO success"
+        assert "Retry chain exhausted after 3 attempt(s)" in msg
+        assert "JellyTest pending × 1" in msg, f"per-server pending count must surface in the message; got {msg!r}"
+
+    def test_chain_exhausted_orders_pending_servers_by_count(self):
+        """Multi-server pending counts sort highest-first so the most-blocked
+        server is named first — keeps the message scannable when 3+ servers
+        are pending."""
+        level, msg = _retry_completion_message(
+            retry_paths=["/a.mkv", "/b.mkv", "/c.mkv"],
+            spawned_retry_id=None,
+            pending_by_server={"Plex": 1, "JellyTest": 3, "EmbyTest": 2},
+            effective_max=3,
+        )
+        assert level == "WARNING"
+        assert msg.index("JellyTest pending × 3") < msg.index("EmbyTest pending × 2") < msg.index("Plex pending × 1"), (
+            f"pending servers must sort by count descending; got {msg!r}"
+        )
+
+    def test_chain_exhausted_falls_back_when_pending_by_server_empty(self):
+        """If pending_by_server got cleared but retry_paths still has entries,
+        the message must still carry a count rather than ending with a stray
+        semicolon — exhausted-chain warnings always need *some* signal.
+        """
+        level, msg = _retry_completion_message(
+            retry_paths=["/a.mkv", "/b.mkv"],
+            spawned_retry_id=None,
+            pending_by_server={},
+            effective_max=3,
+        )
+        assert level == "WARNING"
+        assert "2 path(s) still pending" in msg, f"empty pending_by_server must fall back to a path count; got {msg!r}"
+
+    def test_retry_succeeded_logs_info_success(self):
+        """retry_paths empty = chain succeeded = original INFO message preserved."""
+        level, msg = _retry_completion_message(
+            retry_paths=[],
+            spawned_retry_id=None,
+            pending_by_server={},
+            effective_max=3,
+        )
+        assert level == "INFO"
+        assert msg == "Retry job completed successfully"
+
+    def test_spawned_next_retry_logs_info_success(self):
+        """If we DID spawn another retry, this child completed its work and
+        the chain is still alive — INFO is correct (the WARNING about the
+        next-retry schedule is logged elsewhere, lines 1239-1242).
+        """
+        level, msg = _retry_completion_message(
+            retry_paths=["/a.mkv"],
+            spawned_retry_id="next-retry-job-id",
+            pending_by_server={"JellyTest": 1},
+            effective_max=3,
+        )
+        assert level == "INFO"
+        assert msg == "Retry job completed successfully"

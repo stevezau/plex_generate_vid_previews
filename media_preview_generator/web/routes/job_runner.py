@@ -67,6 +67,38 @@ def _classify_job_completion(
     return "warning"
 
 
+def _retry_completion_message(
+    *,
+    retry_paths: list,
+    spawned_retry_id: str | None,
+    pending_by_server: dict,
+    effective_max: int,
+) -> tuple[str, str]:
+    """Decide what the per-job log line should say when a retry job finishes.
+
+    Pre-fix every retry's tail logged ``"Retry job completed successfully"`` —
+    even when ``retry_paths`` was non-empty and no further retry was spawned
+    (chain exhausted). The parent was being marked FAILED a few lines up with
+    "Source server did not register N file(s)…", so the child's success log
+    contradicted the chain's actual outcome and misled anyone reading
+    per-job logs. Verified across 4 separate exhausted chains
+    (``1e858ad7``, ``ef161db5``, ``41e4c860``, ``5db48618`` on 2026-05-14).
+
+    Returns:
+        ``("INFO", "Retry job completed successfully")`` when the chain succeeded.
+        ``("WARNING", "Retry chain exhausted after N attempt(s); …")`` when
+        ``retry_paths`` is non-empty AND ``spawned_retry_id`` is ``None``
+        (chain ran out of attempts).
+    """
+    if retry_paths and not spawned_retry_id:
+        pending_summary = (
+            ", ".join(f"{name} pending × {n}" for name, n in sorted(pending_by_server.items(), key=lambda kv: -kv[1]))
+            or f"{len(retry_paths)} path(s) still pending"
+        )
+        return "WARNING", f"Retry chain exhausted after {effective_max} attempt(s); {pending_summary}"
+    return "INFO", "Retry job completed successfully"
+
+
 def _format_retry_wait_server_label(parent_job, run_job_config) -> str:
     """Return the "({label} may still be indexing)" label for the retry-wait log.
 
@@ -1477,8 +1509,17 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                                 job_manager.add_log(job_id, f"INFO - {msg}")
                                 job_manager.complete_job(job_id, warning=msg)
                             elif is_retry:
-                                job_manager.add_log(job_id, "INFO - Retry job completed successfully")
-                                job_manager.complete_job(job_id)
+                                _level, _msg = _retry_completion_message(
+                                    retry_paths=retry_paths,
+                                    spawned_retry_id=spawned_retry_id,
+                                    pending_by_server=pending_by_server,
+                                    effective_max=effective_max,
+                                )
+                                job_manager.add_log(job_id, f"{_level} - {_msg}")
+                                if _level == "WARNING":
+                                    job_manager.complete_job(job_id, warning=_msg)
+                                else:
+                                    job_manager.complete_job(job_id)
                             else:
                                 # ``result["warning"]`` flows up from
                                 # ``run_processing`` when the multi-server
