@@ -692,8 +692,8 @@ class TestExtractTitlePrefix:
 
     Empirically verified on a live Emby 4.9 instance: the legacy stem
     extractor that did NOT strip the article missed item 13504
-    ("The 'Burbs") in tools/bench_emby_reverse_path.py — the only
-    miss across 22 paths until this regex was added.
+    ("The 'Burbs") — the only miss across 22 paths until this regex
+    was added.
     """
 
     def test_tv_returns_first_word_and_episode_kind(self, emby):
@@ -800,7 +800,7 @@ class TestPass0NameStartsWithFastPath:
     a per-Series enumerate of just the matching Series (~5 ms).
 
     Empirical: 4173× total speedup across 22 real paths with 22/22 Id
-    agreement against the legacy strategy (tools/bench_emby_reverse_path.py).
+    agreement against the legacy strategy.
 
     These tests pin both the happy path AND the safe-fallback contract:
     Pass 0 returning None must always fall through to Pass 1 and Pass 2,
