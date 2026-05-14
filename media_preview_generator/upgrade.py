@@ -9,7 +9,11 @@ After migration, settings.json is the single source of truth for all
 application-level configuration.
 """
 
+import json
 import os
+import sqlite3
+import uuid
+from pathlib import Path
 from typing import Any
 
 from loguru import logger
@@ -17,7 +21,7 @@ from loguru import logger
 # -------------------------------------------------------------------------
 # Schema version — bump when adding new migrations
 # -------------------------------------------------------------------------
-_CURRENT_SCHEMA_VERSION = 11
+_CURRENT_SCHEMA_VERSION = 12
 
 
 # -------------------------------------------------------------------------
@@ -46,6 +50,13 @@ _USER_FACING_NOTES: dict[int, str] = {
         "Frame-reuse caching is now on by default. When the same frame shows up "
         "across multiple files, it's reused instead of re-encoded — saves time on "
         "large libraries. Tunable under Settings → Performance."
+    ),
+    12: (
+        "Your Plex server's internal id was renamed so it matches the shape used by "
+        "Jellyfin and Emby. Existing Plex Direct webhooks keep working as-is — "
+        "routing matches on Plex's own machine identifier, not on the renamed id. "
+        "If you'd like the URL on plex.tv to use the new cleaner form, open "
+        "Servers → Plex → Webhook & Scanner and click Re-register. Optional, not required."
     ),
 }
 
@@ -321,6 +332,8 @@ def _migrate_schema(sm) -> None:
         _run(10, _migrate_to_v10)
     if current < 11:
         _run(11, _migrate_to_v11)
+    if current < 12:
+        _run(12, _migrate_to_v12)
 
     sm.set("_schema_version", _CURRENT_SCHEMA_VERSION)
 
@@ -589,7 +602,7 @@ def _migrate_to_v6(sm) -> list:
     return notes
 
 
-def _legacy_plex_to_media_server(sm) -> dict[str, Any] | None:
+def _legacy_plex_to_media_server(sm, *, id_override: str | None = None) -> dict[str, Any] | None:
     """Build a single ``media_servers`` entry from legacy ``plex_*`` keys.
 
     Returns ``None`` when there is nothing to migrate (e.g. fresh install
@@ -597,9 +610,11 @@ def _legacy_plex_to_media_server(sm) -> dict[str, Any] | None:
     persisted in ``settings.json`` (not a :class:`ServerConfig` instance);
     the runtime hydrates it into the dataclass at load time.
 
-    Used by the v7 migration and by tests; exposed so other code paths
-    (e.g. legacy-only deployments hitting the new server registry) can
-    synthesize the same shape on demand.
+    Used by the v7 migration (no ``id_override`` → a fresh UUID) and by
+    runtime callers like :meth:`ServerRegistry.from_legacy_config` (which
+    passes the stable slug ``"plex-default"`` because the synthesised
+    stub is built repeatedly per request and the id must stay identical
+    between calls so dispatch lookups don't drift).
     """
     plex_url = (sm.get("plex_url") or "").strip()
     plex_token = (sm.get("plex_token") or "").strip()
@@ -634,7 +649,7 @@ def _legacy_plex_to_media_server(sm) -> dict[str, Any] | None:
     auth: dict[str, Any] = {"method": "token", "token": plex_token} if plex_token else {}
 
     return {
-        "id": "plex-default",
+        "id": id_override or uuid.uuid4().hex,
         "type": "plex",
         "name": "Plex",
         "enabled": True,
@@ -975,6 +990,142 @@ def _migrate_to_v11(sm) -> list:
     return [
         "v11: seeded frame_reuse defaults (enabled, ttl=60min, max_disk=2GB) — tunable under Settings → Performance"
     ]
+
+
+def _migrate_to_v12(sm) -> list:
+    """Rename legacy ``plex-default`` server id to a generated UUID.
+
+    The v7 migration and the Setup Wizard both hard-coded the id
+    ``"plex-default"`` for the first/only Plex server. Every other
+    server (Jellyfin, Emby, or a second Plex added through the UI)
+    gets a ``uuid.uuid4().hex`` id from ``POST /api/servers``. The
+    resulting per-server webhook URLs diverged in shape:
+
+        Plex:     /api/webhooks/server/plex-default
+        Jellyfin: /api/webhooks/server/e1be34e0570c413ab64755baf7d839cd
+
+    This migration renames the slug to a UUID so every install ends up
+    with consistently-shaped ids, and rewrites the runtime references
+    that point at the old value.
+
+    Surfaces rewritten:
+
+    * ``settings.json`` ``media_servers[*].id``
+    * ``jobs.db`` ``jobs.server_id`` (per-job server pin)
+    * ``schedules.json`` schedule entries
+    * ``webhook_history.json`` history entries
+    * ``plex_bundle_cache_plex-default.json`` filename (cache stays
+      bound to the same logical server under its new id)
+
+    Deliberately NOT rewritten:
+
+    * ``output.webhook_public_url`` — left pointing at the old URL so
+      the Plex status probe's stored-URL fallback still finds the
+      live registration on plex.tv. The user clicks Re-register
+      (already required by the earlier path migration) to push the
+      new URL upstream; the register handler rewrites the path with
+      the new UUID at that point.
+
+    Idempotent — a re-run with no ``plex-default`` entry is a no-op.
+    """
+    media_servers = list(sm.get("media_servers") or [])
+    plex_default_idx = next(
+        (i for i, e in enumerate(media_servers) if isinstance(e, dict) and e.get("id") == "plex-default"),
+        None,
+    )
+    if plex_default_idx is None:
+        return []
+
+    new_id = uuid.uuid4().hex
+    entry = dict(media_servers[plex_default_idx])
+    entry["id"] = new_id
+    media_servers[plex_default_idx] = entry
+    sm.update({"media_servers": media_servers})
+
+    config_dir = getattr(sm, "config_dir", None)
+    if config_dir is None:
+        logger.warning("v12: settings manager has no config_dir; skipping runtime-file rewrites")
+        return [f"v12: renamed legacy 'plex-default' → {new_id} in settings.json (runtime files not rewritten)"]
+
+    config_dir = Path(config_dir)
+    runtime_notes: list[str] = []
+
+    jobs_db = config_dir / "jobs.db"
+    if jobs_db.exists():
+        try:
+            with sqlite3.connect(str(jobs_db)) as conn:
+                cur = conn.execute(
+                    "UPDATE jobs SET server_id = ? WHERE server_id = 'plex-default'",
+                    (new_id,),
+                )
+                conn.commit()
+                if cur.rowcount:
+                    runtime_notes.append(f"jobs.db: rewrote {cur.rowcount} rows")
+        except Exception as exc:
+            logger.warning(
+                "v12: jobs.db rewrite failed ({}). The new server id is in settings.json but historical "
+                "jobs still reference 'plex-default' and will show 'unknown server' in the Jobs view. "
+                "Restart the app or rerun manually: "
+                "sqlite3 {} \"UPDATE jobs SET server_id = '{}' WHERE server_id = 'plex-default'\"",
+                exc,
+                jobs_db,
+                new_id,
+            )
+
+    schedules_file = config_dir / "schedules.json"
+    if schedules_file.exists():
+        try:
+            with open(schedules_file) as fh:
+                data = json.load(fh)
+            n = 0
+            for sched in (data.get("schedules") or []) if isinstance(data, dict) else []:
+                if isinstance(sched, dict) and sched.get("server_id") == "plex-default":
+                    sched["server_id"] = new_id
+                    n += 1
+            if n:
+                with open(schedules_file, "w") as fh:
+                    json.dump(data, fh, indent=2)
+                runtime_notes.append(f"schedules.json: rewrote {n} entries")
+        except Exception as exc:
+            logger.warning(
+                "v12: schedules.json rewrite failed ({}). Scheduled scans pinned to the old id won't fire.", exc
+            )
+
+    webhook_history = config_dir / "webhook_history.json"
+    if webhook_history.exists():
+        try:
+            with open(webhook_history) as fh:
+                history = json.load(fh)
+            n = 0
+            if isinstance(history, list):
+                for h in history:
+                    if isinstance(h, dict) and h.get("server_id") == "plex-default":
+                        h["server_id"] = new_id
+                        n += 1
+            if n:
+                with open(webhook_history, "w") as fh:
+                    json.dump(history, fh, indent=2)
+                runtime_notes.append(f"webhook_history.json: rewrote {n} entries")
+        except Exception as exc:
+            logger.warning(
+                "v12: webhook_history.json rewrite failed ({}). Old entries display 'unknown server' but new ones are fine.",
+                exc,
+            )
+
+    old_cache = config_dir / "plex_bundle_cache_plex-default.json"
+    new_cache = config_dir / f"plex_bundle_cache_{new_id}.json"
+    if old_cache.exists():
+        try:
+            old_cache.rename(new_cache)
+            runtime_notes.append("plex_bundle_cache: renamed")
+        except Exception as exc:
+            logger.warning(
+                "v12: plex_bundle_cache rename failed ({}). Cache will be regenerated on next scan — non-fatal.",
+                exc,
+            )
+
+    detail = "; ".join(runtime_notes) if runtime_notes else "no runtime references to rewrite"
+    return [f"v12: renamed legacy 'plex-default' → {new_id} ({detail})"]
 
 
 # =========================================================================

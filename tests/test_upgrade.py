@@ -995,7 +995,15 @@ class TestMigrateToV7:
         servers = settings_manager.get("media_servers")
         assert isinstance(servers, list) and len(servers) == 1
         entry = servers[0]
-        assert entry["id"] == "plex-default"
+        # v12 retired the hard-coded ``plex-default`` slug: the synthesised
+        # entry now gets a UUID matching the shape of every other server
+        # added through the multi-server flow.
+        assert isinstance(entry["id"], str)
+        assert len(entry["id"]) == 32, f"v7-synthesised id should be a uuid4 hex; got {entry['id']!r}"
+        # Sanity: it's a valid hex uuid (raises ValueError otherwise).
+        import uuid as _uuid
+
+        _uuid.UUID(hex=entry["id"])
         assert entry["type"] == "plex"
         assert entry["enabled"] is True
         assert entry["url"] == "http://plex:32400"
@@ -1487,6 +1495,212 @@ class TestMigrateToV11:
         notes = _migrate_to_v11(settings_manager)
         assert notes == []
         assert settings_manager.get("frame_reuse") == existing
+
+
+class TestMigrateToV12:
+    """v12 renames the legacy ``plex-default`` slug to a UUID.
+
+    Pre-v12 two code paths (v7 migration + Setup Wizard) hard-coded the
+    string ``"plex-default"`` as the id of the first Plex entry. Every
+    other server type — and any second Plex added via the UI — got a
+    UUID from ``POST /api/servers``. The resulting per-server webhook
+    URLs diverged in shape (``/server/plex-default`` vs
+    ``/server/<32-hex>``). v12 collapses them onto a single shape, and
+    rewrites the runtime references (jobs.db, schedules.json,
+    webhook_history.json, plex bundle cache filename) so nothing
+    dangles after the rename.
+    """
+
+    def _new_id_from(self, notes):
+        # Note shape: "v12: renamed legacy 'plex-default' → <new_id> (…)"
+        marker = "→ "
+        for n in notes:
+            if marker in n:
+                tail = n.split(marker, 1)[1]
+                return tail.split(" ", 1)[0]
+        raise AssertionError(f"could not extract new id from notes: {notes!r}")
+
+    def test_no_op_when_no_plex_default_entry(self, settings_manager):
+        from media_preview_generator.upgrade import _migrate_to_v12
+
+        settings_manager.apply_changes(
+            updates={
+                "media_servers": [
+                    {"id": "abcdef0123456789", "type": "plex", "name": "Plex"},
+                    {"id": "fedcba9876543210", "type": "jellyfin", "name": "Jellyfin"},
+                ]
+            }
+        )
+        notes = _migrate_to_v12(settings_manager)
+        assert notes == [], "migration must be a no-op when there's no legacy slug"
+        ids = [s["id"] for s in settings_manager.get("media_servers")]
+        assert ids == ["abcdef0123456789", "fedcba9876543210"]
+
+    def test_renames_settings_json_entry(self, settings_manager):
+        from media_preview_generator.upgrade import _migrate_to_v12
+
+        settings_manager.apply_changes(
+            updates={
+                "media_servers": [
+                    {"id": "plex-default", "type": "plex", "name": "Plex"},
+                    {"id": "fedcba9876543210", "type": "jellyfin", "name": "Jellyfin"},
+                ]
+            }
+        )
+        notes = _migrate_to_v12(settings_manager)
+        new_id = self._new_id_from(notes)
+
+        servers = settings_manager.get("media_servers")
+        # Jellyfin entry untouched.
+        assert servers[1]["id"] == "fedcba9876543210"
+        # Plex entry renamed; rest of the entry preserved.
+        assert servers[0]["id"] == new_id
+        assert servers[0]["type"] == "plex"
+        assert servers[0]["name"] == "Plex"
+        # The new id is a valid uuid4 hex (32 lowercase hex chars).
+        import uuid as _uuid
+
+        assert len(new_id) == 32
+        _uuid.UUID(hex=new_id)
+
+    def test_does_not_rewrite_output_webhook_public_url(self, settings_manager):
+        """Stored URL stays pointing at the OLD path so the Plex status
+        probe's stored-URL fallback still finds the live plex.tv
+        registration. Re-register on the Plex card pushes the new
+        UUID-shaped URL upstream.
+        """
+        from media_preview_generator.upgrade import _migrate_to_v12
+
+        settings_manager.apply_changes(
+            updates={
+                "media_servers": [
+                    {
+                        "id": "plex-default",
+                        "type": "plex",
+                        "name": "Plex",
+                        "output": {
+                            "adapter": "plex_bundle",
+                            "webhook_public_url": "https://previews.example.com/api/webhooks/server/plex-default",
+                        },
+                    }
+                ]
+            }
+        )
+        _migrate_to_v12(settings_manager)
+        url = settings_manager.get("media_servers")[0]["output"]["webhook_public_url"]
+        assert url == "https://previews.example.com/api/webhooks/server/plex-default", (
+            "stored URL MUST keep the old slug so the legacy-URL fallback probe still finds "
+            "plex.tv's existing registration; Re-register updates it"
+        )
+
+    def test_rewrites_jobs_db_server_id(self, settings_manager, tmp_path):
+        """``UPDATE jobs SET server_id = <new_id> WHERE server_id = 'plex-default'``."""
+        import sqlite3
+
+        from media_preview_generator.upgrade import _migrate_to_v12
+
+        jobs_db = tmp_path / "jobs.db"
+        conn = sqlite3.connect(str(jobs_db))
+        conn.execute("CREATE TABLE jobs (id TEXT, server_id TEXT)")
+        conn.executemany(
+            "INSERT INTO jobs VALUES (?, ?)",
+            [("j1", "plex-default"), ("j2", "plex-default"), ("j3", "other-server"), ("j4", None)],
+        )
+        conn.commit()
+        conn.close()
+
+        settings_manager.apply_changes(updates={"media_servers": [{"id": "plex-default", "type": "plex"}]})
+        notes = _migrate_to_v12(settings_manager)
+        new_id = self._new_id_from(notes)
+
+        conn = sqlite3.connect(str(jobs_db))
+        rows = sorted(conn.execute("SELECT id, server_id FROM jobs").fetchall())
+        conn.close()
+        # j1 and j2 rewritten; j3 and j4 left alone.
+        assert rows == [
+            ("j1", new_id),
+            ("j2", new_id),
+            ("j3", "other-server"),
+            ("j4", None),
+        ]
+        assert any("jobs.db: rewrote 2 rows" in n for n in notes)
+
+    def test_rewrites_webhook_history_entries(self, settings_manager, tmp_path):
+        from media_preview_generator.upgrade import _migrate_to_v12
+
+        hist = tmp_path / "webhook_history.json"
+        hist.write_text(
+            json.dumps(
+                [
+                    {"id": "h1", "server_id": "plex-default", "kind": "plex"},
+                    {"id": "h2", "server_id": "other-server", "kind": "jellyfin"},
+                    {"id": "h3", "server_id": "plex-default", "kind": "plex"},
+                ]
+            )
+        )
+
+        settings_manager.apply_changes(updates={"media_servers": [{"id": "plex-default", "type": "plex"}]})
+        notes = _migrate_to_v12(settings_manager)
+        new_id = self._new_id_from(notes)
+
+        rewritten = json.loads(hist.read_text())
+        assert rewritten[0]["server_id"] == new_id
+        assert rewritten[1]["server_id"] == "other-server"
+        assert rewritten[2]["server_id"] == new_id
+        assert any("webhook_history.json: rewrote 2 entries" in n for n in notes)
+
+    def test_rewrites_schedules_json_entries(self, settings_manager, tmp_path):
+        from media_preview_generator.upgrade import _migrate_to_v12
+
+        sched = tmp_path / "schedules.json"
+        sched.write_text(
+            json.dumps(
+                {
+                    "schedules": [
+                        {"id": "s1", "server_id": "plex-default", "config": {}},
+                        {"id": "s2", "server_id": "other-server", "config": {}},
+                    ]
+                }
+            )
+        )
+
+        settings_manager.apply_changes(updates={"media_servers": [{"id": "plex-default", "type": "plex"}]})
+        notes = _migrate_to_v12(settings_manager)
+        new_id = self._new_id_from(notes)
+
+        rewritten = json.loads(sched.read_text())
+        assert rewritten["schedules"][0]["server_id"] == new_id
+        assert rewritten["schedules"][1]["server_id"] == "other-server"
+        assert any("schedules.json: rewrote 1 entries" in n for n in notes)
+
+    def test_renames_plex_bundle_cache_file(self, settings_manager, tmp_path):
+        from media_preview_generator.upgrade import _migrate_to_v12
+
+        old = tmp_path / "plex_bundle_cache_plex-default.json"
+        old.write_text('{"cached": true}')
+        settings_manager.apply_changes(updates={"media_servers": [{"id": "plex-default", "type": "plex"}]})
+        notes = _migrate_to_v12(settings_manager)
+        new_id = self._new_id_from(notes)
+
+        assert not old.exists()
+        renamed = tmp_path / f"plex_bundle_cache_{new_id}.json"
+        assert renamed.exists()
+        assert renamed.read_text() == '{"cached": true}'
+        assert any("plex_bundle_cache: renamed" in n for n in notes)
+
+    def test_runs_at_end_of_full_migration_chain(self, settings_manager):
+        """Schema bump v11→v12 fires automatically on _migrate_schema."""
+        from media_preview_generator.upgrade import _migrate_schema
+
+        settings_manager.apply_changes(
+            updates={
+                "_schema_version": 11,
+                "media_servers": [{"id": "plex-default", "type": "plex", "name": "Plex"}],
+            }
+        )
+        _migrate_schema(settings_manager)
+        assert settings_manager.get("_schema_version") == _CURRENT_SCHEMA_VERSION
+        assert settings_manager.get("media_servers")[0]["id"] != "plex-default"
 
 
 class TestMigrationNoticeUserFacingSplit:
