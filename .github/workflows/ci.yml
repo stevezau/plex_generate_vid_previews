@@ -533,8 +533,8 @@ jobs:
   update-dockerhub-description:
     runs-on: ubuntu-latest
     needs: context
-    # Only update the public Docker Hub description from main builds.
-    if: needs.context.outputs.head_branch == 'main'
+    # Releases are cut from tags; sync Docker Hub READMEs on every tag push.
+    if: needs.context.outputs.is_tag == 'true'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
