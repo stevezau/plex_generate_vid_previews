@@ -576,11 +576,20 @@ class JobManager:
         self._job_logs: dict[str, deque] = {}
         self._max_log_lines = 500
 
-        # Per-job file-results JSONL counter — keyed by job_id, lazily seeded
-        # from disk on first record_file_result call. Without this, the cap
-        # check would re-scan the JSONL on EVERY append and a 100k-item scan
-        # past the 5000-entry cap would do ~95k * O(5k) = 475M file reads.
-        self._file_result_counts: dict[str, int] = {}
+        # Per-job, per-outcome file-results JSONL counter — keyed by
+        # ``job_id`` -> ``{outcome: count}``. Lazily seeded from disk on
+        # the first record_file_result call. Without this, the cap check
+        # would re-scan the JSONL on EVERY append and a 100k-item scan
+        # past the cap would do ~95k * O(5k) = 475M file reads.
+        #
+        # Per-outcome (not a single total) so a flood of ``generated``
+        # rows can't push out the (typically rare) ``failed`` /
+        # ``skipped_file_not_found`` / ``unresolved_vendor`` rows the
+        # user actually wants to filter to. Before this shape change,
+        # filtering the Files panel to "failed" on a 100k-item scan
+        # returned zero even when the job's aggregate counter showed
+        # failures — every failure row had been dropped past the cap.
+        self._file_result_counts: dict[str, dict[str, int]] = {}
         self._file_result_counts_lock = threading.Lock()
 
         # Worker status tracking
@@ -2031,14 +2040,22 @@ class JobManager:
         """Return the JSONL file path for per-file results of a job."""
         return os.path.join(self._job_file_results_dir, f"{job_id}.jsonl")
 
-    # Per-job soft cap on the JSONL file. A full-library scan can iterate
-    # 100k+ items; persisting every one would bloat the config volume and
-    # kill the GET /api/jobs/<id>/files endpoint's response time. The cap
-    # is applied at append time — once reached, further calls are dropped
-    # silently (a one-shot truncation marker is written so the UI can
-    # surface "+N more not shown"). 5000 is generous for any single job
-    # while keeping the JSONL well under a few MB.
-    _FILE_RESULTS_PER_JOB_CAP = 5000
+    # Per-outcome soft cap on the JSONL file. A full-library scan can
+    # iterate 100k+ items; persisting every one would bloat the config
+    # volume and kill the GET /api/jobs/<id>/files endpoint's response
+    # time. The cap is applied at append time per-outcome — once a
+    # given outcome's bucket fills, further rows for THAT outcome are
+    # dropped (a one-shot per-outcome truncation marker is written so
+    # the UI can surface "+N more not shown" for that bucket
+    # specifically). Other outcomes keep accepting rows.
+    #
+    # Per-outcome (not a single shared cap) so a 95k-row flood of
+    # ``generated`` can't push out the user's 47 ``failed`` rows. With
+    # 9 outcome values and 5000 each, worst-case JSONL is ~22 MB; in
+    # practice rare outcomes (failed, unresolved_vendor, etc.) sit at
+    # double-digit row counts while only the noisy happy-path outcomes
+    # (generated, skipped_bif_exists) ever hit cap.
+    _FILE_RESULTS_PER_OUTCOME_CAP = 5000
 
     def record_file_result(
         self,
@@ -2066,33 +2083,56 @@ class JobManager:
         """
         path = self._file_results_path(job_id)
 
-        # Soft-cap check is O(1) via an in-memory per-job counter, lazily
-        # seeded from disk on the first call. The naive approach
-        # (re-scanning the JSONL each call) is O(n) per call and turns a
-        # 100k-item scan past the cap into ~475M file reads.
+        # Soft-cap check is O(1) via an in-memory per-job, per-outcome
+        # counter, lazily seeded from disk on the first call. The naive
+        # approach (re-scanning the JSONL each call) is O(n) per call
+        # and turns a 100k-item scan past the cap into ~475M file reads.
+        #
+        # Per-outcome (not a single shared count) so a 95k flood of
+        # ``generated`` rows can't crowd out the rare-but-interesting
+        # ``failed`` / ``unresolved_vendor`` rows the user actually
+        # filters to in the Files panel.
         with self._file_result_counts_lock:
             if job_id not in self._file_result_counts:
-                seeded = 0
+                seeded: dict[str, int] = {}
                 if os.path.isfile(path):
                     try:
-                        with open(path, "rb") as f:
-                            seeded = sum(1 for _ in f)
+                        with open(path) as f:
+                            for line in f:
+                                line = line.strip()
+                                if not line:
+                                    continue
+                                try:
+                                    rec = json.loads(line)
+                                except json.JSONDecodeError:
+                                    continue
+                                # Truncation markers themselves don't
+                                # count toward any outcome's cap — they
+                                # exist outside the user-supplied space.
+                                rec_outcome = rec.get("outcome", "")
+                                if not rec_outcome or rec_outcome.startswith("truncated"):
+                                    continue
+                                seeded[rec_outcome] = seeded.get(rec_outcome, 0) + 1
                     except OSError as e:
                         logger.debug("Could not seed file-results counter for {}: {}", path, e)
                 self._file_result_counts[job_id] = seeded
 
-            current = self._file_result_counts[job_id]
-            if current >= self._FILE_RESULTS_PER_JOB_CAP:
-                # One-shot truncation marker on the boundary record only;
-                # subsequent calls are silent O(1) returns.
-                if current == self._FILE_RESULTS_PER_JOB_CAP:
+            counts = self._file_result_counts[job_id]
+            current = counts.get(outcome, 0)
+            if current >= self._FILE_RESULTS_PER_OUTCOME_CAP:
+                # One-shot per-outcome truncation marker on the boundary
+                # record only; subsequent calls for the same outcome are
+                # silent O(1) returns. Other outcomes keep accepting
+                # rows independently.
+                if current == self._FILE_RESULTS_PER_OUTCOME_CAP:
                     marker = {
                         "file": "",
-                        "outcome": "truncated",
+                        "outcome": f"truncated:{outcome}",
                         "reason": (
-                            f"per-job file-results cap reached ({self._FILE_RESULTS_PER_JOB_CAP} entries) — "
-                            "later items processed normally but not listed here. Aggregate counts "
-                            "in the job summary remain accurate."
+                            f"per-outcome file-results cap reached for {outcome!r} "
+                            f"({self._FILE_RESULTS_PER_OUTCOME_CAP} entries) — later items "
+                            "with this outcome processed normally but not listed here. "
+                            "Aggregate counts in the job summary remain accurate."
                         ),
                         "worker": "",
                         "ts": datetime.now(timezone.utc).strftime("%H:%M:%S"),
@@ -2100,7 +2140,7 @@ class JobManager:
                     try:
                         with open(path, "a") as f:
                             f.write(json.dumps(marker, separators=(",", ":")) + "\n")
-                        self._file_result_counts[job_id] = current + 1
+                        counts[outcome] = current + 1
                     except OSError as e:
                         logger.debug("Could not append truncation marker to {}: {}", path, e)
                 return
@@ -2170,7 +2210,10 @@ class JobManager:
             with open(path, "a") as f:
                 f.write(json.dumps(record, separators=(",", ":")) + "\n")
             with self._file_result_counts_lock:
-                self._file_result_counts[job_id] = self._file_result_counts.get(job_id, 0) + 1
+                # Counter dict is guaranteed to exist after the
+                # cap-check block above seeded it under the same lock.
+                counts = self._file_result_counts.setdefault(job_id, {})
+                counts[outcome] = counts.get(outcome, 0) + 1
         except OSError as e:
             logger.debug("Could not append file result to {}: {}", path, e)
 

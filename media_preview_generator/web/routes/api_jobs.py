@@ -1100,13 +1100,28 @@ def get_job_file_results(job_id):
 
     all_results = job_manager.get_file_results(job_id)
 
-    # The per-job JSONL is soft-capped at _FILE_RESULTS_PER_JOB_CAP entries
-    # (see JobManager.record_file_result). Past that, a one-shot "truncated"
-    # marker row is written and later items are dropped from the list — but
-    # aggregate counters on job.progress.outcome keep counting. The UI needs
-    # both numbers to render "Showing 1–100 of 5,000 files in list (117,981
-    # items processed — list truncated for performance)" on huge scans.
-    list_truncated = any(r.get("outcome") == "truncated" for r in all_results)
+    # The per-job JSONL is soft-capped per-outcome at
+    # ``_FILE_RESULTS_PER_OUTCOME_CAP`` entries (see
+    # ``JobManager.record_file_result``). Past that, a one-shot
+    # ``"truncated:<outcome>"`` marker row is written and later rows
+    # with that outcome are dropped — but aggregate counters on
+    # ``job.progress.outcome`` keep counting. The UI needs both numbers
+    # to render "Generated: 5,000 of 95,318 shown · Failed: all 47
+    # shown" on huge scans.
+    #
+    # Pre-fix runs wrote a generic ``"truncated"`` marker with no
+    # per-outcome suffix; keep matching that too so historical jobs
+    # still render the legacy banner.
+    truncated_outcomes_set: set[str] = set()
+    legacy_truncated = False
+    for r in all_results:
+        oc = r.get("outcome", "")
+        if oc == "truncated":
+            legacy_truncated = True
+        elif oc.startswith("truncated:"):
+            truncated_outcomes_set.add(oc[len("truncated:") :])
+    truncated_outcomes = sorted(truncated_outcomes_set)
+    list_truncated = legacy_truncated or bool(truncated_outcomes)
     processed_total = sum((job.progress.outcome or {}).values()) if job.progress else 0
 
     filtered = all_results
@@ -1131,6 +1146,11 @@ def get_job_file_results(job_id):
             "total": len(all_results),
             "processed_total": processed_total,
             "list_truncated": list_truncated,
+            # Per-outcome list — which outcome buckets hit their cap on
+            # this job. Empty when nothing was truncated. The UI can use
+            # this to render bucket-specific "X of Y shown" messaging
+            # instead of one global banner.
+            "truncated_outcomes": truncated_outcomes,
             "page": page,
             "per_page": per_page,
             "total_pages": total_pages,

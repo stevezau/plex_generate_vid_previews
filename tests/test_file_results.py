@@ -727,7 +727,9 @@ class TestFileResultBifPath:
 
 
 class TestFileResultsCap:
-    """The 5000-entry per-job soft cap protects /config from 100k-item scans."""
+    """The 5000-entry per-outcome soft cap protects /config from 100k-item scans
+    while keeping rare outcomes (failed, unresolved_vendor, ...) intact even
+    when a flood of ``generated`` rows would otherwise crowd them out."""
 
     def test_writes_truncation_marker_at_cap(self, config_dir):
         os.makedirs(config_dir, exist_ok=True)
@@ -735,23 +737,27 @@ class TestFileResultsCap:
         job = jm.create_job(library_name="Big scan")
 
         # Tighten the cap so the test runs fast.
-        original_cap = JobManager._FILE_RESULTS_PER_JOB_CAP
-        JobManager._FILE_RESULTS_PER_JOB_CAP = 10
+        original_cap = JobManager._FILE_RESULTS_PER_OUTCOME_CAP
+        JobManager._FILE_RESULTS_PER_OUTCOME_CAP = 10
         try:
             for i in range(15):
                 jm.record_file_result(job.id, f"/media/v{i}.mkv", "skipped_bif_exists", "", "GPU 1")
         finally:
-            JobManager._FILE_RESULTS_PER_JOB_CAP = original_cap
+            JobManager._FILE_RESULTS_PER_OUTCOME_CAP = original_cap
 
         results = jm.get_file_results(job.id)
         # 10 normal records + 1 truncation marker = 11 total. Anything past
-        # the cap is silently dropped.
+        # the per-outcome cap is silently dropped.
         assert len(results) == 11, f"expected 10 records + 1 marker = 11, got {len(results)}"
-        assert results[-1]["outcome"] == "truncated", (
-            "the boundary record must be the one-shot 'truncated' marker so the UI can surface it."
+        assert results[-1]["outcome"] == "truncated:skipped_bif_exists", (
+            "the boundary record must be the one-shot per-outcome truncation marker so the UI can "
+            "surface 'X of Y shown' for that bucket specifically."
         )
-        assert "5000" in results[-1]["reason"] or "10" in results[-1]["reason"], (
-            "the marker's reason must include the cap value so users know how many were dropped."
+        assert "skipped_bif_exists" in results[-1]["reason"], (
+            "the marker's reason must name the truncated outcome so users know which bucket filled."
+        )
+        assert "10" in results[-1]["reason"], (
+            "the marker's reason must include the cap value so users know how many were kept."
         )
 
     def test_marker_only_written_once(self, config_dir):
@@ -760,20 +766,138 @@ class TestFileResultsCap:
         jm = JobManager(config_dir=config_dir)
         job = jm.create_job(library_name="Big scan")
 
-        original_cap = JobManager._FILE_RESULTS_PER_JOB_CAP
-        JobManager._FILE_RESULTS_PER_JOB_CAP = 5
+        original_cap = JobManager._FILE_RESULTS_PER_OUTCOME_CAP
+        JobManager._FILE_RESULTS_PER_OUTCOME_CAP = 5
         try:
             for i in range(30):
                 jm.record_file_result(job.id, f"/media/v{i}.mkv", "skipped_bif_exists", "", "")
         finally:
-            JobManager._FILE_RESULTS_PER_JOB_CAP = original_cap
+            JobManager._FILE_RESULTS_PER_OUTCOME_CAP = original_cap
 
         results = jm.get_file_results(job.id)
-        marker_count = sum(1 for r in results if r["outcome"] == "truncated")
+        marker_count = sum(1 for r in results if r["outcome"].startswith("truncated"))
         assert marker_count == 1, (
             f"expected exactly 1 truncation marker across all 30 calls; got {marker_count}. "
             "A duplicate marker means the boundary check is firing on every post-cap call, "
             "which would itself bloat the file the cap was meant to protect."
+        )
+
+    def test_failed_rows_survive_flood_of_generated(self, config_dir):
+        """The regression that prompted the per-outcome refactor: on a 100k-item
+        scan the user filtered the Files panel to "failed" and saw zero rows
+        even though the aggregate counter showed failures had occurred. With
+        a single shared cap, the first 5000 ``generated`` rows filled the
+        JSONL and every later ``failed`` row was dropped. Per-outcome caps
+        guarantee that a flood of one outcome can't crowd out another.
+        """
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        job = jm.create_job(library_name="Huge scan")
+
+        original_cap = JobManager._FILE_RESULTS_PER_OUTCOME_CAP
+        JobManager._FILE_RESULTS_PER_OUTCOME_CAP = 50
+        try:
+            # 100 generated rows would have filled the old single-cap of 50
+            # and dropped every later row, including the 30 failures below.
+            for i in range(100):
+                jm.record_file_result(job.id, f"/media/ok-{i}.mkv", "generated", "", "GPU 1")
+            for i in range(30):
+                jm.record_file_result(job.id, f"/media/bad-{i}.mkv", "failed", "exit 1", "GPU 1")
+        finally:
+            JobManager._FILE_RESULTS_PER_OUTCOME_CAP = original_cap
+
+        # Every failure must be present despite the prior generated flood.
+        failed_rows = jm.get_file_results(job.id, outcome_filter="failed")
+        assert len(failed_rows) == 30, (
+            f"per-outcome cap MUST keep all 30 failures despite a 100-row "
+            f"``generated`` flood; got {len(failed_rows)}. This is the exact "
+            f"behaviour the Files-panel filter relies on."
+        )
+
+        # And the generated bucket capped at 50, with its own marker.
+        generated_rows = jm.get_file_results(job.id, outcome_filter="generated")
+        assert len(generated_rows) == 50, f"``generated`` should cap at 50 independently; got {len(generated_rows)}"
+        all_rows = jm.get_file_results(job.id)
+        markers = [r for r in all_rows if r["outcome"].startswith("truncated")]
+        assert any(m["outcome"] == "truncated:generated" for m in markers), (
+            "must write a per-outcome marker naming which bucket filled"
+        )
+        assert not any(m["outcome"] == "truncated:failed" for m in markers), (
+            "``failed`` did not hit cap, so no marker for it"
+        )
+
+    def test_two_outcomes_both_hit_cap_independently(self, config_dir):
+        """Two noisy outcomes capping in parallel each get their own marker."""
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        job = jm.create_job(library_name="Mixed huge scan")
+
+        original_cap = JobManager._FILE_RESULTS_PER_OUTCOME_CAP
+        JobManager._FILE_RESULTS_PER_OUTCOME_CAP = 10
+        try:
+            for i in range(15):
+                jm.record_file_result(job.id, f"/media/g-{i}.mkv", "generated", "", "")
+            for i in range(15):
+                jm.record_file_result(job.id, f"/media/s-{i}.mkv", "skipped_bif_exists", "", "")
+        finally:
+            JobManager._FILE_RESULTS_PER_OUTCOME_CAP = original_cap
+
+        all_rows = jm.get_file_results(job.id)
+        marker_outcomes = sorted(r["outcome"] for r in all_rows if r["outcome"].startswith("truncated"))
+        assert marker_outcomes == ["truncated:generated", "truncated:skipped_bif_exists"], (
+            f"expected one marker per capped outcome; got {marker_outcomes}"
+        )
+
+    def test_small_job_writes_no_truncation_marker(self, config_dir):
+        """Jobs that stay under cap on every outcome must not write any marker."""
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        job = jm.create_job(library_name="Small scan")
+
+        for i in range(10):
+            jm.record_file_result(job.id, f"/media/v{i}.mkv", "generated", "", "")
+        for i in range(3):
+            jm.record_file_result(job.id, f"/media/x{i}.mkv", "failed", "x", "")
+
+        rows = jm.get_file_results(job.id)
+        assert len(rows) == 13
+        assert not any(r["outcome"].startswith("truncated") for r in rows)
+
+    def test_seed_per_outcome_counter_from_existing_jsonl(self, config_dir, tmp_path):
+        """If a JSONL exists on disk before the in-memory counter is
+        primed (job-survives-restart case), the per-outcome counter must
+        re-seed by parsing each line's outcome — not by counting lines
+        as if they were all the same bucket. Without this, a restart
+        would resurrect the old "shared 5000 cap" behaviour for the
+        first 5000 appends post-restart.
+        """
+        os.makedirs(config_dir, exist_ok=True)
+        jm = JobManager(config_dir=config_dir)
+        job = jm.create_job(library_name="Pre-existing")
+
+        # Write directly to the JSONL bypassing record_file_result, so
+        # the in-memory counter doesn't get populated.
+        path = jm._file_results_path(job.id)
+        rows = [
+            {"file": f"/g{i}.mkv", "outcome": "generated", "reason": "", "worker": "", "ts": "00:00:00"}
+            for i in range(7)
+        ] + [
+            {"file": f"/f{i}.mkv", "outcome": "failed", "reason": "x", "worker": "", "ts": "00:00:00"} for i in range(3)
+        ]
+        with open(path, "w") as f:
+            for r in rows:
+                f.write(json.dumps(r) + "\n")
+        # Clear the lazy-seed slot so the next call re-reads from disk.
+        with jm._file_result_counts_lock:
+            jm._file_result_counts.pop(job.id, None)
+
+        # Trigger a fresh append; the seed step must populate counts
+        # per-outcome.
+        jm.record_file_result(job.id, "/g7.mkv", "generated")
+        with jm._file_result_counts_lock:
+            counts = dict(jm._file_result_counts[job.id])
+        assert counts == {"generated": 8, "failed": 3}, (
+            f"per-outcome seed must parse each existing line's outcome; got {counts}"
         )
 
 
@@ -876,7 +1000,7 @@ class TestFileResultsAPI:
         jm = get_job_manager()
         # Shrink the cap to exercise the truncation path fast. The sentinel
         # marker is written exactly once on the 4th call; the 5th is dropped.
-        monkeypatch.setattr(JobManager, "_FILE_RESULTS_PER_JOB_CAP", 3)
+        monkeypatch.setattr(JobManager, "_FILE_RESULTS_PER_OUTCOME_CAP", 3)
         job = jm.create_job(library_name="Truncated Test")
         for i in range(5):
             jm.record_file_result(job.id, f"/media/{i}.mkv", "generated")
