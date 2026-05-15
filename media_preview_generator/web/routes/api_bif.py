@@ -18,6 +18,36 @@ _MAX_SEARCH_RESULTS = 15
 
 _SEASON_EP_RE = re.compile(r"\bS(\d{1,2})(?:E(\d{1,3}))?\b", re.IGNORECASE)
 
+_MEDIA_FILE_EXTS = (
+    ".mkv",
+    ".mp4",
+    ".m4v",
+    ".avi",
+    ".mov",
+    ".mpg",
+    ".mpeg",
+    ".webm",
+    ".ts",
+    ".wmv",
+    ".flv",
+)
+
+
+def _rejection_error(user_path: str) -> str:
+    """Pick a helpful 400 message when ``_validate_bif_path`` rejects input.
+
+    The path input on the Preview Inspector accepts ``.bif`` paths only —
+    issue #231 surfaced users pasting the source ``.mkv`` path expecting a
+    lookup. Detect common video extensions and steer them to the search
+    box instead of the generic "invalid path" string.
+    """
+    cleaned = (user_path or "").strip()
+    if cleaned.lower().endswith(_MEDIA_FILE_EXTS):
+        return (
+            "That looks like a media file path. Paste the .bif path, or use the search box above to find it by title."
+        )
+    return "Invalid or missing BIF file path"
+
 
 def _get_plex_config_folder() -> str:
     """Return the Plex config folder from user settings."""
@@ -559,7 +589,7 @@ def bif_info():
     path = request.args.get("path", "")
     resolved = _validate_bif_path(path)
     if resolved is None:
-        return jsonify({"error": "Invalid or missing BIF file path"}), 400
+        return jsonify({"error": _rejection_error(path)}), 400
 
     try:
         meta = read_bif_metadata(resolved)
@@ -605,7 +635,7 @@ def bif_frame():
     path = request.args.get("path", "")
     resolved = _validate_bif_path(path)
     if resolved is None:
-        return jsonify({"error": "Invalid or missing BIF file path"}), 400
+        return jsonify({"error": _rejection_error(path)}), 400
 
     try:
         index = int(request.args.get("index", "0"))

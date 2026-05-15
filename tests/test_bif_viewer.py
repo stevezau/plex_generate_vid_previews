@@ -331,6 +331,37 @@ class TestBifInfoEndpoint:
         resp = client.get("/api/bif/info", headers=_api_headers())
         assert resp.status_code == 400
 
+    def test_media_file_path_gets_helpful_message(self, client):
+        """Pasting a .mkv path should steer the user to the search box.
+
+        Regression guard for issue #231 — users naturally try the source
+        media path; the generic "Invalid or missing BIF file path" gave
+        no hint that the search box above was the right path.
+        """
+        from media_preview_generator.web.routes.api_bif import _MEDIA_FILE_EXTS
+
+        # Drive the loop from the constant so adding/removing an extension
+        # is automatically covered without hand-maintaining the test list.
+        # Mixed-case `.MP4` separately verifies the helper's .lower() pass.
+        cases = list(_MEDIA_FILE_EXTS) + [".MP4"]
+        for ext in cases:
+            resp = client.get(
+                f"/api/bif/info?path=/data/movies/Foo{ext}",
+                headers=_api_headers(),
+            )
+            assert resp.status_code == 400, ext
+            assert "media file path" in resp.get_json()["error"], ext
+            assert "search box" in resp.get_json()["error"], ext
+
+    def test_non_media_invalid_path_keeps_generic_message(self, client):
+        """Non-media extensions retain the generic rejection message."""
+        resp = client.get(
+            "/api/bif/info?path=/etc/passwd",
+            headers=_api_headers(),
+        )
+        assert resp.status_code == 400
+        assert resp.get_json()["error"] == "Invalid or missing BIF file path"
+
     def test_suspect_frames_detected(self, client, tmp_path):
         """Frames under 500 bytes are flagged as suspect."""
         tiny_frames = [b"\xff\xd8" + bytes(10)] * 3
