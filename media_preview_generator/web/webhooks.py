@@ -796,7 +796,16 @@ def _schedule_webhook_job(
         return False
 
     settings = get_settings_manager()
-    delay = int(settings.get("webhook_delay", 60))
+    # Server-side defense: clamp to [1, 600] so a hand-edited settings.json
+    # or bogus API call can't park the threading.Timer at line below for
+    # 24h (huge delay) or fire instantly and bypass debouncing entirely
+    # (delay <= 0). The UI form validates separately; this is the
+    # belt-and-suspenders pin for everything that doesn't go through it.
+    try:
+        _raw_delay = int(settings.get("webhook_delay", 60))
+    except (TypeError, ValueError):
+        _raw_delay = 60
+    delay = max(1, min(600, _raw_delay))
     debounce_key = _debounce_key(safe_source, server_id)
     normalized_path = os.path.normpath(normalized_input_path).replace("\\", "/")
     basename = os.path.basename(normalized_path)

@@ -312,6 +312,54 @@ class TestWorker:
             f"Found offending lines:\n{chr(10).join(started_lines)}"
         )
 
+    @patch("media_preview_generator.jobs.worker._notify_file_result")
+    @patch("media_preview_generator.processing.multi_server.process_canonical_path")
+    def test_persist_swallows_notify_failure_keeps_worker_alive(self, mock_process, mock_notify):
+        """If ``_notify_file_result`` raises (e.g. disk full mid-JSONL write,
+        or a SocketIO emit hiccup), the per-item ``_persist`` MUST swallow
+        the exception so the worker doesn't crash out of its dispatch loop
+        and the next item gets processed normally. The per-item try/except
+        in ``_process_item`` is scoped to FFmpeg failures; a persist crash
+        escaping that scope would silently break the whole worker.
+
+        Failure is logged at WARNING so an operator can see the persist
+        crash even though that one file's row is lost.
+        """
+        from loguru import logger
+
+        worker = Worker(0, "CPU")
+        config = MagicMock()
+        registry = MagicMock()
+        mock_process.side_effect = lambda *a, **kw: _ms("generated")
+        mock_notify.side_effect = OSError("simulated: disk full during JSONL write")
+
+        captured: list[str] = []
+        sink_id = logger.add(lambda msg: captured.append(str(msg)), level="WARNING")
+        try:
+            worker.assign_task(_pi("k1", title="Test", media_type="movie"), config, registry)
+            worker.current_thread.join(timeout=2)
+        finally:
+            logger.remove(sink_id)
+
+        # Worker must not have crashed: the item completed (process_canonical_path
+        # returned a successful result), the counter ticked, and the worker is
+        # idle again.
+        assert worker.current_thread is not None and not worker.current_thread.is_alive(), (
+            "Worker thread must have terminated cleanly; a persist crash escaping "
+            "_process_item would have killed the thread mid-run."
+        )
+        assert worker.completed == 1, (
+            f"FFmpeg succeeded so the file counts as completed regardless of the "
+            f"persist crash; got worker.completed={worker.completed}, "
+            f"worker.failed={worker.failed}"
+        )
+
+        # The persist failure must be visible to the operator.
+        persist_warnings = [line for line in captured if "Failed to persist" in line]
+        assert persist_warnings, (
+            f"Persist crash must log at WARNING (operator-visible). Full WARNING+ log was:\n{chr(10).join(captured)}"
+        )
+
     @patch("media_preview_generator.processing.multi_server.process_canonical_path")
     def test_last_task_outcome_delta(self, mock_process):
         """Test that last_task_outcome_delta returns correct per-task delta."""

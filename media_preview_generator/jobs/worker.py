@@ -483,13 +483,28 @@ class Worker:
 
             def _persist(outcome: ProcessingResult, reason: str = "") -> None:
                 effective_reason = reason or self.last_ms_message or ""
-                _notify_file_result(
-                    item.canonical_path,
-                    outcome,
-                    effective_reason,
-                    self.display_name,
-                    servers=list(self.last_publishers or []),
-                )
+                # Defensive: _notify_file_result writes a JSONL row + emits
+                # SocketIO. A disk-full or emit-state hiccup must not bubble
+                # out of the per-item try/except (which is scoped to FFmpeg
+                # failures) and drop the worker out of the dispatch loop.
+                # Swallow with a WARNING so the operator sees the persist
+                # failure even though this file's row is lost.
+                try:
+                    _notify_file_result(
+                        item.canonical_path,
+                        outcome,
+                        effective_reason,
+                        self.display_name,
+                        servers=list(self.last_publishers or []),
+                    )
+                except Exception as persist_exc:
+                    logger.warning(
+                        "Failed to persist {} result for {}: {}: {}",
+                        outcome.value if hasattr(outcome, "value") else outcome,
+                        item.canonical_path,
+                        type(persist_exc).__name__,
+                        persist_exc,
+                    )
 
             # Capture this task's publisher fan-out for the dispatcher to
             # merge into JobTracker.publishers_by_server (D7). Each entry

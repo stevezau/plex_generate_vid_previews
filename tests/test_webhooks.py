@@ -109,6 +109,59 @@ def _auth_headers(token: str = "test-token-12345678") -> dict:
     return {"X-Auth-Token": token, "Content-Type": "application/json"}
 
 
+@pytest.mark.parametrize(
+    "stored,expected",
+    [
+        (-1, 1),  # negative → floor
+        (0, 1),  # zero would bypass debouncing → floor
+        (1, 1),  # at the floor
+        (60, 60),  # the default, untouched
+        (600, 600),  # at the ceiling
+        (601, 600),  # above ceiling → cap
+        (86400, 600),  # 24h foot-gun → cap
+        ("abc", 60),  # non-numeric → fall back to the default 60
+        (None, 60),  # missing → fall back to the default 60
+    ],
+)
+def test_schedule_webhook_job_clamps_webhook_delay(stored, expected, app):
+    """``webhook_delay`` flows into ``threading.Timer(delay, …)``; an out-of-range
+    setting (hand-edited settings.json, bogus API call) must not park the timer
+    for hours or fire instantly. Server-side belt-and-suspenders clamp to
+    ``[1, 600]`` seconds; non-numeric / missing falls back to the default 60.
+    """
+    import media_preview_generator.web.webhooks as wh
+
+    settings = wh.get_settings_manager()
+    settings.set("webhook_delay", stored)
+
+    captured = {}
+
+    class _FakeTimer:
+        def __init__(self, delay, target, args=None, kwargs=None):
+            captured["delay"] = delay
+            self.daemon = False
+
+        def start(self):
+            pass
+
+        def cancel(self):
+            pass
+
+    fake_job = MagicMock()
+    fake_job.id = "test-job-id"
+
+    with patch.object(wh.threading, "Timer", _FakeTimer):
+        with patch.object(wh, "get_job_manager") as mock_jm:
+            mock_jm.return_value.create_job.return_value = fake_job
+            with patch.object(wh, "_resolve_webhook_server_context", return_value=(None, None, None)):
+                with patch.object(wh, "_kick_early_scan"):
+                    wh._schedule_webhook_job("sonarr", "Test Title", "/data/test.mkv")
+
+    assert captured.get("delay") == expected, (
+        f"webhook_delay stored={stored!r} should clamp to {expected}, got {captured.get('delay')!r}"
+    )
+
+
 def test_clean_title_from_basename():
     """_clean_title_from_basename collapses raw filenames to a Sonarr-style title."""
     from media_preview_generator.web.webhooks import _clean_title_from_basename as f
