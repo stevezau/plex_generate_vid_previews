@@ -1223,3 +1223,141 @@ class TestCancelJobCascadesToRetryChildren:
             f"Unrelated chain's child must be untouched by sibling cancel; got {refreshed_b_child.status}"
         )
         assert jm.get_job(chain_b.id).status != JobStatus.CANCELLED, "Unrelated chain head must not be cancelled"
+
+
+def _seed_failed_chain_with_children(jm, library_name="Foo"):
+    """Build an exhausted retry chain: head + 1 modern child + 1 legacy child,
+    all FAILED. Returns (head_id, modern_child_id, legacy_child_id).
+
+    The queue UI hides retry children (``api_jobs.py:_is_user_visible``) but
+    they remain in ``self._jobs``, so the user sees one "failed" row in the
+    queue while ``get_stats()`` counts three. This helper produces that exact
+    discrepancy for the cascade + filter tests below.
+    """
+    head = _seed_originating_job(jm, library_name=library_name)
+    jm.upsert_retry_chain_job(
+        canonical_path=f"/data/{library_name}.mkv",
+        basename=library_name,
+        attempt=2,
+        max_attempts=2,
+        next_run_at=None,
+        wait_seconds=60,
+        outcome="exhausted",
+        originating_job_id=head.id,
+    )
+    modern_child = jm.create_job(
+        library_name=f"Retry: {library_name}",
+        config={
+            "is_retry": True,
+            "parent_job_id": head.id,
+            "retry_attempt": 1,
+            "max_retries": 2,
+        },
+    )
+    legacy_child = jm.create_job(
+        library_name=f"Retry: {library_name}",
+        config={
+            "is_retry_attempt": True,
+            "parent_chain_id": head.id,
+            "retry_attempt": 2,
+        },
+    )
+    jm.complete_job(modern_child.id, error="Boom")
+    jm.complete_job(legacy_child.id, error="Boom")
+    with jm._lock:
+        head_obj = jm._jobs[head.id]
+        head_obj.status = JobStatus.FAILED
+        jm._persist_job(head_obj)
+    assert jm.get_job(head.id).status == JobStatus.FAILED
+    assert jm.get_job(modern_child.id).status == JobStatus.FAILED
+    assert jm.get_job(legacy_child.id).status == JobStatus.FAILED
+    return head.id, modern_child.id, legacy_child.id
+
+
+class TestDeleteJobCascadesToRetryChildren:
+    """Discussion #239 — deleting a chain head from the queue must also
+    delete its hidden retry children, otherwise the Job Statistics KPI
+    keeps counting failures the user can no longer see.
+    """
+
+    def test_delete_chain_head_removes_modern_and_legacy_children(self, jm):
+        head_id, modern_id, legacy_id = _seed_failed_chain_with_children(jm)
+
+        ok = jm.delete_job(head_id)
+
+        assert ok is True
+        assert jm.get_job(head_id) is None, "chain head must be gone"
+        assert jm.get_job(modern_id) is None, "modern retry child (is_retry + parent_job_id) must cascade"
+        assert jm.get_job(legacy_id) is None, "legacy retry child (is_retry_attempt + parent_chain_id) must cascade"
+
+    def test_delete_chain_head_persists_each_child_deletion(self, jm):
+        head_id, modern_id, legacy_id = _seed_failed_chain_with_children(jm)
+
+        jm.delete_job(head_id)
+
+        # SQLite is the source of truth across restarts. Every cascaded child
+        # must be removed there too — otherwise a process restart would
+        # re-hydrate the orphans into ``self._jobs`` and the failed KPI
+        # would resurrect.
+        assert jm._storage.row_count() == 0, (
+            "all chain rows (head + modern child + legacy child) must be "
+            "deleted from the SQLite store, not just the in-memory dict"
+        )
+        stored_ids = {j.id for j in jm._storage.all_jobs()}
+        for jid in (head_id, modern_id, legacy_id):
+            assert jid not in stored_ids, f"{jid[:8]} still in storage"
+
+    def test_delete_chain_head_does_not_touch_unrelated_chain(self, jm):
+        a_head, a_modern, a_legacy = _seed_failed_chain_with_children(jm, library_name="A")
+        b_head, b_modern, b_legacy = _seed_failed_chain_with_children(jm, library_name="B")
+
+        jm.delete_job(a_head)
+
+        assert jm.get_job(b_head) is not None
+        assert jm.get_job(b_modern) is not None
+        assert jm.get_job(b_legacy) is not None
+
+    def test_delete_chain_head_refuses_when_child_is_running(self, jm):
+        head_id, modern_id, legacy_id = _seed_failed_chain_with_children(jm)
+        # Force the modern child into the running set so it can't be safely
+        # cascade-deleted (its worker thread still owns the row).
+        with jm._lock:
+            jm._running_job_ids.add(modern_id)
+
+        ok = jm.delete_job(head_id)
+
+        assert ok is False, "must refuse when a descendant is running"
+        assert jm.get_job(head_id) is not None, "head must remain"
+        assert jm.get_job(modern_id) is not None, "running child must remain"
+        assert jm.get_job(legacy_id) is not None, "siblings must not be partially deleted on refusal"
+
+
+class TestGetStatsExcludesHiddenRetryChildren:
+    """``JobManager.get_stats`` powers the Job Statistics KPI tile. The queue
+    UI hides retry children (one row per file), so the KPI must agree —
+    otherwise deleting the visible failed row leaves a stale failed count
+    backed by hidden children, which is exactly discussion #239.
+    """
+
+    def test_failed_count_matches_visible_queue_rows(self, jm):
+        _seed_failed_chain_with_children(jm, library_name="Foo")
+
+        stats = jm.get_stats()
+
+        assert stats["failed"] == 1, (
+            f"failed KPI must count the chain head only (1 visible row), "
+            f"not the head + 2 hidden retry children; got failed={stats['failed']}"
+        )
+        assert stats["total"] == 1, f"total KPI must count visible rows only; got total={stats['total']}"
+
+    def test_stats_drops_to_zero_after_deleting_chain_head(self, jm):
+        head_id, _modern, _legacy = _seed_failed_chain_with_children(jm)
+
+        jm.delete_job(head_id)
+
+        stats = jm.get_stats()
+        assert stats["failed"] == 0, (
+            f"after cascade-deleting the chain head the failed KPI must reach 0; "
+            f"got failed={stats['failed']} (orphan children are still being counted)"
+        )
+        assert stats["total"] == 0

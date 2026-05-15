@@ -14,7 +14,7 @@ from ..auth import (
     regenerate_token,
     validate_token,
 )
-from ..jobs import PRIORITY_NORMAL, JobStatus, get_job_manager, parse_priority
+from ..jobs import PRIORITY_NORMAL, JobStatus, get_job_manager, is_user_visible_job, parse_priority
 from . import api
 from ._helpers import (
     MEDIA_ROOT,
@@ -268,31 +268,12 @@ def get_jobs():
         include_attempts = request.args.get("include_retry_attempts") == "1"
         if not include_attempts:
             # Hide retry firings — they're visible only via the chain
-            # Job's modal Attempts dropdown. Retry Jobs (is_retry=true,
-            # is_retry_chain=false) are spawned by
-            # job_runner._spawn_retry_job and linked back via
-            # parent_job_id. The chain row itself (the originating
-            # dispatch) is mutated to carry is_retry=true AS WELL AS
-            # is_retry_chain=true by upsert_retry_chain_job — that flag
-            # is a legacy alias used by older app.js code paths; the
-            # is_retry_chain flag is what distinguishes the chain head
-            # from a retry child. So we must NOT hide rows where both
-            # are true, only rows that carry is_retry without
-            # is_retry_chain (the retry children).
-            #
-            # is_retry_attempt is a legacy flag from the per-file retry
-            # chain (deleted 2026-05-13 in the per-job retry refactor);
-            # kept in the filter for back-compat with any persisted
-            # rows from older versions.
-            def _is_user_visible(j):
-                cfg = j.config or {}
-                if cfg.get("is_retry_attempt"):
-                    return False
-                if cfg.get("is_retry") and not cfg.get("is_retry_chain"):
-                    return False
-                return True
-
-            all_jobs = [j for j in all_jobs if _is_user_visible(j)]
+            # Job's modal Attempts dropdown. The visibility rule lives
+            # in ``jobs.is_user_visible_job`` so the Job Statistics KPI
+            # tile (``JobManager.get_stats``) and this list stay in lock-step;
+            # otherwise discussion #239 repeats — the queue collapses
+            # children but the KPI keeps counting them.
+            all_jobs = [j for j in all_jobs if is_user_visible_job(j)]
 
         running = [j for j in all_jobs if j.status == JobStatus.RUNNING]
         pending = sorted(

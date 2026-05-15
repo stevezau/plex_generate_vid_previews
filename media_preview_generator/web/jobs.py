@@ -137,6 +137,41 @@ class JobStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
+def is_user_visible_job(job: "Job") -> bool:
+    """Whether a Job should appear in user-facing surfaces (queue, KPI tile).
+
+    Retry children are bookkeeping rows — the queue collapses them under the
+    chain head (one row per file). Stats must agree, otherwise discussion #239
+    repeats: deleting the visible failed row leaves a stale failed count
+    backed by hidden children. Single source of truth for the predicate;
+    ``routes/api_jobs.get_jobs`` and ``JobManager.get_stats`` both import it.
+    """
+    cfg = job.config or {}
+    if cfg.get("is_retry_attempt"):
+        return False
+    if cfg.get("is_retry") and not cfg.get("is_retry_chain"):
+        return False
+    return True
+
+
+def _retry_child_ids_of(parent_id: str, jobs: "dict[str, Job]") -> list[str]:
+    """IDs of every retry child belonging to ``parent_id``.
+
+    Walks both flag families so legacy rows from before the 2026-05-13 retry
+    refactor still cascade: post-refactor children carry ``is_retry=True`` +
+    ``parent_job_id``; legacy children carry ``is_retry_attempt=True`` +
+    ``parent_chain_id``. Caller must hold the JobManager lock.
+    """
+    out: list[str] = []
+    for jid, j in jobs.items():
+        cfg = j.config or {}
+        if cfg.get("is_retry") and cfg.get("parent_job_id") == parent_id:
+            out.append(jid)
+        elif cfg.get("is_retry_attempt") and cfg.get("parent_chain_id") == parent_id:
+            out.append(jid)
+    return out
+
+
 @dataclass
 class WorkerStatus:
     """Status information for a single worker."""
@@ -1779,23 +1814,48 @@ class JobManager:
         return job
 
     def delete_job(self, job_id: str) -> bool:
-        """Delete a job."""
-        deleted = False
+        """Delete a job and any retry children that point at it.
+
+        Retry children (``is_retry`` + ``parent_job_id``, or legacy
+        ``is_retry_attempt`` + ``parent_chain_id``) are hidden from the queue
+        UI but still counted by ``get_stats``. Without this cascade, deleting
+        a chain head from the queue leaves orphan children that keep the
+        Failed KPI inflated — see discussion #239.
+
+        Refuses (returns False) if the head OR any descendant is currently
+        running; the caller should cancel first.
+        """
+        deleted_ids: list[str] = []
         with self._lock:
-            if job_id in self._jobs:
-                if job_id in self._running_job_ids:
-                    return False  # Can't delete running job
-                self._delete_job_log_file(job_id)
-                self._delete_file_results(job_id)
-                if job_id in self._job_logs:
-                    del self._job_logs[job_id]
-                del self._jobs[job_id]
-                self._persist_delete(job_id)
-                self._emit_event("job_deleted", {"job_id": job_id})
-                deleted = True
-        if deleted:
-            logger.info("Deleted job {}", job_id)
-        return deleted
+            if job_id not in self._jobs:
+                return False
+            child_ids = _retry_child_ids_of(job_id, self._jobs)
+            blockers = [jid for jid in (job_id, *child_ids) if jid in self._running_job_ids]
+            if blockers:
+                logger.warning(
+                    "Refusing to delete job {} — running descendants: {}",
+                    job_id,
+                    ", ".join(b[:8] for b in blockers),
+                )
+                return False
+            for jid in (job_id, *child_ids):
+                self._delete_job_log_file(jid)
+                self._delete_file_results(jid)
+                self._job_logs.pop(jid, None)
+                del self._jobs[jid]
+                self._persist_delete(jid)
+                deleted_ids.append(jid)
+        for jid in deleted_ids:
+            self._emit_event("job_deleted", {"job_id": jid})
+        if len(deleted_ids) == 1:
+            logger.info("Deleted job {}", deleted_ids[0])
+        else:
+            logger.info(
+                "Deleted job {} and {} retry child(ren)",
+                deleted_ids[0],
+                len(deleted_ids) - 1,
+            )
+        return True
 
     def clear_completed_jobs(self, statuses: list[str] | None = None) -> int:
         """Clear jobs by status.
@@ -1824,19 +1884,27 @@ class JobManager:
             return len(to_delete)
 
     def get_stats(self) -> dict:
-        """Get job statistics."""
+        """Counts that match what the queue UI shows.
+
+        Filters by ``is_user_visible_job`` so retry children — which the
+        queue collapses under the chain head — don't double-count in the
+        Failed/Total tiles. See discussion #239.
+        """
+        stats = {
+            "total": 0,
+            "pending": 0,
+            "running": 0,
+            "completed": 0,
+            "failed": 0,
+            "cancelled": 0,
+        }
         with self._lock:
-            stats = {
-                "total": len(self._jobs),
-                "pending": 0,
-                "running": 0,
-                "completed": 0,
-                "failed": 0,
-                "cancelled": 0,
-            }
             for job in self._jobs.values():
+                if not is_user_visible_job(job):
+                    continue
+                stats["total"] += 1
                 stats[job.status.value] += 1
-            return stats
+        return stats
 
     # ========================================================================
     # Job Logs Management
