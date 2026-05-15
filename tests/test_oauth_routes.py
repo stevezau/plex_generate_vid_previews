@@ -73,10 +73,13 @@ class TestSettingsAPIRoutes:
         # - plex_url falls through to "" when neither media_servers nor the
         #   legacy plex_url is set
         # - gpu_threads is computed from gpu_config (empty -> 0)
-        # - thumbnail_interval default is 2 (settings_manager.py:344)
+        # - thumbnail_interval default is 10s -- the BIF/Plex community
+        #   convention and the value every other site in the codebase
+        #   converged on after #238 (settings_manager.py:344,
+        #   config/__init__.py:509, settings.html, docs/reference.md)
         assert data["plex_url"] == ""
         assert data["gpu_threads"] == 0
-        assert data["thumbnail_interval"] == 2
+        assert data["thumbnail_interval"] == 10
         # Plex token must be returned masked (never raw) — the empty case
         # returns "" which the frontend treats as "not yet set".
         assert data["plex_token"] == ""

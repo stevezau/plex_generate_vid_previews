@@ -199,11 +199,11 @@
                     <div class="col-md-6 mb-3">
                         <label for="thumbnailInterval" class="form-label">
                             Thumbnail Interval
-                            <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Seconds between thumbnails in the preview strip. Smaller = smoother scrubbing in your player, but bigger BIF files and longer to generate. Default 2s works well for most setups; raise to 5–10s if you don't need fine scrubbing and want faster jobs."><i class="bi bi-info-circle"></i></button>
+                            <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Seconds between thumbnails in the preview strip. Default 10s matches Plex's standard preview cadence and the BIF community convention — your existing sidecar BIFs (the -320-10.bif files alongside videos) use the same value. Lower to 5s for finer scrubbing if you don't mind bigger BIF files and longer jobs."><i class="bi bi-info-circle"></i></button>
                         </label>
                         <div class="input-group">
                             <input type="number" class="form-control has-stepper" id="thumbnailInterval"
-                                   min="1" max="60" value="2">
+                                   min="1" max="60" value="10">
                             <span class="input-group-text">seconds</span>
                         </div>
                     </div>
@@ -730,7 +730,7 @@ async function loadSettings() {
         // Store gpu_config for the GPU panel
         window._gpuConfig = settings.gpu_config || [];
         document.getElementById('cpuThreads').value = settings.cpu_threads ?? 1;
-        document.getElementById('thumbnailInterval').value = settings.thumbnail_interval || 2;
+        document.getElementById('thumbnailInterval').value = settings.thumbnail_interval || 10;
         document.getElementById('thumbnailQuality').value = settings.thumbnail_quality || 4;
         document.getElementById('qualityValue').textContent = settings.thumbnail_quality || 4;
         document.getElementById('tonemapAlgorithm').value = settings.tonemap_algorithm || 'hable';

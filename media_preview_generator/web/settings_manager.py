@@ -340,8 +340,14 @@ class SettingsManager:
 
     @property
     def thumbnail_interval(self) -> int:
-        """Seconds between thumbnail captures."""
-        return int(self.get("thumbnail_interval") or 2)
+        """Seconds between thumbnail captures.
+
+        Defaults to 10 -- the BIF/Plex community convention (every sidecar
+        BIF in the wild follows ``-{width}-10.bif`` naming) and the Roku
+        spec example. Matches the read-side fallback in
+        :func:`media_preview_generator.config.resolve_frame_interval`.
+        """
+        return int(self.get("thumbnail_interval") or 10)
 
     @thumbnail_interval.setter
     def thumbnail_interval(self, value: int) -> None:

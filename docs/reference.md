@@ -116,7 +116,7 @@ GPU settings are configured per-GPU in **Settings** → **Processing Options**. 
 |---------|--------|---------|-------------|
 | `cpu_threads` | Yes | `1` | Number of CPU worker threads (0–32) |
 | `thumbnail_quality` | Yes | `4` | Preview quality 1-10 (2=highest) |
-| `thumbnail_interval` | Yes | `5` | Interval between preview images (1–60 s) |
+| `thumbnail_interval` | Yes | `10` | Interval between preview images (1–60 s). Matches Plex/BIF community convention (see sidecar `-{width}-10.bif` files). |
 | `selected_libraries` | Yes | All | Library IDs to process |
 | `sort_by` (per-run) | Yes | `newest` | Order items are processed: `newest`, `oldest`, `random`, or empty for Plex's natural order. Set per manual run (New Job modal) or per schedule — not a global setting. |
 
@@ -450,7 +450,7 @@ Get current settings.
     {"device": "/dev/dri/renderD128", "name": "Intel UHD 630", "type": "intel", "enabled": true, "workers": 4, "ffmpeg_threads": 2}
   ],
   "cpu_threads": 2,
-  "thumbnail_interval": 5,
+  "thumbnail_interval": 10,
   "thumbnail_quality": 4
 }
 ```
@@ -465,7 +465,7 @@ Update settings. Send only the fields to change.
 {
   "gpu_config": [{"device": "/dev/dri/renderD128", "enabled": true, "workers": 4, "ffmpeg_threads": 2}],
   "cpu_threads": 2,
-  "thumbnail_interval": 5,
+  "thumbnail_interval": 10,
   "plex_url": "http://192.168.1.100:32400"
 }
 ```
