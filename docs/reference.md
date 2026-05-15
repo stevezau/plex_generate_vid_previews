@@ -957,6 +957,8 @@ unless noted.
 | POST | `/api/jobs/manual` | Submit one or more absolute file paths — `{"file_paths": ["/a.mkv", "/b.mkv"], "force_regenerate": false, "priority": 2, "server_id": "..."}`. Bypasses library scan. |
 | POST | `/api/jobs/{id}/priority` | Change a pending/running job's priority (`{"priority": 1\|2\|3}`; 1 = high) |
 | POST | `/api/jobs/{id}/reprocess` | Re-run a finished job with the same config |
+| POST | `/api/jobs/{id}/retry-now` | Skip the retry back-off on a chain-head job whose next attempt is currently in the back-off countdown. Returns 200 + `{"fired": true, ...}` on success, 409 when no retry is pending, 400 if the job isn't a chain head. |
+| POST | `/api/jobs/{id}/fire-webhook-now` | Skip the debounce window on a webhook-batch job that's still waiting to dispatch. Looks up the in-memory batch by `job_id` and cancels its threading timer, then dispatches the same callback synchronously. 202 on success, 404 when the job has no live pending batch (already fired, never had one, or container restart cleared the in-memory dict). |
 | GET | `/api/jobs/{id}/logs` | Paginated log stream — `?offset=&limit=` (limit capped at 5000); or legacy `?last=N` for the tail |
 | GET | `/api/jobs/{id}/files` | Per-file outcomes — paginated `?page=&per_page=` (per_page capped at 500), plus optional `?outcome=` and `?search=` filters. The underlying per-job JSONL is itself soft-capped at 5000 rows; past that, a `truncated` marker row appears and aggregate counts remain in `progress.outcome`. |
 | POST | `/api/jobs/clear` | Delete completed/failed jobs from the queue |

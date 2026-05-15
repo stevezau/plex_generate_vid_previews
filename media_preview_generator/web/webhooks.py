@@ -914,11 +914,12 @@ def _schedule_webhook_job(
                         # batch had accumulated. See the matching
                         # comment in the fresh-batch branch above.
                         "webhook_paths": batch_paths_sorted,
-                        # Refresh the countdown anchor: the timer has
-                        # been cancelled + reset by this merge, so the
-                        # Job's stored fire_at must move forward too,
-                        # or the row's countdown would tick into the
-                        # past while Plex is still waiting.
+                        # Refresh the countdown anchor: the old timer
+                        # was cancelled at the top of this branch and a
+                        # new one is queued below, so the Job's stored
+                        # fire_at must move forward in lockstep — else
+                        # the row's countdown would tick into the past
+                        # while Plex is still waiting.
                         "webhook_fire_at": fire_at_iso,
                     },
                 )
