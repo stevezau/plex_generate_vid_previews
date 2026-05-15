@@ -225,6 +225,43 @@ class Config:
         self.plex_bif_frame_interval = int(value)
 
 
+def resolve_frame_interval(server_output: dict | None) -> int:
+    """Resolve a server entry's effective BIF frame interval, in seconds.
+
+    Lookup order (each layer heals a drift introduced by a different code path):
+
+      1. ``server_output["frame_interval"]`` -- the per-server override. Post-#240
+         this matches the global; pre-#240 entries may carry a stale value, and
+         entries created before the field existed (the Jellyfin/Emby drift the
+         user's own settings exhibits today) have it missing entirely.
+      2. The global ``thumbnail_interval`` setting -- the value the user actually
+         chose in the UI. This is what FFmpeg's fps argument is derived from, so
+         honouring it here is what keeps the BIF multiplier consistent with the
+         extraction cadence.
+      3. The documented ``10`` second default -- matches the BIF/Plex community
+         convention (every sidecar in the repo's own user library is ``-320-10``)
+         and the Roku spec example.
+
+    The settings-manager singleton is imported lazily to avoid a circular
+    dependency: ``servers/plex.py`` and ``processing/multi_server.py`` must
+    not import ``web/`` at module load. The pattern matches existing usage
+    in ``processing/frame_cache.py`` and ``jobs/orchestrator.py``.
+    """
+    if isinstance(server_output, dict):
+        val = server_output.get("frame_interval")
+        if isinstance(val, int) and val > 0:
+            return val
+    try:
+        from ..web.settings_manager import get_settings_manager
+
+        val = get_settings_manager().get("thumbnail_interval")
+        if isinstance(val, int) and val > 0:
+            return val
+    except Exception:
+        pass
+    return 10
+
+
 def show_docker_help():
     """Show help message pointing users to the web UI for configuration."""
     logger.info("🐳 Docker Environment Detected")
@@ -506,12 +543,12 @@ def load_config(*, log_validation_errors: bool = True) -> Config:
     if _interval_setting in (None, ""):
         _interval_setting = ui_settings.get("plex_bif_frame_interval")
     if _interval_setting in (None, ""):
-        plex_bif_frame_interval = get_value("__never_set__", "PLEX_BIF_FRAME_INTERVAL", 5, int)
+        plex_bif_frame_interval = get_value("__never_set__", "PLEX_BIF_FRAME_INTERVAL", 10, int)
     else:
         try:
             plex_bif_frame_interval = int(_interval_setting)
         except (TypeError, ValueError):
-            plex_bif_frame_interval = get_value("__never_set__", "PLEX_BIF_FRAME_INTERVAL", 5, int)
+            plex_bif_frame_interval = get_value("__never_set__", "PLEX_BIF_FRAME_INTERVAL", 10, int)
     thumbnail_quality = get_value("thumbnail_quality", "THUMBNAIL_QUALITY", 4, int)
     tonemap_algorithm = get_value("tonemap_algorithm", "TONEMAP_ALGORITHM", "hable", str).strip().lower()
     regenerate_thumbnails = get_value("regenerate_thumbnails", "REGENERATE_THUMBNAILS", False, bool)

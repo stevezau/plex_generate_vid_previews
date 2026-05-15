@@ -144,6 +144,17 @@ def _route_legacy_plex_fields_into_media_servers(settings, updates: dict) -> tup
     payload = {k: updates[k] for k in touched}
     new_updates = {k: v for k, v in updates.items() if k not in touched}
 
+    # Default frame_interval for any newly-synthesised / setdefault'd output
+    # block. Prefer the about-to-be-persisted update (so a wizard save that
+    # changes both plex_url and thumbnail_interval ends up with the new
+    # interval everywhere), then the already-persisted global, then the
+    # documented 10s default. Matches the read-side resolve_frame_interval
+    # fallback chain so writes can never disagree with subsequent reads.
+    default_interval = updates.get("thumbnail_interval") or settings.get("thumbnail_interval") or 10
+    default_interval = (
+        int(default_interval) if isinstance(default_interval, int) or str(default_interval).isdigit() else 10
+    )
+
     media_servers = list(settings.get("media_servers") or [])
     plex_index = next(
         (i for i, e in enumerate(media_servers) if isinstance(e, dict) and (e.get("type") or "").lower() == "plex"),
@@ -165,7 +176,7 @@ def _route_legacy_plex_fields_into_media_servers(settings, updates: dict) -> tup
             "libraries": [],
             "path_mappings": [],
             "exclude_paths": [],
-            "output": {"adapter": "plex_bundle", "plex_config_folder": "", "frame_interval": 10},
+            "output": {"adapter": "plex_bundle", "plex_config_folder": "", "frame_interval": default_interval},
         }
         media_servers.append(plex_entry)
         plex_index = len(media_servers) - 1
@@ -187,7 +198,7 @@ def _route_legacy_plex_fields_into_media_servers(settings, updates: dict) -> tup
     if "plex_config_folder" in payload:
         output = dict(plex_entry.get("output") or {})
         output.setdefault("adapter", "plex_bundle")
-        output.setdefault("frame_interval", 10)
+        output.setdefault("frame_interval", default_interval)
         output["plex_config_folder"] = str(payload["plex_config_folder"] or "").strip()
         plex_entry["output"] = output
     if "selected_libraries" in payload:

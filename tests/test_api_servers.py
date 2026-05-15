@@ -522,6 +522,146 @@ class TestCreateServer:
         assert existing["url"] == "http://emby"
 
 
+class TestCreateServerDefaultsFrameInterval:
+    """Issue #238 — creating a server without ``output.frame_interval`` must
+    default it to the user's current global ``thumbnail_interval``, not the
+    hardcoded 10.
+
+    Previously, a Jellyfin/Emby server added through the per-server modal
+    with no explicit ``frame_interval`` in the payload was persisted with
+    ``frame_interval`` missing from ``output``. The six read sites then
+    fell back to literal 10 regardless of what the user had configured
+    globally -- the exact configuration the user's settings.json exhibited
+    live (see plan write-up).
+    """
+
+    def test_emby_server_defaults_frame_interval_from_global(self, client, auth_headers):
+        # User's global is 5.
+        get_settings_manager().update({"thumbnail_interval": 5})
+
+        response = client.post(
+            "/api/servers",
+            headers=auth_headers,
+            json={
+                "type": "emby",
+                "name": "Emby",
+                "url": "http://emby:8096",
+                "auth": {"method": "api_key", "api_key": "secret"},
+                # NOTE: no "output" / no "frame_interval".
+            },
+        )
+        assert response.status_code == 201, response.get_data(as_text=True)
+
+        body = response.get_json()
+        # The persisted entry must have frame_interval=5 (not 10, the old
+        # hardcoded default). Asserting on the persisted record rather than
+        # the API response so a "redacted response" regression can't mask
+        # the underlying storage state.
+        servers = get_settings_manager().get("media_servers")
+        created = next(s for s in servers if s["id"] == body["id"])
+        assert created["output"]["frame_interval"] == 5, (
+            f"server created with global thumbnail_interval=5 must inherit it; "
+            f"got frame_interval={created['output'].get('frame_interval')!r}"
+        )
+
+    def test_jellyfin_server_defaults_frame_interval_from_global(self, client, auth_headers):
+        """Same shape as the Emby row but for Jellyfin — different ``type``
+        means the validation branch differs (no _validate_plex_output) so
+        the create-flow default still must populate from global.
+
+        Together with the Emby + Plex rows, this completes the
+        per-server-type matrix the .claude/rules/testing.md "cover the
+        matrix" rule calls out — the D34 precedent showed that testing
+        one server type and not the others is exactly how a per-type
+        bug ships.
+        """
+        get_settings_manager().update({"thumbnail_interval": 4})
+
+        response = client.post(
+            "/api/servers",
+            headers=auth_headers,
+            json={
+                "type": "jellyfin",
+                "name": "Jellyfin",
+                "url": "http://jellyfin:8096",
+                "auth": {"method": "api_key", "api_key": "secret"},
+                # No "output" / no "frame_interval".
+            },
+        )
+        assert response.status_code == 201, response.get_data(as_text=True)
+
+        body = response.get_json()
+        servers = get_settings_manager().get("media_servers")
+        created = next(s for s in servers if s["id"] == body["id"])
+        assert created["output"]["frame_interval"] == 4, (
+            f"jellyfin server created with global thumbnail_interval=4 must inherit it; "
+            f"got frame_interval={created['output'].get('frame_interval')!r}"
+        )
+
+    def test_plex_server_defaults_frame_interval_from_global(self, client, auth_headers, tmp_path):
+        """Plex create path runs through ``_validate_plex_output`` in addition
+        to the generic validator — this row pins that the frame_interval
+        default-from-global still kicks in for the Plex branch.
+
+        Plex requires a real ``plex_config_folder`` to satisfy the bundle
+        publisher's validation; the test creates a tmp_path-backed dir
+        so the test runs in both CI and dev environments.
+        """
+        plex_config = tmp_path / "plex_config"
+        plex_config.mkdir()
+        get_settings_manager().update({"thumbnail_interval": 6})
+
+        response = client.post(
+            "/api/servers",
+            headers=auth_headers,
+            json={
+                "type": "plex",
+                "name": "Plex",
+                "url": "http://plex:32400",
+                "auth": {"method": "token", "token": "secret-tok"},
+                "output": {
+                    "adapter": "plex_bundle",
+                    "plex_config_folder": str(plex_config),
+                    # NOTE: no "frame_interval" — must default from global.
+                },
+            },
+        )
+        assert response.status_code == 201, response.get_data(as_text=True)
+
+        body = response.get_json()
+        servers = get_settings_manager().get("media_servers")
+        created = next(s for s in servers if s["id"] == body["id"])
+        assert created["output"]["frame_interval"] == 6, (
+            f"plex server created with global thumbnail_interval=6 must inherit it; "
+            f"got frame_interval={created['output'].get('frame_interval')!r}"
+        )
+
+    def test_explicit_frame_interval_in_payload_wins_over_global(self, client, auth_headers):
+        """If a script/client explicitly POSTs frame_interval=N, that wins over
+        the global. The per-server override is still allowed."""
+        get_settings_manager().update({"thumbnail_interval": 5})
+
+        response = client.post(
+            "/api/servers",
+            headers=auth_headers,
+            json={
+                "type": "jellyfin",
+                "name": "Jellyfin",
+                "url": "http://jellyfin:8096",
+                "auth": {"method": "api_key", "api_key": "secret"},
+                "output": {"adapter": "jellyfin_trickplay", "frame_interval": 3},
+            },
+        )
+        assert response.status_code == 201, response.get_data(as_text=True)
+
+        body = response.get_json()
+        servers = get_settings_manager().get("media_servers")
+        created = next(s for s in servers if s["id"] == body["id"])
+        assert created["output"]["frame_interval"] == 3, (
+            "explicit frame_interval in request payload must be preserved verbatim"
+        )
+
+
 class TestUpdateServer:
     def test_renames_server(self, client, auth_headers):
         _seed_media_servers(

@@ -21,7 +21,7 @@ from loguru import logger
 # -------------------------------------------------------------------------
 # Schema version — bump when adding new migrations
 # -------------------------------------------------------------------------
-_CURRENT_SCHEMA_VERSION = 12
+_CURRENT_SCHEMA_VERSION = 13
 
 
 # -------------------------------------------------------------------------
@@ -57,6 +57,14 @@ _USER_FACING_NOTES: dict[int, str] = {
         "routing matches on Plex's own machine identifier, not on the renamed id. "
         "If you'd like the URL on plex.tv to use the new cleaner form, open "
         "Servers → Plex → Webhook & Scanner and click Re-register. Optional, not required."
+    ),
+    13: (
+        "Your Thumbnail Interval setting now applies to every server consistently. "
+        "Previously a server entry either kept a stale per-server copy of the "
+        "interval (typically Plex, after a later UI change) or had none at all "
+        "(typically Jellyfin/Emby added before the field existed), which made "
+        "BIF previews drift out of sync with playback. Existing previews "
+        "regenerate normally next time the job runs."
     ),
 }
 
@@ -282,6 +290,13 @@ def _migrate_schema(sm) -> None:
         v11 -- Seeds the ``frame_reuse`` block (enabled, ttl_minutes,
                max_cache_disk_mb) so cross-server webhook reuse is on
                by default. Tunable under Settings → Performance.
+        v13 -- Aligns per-server ``output.frame_interval`` with the global
+               ``thumbnail_interval`` for upgraders whose Jellyfin/Emby
+               entries pre-date the field or whose Plex entry drifted from
+               a later UI change. PR #240 keeps them aligned going forward
+               via a post-save hook; this one-shot heals already-affected
+               installs without requiring the user to re-save settings.
+               Issue #238.
     """
     current = sm.get("_schema_version", 1)
     if current > _CURRENT_SCHEMA_VERSION:
@@ -334,6 +349,8 @@ def _migrate_schema(sm) -> None:
         _run(11, _migrate_to_v11)
     if current < 12:
         _run(12, _migrate_to_v12)
+    if current < 13:
+        _run(13, _migrate_to_v13)
 
     sm.set("_schema_version", _CURRENT_SCHEMA_VERSION)
 
@@ -1126,6 +1143,56 @@ def _migrate_to_v12(sm) -> list:
 
     detail = "; ".join(runtime_notes) if runtime_notes else "no runtime references to rewrite"
     return [f"v12: renamed legacy 'plex-default' → {new_id} ({detail})"]
+
+
+def _migrate_to_v13(sm) -> list:
+    """Align per-server ``output.frame_interval`` with the global ``thumbnail_interval``.
+
+    Pre-fix builds initialised ``media_servers[i].output.frame_interval`` at
+    server-create time and never updated it when the user later changed the
+    global ``thumbnail_interval``. Additionally, Jellyfin/Emby entries added
+    before this fix often had ``output.frame_interval`` missing entirely; the
+    six read sites then fell back to a hardcoded ``10`` regardless of the
+    user's chosen value, producing BIF previews whose declared multiplier
+    disagreed with the FFmpeg extraction cadence (issue #238).
+
+    This migration walks every server, writes ``output.frame_interval`` to
+    match the current global, and reports how many entries it touched. PR
+    #240's post-save propagation keeps the values aligned going forward; this
+    one-shot heals everyone who upgraded with stale or missing values without
+    requiring them to re-save settings.
+
+    Idempotent — a re-run with already-aligned entries is a no-op (no notes).
+    """
+    global_interval = sm.get("thumbnail_interval") or sm.get("plex_bif_frame_interval")
+    if not isinstance(global_interval, int) or global_interval <= 0:
+        # No global to align to (very-old install with neither key set); leave
+        # entries as-is so the read-side fallback to the documented default
+        # picks up.
+        return []
+
+    media_servers = sm.get("media_servers") or []
+    if not isinstance(media_servers, list):
+        return []
+
+    updated: list = []
+    drift_count = 0
+    for entry in media_servers:
+        if isinstance(entry, dict):
+            output = dict(entry.get("output") or {})
+            if output.get("frame_interval") != global_interval:
+                output["frame_interval"] = global_interval
+                entry = {**entry, "output": output}
+                drift_count += 1
+        updated.append(entry)
+
+    if drift_count:
+        sm.update({"media_servers": updated})
+        return [
+            f"v13: aligned {drift_count} server(s) output.frame_interval to "
+            f"global thumbnail_interval={global_interval} (#238)"
+        ]
+    return []
 
 
 # =========================================================================

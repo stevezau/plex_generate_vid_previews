@@ -1756,6 +1756,46 @@ class TestMigrationNoticeUserFacingSplit:
             f"Dev 'vN:' prefix leaked into user notice: {notes}"
         )
 
+    def test_v13_emits_friendly_user_string(self, settings_manager):
+        """Starting at v12 with a drifted per-server frame_interval, the v13
+        migration must emit the friendly summary copy ("now applies to every
+        server consistently") and never leak the dev ``v13: aligned N
+        server(s)...`` log string into the dashboard notice.
+
+        Same shape as the v7+v11 test above, scoped to v13's contract."""
+        from media_preview_generator.upgrade import _migrate_schema
+
+        # Start at v12 so v7..v12 are all skipped and only v13 fires.
+        # Drift: thumbnail_interval=5 globally, Plex entry stuck at 10.
+        settings_manager.apply_changes(
+            updates={
+                "_schema_version": 12,
+                "thumbnail_interval": 5,
+                "media_servers": [
+                    {
+                        "id": "abc123",
+                        "type": "plex",
+                        "name": "Plex",
+                        "enabled": True,
+                        "url": "http://plex:32400",
+                        "auth": {"token": "tok"},
+                        "output": {"frame_interval": 10},  # stale
+                    },
+                ],
+            }
+        )
+        _migrate_schema(settings_manager)
+
+        notice = settings_manager.get("_pending_migration_notice") or {}
+        notes = notice.get("notes") or []
+        assert len(notes) == 1, f"expected 1 user note (v13 only), got {len(notes)}: {notes}"
+        joined = notes[0]
+        assert "every server consistently" in joined, (
+            f"v13 user-facing note missing the expected friendly copy: {notes}"
+        )
+        assert not joined.startswith("v13:"), f"Dev-facing 'v13:' prefix leaked into user notice: {notes}"
+        assert "aligned" not in joined, f"Dev string token 'aligned N server(s)' leaked into user notice: {notes}"
+
     def test_unmapped_migration_produces_no_user_note(self, settings_manager):
         """A migration without a ``_USER_FACING_NOTES`` entry must be silent
         in the dashboard, not leak its dev log copy. Guards against a future
@@ -1879,3 +1919,186 @@ class TestReleaseNotesBundle:
 
         out = api_system._fetch_github_releases(limit=10)
         assert out == []
+
+
+class TestMigrateToV13:
+    """Tests for the v13 frame_interval alignment migration (#238).
+
+    The migration walks every server in ``media_servers`` and rewrites
+    ``output.frame_interval`` to match the global ``thumbnail_interval``.
+    It must heal three drift shapes the user's own settings exhibited:
+
+      a) Stale per-server value (e.g. Plex output.frame_interval=10 while
+         global has been changed to 2)
+      b) Missing per-server value entirely (the Jellyfin/Emby case — output
+         exists but has no frame_interval key, so reads fall back to 10)
+      c) Missing output block entirely (no output key at all)
+
+    And it must be a no-op when:
+      d) Already aligned across all servers
+      e) Global thumbnail_interval not set (nothing to align to)
+      f) media_servers empty or absent
+    """
+
+    def test_aligns_stale_per_server_value(self, settings_manager):
+        from media_preview_generator.upgrade import _migrate_to_v13
+
+        settings_manager.update(
+            {
+                "thumbnail_interval": 2,
+                "media_servers": [
+                    {
+                        "id": "plex-1",
+                        "type": "plex",
+                        "output": {"frame_interval": 10},  # stale
+                    },
+                ],
+            }
+        )
+
+        notes = _migrate_to_v13(settings_manager)
+
+        servers = settings_manager.get("media_servers")
+        assert servers[0]["output"]["frame_interval"] == 2
+        assert any("v13: aligned 1 server" in n for n in notes), (
+            f"migration must report alignment in its notes; got {notes!r}"
+        )
+
+    def test_fills_missing_frame_interval_key(self, settings_manager):
+        """Output dict exists but ``frame_interval`` is missing entirely."""
+        from media_preview_generator.upgrade import _migrate_to_v13
+
+        settings_manager.update(
+            {
+                "thumbnail_interval": 5,
+                "media_servers": [
+                    {
+                        "id": "jf-1",
+                        "type": "jellyfin",
+                        "output": {"adapter": "jellyfin_trickplay"},  # no frame_interval
+                    },
+                ],
+            }
+        )
+
+        _migrate_to_v13(settings_manager)
+
+        servers = settings_manager.get("media_servers")
+        assert servers[0]["output"]["frame_interval"] == 5
+
+    def test_creates_output_block_when_missing(self, settings_manager):
+        """Entry with no output key at all gets one with frame_interval set."""
+        from media_preview_generator.upgrade import _migrate_to_v13
+
+        settings_manager.update(
+            {
+                "thumbnail_interval": 7,
+                "media_servers": [
+                    {
+                        "id": "emby-1",
+                        "type": "emby",
+                        # NOTE: no "output" key at all.
+                    },
+                ],
+            }
+        )
+
+        _migrate_to_v13(settings_manager)
+
+        servers = settings_manager.get("media_servers")
+        assert servers[0]["output"]["frame_interval"] == 7
+
+    def test_handles_full_drift_matrix(self, settings_manager):
+        """One server stale (Plex), one missing key (Jellyfin), one missing output (Emby)
+        — the exact mix the user's live settings.json exhibited. All three heal to global."""
+        from media_preview_generator.upgrade import _migrate_to_v13
+
+        settings_manager.update(
+            {
+                "thumbnail_interval": 2,
+                "media_servers": [
+                    {"id": "plex-1", "type": "plex", "output": {"frame_interval": 10}},
+                    {"id": "jf-1", "type": "jellyfin", "output": {"adapter": "jellyfin_trickplay"}},
+                    {"id": "emby-1", "type": "emby"},
+                ],
+            }
+        )
+
+        notes = _migrate_to_v13(settings_manager)
+
+        servers = settings_manager.get("media_servers")
+        for entry in servers:
+            actual = entry.get("output", {}).get("frame_interval")
+            assert actual == 2, f"server {entry['id']!r}: expected 2, got {actual!r}"
+        assert any("v13: aligned 3 server" in n for n in notes), (
+            f"migration must report aligning all 3 servers; got {notes!r}"
+        )
+
+    def test_noop_when_already_aligned(self, settings_manager):
+        """Idempotent on re-run — no notes, no settings.update churn."""
+        from media_preview_generator.upgrade import _migrate_to_v13
+
+        settings_manager.update(
+            {
+                "thumbnail_interval": 10,
+                "media_servers": [
+                    {"id": "plex-1", "type": "plex", "output": {"frame_interval": 10}},
+                ],
+            }
+        )
+
+        before = settings_manager.get("media_servers")
+        notes = _migrate_to_v13(settings_manager)
+        after = settings_manager.get("media_servers")
+
+        assert notes == [], f"already-aligned migration must produce no notes; got {notes!r}"
+        assert before == after, "no-op migration must not mutate media_servers"
+
+    def test_noop_when_no_global_interval(self, settings_manager):
+        """If neither ``thumbnail_interval`` nor ``plex_bif_frame_interval`` is set,
+        leave per-server entries alone — the read-side fallback handles the default."""
+        from media_preview_generator.upgrade import _migrate_to_v13
+
+        settings_manager.update(
+            {
+                "media_servers": [
+                    {"id": "plex-1", "type": "plex", "output": {"frame_interval": 10}},
+                ],
+            }
+        )
+        # Sanity: neither key is set
+        assert settings_manager.get("thumbnail_interval") in (None, "")
+        assert settings_manager.get("plex_bif_frame_interval") in (None, "")
+
+        notes = _migrate_to_v13(settings_manager)
+
+        assert notes == []
+        servers = settings_manager.get("media_servers")
+        assert servers[0]["output"]["frame_interval"] == 10  # unchanged
+
+    def test_falls_back_to_legacy_plex_bif_frame_interval_key(self, settings_manager):
+        """Old installs may only have ``plex_bif_frame_interval`` set, not the
+        modern ``thumbnail_interval``. Migration must honour the legacy key."""
+        from media_preview_generator.upgrade import _migrate_to_v13
+
+        settings_manager.update(
+            {
+                "plex_bif_frame_interval": 3,
+                "media_servers": [
+                    {"id": "plex-1", "type": "plex", "output": {"frame_interval": 10}},
+                ],
+            }
+        )
+
+        _migrate_to_v13(settings_manager)
+
+        servers = settings_manager.get("media_servers")
+        assert servers[0]["output"]["frame_interval"] == 3
+
+    def test_handles_empty_media_servers(self, settings_manager):
+        """Empty list — no work, no error."""
+        from media_preview_generator.upgrade import _migrate_to_v13
+
+        settings_manager.update({"thumbnail_interval": 5, "media_servers": []})
+        notes = _migrate_to_v13(settings_manager)
+        assert notes == []

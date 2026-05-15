@@ -39,6 +39,7 @@ import requests
 from loguru import logger
 
 from ..bif_reader import unpack_bif_to_jpegs
+from ..config import resolve_frame_interval
 from ..output import BifBundle, EmbyBifAdapter, JellyfinTrickplayAdapter, PlexBundleAdapter
 from ..output.base import OutputAdapter
 from ..output.journal import clear_meta, outputs_fresh_for_source, write_meta
@@ -149,7 +150,7 @@ def _adapter_for_server(server_config: ServerConfig) -> OutputAdapter | None:
     output = server_config.output or {}
     adapter_name = str(output.get("adapter") or "").strip().lower()
     width = int(output.get("width") or 320)
-    frame_interval = int(output.get("frame_interval") or 10)
+    frame_interval = resolve_frame_interval(output)
 
     # Default per server type when adapter name is missing.
     if not adapter_name:

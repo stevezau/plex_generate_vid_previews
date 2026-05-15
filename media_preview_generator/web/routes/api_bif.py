@@ -9,6 +9,7 @@ import urllib3
 from flask import Response, jsonify, request
 from loguru import logger
 
+from ...config import resolve_frame_interval
 from ..auth import api_token_required
 from . import api
 from ._helpers import limiter
@@ -844,7 +845,7 @@ def _resolve_previews_for_item(item, server_cfg) -> list[dict]:
 
     output_cfg = server_cfg.output or {}
     width = int(output_cfg.get("width") or 320)
-    interval = int(output_cfg.get("frame_interval") or 10)
+    interval = resolve_frame_interval(output_cfg)
 
     # Episode-vs-movie classification: the MediaItem dataclass has no
     # explicit ``kind`` field, so fall back to a title-shape check. Match on

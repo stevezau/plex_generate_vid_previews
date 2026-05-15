@@ -19,6 +19,7 @@ import requests
 import urllib3
 from loguru import logger
 
+from ..config import resolve_frame_interval
 from .base import (
     ConnectionResult,
     FlagTarget,
@@ -97,7 +98,7 @@ def _synthesize_legacy_config(cfg: ServerConfig) -> SimpleNamespace:
         plex_library_ids=enabled_lib_ids,
         plex_libraries=[],  # legacy name-based selector — superseded by ids
         plex_config_folder=(cfg.output or {}).get("plex_config_folder", "/plex"),
-        plex_bif_frame_interval=int((cfg.output or {}).get("frame_interval") or 10),
+        plex_bif_frame_interval=resolve_frame_interval(cfg.output),
     )
 
 

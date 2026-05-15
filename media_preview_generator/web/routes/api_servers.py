@@ -17,6 +17,7 @@ from typing import Any
 from flask import jsonify, request
 from loguru import logger
 
+from ...config import resolve_frame_interval
 from ...servers import (
     ServerRegistry,
     ServerType,
@@ -273,6 +274,22 @@ def _validate_server_payload(
     path_mappings = data.get("path_mappings") if "path_mappings" in data else base.get("path_mappings", [])
     exclude_paths = data.get("exclude_paths") if "exclude_paths" in data else base.get("exclude_paths", [])
     output = data.get("output") if "output" in data else base.get("output", {})
+
+    # When a client (or scripted deploy) creates / updates a server without
+    # specifying ``output.frame_interval``, default it to the user's current
+    # global ``thumbnail_interval`` rather than letting the read-side fallback
+    # silently fill in the documented 10s default. This mirrors PR #240's
+    # design — global is the source of truth — and stops Jellyfin/Emby entries
+    # from being born with ``frame_interval`` missing, which is the
+    # configuration that produced the user-visible drift in #238.
+    if isinstance(output, dict) and "frame_interval" not in output:
+        try:
+            global_interval = get_settings_manager().get("thumbnail_interval")
+            if isinstance(global_interval, int) and global_interval > 0:
+                output = dict(output)
+                output["frame_interval"] = global_interval
+        except Exception:
+            pass
     # health_dismissals is managed by the per-row dismiss endpoint
     # (POST /previews-readiness/(dis|un)dismiss). The modal Save form
     # never sends it, so this MUST carry-forward from ``base`` or every
@@ -1636,7 +1653,7 @@ def get_output_status(server_id: str):
         canonical_path=canonical_path,
         frame_dir=_Path("."),  # unused — only canonical_path is read
         bif_path=None,
-        frame_interval=int((cfg.output or {}).get("frame_interval") or 10),
+        frame_interval=resolve_frame_interval(cfg.output),
         width=int((cfg.output or {}).get("width") or 320),
         height=180,
         frame_count=0,
