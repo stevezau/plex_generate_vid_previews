@@ -543,6 +543,10 @@ def _apply_post_save_hooks(settings, updates: dict, incoming_field_keys: set[str
        new token (otherwise it keeps posting with the stale token).
     5. **Logging reconfiguration** — if any log_* field changed, rebuild
        the loguru handlers with the new level/rotation/retention.
+    6. **Thumbnail interval propagation** — if ``thumbnail_interval`` changed,
+       update ``frame_interval`` in every server's ``output`` config so the
+       BIF writer, Jellyfin trickplay registration, Emby sidecar naming, and
+       BIF viewer all use the new value immediately.
 
     Returns ``thread_warning`` (empty string when worker counts are healthy)
     so the route can include it in the JSON response.
@@ -584,6 +588,30 @@ def _apply_post_save_hooks(settings, updates: dict, incoming_field_keys: set[str
             rotation=settings.get("log_rotation_size", "10 MB"),
             retention=settings.get("log_retention_count", 5),
         )
+
+    # Propagate thumbnail_interval into every server's output.frame_interval.
+    if "thumbnail_interval" in updates:
+        new_interval = int(updates["thumbnail_interval"])
+        media_servers = settings.get("media_servers") or []
+        updated_servers = []
+        changed = False
+        for entry in media_servers:
+            if not isinstance(entry, dict):
+                updated_servers.append(entry)
+                continue
+            output = dict(entry.get("output") or {})
+            if output.get("frame_interval") != new_interval:
+                output["frame_interval"] = new_interval
+                entry = dict(entry)
+                entry["output"] = output
+                changed = True
+            updated_servers.append(entry)
+        if changed:
+            settings.update({"media_servers": updated_servers})
+            logger.debug(
+                "Propagated thumbnail_interval={} to all server output configs",
+                new_interval,
+            )
 
     return thread_warning
 
