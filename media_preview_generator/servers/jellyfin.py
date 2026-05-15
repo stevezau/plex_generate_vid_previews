@@ -28,6 +28,7 @@ from typing import Any
 import requests
 from loguru import logger
 
+from ..config import resolve_frame_interval
 from ._embyish import EmbyApiClient, is_video_library_folder
 from .base import FlagTarget, HealthCheckIssue, ServerType, WebhookEvent
 
@@ -175,7 +176,7 @@ class JellyfinServer(EmbyApiClient):
         # ``frame_interval`` is in seconds. Convert here so the two
         # views agree: tiles named "<width> - 10x10/<index>.jpg"
         # match the row registered with the matching intervalMs.
-        adapter_interval_ms = int(output.get("frame_interval") or 10) * 1000
+        adapter_interval_ms = resolve_frame_interval(output) * 1000
         try:
             resp = self._request(
                 "POST",
@@ -1217,7 +1218,7 @@ class JellyfinServer(EmbyApiClient):
             "width": int(output.get("width") or 320),
             "tile_w": 10,
             "tile_h": 10,
-            "interval_ms": int(output.get("frame_interval") or 10) * 1000,
+            "interval_ms": resolve_frame_interval(output) * 1000,
         }
 
     def fetch_trickplay_options(self) -> dict[str, Any] | None:

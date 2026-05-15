@@ -74,10 +74,13 @@ class TestSettingsSteppers:
 
     def test_thumbnail_interval_stepper_works(self, settings_page: Page) -> None:
         interval = settings_page.locator("#thumbnailInterval")
-        expect(interval).to_have_value("2")
+        # Default unified to 10s post-#238 (BIF/Plex community convention).
+        # See settings.html input value, settings_manager.thumbnail_interval,
+        # config/__init__.py loader default, and docs/reference.md.
+        expect(interval).to_have_value("10")
         plus = interval.locator(".. >> .stepper-plus").first
         plus.click()
-        expect(interval).to_have_value("3")
+        expect(interval).to_have_value("11")
 
     def test_log_rotation_stepper_works(self, settings_page: Page) -> None:
         rot = settings_page.locator("#logRotationSize")

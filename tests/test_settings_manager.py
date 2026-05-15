@@ -881,3 +881,81 @@ class TestSingletonInitDeadlockRegression:
             )
         finally:
             reset_settings_manager()
+
+
+class TestResolveFrameInterval:
+    """Tests for ``config.resolve_frame_interval`` -- the read-side fallback (#238).
+
+    Lookup order under test:
+      1. ``server_output["frame_interval"]`` -- per-server override wins when set.
+      2. The global ``thumbnail_interval`` from the SettingsManager singleton.
+      3. The documented 10s default.
+
+    The helper is what stops the BIF multiplier from disagreeing with FFmpeg's
+    extraction cadence when a server entry is missing ``output.frame_interval``
+    -- the configuration the user's own settings exhibited live for Jellyfin
+    and Emby (see plan write-up).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self, tmp_path, monkeypatch):
+        from media_preview_generator.web.settings_manager import reset_settings_manager
+
+        monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+        reset_settings_manager()
+        yield
+        reset_settings_manager()
+
+    def test_returns_per_server_value_when_set(self):
+        from media_preview_generator.config import resolve_frame_interval
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        get_settings_manager().update({"thumbnail_interval": 5})  # global is 5
+
+        # Per-server explicitly set to 3 -- wins over global.
+        assert resolve_frame_interval({"frame_interval": 3}) == 3
+
+    def test_falls_back_to_global_when_per_server_missing(self):
+        from media_preview_generator.config import resolve_frame_interval
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        get_settings_manager().update({"thumbnail_interval": 7})
+
+        # Output dict has no frame_interval key -- must use global, not 10.
+        assert resolve_frame_interval({"adapter": "jellyfin_trickplay"}) == 7
+
+    def test_falls_back_to_global_when_output_is_none(self):
+        from media_preview_generator.config import resolve_frame_interval
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        get_settings_manager().update({"thumbnail_interval": 4})
+
+        assert resolve_frame_interval(None) == 4
+
+    def test_rejects_non_int_per_server_value(self):
+        """A garbage frame_interval (e.g. string from a hand-edit) must not poison
+        the chain; we fall through to the global instead of crashing or returning
+        a non-int."""
+        from media_preview_generator.config import resolve_frame_interval
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        get_settings_manager().update({"thumbnail_interval": 6})
+
+        assert resolve_frame_interval({"frame_interval": "not-a-number"}) == 6
+
+    def test_rejects_zero_per_server_value(self):
+        from media_preview_generator.config import resolve_frame_interval
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        get_settings_manager().update({"thumbnail_interval": 8})
+
+        # 0 would cause divide-by-zero in fps = 1/interval; fall through.
+        assert resolve_frame_interval({"frame_interval": 0}) == 8
+
+    def test_final_fallback_to_ten_when_nothing_set(self):
+        """No per-server override, no global setting -- documented 10s default."""
+        from media_preview_generator.config import resolve_frame_interval
+
+        # SettingsManager singleton was reset by the fixture; .get returns None.
+        assert resolve_frame_interval({}) == 10
+        assert resolve_frame_interval(None) == 10
