@@ -273,6 +273,17 @@ def _validate_server_payload(
     path_mappings = data.get("path_mappings") if "path_mappings" in data else base.get("path_mappings", [])
     exclude_paths = data.get("exclude_paths") if "exclude_paths" in data else base.get("exclude_paths", [])
     output = data.get("output") if "output" in data else base.get("output", {})
+    # health_dismissals is managed by the per-row dismiss endpoint
+    # (POST /previews-readiness/(dis|un)dismiss). The modal Save form
+    # never sends it, so this MUST carry-forward from ``base`` or every
+    # Save would silently wipe the user's dismissals — the issue #237
+    # follow-up bug SpartacusIam reported (2026-05-15): "if you hit save
+    # at the time of the dismiss or any later time they all undismiss
+    # again." Whitelist-only entry-construction below means a missing
+    # key here is a dropped field, not a no-op.
+    health_dismissals = (
+        data.get("health_dismissals") if "health_dismissals" in data else base.get("health_dismissals", [])
+    )
 
     err = _validate_path_mappings(path_mappings or [])
     if err:
@@ -304,6 +315,8 @@ def _validate_server_payload(
         "exclude_paths": list(exclude_paths or []),
         "output": dict(output or {}),
         "server_identity": str(server_identity) if server_identity else None,
+        # Carry-forward only — see comment above on health_dismissals.
+        "health_dismissals": list(health_dismissals or []),
     }
 
     # Sanity-check the result: server_config_from_dict applies its own

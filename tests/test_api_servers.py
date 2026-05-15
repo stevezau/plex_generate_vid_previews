@@ -765,6 +765,91 @@ class TestUpdateServer:
         assert response.status_code == 400
         assert "does not exist" in response.get_json()["error"]
 
+    def test_save_preserves_health_dismissals_managed_by_separate_endpoint(self, client, auth_headers):
+        """Issue #237 regression: dismissals set via
+        ``POST /previews-readiness/dismiss`` were being wiped when the
+        user hit Save in the server edit modal. Root cause:
+        ``_validate_server_payload`` enumerates known fields explicitly
+        and ``health_dismissals`` wasn't in the whitelist, so updating
+        any field would silently drop it on the next ``servers[i] =
+        updated``.
+
+        Pin: dismissals set BEFORE the update must survive the update,
+        even when the update body omits the field entirely (which is
+        the normal path — the modal save UI never sends it).
+
+        Bug-blindness guard: the assertion uses ``==`` against the
+        exact list, not just ``"health_dismissals" in servers[0]`` —
+        a regression that wrote ``[]`` would pass the membership check
+        and miss the bug.
+        """
+        _seed_media_servers(
+            [
+                {
+                    "id": "s1",
+                    "type": "emby",
+                    "name": "Emby",
+                    "enabled": True,
+                    "url": "http://emby",
+                    "auth": {"api_key": "k"},
+                    "health_dismissals": [
+                        "library_settings:FSEventLibraryUpdatesEnabled",
+                        "vendor_extraction:5",
+                    ],
+                }
+            ]
+        )
+        # Simulate hitting Save with the form fields the modal owns —
+        # health_dismissals is NOT in the body.
+        response = client.put(
+            "/api/servers/s1",
+            headers=auth_headers,
+            json={"name": "Emby Renamed"},
+        )
+        assert response.status_code == 200
+        servers = get_settings_manager().get("media_servers")
+        assert servers[0]["name"] == "Emby Renamed"
+        assert servers[0]["health_dismissals"] == [
+            "library_settings:FSEventLibraryUpdatesEnabled",
+            "vendor_extraction:5",
+        ], (
+            "Saving the server form must NOT wipe health_dismissals — "
+            "that field is managed by a separate endpoint and the form "
+            "never sends it. Without the carry-forward in "
+            "_validate_server_payload, dismiss → save is a footgun."
+        )
+
+    def test_save_with_explicit_health_dismissals_in_body_writes_through(self, client, auth_headers):
+        """Companion to the preservation test above: when the body DOES
+        carry ``health_dismissals``, it wins (overrides the existing
+        value). This pins normal CRUD semantics for the field — a
+        future client that wants to bulk-edit dismissals via the
+        server PUT route can.
+        """
+        _seed_media_servers(
+            [
+                {
+                    "id": "s1",
+                    "type": "emby",
+                    "name": "Emby",
+                    "enabled": True,
+                    "url": "http://emby",
+                    "auth": {"api_key": "k"},
+                    "health_dismissals": ["old:row"],
+                }
+            ]
+        )
+        response = client.put(
+            "/api/servers/s1",
+            headers=auth_headers,
+            json={"name": "Emby Renamed", "health_dismissals": ["new:row"]},
+        )
+        assert response.status_code == 200
+        servers = get_settings_manager().get("media_servers")
+        assert servers[0]["health_dismissals"] == ["new:row"], (
+            "Explicit health_dismissals in body must override the existing value, not merge with it."
+        )
+
 
 class TestDeleteServer:
     def test_removes_server(self, client, auth_headers):
