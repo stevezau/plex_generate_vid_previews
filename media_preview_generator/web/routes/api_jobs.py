@@ -470,7 +470,85 @@ def get_chain_attempts(chain_id):
         }
     )
 
+    def _reconstruct_retry_reason(child_job) -> dict | None:
+        """Best-effort backfill of ``retry_reason`` for legacy chains
+        that ran before this field was persisted on config (job
+        ``4ad23f43``, 2026-05-15: chain completed but the modal banner
+        was blank because no child carried a structured reason).
+
+        The chain head's per-file JSONL preserves the historical pending
+        statuses for paths that reached the per-file orchestrator — the
+        in-memory ``publishers`` ``best_per_path`` merge only affects
+        display, not the JSONL — so we can rebuild ``pending_by_server``
+        and ``stale_paths`` for those rows.
+
+        Known limitation: ``unresolved`` is hard-coded to 0 because an
+        unresolved path leaves NO JSONL row (the Plex resolver
+        short-circuits before per-file dispatch). Legacy chains whose
+        ONLY retry trigger was unresolved paths will still render a
+        blank banner — there's no signal left to reconstruct from.
+        Publisher-pending and stale-path triggers (the common cases)
+        reconstruct correctly.
+
+        Limited to ``retry_attempt == 1``: subsequent attempts would
+        need temporal slicing of JSONL rows by ``ts`` against each
+        child's ``started_at`` — brittle for the marginal value. The
+        first child's reason captures the dominant signal for the vast
+        majority of real chains (1-2 retries before terminal).
+        """
+        try:
+            attempt_num = int(child_job.config.get("retry_attempt", 0))
+        except (TypeError, ValueError):
+            # Hand-edited or partially-migrated config — bail rather
+            # than 500 the whole /attempts response. Matches the
+            # defensive posture of ``_pending_servers`` above.
+            return None
+        if attempt_num != 1:
+            return None
+        child_paths_raw = child_job.config.get("webhook_paths") or []
+        child_paths = {p for p in child_paths_raw if isinstance(p, str)}
+        pending_by_server: dict[str, int] = {}
+        stale_paths = 0
+        seen_files: set[str] = set()
+        for fr in job_manager.get_file_results(chain.id, dedup_by_path=False):
+            file_path = fr.get("file")
+            if not file_path or file_path in seen_files:
+                continue
+            # The first row per file captures the ORIGINAL dispatch's
+            # state — exactly the data that drove the retry decision.
+            # Filter out files that aren't part of this child's scope so
+            # a chain with 8 paths but only 2 retried doesn't surface
+            # blockers from the 6 successful paths.
+            if child_paths and file_path not in child_paths:
+                continue
+            seen_files.add(file_path)
+            if fr.get("outcome") == "skipped_file_not_found":
+                stale_paths += 1
+                continue
+            for s in fr.get("servers") or []:
+                if (s.get("status") or "") in _PENDING_PUBLISHER_STATUSES:
+                    name = s.get("name") or "?"
+                    pending_by_server[name] = pending_by_server.get(name, 0) + 1
+        if not pending_by_server and stale_paths == 0:
+            return None
+        return {
+            "unresolved": 0,
+            "stale_paths": stale_paths,
+            "pending_by_server": pending_by_server,
+        }
+
     for j in children:
+        # ``retry_reason`` is the structured trigger captured at spawn
+        # time by ``job_runner._spawn_retry_job``. The modal's
+        # "Retried Nx because…" banner derives its summary from these
+        # entries — required because the live ``publishers`` snapshot
+        # gets refreshed away from pending statuses once the chain
+        # succeeds (job ``4ad23f43``, 2026-05-15). For legacy children
+        # without the field, fall back to a JSONL reconstruction so
+        # historical chains in the DB don't render blank banners.
+        retry_reason_value = j.config.get("retry_reason")
+        if retry_reason_value is None:
+            retry_reason_value = _reconstruct_retry_reason(j)
         attempts.append(
             {
                 "id": j.id,
@@ -483,6 +561,7 @@ def get_chain_attempts(chain_id):
                 "duration_sec": _duration_sec(j),
                 "is_originating": False,
                 "pending_servers": _pending_servers(j),
+                "retry_reason": retry_reason_value,
             }
         )
 

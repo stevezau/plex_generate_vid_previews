@@ -1706,3 +1706,250 @@ class TestStartJobAsyncSimplifiedPayload:
         assert any(r.get("file") == "/data/X.mkv" for r in results), (
             "Unresolved path's file_result missing — the result handler bailed before recording it."
         )
+
+
+class TestRetryReasonPersistedOnSpawn:
+    """When a retry is spawned, the structured reason that triggered it
+    MUST land on the spawned child's ``config["retry_reason"]``. The
+    modal's "Retried N× because…" banner reads this field instead of
+    re-deriving from the live ``publishers`` snapshot — so a chain that
+    SUCCEEDS still shows why it ever needed to retry (job ``4ad23f43``,
+    2026-05-15: chain completed but the modal banner was blank because
+    ``merge_chain_publishers_best_per_path`` had refreshed every snapshot
+    to ``published`` / ``skipped_output_exists`` and ``_pending_servers()``
+    correctly returned ``[]``).
+
+    Three categories the spawner must capture, mirroring the WARNING log
+    line built immediately above the ``_spawn_retry_job`` call:
+        * ``pending_by_server`` — per-server ``{name: count}`` for files
+          stuck in publisher-pending status (the publisher case).
+        * ``stale_paths`` — count of paths Plex returned but that don't
+          exist on disk (skipped_file_not_found).
+        * ``unresolved`` — count of paths Plex couldn't resolve at all.
+
+    Cover the matrix: each non-zero category alone, then a mixed case.
+    Without per-cell coverage, a refactor that drops ``stale_paths`` from
+    the persisted dict (or only persists ``pending_by_server``) passes the
+    publisher-only test and silently breaks the Plex-resolution case the
+    UI needs covered.
+    """
+
+    @pytest.mark.parametrize(
+        "publisher_status",
+        [
+            "published_pending_registration",
+            "skipped_not_indexed",
+            "skipped_not_in_library",
+        ],
+    )
+    def test_publisher_pending_persists_pending_by_server(self, app, tmp_path, publisher_status):
+        """Each retry-eligible publisher status must persist a
+        ``pending_by_server`` entry naming the actual blocker server.
+        The modal's chain-summary subtitle aggregates these across
+        attempts to render "Retried Nx because <server> was still indexing".
+        """
+        from media_preview_generator.web.jobs import get_job_manager
+        from media_preview_generator.web.routes.job_runner import _start_job_async
+
+        run_calls: list[dict] = []
+
+        def fake_run_processing(config, selected_gpus, **kwargs):
+            run_calls.append({"job_id": kwargs.get("job_id")})
+            jm = get_job_manager()
+            target = (jm.get_job(kwargs.get("job_id")).config or {}).get("parent_job_id") or kwargs.get("job_id")
+            if len(run_calls) == 1:
+                # Initial dispatch: file's publisher returned the
+                # retry-eligible status. Use FULL publisher keys
+                # (``server_id``/``server_name``/``server_type``) — that's
+                # the contract ``record_file_result`` translates from.
+                jm.record_file_result(
+                    target,
+                    "/data/tv/Show/S01E01.mkv",
+                    "generated",
+                    "",
+                    "[GPU 0]",
+                    servers=[
+                        {
+                            "server_id": "jelly-1",
+                            "server_name": "JellyTest",
+                            "server_type": "jellyfin",
+                            "status": publisher_status,
+                            "message": f"server returned {publisher_status}",
+                        }
+                    ],
+                )
+            else:
+                # Retry: registration succeeds — fresh row so the
+                # retry-decision scan doesn't loop forever.
+                jm.record_file_result(
+                    target,
+                    "/data/tv/Show/S01E01.mkv",
+                    "generated",
+                    "",
+                    "[GPU 0]",
+                    servers=[
+                        {
+                            "server_id": "jelly-1",
+                            "server_name": "JellyTest",
+                            "server_type": "jellyfin",
+                            "status": "published",
+                            "message": "registered after retry",
+                        }
+                    ],
+                )
+            return {
+                "outcome": {"generated": 1},
+                "webhook_resolution": {
+                    "unresolved_paths": [],
+                    "skipped_paths": [],
+                    "resolved_count": 1,
+                    "total_paths": 1,
+                    "path_hints": [],
+                },
+            }
+
+        with (
+            app.app_context(),
+            patch(
+                "media_preview_generator.jobs.orchestrator.run_processing",
+                side_effect=fake_run_processing,
+            ),
+            patch(
+                "media_preview_generator.plex_client.trigger_plex_partial_scan",
+                return_value=[],
+            ),
+            patch(
+                "media_preview_generator.processing.retry_queue.BACKOFF_SCHEDULE",
+                [1, 1, 1, 1, 1],
+            ),
+        ):
+            jm = get_job_manager()
+            job = jm.create_job(library_name="The Show", config={"source": "sonarr"})
+            _start_job_async(
+                job.id,
+                config_overrides={
+                    "webhook_paths": ["/data/tv/Show/S01E01.mkv"],
+                    "webhook_retry_count": 3,
+                    "webhook_retry_delay": 30,
+                },
+            )
+
+        all_jobs = get_job_manager().get_all_jobs()
+        retry_children = [
+            j
+            for j in all_jobs
+            if (j.config or {}).get("is_retry") is True and (j.config or {}).get("parent_job_id") == job.id
+        ]
+        assert len(retry_children) == 1, (
+            f"{publisher_status} must spawn exactly 1 retry; got {len(retry_children)}: "
+            f"{[(j.id, j.library_name) for j in retry_children]}"
+        )
+        reason = (retry_children[0].config or {}).get("retry_reason")
+        assert reason is not None, (
+            f"{publisher_status}: child must carry retry_reason in config so the modal "
+            f"banner can render after chain success; got config={retry_children[0].config!r}"
+        )
+        # Publisher-pending case: pending_by_server populated, the
+        # other two categories zero. Asserting on every field — not just
+        # pending_by_server — so a regression that fills this dict but
+        # also accidentally double-counts paths into stale_paths fails
+        # here instead of producing a confusing UI line.
+        assert reason["pending_by_server"] == {"JellyTest": 1}, (
+            f"pending_by_server must name the actual blocker; got {reason['pending_by_server']!r}"
+        )
+        assert reason["unresolved"] == 0, (
+            f"Publisher-pending case must report 0 unresolved; got {reason['unresolved']!r}"
+        )
+        assert reason["stale_paths"] == 0, (
+            f"Publisher-pending case must report 0 stale_paths; got {reason['stale_paths']!r}"
+        )
+
+    def test_skipped_file_not_found_persists_stale_paths(self, app, tmp_path):
+        """The not-found-on-disk branch (Plex returned a stale path)
+        must persist a non-zero ``stale_paths`` count. This is the
+        category that the live-publisher fallback CAN'T cover — there
+        IS no publisher status to derive it from — so persisting it
+        here is the only way the modal banner can ever render for this
+        retry trigger.
+        """
+        from media_preview_generator.web.jobs import get_job_manager
+        from media_preview_generator.web.routes.job_runner import _start_job_async
+
+        run_calls: list[dict] = []
+
+        def fake_run_processing(config, selected_gpus, **kwargs):
+            run_calls.append({"job_id": kwargs.get("job_id")})
+            jm = get_job_manager()
+            if len(run_calls) == 1:
+                jm.record_file_result(
+                    kwargs.get("job_id"),
+                    "/data/tv/Show/S01E01.mkv",
+                    "skipped_file_not_found",
+                    "file gone",
+                    "[GPU 0]",
+                )
+                return {
+                    "outcome": {"skipped_file_not_found": 1, "generated": 0, "failed": 0},
+                    "webhook_resolution": {
+                        "unresolved_paths": [],
+                        "skipped_paths": [],
+                        "resolved_count": 1,
+                        "total_paths": 1,
+                        "path_hints": [],
+                    },
+                }
+            parent_id = (jm.get_job(kwargs.get("job_id")).config or {}).get("parent_job_id") or kwargs.get("job_id")
+            jm.record_file_result(parent_id, "/data/tv/Show/S01E01.mkv", "generated", "", "[GPU 0]")
+            return {
+                "outcome": {"generated": 1},
+                "webhook_resolution": {
+                    "unresolved_paths": [],
+                    "skipped_paths": [],
+                    "resolved_count": 1,
+                    "total_paths": 1,
+                    "path_hints": [],
+                },
+            }
+
+        with (
+            app.app_context(),
+            patch(
+                "media_preview_generator.jobs.orchestrator.run_processing",
+                side_effect=fake_run_processing,
+            ),
+            patch(
+                "media_preview_generator.plex_client.trigger_plex_partial_scan",
+                return_value=[],
+            ),
+            patch(
+                "media_preview_generator.processing.retry_queue.BACKOFF_SCHEDULE",
+                [1, 1, 1, 1, 1],
+            ),
+        ):
+            job = get_job_manager().create_job(library_name="The Show", config={"source": "sonarr"})
+            _start_job_async(
+                job.id,
+                config_overrides={
+                    "webhook_paths": ["/data/tv/Show/S01E01.mkv"],
+                    "webhook_retry_count": 3,
+                    "webhook_retry_delay": 30,
+                },
+            )
+
+        retry_children = [
+            j
+            for j in get_job_manager().get_all_jobs()
+            if (j.config or {}).get("is_retry") is True and (j.config or {}).get("parent_job_id") == job.id
+        ]
+        assert len(retry_children) == 1, f"Expected 1 retry child; got {len(retry_children)}"
+        reason = (retry_children[0].config or {}).get("retry_reason")
+        assert reason is not None, f"Stale-path case must persist retry_reason; got config={retry_children[0].config!r}"
+        # Full-dict assertion (not just stale_paths >= 1) so a
+        # regression that double-counts the stale path into both
+        # ``stale_paths`` AND ``unresolved`` fails here. Mirrors the
+        # publisher-pending test's exact-shape contract.
+        assert reason == {
+            "unresolved": 0,
+            "stale_paths": 1,
+            "pending_by_server": {},
+        }, f"Stale-path case must produce exactly one stale path with no other categories; got {reason!r}"

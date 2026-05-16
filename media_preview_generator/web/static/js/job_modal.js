@@ -1153,70 +1153,106 @@ async function _loadAttemptsDropdown(chainId) {
     }
 }
 
-// Build the chain-summary subtitle from the per-attempt pending_servers
-// data. Aggregates each server's appearances across attempts and picks
-// the most-frequent blocker as the "why" — that's almost always the
-// holdout (e.g. Jellyfin lagging on indexing). Hidden when:
-//   * The chain has no retries (only the originating dispatch),
-//   * No attempts carry pending_servers (chain succeeded immediately
-//     on each run, but a non-publisher condition triggered the retry —
-//     e.g. unresolved Plex paths),
-//   * The data hasn't loaded yet (defensive).
+// Render the "Retried Nx because…" subtitle beneath the Attempts pill
+// row. Preferred source: the persisted ``retry_reason`` on each retry
+// child (captured at spawn time in ``job_runner._spawn_retry_job``).
+// Fallback: derive from the live ``pending_servers`` snapshot for
+// chains predating the persistence change.
 //
-// Visual: a small italic line beneath the Attempts pill row, e.g.
+// Persisted source matters because once a chain SUCCEEDS,
+// ``merge_chain_publishers_best_per_path`` refreshes every snapshot to
+// the best status per path — so the live ``pending_servers`` becomes
+// empty even though the chain DID retry (job ``4ad23f43``, 2026-05-15:
+// the modal banner was blank because the retry resolved everything and
+// the snapshot showed only ``published``/``skipped_output_exists``).
+//
+// Output examples:
 //   "Retried 3× because JellyTest was still indexing"
 //   "Retried 2× because Plex + JellyTest were still indexing"
+//   "Retried 1× because path(s) couldn't be resolved by any server"
+//   "Retried 1× because file(s) were missing on disk"
+//   "Retried 2× because JellyTest was still indexing, and file(s) were missing on disk"
+//
+// Hidden when: no retries fired (only originating dispatch), or no
+// reason data is available from either source.
 function _renderRetryReasonSubtitle(attempts) {
     const el = document.getElementById('retryReasonSubtitle');
     if (!el) return;
-    if (!Array.isArray(attempts) || attempts.length === 0) {
-        el.className = 'd-none small text-muted mt-2';
-        el.textContent = '';
-        return;
-    }
-    // Count how often each server appeared as a blocker across the
-    // retry pills only — the originating pill always has empty
-    // pending_servers, but skip it explicitly to be defensive.
-    const counts = new Map();  // server_name -> attempts-blocked count
-    let retryCount = 0;
-    for (let i = 0; i < attempts.length; i++) {
-        const a = attempts[i];
-        if (a.is_originating) continue;
-        retryCount += 1;
-        const pending = Array.isArray(a.pending_servers) ? a.pending_servers : [];
-        // Use a Set to avoid double-counting the same server within
-        // one attempt (a server with 4 pending files on attempt 2
-        // counts as 1 "blocked on attempt 2", not 4).
-        const seen = new Set();
-        for (const s of pending) {
-            const name = s.server_name || s.server_type || '';
-            if (!name || seen.has(name)) continue;
-            seen.add(name);
-            counts.set(name, (counts.get(name) || 0) + 1);
+    const hide = () => { el.className = 'd-none small text-muted mt-2'; el.textContent = ''; };
+    if (!Array.isArray(attempts) || attempts.length === 0) return hide();
+
+    // Originating-dispatch entry never carries a retry_reason (it
+    // wasn't a retry — it TRIGGERED the first retry). Walk children only.
+    const children = attempts.filter(a => !a.is_originating);
+    if (children.length === 0) return hide();
+
+    // Aggregate across children. PER-CHILD fallback: when a child has
+    // a persisted retry_reason use it, otherwise fall back to that
+    // child's live pending_servers snapshot. A chain-wide
+    // ``anyPersisted`` short-circuit would silently drop legacy
+    // children's data on a chain that spans the upgrade (older retries
+    // pre-patch with no retry_reason; newer retries post-patch with
+    // retry_reason set) — the legacy children would be invisible to
+    // the banner aggregator.
+    const pendingCounts = new Map();  // server_name -> attempts-blocked count
+    let unresolvedAttempts = 0;
+    let staleAttempts = 0;
+    for (const a of children) {
+        const r = a.retry_reason;
+        if (r && typeof r === 'object') {
+            if ((r.unresolved | 0) > 0) unresolvedAttempts += 1;
+            if ((r.stale_paths | 0) > 0) staleAttempts += 1;
+            const pbs = r.pending_by_server || {};
+            for (const name of Object.keys(pbs)) {
+                if (!name) continue;
+                pendingCounts.set(name, (pendingCounts.get(name) || 0) + 1);
+            }
+        } else {
+            // Legacy / in-flight: no persisted reason — derive blockers
+            // from the live publisher snapshot. Set semantics within
+            // an attempt: a server with 4 pending files counts as 1
+            // "blocked on this attempt", not 4.
+            const pending = Array.isArray(a.pending_servers) ? a.pending_servers : [];
+            const seen = new Set();
+            for (const s of pending) {
+                const name = s.server_name || s.server_type || '';
+                if (!name || seen.has(name)) continue;
+                seen.add(name);
+                pendingCounts.set(name, (pendingCounts.get(name) || 0) + 1);
+            }
         }
     }
-    if (retryCount === 0 || counts.size === 0) {
-        el.className = 'd-none small text-muted mt-2';
-        el.textContent = '';
-        return;
+
+    const phrases = [];
+    if (pendingCounts.size > 0) {
+        // Pick the server(s) tied for most appearances. Single dominant
+        // → "because <name>"; ties → list with " + ".
+        const ranked = [...pendingCounts.entries()].sort((a, b) => b[1] - a[1]);
+        const topCount = ranked[0][1];
+        const blockers = ranked.filter(([, n]) => n === topCount).map(([name]) => name);
+        const namesText = blockers.length === 1
+            ? blockers[0]
+            : blockers.slice(0, -1).join(', ') + ' + ' + blockers[blockers.length - 1];
+        const verb = blockers.length === 1 ? 'was' : 'were';
+        phrases.push(namesText + ' ' + verb + ' still indexing');
     }
-    // Pick the server(s) tied for most appearances. If one clearly
-    // dominates we say "because <name>"; if multiple tie we list them
-    // with " + ". Real-world chains almost always have one dominant
-    // blocker (Jellyfin's indexing latency), so the single-blocker
-    // branch is the common case.
-    const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1]);
-    const topCount = ranked[0][1];
-    const blockers = ranked.filter(([, n]) => n === topCount).map(([name]) => name);
-    const namesText = blockers.length === 1
-        ? blockers[0]
-        : blockers.slice(0, -1).join(', ') + ' + ' + blockers[blockers.length - 1];
-    const verb = blockers.length === 1 ? 'was' : 'were';
+    if (unresolvedAttempts > 0) {
+        phrases.push("path(s) couldn't be resolved by any server");
+    }
+    if (staleAttempts > 0) {
+        phrases.push("file(s) were missing on disk");
+    }
+
+    if (phrases.length === 0) return hide();
+
+    const reasonText = phrases.length === 1
+        ? phrases[0]
+        : phrases.slice(0, -1).join(', ') + ', and ' + phrases[phrases.length - 1];
     el.className = 'small text-muted mt-2';
-    // Plain text — no HTML — so escapeHtml isn't required. Bootstrap
-    // .small + .text-muted matches the existing modal copy tone.
-    el.textContent = 'Retried ' + retryCount + '× because '
-        + namesText + ' ' + verb + ' still indexing';
+    // Plain text — no HTML — escapeHtml not required. Server names
+    // come straight from the API which sources them from settings (no
+    // user-controlled HTML enters this path).
+    el.textContent = 'Retried ' + children.length + '× because ' + reasonText;
 }
 
 async function _refreshAttemptsDropdown(chainId) {

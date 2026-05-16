@@ -672,3 +672,323 @@ class TestOriginatingDispatchFilter:
         ids_opt = {j["id"] for j in resp.get_json()["jobs"]}
         for aid in attempt_ids:
             assert aid in ids_opt, f"Attempt {aid} missing with include_retry_attempts=1"
+
+
+class TestAttemptsRetryReason:
+    """Each retry child carries the structured reason it was spawned for
+    (``config["retry_reason"]``) so the modal can show "Retried N× because
+    JellyTest was still indexing" even after the chain succeeds and the
+    live ``publishers`` snapshot has been refreshed away from any pending
+    statuses (job ``4ad23f43``, 2026-05-15 — chain completed successfully
+    but the modal banner was blank because ``_pending_servers()`` derived
+    its data from the post-success ``publishers`` snapshot).
+
+    Contract surfaced through ``/api/jobs/<chain_id>/attempts``:
+      * Originating-dispatch entry NEVER carries ``retry_reason`` (it
+        wasn't a retry — it triggered the first retry, whose reason
+        lives on the FIRST retry child).
+      * Each retry-child entry surfaces ``retry_reason`` verbatim from
+        ``j.config["retry_reason"]``. ``None`` for legacy children
+        (created before this field was persisted).
+    """
+
+    def test_attempts_endpoint_includes_retry_reason(self, client):
+        from media_preview_generator.web.jobs import get_job_manager
+
+        jm = get_job_manager()
+        chain_id, attempt_ids = _seed_chain_with_attempts(
+            jm,
+            canonical_path="/data/Foo.mkv",
+            basename="Foo",
+            num_attempts=3,
+        )
+        # Stamp three different retry_reason shapes onto the children to
+        # cover the matrix the spawn helper produces:
+        #   1. publisher-pending only (the 4ad23f43 case)
+        #   2. unresolved + stale_paths (Plex-resolution failure)
+        #   3. legacy/missing — child has no retry_reason field
+        first_child = jm.get_job(attempt_ids[0])
+        first_child.config = {
+            **(first_child.config or {}),
+            "retry_reason": {
+                "unresolved": 0,
+                "stale_paths": 0,
+                "pending_by_server": {"Plex": 1, "JellyTest": 1},
+            },
+        }
+        second_child = jm.get_job(attempt_ids[1])
+        second_child.config = {
+            **(second_child.config or {}),
+            "retry_reason": {
+                "unresolved": 2,
+                "stale_paths": 1,
+                "pending_by_server": {},
+            },
+        }
+        # Third child intentionally has no retry_reason — exercises the
+        # legacy-row path so the API is tolerant of older children that
+        # were spawned before this field existed.
+        with jm._lock:  # noqa: SLF001
+            jm._persist_job(first_child)  # noqa: SLF001
+            jm._persist_job(second_child)  # noqa: SLF001
+
+        resp = client.get(f"/api/jobs/{chain_id}/attempts", headers=_headers())
+        assert resp.status_code == 200
+        attempts = resp.get_json()["attempts"]
+
+        # Originating dispatch — no retry_reason. The chain head wasn't
+        # a retry; it's the originator. Surfacing a reason here would be
+        # semantically wrong (the chain head doesn't have a "why I was
+        # retried" because it WASN'T retried).
+        originating = next(a for a in attempts if a["is_originating"])
+        assert originating.get("retry_reason") is None, (
+            f"Originating-dispatch entry must not carry retry_reason; got {originating.get('retry_reason')!r}"
+        )
+
+        by_id = {a["id"]: a for a in attempts}
+
+        # Child 1 — publisher-pending only. Modal renders this as
+        # "Retried Nx because Plex + JellyTest were still indexing".
+        assert by_id[attempt_ids[0]]["retry_reason"] == {
+            "unresolved": 0,
+            "stale_paths": 0,
+            "pending_by_server": {"Plex": 1, "JellyTest": 1},
+        }, f"Child 1 retry_reason must echo config verbatim; got {by_id[attempt_ids[0]]['retry_reason']!r}"
+
+        # Child 2 — Plex resolution failure (unresolved + stale path).
+        # Today's UI only renders publisher-pending; the persisted reason
+        # lets the modal cover this case too.
+        assert by_id[attempt_ids[1]]["retry_reason"] == {
+            "unresolved": 2,
+            "stale_paths": 1,
+            "pending_by_server": {},
+        }
+
+        # Child 3 — legacy (no field on config). API must NOT 500 and
+        # must surface ``None`` so the JS can fall back to the live
+        # publisher snapshot for chains predating this change.
+        assert by_id[attempt_ids[2]]["retry_reason"] is None, (
+            f"Legacy child without retry_reason must surface as None, not raise; "
+            f"got {by_id[attempt_ids[2]]['retry_reason']!r}"
+        )
+
+    def test_reconstructs_retry_reason_from_chain_jsonl_for_legacy_first_attempt(self, client):
+        """Existing chains that ran before ``retry_reason`` was persisted
+        on config (e.g. job ``4ad23f43``, 2026-05-15) MUST still surface
+        a reason in the modal — otherwise the user's reported case stays
+        broken even after the fix ships. The chain head's per-file JSONL
+        preserves the historical pending status (rows are written-once;
+        the in-memory ``publishers`` snapshot's ``best_per_path`` merge
+        only affects display, not the JSONL).
+
+        Scope: reconstruct ONLY for the first retry child
+        (``retry_attempt == 1``). Subsequent attempts would need temporal
+        slicing of the JSONL by ``ts`` against each attempt's
+        ``started_at`` — brittle for the marginal value. Reconstructing
+        the first child alone covers the common chain shape (1-2 retries)
+        and the JS aggregator correctly carries that reason through the
+        banner across all attempts.
+        """
+        from media_preview_generator.web.jobs import get_job_manager
+
+        jm = get_job_manager()
+        chain_id, attempt_ids = _seed_chain_with_attempts(
+            jm,
+            canonical_path="/data/Nemesis.mkv",
+            basename="Nemesis (2026)",
+            num_attempts=1,
+        )
+        # Stamp the first child's webhook_paths so the reconstruction
+        # filter knows which JSONL rows belong to this retry.
+        child = jm.get_job(attempt_ids[0])
+        child.config = {
+            **(child.config or {}),
+            "webhook_paths": [
+                "/data/Nemesis/S01E01.mkv",
+                "/data/Nemesis/S01E07.mkv",
+            ],
+        }
+        with jm._lock:  # noqa: SLF001
+            jm._persist_job(child)  # noqa: SLF001
+
+        # Seed the chain head's JSONL with the pre-retry state — exactly
+        # the shape the orchestrator wrote for job 4ad23f43 (Plex
+        # skipped_not_in_library on S01E07, JellyTest
+        # published_pending_registration on S01E01).
+        # ``record_file_result`` reads FULL publisher keys
+        # (``server_id``/``server_name``/``server_type``) and writes
+        # the SLIM ``{id,name,type,status}`` shape to JSONL. Test data
+        # MUST use the full keys so the translator emits real names —
+        # otherwise reconstruction sees empty names and groups
+        # everything under "?".
+        jm.record_file_result(
+            chain_id,
+            "/data/Nemesis/S01E07.mkv",
+            "generated",
+            "",
+            "[GPU 0]",
+            servers=[
+                {
+                    "server_id": "plex-1",
+                    "server_name": "Plex",
+                    "server_type": "plex",
+                    "status": "skipped_not_in_library",
+                    "message": "indexing delayed",
+                },
+            ],
+        )
+        jm.record_file_result(
+            chain_id,
+            "/data/Nemesis/S01E01.mkv",
+            "generated",
+            "",
+            "[GPU 0]",
+            servers=[
+                {
+                    "server_id": "jelly-1",
+                    "server_name": "JellyTest",
+                    "server_type": "jellyfin",
+                    "status": "published_pending_registration",
+                    "message": "indexing delayed",
+                },
+            ],
+        )
+
+        resp = client.get(f"/api/jobs/{chain_id}/attempts", headers=_headers())
+        assert resp.status_code == 200
+        attempts = resp.get_json()["attempts"]
+        first_child_resp = next(a for a in attempts if a["id"] == attempt_ids[0])
+        reason = first_child_resp["retry_reason"]
+        # Reconstruction MUST produce the exact pending_by_server we
+        # would have persisted on a fresh run — if the count is off the
+        # banner wording silently degrades.
+        assert reason is not None, (
+            f"Reconstruction must populate retry_reason for legacy retry-1 children when JSONL has pending rows; "
+            f"got {first_child_resp!r}"
+        )
+        assert reason["pending_by_server"] == {"Plex": 1, "JellyTest": 1}, (
+            f"Reconstruction must surface BOTH blockers, one per affected file; "
+            f"got pending_by_server={reason['pending_by_server']!r}"
+        )
+
+    def test_mixed_legacy_and_persisted_children_both_surface_in_response(self, client):
+        """A chain that spans the upgrade — older retry children
+        spawned before ``retry_reason`` was persisted, newer retries
+        spawned after — MUST surface BOTH children's reason data so the
+        frontend banner aggregator counts every blocker. A chain-wide
+        ``anyPersisted`` short-circuit on the JS side would silently
+        drop the legacy child's ``pending_servers`` data; this test
+        anchors the API contract that the data IS present so the JS
+        aggregator's per-child fallback path has something to fall
+        back to. (The JS-side per-child fallback is in
+        ``_renderRetryReasonSubtitle`` in ``static/js/job_modal.js``.)
+        """
+        from media_preview_generator.web.jobs import get_job_manager
+
+        jm = get_job_manager()
+        chain_id, attempt_ids = _seed_chain_with_attempts(
+            jm,
+            canonical_path="/data/Foo.mkv",
+            basename="Foo",
+            num_attempts=2,
+        )
+        # Child 1 — LEGACY (no retry_reason; only live publishers data
+        # survives). Stamp publishers so /attempts derives a non-empty
+        # pending_servers list for it.
+        legacy_child = jm.get_job(attempt_ids[0])
+        legacy_child.publishers = [
+            {
+                "server_id": "emby-1",
+                "server_name": "EmbyTest",
+                "server_type": "emby",
+                "counts": {"published_pending_registration": 1},
+            },
+        ]
+        # Child 2 — POST-PATCH (carries retry_reason).
+        new_child = jm.get_job(attempt_ids[1])
+        new_child.config = {
+            **(new_child.config or {}),
+            "retry_reason": {
+                "unresolved": 0,
+                "stale_paths": 0,
+                "pending_by_server": {"JellyTest": 1},
+            },
+        }
+        with jm._lock:  # noqa: SLF001
+            jm._persist_job(legacy_child)  # noqa: SLF001
+            jm._persist_job(new_child)  # noqa: SLF001
+
+        resp = client.get(f"/api/jobs/{chain_id}/attempts", headers=_headers())
+        assert resp.status_code == 200
+        attempts = {a["id"]: a for a in resp.get_json()["attempts"]}
+
+        # Legacy child: retry_reason is None (no persisted, no
+        # reconstruction because no JSONL pending rows for retry-1
+        # files), pending_servers IS populated.
+        legacy_resp = attempts[attempt_ids[0]]
+        assert legacy_resp.get("retry_reason") is None
+        assert legacy_resp["pending_servers"], (
+            f"Legacy child must surface its publisher pending state via pending_servers so the "
+            f"JS per-child fallback has something to consume; got {legacy_resp!r}"
+        )
+
+        # New child: retry_reason populated.
+        new_resp = attempts[attempt_ids[1]]
+        assert new_resp["retry_reason"] == {
+            "unresolved": 0,
+            "stale_paths": 0,
+            "pending_by_server": {"JellyTest": 1},
+        }
+
+    def test_reconstruction_skipped_for_retry_attempt_above_one(self, client):
+        """Reconstruction is intentionally limited to ``retry_attempt==1``
+        because attributing JSONL rows to a specific attempt (retry #2 vs
+        #3) requires temporal slicing of ``ts`` against each child's
+        ``started_at`` — brittle. For deeper retries the modal falls back
+        to whatever the JS aggregator can derive from sibling children's
+        reasons, which is acceptable: the FIRST retry's reason captures
+        the dominant signal for almost every chain.
+        """
+        from media_preview_generator.web.jobs import get_job_manager
+
+        jm = get_job_manager()
+        chain_id, attempt_ids = _seed_chain_with_attempts(
+            jm,
+            canonical_path="/data/Foo.mkv",
+            basename="Foo",
+            num_attempts=2,
+        )
+        # Stamp retry_attempt=2 on second child + webhook_paths.
+        child2 = jm.get_job(attempt_ids[1])
+        child2.config = {
+            **(child2.config or {}),
+            "retry_attempt": 2,
+            "webhook_paths": ["/data/Foo.mkv"],
+        }
+        with jm._lock:  # noqa: SLF001
+            jm._persist_job(child2)  # noqa: SLF001
+        # Seed JSONL — would normally produce a reconstruction.
+        jm.record_file_result(
+            chain_id,
+            "/data/Foo.mkv",
+            "generated",
+            "",
+            "[GPU 0]",
+            servers=[
+                {
+                    "server_id": "jelly-1",
+                    "server_name": "JellyTest",
+                    "server_type": "jellyfin",
+                    "status": "published_pending_registration",
+                    "message": "indexing",
+                },
+            ],
+        )
+
+        resp = client.get(f"/api/jobs/{chain_id}/attempts", headers=_headers())
+        attempts = resp.get_json()["attempts"]
+        child2_resp = next(a for a in attempts if a["id"] == attempt_ids[1])
+        # No reconstruction for retry_attempt > 1.
+        assert child2_resp["retry_reason"] is None, (
+            f"Reconstruction must SKIP retry_attempt>1; got {child2_resp['retry_reason']!r}"
+        )

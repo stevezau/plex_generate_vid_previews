@@ -1047,8 +1047,20 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                         if pp not in retry_paths:
                             retry_paths.append(pp)
 
-                    def _spawn_retry_job(paths, attempt):
-                        """Create and start a retry job for unresolved webhook paths."""
+                    def _spawn_retry_job(paths, attempt, retry_reason=None):
+                        """Create and start a retry job for unresolved webhook paths.
+
+                        ``retry_reason`` is the structured ``{unresolved,
+                        stale_paths, pending_by_server}`` dict captured at
+                        spawn time and persisted on the child's config so
+                        the modal's "Retried Nx because…" banner survives
+                        chain success — the live ``publishers`` snapshot
+                        gets refreshed by ``merge_chain_publishers_best_per_path``
+                        once the chain succeeds (job ``4ad23f43``,
+                        2026-05-15: chain completed but the modal banner
+                        was blank because every snapshot showed
+                        ``published``/``skipped_output_exists``).
+                        """
                         import os as _os
                         from datetime import datetime, timedelta, timezone
 
@@ -1121,18 +1133,21 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                         # worker to Plex (already done) and never re-attempted
                         # Jellyfin's registration.
                         parent_explicit_pin = (current_job.config or {}).get("server_id") if current_job else None
+                        retry_child_config = {
+                            "is_retry": True,
+                            "parent_job_id": parent_id,
+                            "retry_attempt": attempt,
+                            "max_retries": effective_max,
+                            "retry_delay": backoff_delay,
+                            "scheduled_at": scheduled_at,
+                            "path_count": len(paths),
+                            "webhook_basenames": basenames[:20],
+                        }
+                        if retry_reason is not None:
+                            retry_child_config["retry_reason"] = retry_reason
                         rj = job_manager.create_job(
                             library_name=retry_library_name,
-                            config={
-                                "is_retry": True,
-                                "parent_job_id": parent_id,
-                                "retry_attempt": attempt,
-                                "max_retries": effective_max,
-                                "retry_delay": backoff_delay,
-                                "scheduled_at": scheduled_at,
-                                "path_count": len(paths),
-                                "webhook_basenames": basenames[:20],
-                            },
+                            config=retry_child_config,
                             priority=parent_priority,
                             server_id=parent_server_id,
                             server_name=parent_server_name,
@@ -1244,9 +1259,24 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
 
                     spawned_retry_id = None
                     if retry_paths and not (result.get("cancelled") or status_value == "cancelled"):
+                        # Single source of truth for the retry trigger
+                        # data. Both the WARNING log line below AND the
+                        # spawned child's persisted ``config["retry_reason"]``
+                        # are derived from this dict — guarantees the two
+                        # views can't drift, and lets the modal render
+                        # "Retried Nx because…" off persisted data after
+                        # the chain succeeds (when the live publishers
+                        # snapshot has been refreshed away from
+                        # ``published_pending_registration``).
+                        retry_reason = {
+                            "unresolved": len(unresolved_paths),
+                            "stale_paths": len(not_found_on_disk),
+                            "pending_by_server": dict(pending_by_server),
+                        }
+
                         if is_retry and retry_attempt < effective_max:
                             next_attempt = retry_attempt + 1
-                            spawned_retry_id = _spawn_retry_job(retry_paths, next_attempt)
+                            spawned_retry_id = _spawn_retry_job(retry_paths, next_attempt, retry_reason=retry_reason)
                             from media_preview_generator.processing.retry_queue import BACKOFF_SCHEDULE
 
                             scale = max(0.5, retry_delay_sec / 30.0)
@@ -1273,7 +1303,7 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
                                 f"WARNING - Retry {retry_attempt}/{effective_max}: {reason}, next retry in {next_delay}s",
                             )
                         elif not is_retry and effective_max > 0:
-                            spawned_retry_id = _spawn_retry_job(retry_paths, 1)
+                            spawned_retry_id = _spawn_retry_job(retry_paths, 1, retry_reason=retry_reason)
                             reason_parts = []
                             if unresolved_paths:
                                 reason_parts.append(f"{len(unresolved_paths)} not found on any server")
