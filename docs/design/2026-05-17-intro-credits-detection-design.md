@@ -10,15 +10,29 @@
 
 ## 0. TL;DR
 
-We add intro/credits ("marker") detection as a first-class processing stage alongside BIF generation. Detection runs through a **four-tier cascade** (TheIntroDB cloud lookup → chromaprint cross-episode for TV → adaptive binary-search blackdetect for movies → optional PaddleOCR), emits a **canonical `.markers.json` sidecar** next to the media file, and fans out to three **per-server marker publishers**:
+We add intro/credits ("marker") detection as a first-class processing stage alongside BIF generation. Detection runs through a **five-tier cascade**:
+
+- **Tier 0:** Embedded chapter-name parsing — extends the existing `pymediainfo` parse with Menu-track handling + regex (Jellyfin's defaults). FREE (no new subprocess), frame-accurate. Live-verified hit rate on user's library: **20% TV / 16% movies**.
+- **Tier 1:** TheIntroDB v2 cloud lookup (TMDb/IMDb-keyed, community-curated, ~57% TV / ~35% movies hit rate; v1 sunsets 2026-08-16). With Tier 1b (IntroDB.app fallback) and Tier 1c (anime-skip.com for anime libraries).
+- **Tier 2:** Chromaprint cross-episode fingerprinting for TV (reimplemented from intro-skipper spec, numpy-accelerated).
+- **Tier 3:** Adaptive binary-search `blackdetect` for movies and chromaprint-missed TV (the structural fix for PR #191).
+- **Tier 4:** PaddleOCR PP-OCRv5 for movies that fade-to-color (optional, GPU, separate `:with-ocr` Docker tag).
+
+The output is a **canonical `.markers.json` sidecar** next to the media file, fanned out to three **per-server marker publishers**:
 
 - **Plex** — read existing markers via plexapi; trigger native detection (`episode.analyze()`) for Plex Pass users; for non-Pass users, write directly to the `taggings` SQLite table with provenance/restore (off by default, big warnings).
 - **Emby** — read via `GET /Items/{Id}?Fields=Chapters`; trigger native scheduled task; write via the existing community `sydlexius/Segment_Reporting` plugin's `POST /emby/segment_reporting/update_segment` endpoint (we require this plugin be installed; surfaced as a Setup Health check).
 - **Jellyfin** — read via `GET /MediaSegments/{itemId}`; write by **extending our existing `Jellyfin.Plugin.MediaPreviewBridge` plugin** (already shipped for trickplay registration, distributed via `stevezau.github.io/media_preview_generator/jellyfin-plugin/manifest.json`). Add a new `MarkerBridgeController` (`POST /MediaPreviewBridge/Markers/{itemId}`) plus an `IMediaSegmentProvider` implementation so Jellyfin's scheduled scan also picks up our sidecars. No new plugin install for users — version bump only.
 
-A new **Marker Inspector** UI page (sibling of the BIF Inspector) lets users search, visualize the timeline against an audio waveform, compare our detected markers vs. the server's existing ones, manually nudge boundaries, and one-click apply.
+A new **Markers Inspector** page (standalone at `/markers` in Phase A; merges with BIF Inspector into a unified `/inspector?tab=…` in Phase D) lets users search, visualize the timeline against an audio waveform, compare our detected markers vs. the server's existing ones, manually nudge boundaries, and one-click apply.
 
-Phased rollout in four PRs (A → D) so we can land scaffolding + TheIntroDB lookups first, ship detection algorithms next, then publishers + Jellyfin plugin, finally the Inspector.
+Phased rollout in four PRs (A → D):
+- **A** — Scaffolding + Tier 0 chapters + TheIntroDB read-only Inspector (~1 week, useful on its own)
+- **B** — Tier 2 chromaprint + Tier 3 blackdetect detection algorithms + sidecar writes (~2 weeks)
+- **C** — Per-server marker publishers + `MediaPreviewBridge` plugin extension (~2 weeks)
+- **D** — Polish, Tier 4 OCR, bulk Inspector, TheIntroDB submit-back, webhook integration (~1.5 weeks)
+
+Total: ~6–7 weeks. Each phase ships something useful on its own.
 
 ---
 
@@ -103,7 +117,7 @@ This is the single most important table in the spec. It dictates everything abou
 ┌────────────┐  ┌────────────┐  ┌─────────┐  ┌──────────┐  ┌─────────┐  ┌──────────────┐
 │  Scan /    │  │ Generate   │  │ Publish │  │ Detect   │  │ Persist │  │  Publish     │
 │  Webhook   │→ │ frames     │→ │ BIFs    │→ │ markers  │→ │ sidecar │→ │  markers     │
-│  → items   │  │ + BIF      │  │ (BIF    │  │ (4-tier) │  │ (.json) │  │  (per-server)│
+│  → items   │  │ + BIF      │  │ (BIF    │  │ (5-tier) │  │ (.json) │  │  (per-server)│
 └────────────┘  └────────────┘  │ adapter)│  └──────────┘  └─────────┘  └──────────────┘
                                 └─────────┘
 ```
@@ -223,7 +237,52 @@ class MarkerPublisher(ABC):
 
 ---
 
-## 5. Detection algorithms (the four-tier cascade)
+## 5. Detection algorithms (the five-tier cascade)
+
+The order is **cheapest first, then by precision, then by cost**. Each tier short-circuits the cascade only when it returns high-confidence markers; otherwise we accumulate evidence across tiers and apply the multi-tier-agreement gate at the end.
+
+### Tier 0 — Embedded chapter-name parsing (FREE, frame-accurate)
+
+**Why this is Tier 0:** The studio that authored the file *already told us* where the intro and credits are, via named chapters in the MKV/MP4 container. We just have to read them. Frame-accurate boundaries when the studio labeled them.
+
+**Empirical hit rate on the user's real library** (160-file probe of `/data` on 2026-05-17):
+- TV episodes: **20% have an explicit credit-marker chapter**, concentrated in Netflix/Amazon WEBDLs (80% of TV-WEBDLs *with chapters* have credit markers)
+- Movies: **16%** with explicit credit-marker chapters
+- Blu-ray rips rarely have semantically-labelled chapters (generic `Chapter 01`); Netflix WEBDLs almost always have at least an "End Credits" boundary
+
+**Cost: piggyback on the existing `pymediainfo` parse** — the codebase already calls `MediaInfo.parse(video_file)` in `processing/generator.py:291` for codec/HDR detection. Chapter names are exposed on the `Menu` track of the parsed result; we just extend the existing parse-result handling. **No new subprocess, no new dependency.** Live-verified on a known chapter-bearing AMZN WEBDL.
+
+**Algorithm:**
+1. From the existing `MediaInfo.parse()` result, find the `Menu` track (`track.track_type == "Menu"`).
+2. Iterate the menu attributes whose keys match `^[0-9]{2}_[0-9]{2}_[0-9]{5}$` — the **timestamp format is `HH_MM_SSmmm`** (5-digit padded milliseconds). Example: `00_25_49000` → 0h25m49.000s = 1549s.
+3. Values are language-prefixed strings — `'en:Opening Credits'`, `'en:End Credits'`. Strip the `XX:` language prefix (any 2-letter ISO 639-1 code) before regex matching.
+4. Apply Jellyfin's published regex defaults (`jellyfin/jellyfin-plugin-chapter-segments`, `PluginConfiguration.cs`) for cross-platform parity:
+   - **Intro:** `(?i)\b(intro|opening)\b|^OP$`
+   - **Credits (outro):** `(?i)\b(outro|closing|credits|ending)\b|^ED$`
+   - **Recap:** `(?i)\b(recap|last time on|last on|previously on)\b`
+   - **Preview:** `(?i)\b(preview|next time on|next on|sneak peek)\b`
+   - **Commercial:** `(?i)\b(break|ad|advertisement|intermission|advert|commercial)\b`
+5. Negative match `^[Cc]hapter\s*0?\d+$` to ignore generic numbered chapters.
+6. Defensive parsing for mojibake-encoded chapter titles (seen in the probe: `绗?16 绔?` and `01:55:26.544` as chapter "names") — wrap regex match in try/except, skip and log on parse failure; never block the pipeline on a single bad chapter title.
+7. Confidence = 0.95 (high — the studio said so).
+8. End-of-segment computation: for chapters that match the *start* of a region (e.g. "Opening Credits"), use the next chapter's timestamp as the end. For trailing "End Credits", use the file duration.
+
+**Killer example** (live pymediainfo output on user's `Sex and the City S02E09`):
+```
+Menu track, ~17 entries:
+  00_00_00000: 'en:Studio Logo'
+  00_00_16000: 'en:Opening Credits'      →  intro_start_ms = 16000
+  00_00_58000: 'en:Men continue to check out other women'   →  intro_end_ms = 58000
+  ...
+  00_24_22000: 'en:Steve calls Miranda'
+  00_25_49000: 'en:End Credits'          →  credits_start_ms = 1549000
+                                         →  credits_end_ms = file_duration_ms
+```
+Both boundaries free, frame-accurate, no extra compute, no network. Phase A budget: ~½ day to write + test the Menu-track parser.
+
+**Sonarr/Radarr routing hint:** when the publisher's manifest tells us a file is from `releaseGroup=NTb` or `quality.source=WEBDL`, run Tier 0 *first*. When the release group is `Hares`/`YAWNiX`/`-d3g` (typical Bluray P2P groups), skip Tier 0 entirely on the next-file shortcut — those releases almost never have useful chapter names. This is a per-show cache (one Sonarr call per series, not per episode).
+
+**Why not write our own chapter-name database:** Jellyfin already maintains the canonical regex list and updates it as new conventions emerge. We mirror their config and inherit their updates.
 
 ### Tier 1 — TheIntroDB lookup (live-verified 2026-05-17)
 
@@ -736,31 +795,49 @@ Per-server, under `output.markers`:
     "detect_intros": true,
     "detect_credits": true,
     "use_native_when_available": true,
-    "use_theintrodb": true,
-    "theintrodb_submit_key": null,
-    "credits_algorithm": "auto",
-    "ocr_fallback": false,
+    "tier0_chapter_parsing": true,
+    "tier1_theintrodb": true,
+    "tier1b_introdb_fallback": false,
+    "tier1c_anime_skip": true,
+    "tier2_chromaprint": true,
+    "tier3_blackdetect": true,
+    "tier4_ocr": false,
+    "theintrodb_api_key": null,
+    "theintrodb_submit_back": false,
     "min_confidence_to_write": 0.7,
     "season_min_episodes": 2,
     "intro_window_sec": 600,
     "credits_window_sec": 600,
     "plex_direct_db_write": false,
-    "plex_direct_db_write_confirmed_at": null
+    "plex_direct_db_write_confirmed_at": null,
+    "use_release_group_hints": true
   }
 }
 ```
 
-Global settings under `settings.markers`:
+**Global settings — top-level `markers` key in `settings.json`**, sibling of `gpu_config`, `media_servers`, etc. (settings.json has a flat root; no `settings.` namespace exists):
 
 ```json
 {
+  "media_servers": [ ... ],
+  "gpu_config": [ ... ],
   "markers": {
-    "theintrodb_base_url": "https://api.theintrodb.org",
+    "theintrodb_base_url": "https://api.theintrodb.org/v2",
+    "introdb_base_url": "https://api.introdb.app",
+    "anime_skip_base_url": "https://api.aniskip.com/v2",
     "cache_dir": "/config/data/markers_cache",
-    "max_concurrent_detections": 2
+    "max_concurrent_detections": 2,
+    "chapter_regex": {
+      "intro": "(?i)\\b(intro|opening)\\b|^OP$",
+      "credits": "(?i)\\b(outro|closing|credits|ending)\\b|^ED$",
+      "recap": "(?i)\\b(recap|last time on|last on|previously on)\\b",
+      "preview": "(?i)\\b(preview|next time on|next on|sneak peek)\\b"
+    }
   }
 }
 ```
+
+The `chapter_regex` is user-overridable; defaults mirror `jellyfin/jellyfin-plugin-chapter-segments/PluginConfiguration.cs` for cross-platform parity.
 
 ### Migration
 
@@ -803,16 +880,20 @@ Total fixture size target: <50MB.
 
 Implementation lands in four PRs against `feat/markers-detection`:
 
-### Phase A — Scaffolding + TheIntroDB (PR #1)
+### Phase A — Scaffolding + Tier 0 chapters + TheIntroDB (PR #1)
 
 - `markers/` package skeleton: `types.py`, `detector.py`, `publisher.py`, `sidecar.py`
-- TheIntroDB client + cache
-- Read paths only — for each server type, implement `read_markers()`. No writes yet.
+- **Tier 0 chapter-name parser** — `ChapterDetector` using `ffprobe -show_chapters` + Jellyfin's regex defaults. Writes `.markers.json` sidecars on hits. Highest leverage per line of code; covers 20% TV / 16% movies on the user's library.
+- **Tier 1 TheIntroDB v2 client** — lookups + per-user cache (positive forever, 404 14 days). Per-server `markers.theintrodb_api_key` setting (optional).
+- **Tier 1c anime-skip.com client** — gated to anime libraries via TVDB/TMDB genre + `kind=anime` library marker.
+- Read paths only on the publisher side — for each server type, implement `read_markers()`. **No writes yet** in Phase A.
 - Settings schema additions, migration in `upgrade.py`
-- `MARKERS_*` `ProcessingResult` outcomes wired
-- A minimal Inspector page that just shows server-reported markers + TheIntroDB lookups (no detection of our own yet)
+- `MARKERS_*` `ProcessingResult` outcomes wired (`MARKERS_DETECTED`, `MARKERS_DETECTED_EMPTY`, `MARKERS_SKIPPED_DISABLED`)
+- Inspector page showing: server-reported markers (read from Plex/Emby/Jellyfin), Tier 0 chapter-derived markers, TheIntroDB hits. No detection-of-our-own yet, no apply-to-server yet.
 
-**Estimated:** 1 week. Useful on its own — gives users a marker viewer for all 3 servers with TheIntroDB enrichment.
+  **Inspector scope decision for Phase A:** Ship the Markers Inspector as a **standalone page at `/markers`** (sibling route to the existing `/bif-viewer`), NOT yet inside a unified `/inspector?tab=...` shell. The current `bif_viewer` route is a single-purpose page (`web/routes/pages.py:104`, `templates/bif_viewer.html`); migrating it into a tabbed shell is a separate ~2-day project that we defer to **Phase D**. In Phase D both pages move under `/inspector` with tabs (`?tab=frames` redirects from `/bif-viewer`, `?tab=markers` from `/markers`). Phase A users see two separate inspector pages temporarily.
+
+**Estimated:** 1 week. Useful on its own — gives users a multi-server marker viewer + frame-accurate chapter-based detection + community-DB enrichment, all read-only.
 
 ### Phase B — Detection algorithms (PR #2)
 
@@ -835,16 +916,18 @@ Implementation lands in four PRs against `feat/markers-detection`:
 
 **Estimated:** 2 weeks (plus iteration time on the C# plugin).
 
-### Phase D — Polish + optional OCR (PR #4)
+### Phase D — Polish + Inspector unification + optional OCR (PR #4)
 
-- PaddleOCR Tier 4 (gated behind setting, optional Dockerfile extra)
-- Bulk Inspector view (`/inspector/markers/library`)
-- TheIntroDB submit-back flow
-- Manual edit modal
-- Webhook integration (Sonarr/Radarr → run detection alongside BIF)
-- Documentation: setup guides for each server, troubleshooting
+- **Unified Inspector at `/inspector`** — port the standalone `/bif-viewer` (Frames) and `/markers` (Markers) pages into a single tabbed shell. Add 301 redirects from the old routes. Shared search/server-picker shell. ~2 days.
+- PaddleOCR Tier 4 (gated behind setting, requires `:with-ocr` Docker tag)
+- Bulk Inspector view (`/inspector?tab=markers&view=library`)
+- TheIntroDB submit-back flow (per-user API key, opt-in toggle)
+- Manual edit modal (drag handles + numeric input)
+- Webhook integration polish (Sonarr/Radarr → run detection alongside BIF on new items)
+- Documentation: setup guides for each server, troubleshooting, FAQ
+- ChapterDB.org opportunistic lookup (Tier 3b — movies only, requires user API key, off by default)
 
-**Estimated:** 1.5 weeks.
+**Estimated:** 1.5–2 weeks.
 
 **Total estimate:** ~6–7 weeks of focused work.
 
@@ -854,11 +937,24 @@ Implementation lands in four PRs against `feat/markers-detection`:
 
 ### Risks
 
-1. **TheIntroDB coverage is small.** Plex's cloud has years of head start. We may submit-back to grow it, but for v1 most files will fall through to local detection. Mitigation: design Tier 2/3 to stand on their own.
-2. **Plex SQLite writes wiped by re-analysis.** Our provenance-restore loop helps but isn't perfect. For users without Plex Pass, this is the only path; for users with Plex Pass, native is strictly better. Mitigation: surface this clearly in Setup Health.
-3. **C# plugin maintenance burden.** A net-new artifact in a Python repo, requiring `dotnet` toolchain in CI. Mitigation: keep the plugin scope minimal (read sidecar → emit DTO, nothing else). It should rarely need changes.
-4. **Chromaprint false matches on shows with shared theme music** (e.g., MCU shows). The `Duration - CreditsFingerprintStart - 1` anti-duplicate check handles same-file re-encodes but not different files with the same outro theme. Mitigation: confidence floor + require pairwise consensus before publishing.
-5. **GPU OCR Docker bloat.** PaddleOCR adds ~2GB. Mitigation (committed): ship via a separate `:with-ocr` Docker tag. Default image stays lean; OCR users opt in by image tag. The `markers.ocr_fallback` setting is runtime-detected so it only appears in the UI when `paddleocr` is importable.
+1. **TheIntroDB sustainability — MED-risk single-maintainer.** `Pasithea0` is the sole org member on GitHub; no funding, no Patreon, no co-maintainer. Community side is healthy (295 contributors, 323,404 submissions, weekly releases) but operationally the API is one person's project. Mitigation:
+   - Cache positive hits *forever* (accepted timestamps are immutable).
+   - Cache 404s for 14 days only (DB grows).
+   - Tier 0 + Tier 2 + Tier 3 stand on their own — if TheIntroDB disappears tomorrow, our cascade still works for free (chapters) + TV (chromaprint) + most movies (blackdetect).
+   - Self-hosted caching proxy as an escape hatch for scale.
+2. **TheIntroDB coverage is partial.** Live-verified hit rates: ~57% popular TV S1E1, ~35% popular movies — long tail much sparser. Tier 0 + Tier 2/3 are the primary coverage; TheIntroDB is opportunistic enrichment. **Movies hit Tier 0 (16%) + Tier 1 (35%) + Tier 3 (blackdetect, near 100% on titles with sustained-black credits) — combined coverage near 95% on mainstream movies.**
+3. **Plex SQLite writes wiped by re-analysis.** Our provenance-restore loop (Phase C) handles this but isn't perfect. For users with Plex Pass, native is strictly better and we prefer the trigger-native path. For non-Pass users this is the only path. Mitigation:
+   - Write to BOTH `taggings` AND `media_parts.extra_data` (the MarkerEditor pattern, not Casvt's incomplete pattern) so markers survive Plex's analyzer pass-through.
+   - Side-car provenance DB with periodic restore loop.
+   - Surface "this Plex install lacks Plex Pass, marker writes may be wiped on re-analyze" as a `HealthCheckIssue` in Setup Health.
+4. **C# plugin maintenance burden.** We already ship `MediaPreviewBridge` for trickplay so the build toolchain (`dotnet 9.0`) is already in CI. Phase C extends it with `MarkerBridgeController` + `MarkerSegmentProvider` — net add ~250 lines C#. Mitigation: scope tightly (read sidecar → emit DTO + REST replace endpoint, nothing else). The plugin should rarely need changes.
+5. **Chromaprint false matches on shows with shared theme music** (e.g., MCU shows, Marvel TV catalog). The `Duration - CreditsFingerprintStart - 1` anti-duplicate check handles same-file re-encodes but not different files with the same outro theme. Mitigation:
+   - Confidence floor + ≥2 pairwise-agreement requirement before publishing.
+   - Tier 0 wins when present — its 0.95 confidence beats Tier 2's 0.80 on agreement, so chapter-labeled shows are safe.
+6. **GPU OCR Docker bloat.** PaddleOCR adds ~2GB. Mitigation (committed): ship via a separate `:with-ocr` Docker tag. Default image stays lean; OCR users opt in by image tag. The `markers.ocr_fallback` setting is runtime-detected so it only appears in the UI when `paddleocr` is importable.
+7. **`media_parts.extra_data` JSON shape differs between PMS versions.** PMS ≥1.40 uses structured `{"pv:version":"5","url":...}`; older PMS uses URL-encoded-only form. Mitigation: detect PMS version on connection and emit the matching shape. Plex itself tolerates both forms on read, so a wrong choice at write time degrades cleanly (the marker exists but lacks the `final` flag).
+8. **No file-hash-based marker lookup exists in 2026.** Director's cuts and theatrical-vs-extended editions all share the same TMDb ID, so TheIntroDB and IntroDB return the same timestamps for both — wrong for at least one of the two. Mitigation: detect duration mismatch (returned `credits.start_ms > file_duration_ms`) and reject; flag in Inspector as "marker length mismatch — possible alternative edition."
+9. **Chapter-name regex false positives** on a tiny number of files with mojibake / shell-encoded chapter names. Mitigation: defensive `try/except` around regex match; log + skip on parse failure; never block the pipeline on a single bad chapter title.
 
 ### Resolved decisions (2026-05-17 review)
 
