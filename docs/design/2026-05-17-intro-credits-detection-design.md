@@ -693,7 +693,7 @@ Implementation lands in four PRs against `feat/markers-detection`:
 2. **Plex SQLite writes wiped by re-analysis.** Our provenance-restore loop helps but isn't perfect. For users without Plex Pass, this is the only path; for users with Plex Pass, native is strictly better. Mitigation: surface this clearly in Setup Health.
 3. **C# plugin maintenance burden.** A net-new artifact in a Python repo, requiring `dotnet` toolchain in CI. Mitigation: keep the plugin scope minimal (read sidecar → emit DTO, nothing else). It should rarely need changes.
 4. **Chromaprint false matches on shows with shared theme music** (e.g., MCU shows). The `Duration - CreditsFingerprintStart - 1` anti-duplicate check handles same-file re-encodes but not different files with the same outro theme. Mitigation: confidence floor + require pairwise consensus before publishing.
-5. **GPU OCR Docker bloat.** PaddleOCR adds ~2GB to image size if bundled. Mitigation: Tier 4 is opt-in; we ship two Dockerfiles or a separate `:ocr` tag.
+5. **GPU OCR Docker bloat.** PaddleOCR adds ~2GB. Mitigation (committed): ship via a separate `:with-ocr` Docker tag. Default image stays lean; OCR users opt in by image tag. The `markers.ocr_fallback` setting is runtime-detected so it only appears in the UI when `paddleocr` is importable.
 
 ### Resolved decisions (2026-05-17 review)
 
@@ -702,12 +702,14 @@ Implementation lands in four PRs against `feat/markers-detection`:
 3. **OCR Tier 4** — see below, still open.
 4. **Inspector unified with tabs** — `/bif-viewer` redirects to `/inspector?tab=frames`; markers live at `/inspector?tab=markers`. Shared search/server-picker shell. See §8.
 
-### Still open
+3. **OCR Tier 4: ship via a separate `:with-ocr` Docker tag.** Decision rationale: Plex's native credits detection explicitly combines OCR-style scrolling-text recognition with black-frame detection (per Plex's 2023 blog). EmbyCredits — the de-facto Emby credits plugin — uses Tesseract OCR with keyword matching. Of the three servers, only Jellyfin's intro-skipper omits OCR, and movies are its acknowledged coverage gap. Adopting OCR brings non-Plex-Pass users to feature parity with Plex's gold standard. The `:with-ocr` tag pattern keeps the default image lean (~2GB smaller) for users who don't need OCR, while letting power users opt in via image tag.
 
-3. **OCR Tier 4 — should it ship?** Three concrete options to choose between:
-   - **(a) Drop Tier 4 entirely.** Skip the OCR fallback. Movies that Tier 1 (TheIntroDB) and Tier 3 (blackdetect binary search) both miss simply don't get a credits marker — user can manually nudge in the Inspector. Simplest. Smallest image. Worst movie coverage.
-   - **(b) Bundle PaddleOCR in the main Docker image (+~2GB).** Every user's image is ~2GB larger, even users who never enable OCR. Best UX (one image, just toggle a setting). Worst for users on small VPS / Raspberry Pi.
-   - **(c) Ship a separate `:with-ocr` Docker tag.** Users who want OCR pull `plex-previews:with-ocr` instead of `plex-previews:latest`. Default image stays small; opt-in image is bigger. Most flexibility. Slightly more CI work.
+   **Implementation notes for the tag:**
+   - Main `Dockerfile` stays as-is.
+   - New `Dockerfile.with-ocr` extends main image, adds `paddlepaddle-gpu`, `paddleocr`, and PP-OCRv5 model weights.
+   - CI builds both tags on release; main is `plex-previews:latest`, OCR variant is `plex-previews:with-ocr`.
+   - Settings flag `markers.ocr_fallback` is **detected at runtime**: if the Python `paddleocr` import succeeds, the flag is offered in the UI; otherwise the setting is greyed out with "available in `:with-ocr` image" tooltip.
+   - Users can switch from `:latest` to `:with-ocr` by changing one line in their `docker-compose.yml` — settings persist via the volume mount.
 
 ---
 
