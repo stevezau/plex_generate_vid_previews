@@ -227,7 +227,9 @@ class MarkerPublisher(ABC):
 
 ### Tier 1 — TheIntroDB lookup (live-verified 2026-05-17)
 
-**Endpoint:** `GET https://api.theintrodb.org/v1/media?tmdb_id={id}[&season={s}&episode={e}]` (also accepts `imdb_id=tt0000000`). OpenAPI 2.0.0 spec mirrored to `docs/design/theintrodb-openapi-v2.yaml`.
+**Endpoint:** `GET https://api.theintrodb.org/v2/media?tmdb_id={id}[&season={s}&episode={e}]` (also accepts `imdb_id=tt0000000`). OpenAPI 2.0.0 spec mirrored to `docs/design/theintrodb-openapi-v2.yaml`.
+
+⚠️ **v1 sunsets 2026-08-16** — every `/v1/*` response carries `sunset: Sun, 16 August 2026 00:00:00 GMT`. We build directly on v2 from day one. The schema is identical; only the path differs.
 
 **Verified response shape** (Breaking Bad S1E1, live):
 ```json
@@ -267,7 +269,45 @@ class MarkerPublisher(ABC):
 
 **Submit-back:** Default OFF. When enabled and detector confidence ≥0.85 AND two tiers agreed on boundary within 2 seconds, POST `/v1/submit` with the user's own API key. Their submissions get 10× weight in TheIntroDB's averaging, so a regular user's contributions visibly improve their own coverage.
 
-**Failure mode:** API 5xx / rate-limit 429 → fall through to Tier 2/3. Never block the pipeline on TheIntroDB. Circuit-breaker pattern: after 5 consecutive failures within 60s, skip TheIntroDB for the next 5 minutes.
+**Failure mode:** API 5xx / rate-limit 429 → fall through to Tier 1b/2/3. Never block the pipeline on TheIntroDB. Circuit-breaker pattern: after 5 consecutive failures within 60s, skip TheIntroDB for the next 5 minutes.
+
+**Sustainability + operational risk:** `Pasithea0` is the sole public org member of TheIntroDB on GitHub — no funding, no Patreon, no co-maintainer. The community side is healthy (295 contributors, 323,404 submissions, 1.79 accepted timestamps per media on average, 3.97 submissions per acceptance — real consensus voting). Release cadence is healthy too (three plugin releases in the last 10 weeks). But single-maintainer fragility means we **MUST cache aggressively**: positive hits cached *forever* (immutable once accepted); 404s cached 14 days. We also keep our pipeline graceful — if TheIntroDB disappears tomorrow, Tier 2/3 still works.
+
+**Optional: self-hosted caching proxy.** No bulk-export endpoint exists; mirror by enumeration would require ~91 days under rate limits. If our user base grows large, we email `hello@theintrodb.org` to request either a bulk dump or higher rate-limit tier. For Phase A we ship just the per-user cache.
+
+### Tier 1b — IntroDB (introdb.app) fallback
+
+**Endpoint:** `GET https://api.introdb.app/segments?imdb_id={tt...}&season={s}&episode={e}` (TV only, no movies, IMDb ID only).
+
+**Why a second source:** Separate project from TheIntroDB; ~73% hit rate on popular TV S1E1 (higher than TheIntroDB's 57%) — but most entries have `submission_count: 1` (single contributor, no consensus). Useful as a fallback for shows TheIntroDB misses, gated by a stricter confidence floor.
+
+**Response shape** (verified live):
+```json
+{"imdb_id":"tt0944947","season":1,"episode":1,
+ "intro":  {"start_sec":437, "end_sec":531, "start_ms":437000, "end_ms":531000,
+            "confidence":1, "submission_count":1,
+            "updated_at":"2026-04-08T18:48:07.297Z"},
+ "outro":  {"start_sec":3631.5, "end_sec":3699.5, "submission_count":2, ...},
+ "recap":  null}
+```
+
+**Rules:**
+- Only consulted when TheIntroDB returns 404 (or we explicitly opt in for higher coverage).
+- Reject single-`submission_count` entries by default — too noisy for auto-write. Surface in Inspector as a low-confidence suggestion the user can manually accept.
+- Anonymous reads work; API key only required for submit.
+- Smaller user base, no GitHub org, no funded sponsorship — **higher disappearance risk than TheIntroDB.** Cache the same way (positive → forever, 404 → 14 days).
+
+### Tier 1c — anime-skip.com (anime libraries only)
+
+**Endpoint:** GraphQL at `https://api.aniskip.com/v2/skip-times/{anilist_id}/{episode}` (REST wrapper; GraphQL also available).
+
+**Why:** Anime is a known weak spot for chromaprint cross-episode matching — many shows have multiple openings per cour (OP1 for episodes 1–13, OP2 for 14–25). anime-skip.com is the de-facto anime intro/credits DB (AniList/MAL-keyed, separate ecosystem from TheIntroDB).
+
+**Conditional activation:** This tier only fires when the item is in a library marked `kind="anime"` (auto-detected from TVDB/TMDB genre or explicit user override). For non-anime libraries this tier is skipped entirely — no extra latency.
+
+**Coverage:** Reportedly strong for anime; verified live: yes, returns intro/outro for popular AniList IDs. Free; rate-limited (per their docs).
+
+**Status:** Optional in Phase A — gated by a `markers.use_anime_skip` setting (default ON for users who have an anime library).
 
 ### Tier 2 — Chromaprint cross-episode (TV only)
 
@@ -322,9 +362,13 @@ class MarkerPublisher(ABC):
 
 ### `PlexMarkerPublisher`
 
+**REST API status (live-confirmed Feb–Apr 2026):** `POST /library/metadata/{id}/marker?type=intro` still returns **400 Bad Request**. Confirmed by a Plex admin's own forum post in dev-corner thread #931778 (Feb 2026), reiterated by multiple devs through April. Plex's Sept 2025 "API Unlocked" was a documentation release of `LukeHagar/plex-api-spec` — not a functionality change. The auto-generated `plexjs`/`plexruby`/`plexphp` SDKs will happily call `createMarker` but receive 400s. **Skip the REST API entirely for marker writes.**
+
 ```python
 class PlexMarkerPublisher(MarkerPublisher):
     def supports_write(self) -> WriteCapability:
+        # Native trigger doesn't write our markers — it asks Plex to detect.
+        # Returned alongside direct-db so the publisher decides per-call which to use.
         if self._has_plex_pass() and self._native_detection_enabled():
             return WriteCapability.TRIGGER_NATIVE
         if self._direct_db_enabled():
@@ -332,17 +376,108 @@ class PlexMarkerPublisher(MarkerPublisher):
         return WriteCapability.READ_ONLY
 ```
 
-**Read:** `episode.markers` via plexapi. Returns `Marker(type, start, end, final, version)`. Fully supported.
+**Read:** `episode.markers` via plexapi. Returns `Marker(type, start, end, final, version)`. Fully supported and unchanged since `1e220eb` (credit markers added).
 
-**Trigger native:** `PUT /library/metadata/{ratingKey}/analyze` via `episode.analyze()`. Plex's full analysis pipeline runs, including markers if Pass + library setting on. Async; poll `episode.reload(); episode.hasIntroMarker` until populated.
+**Trigger native — use the NARROW endpoints, not `/analyze`:**
 
-**Direct DB write (when enabled):**
-- Connect to `{plex_config}/Plug-in Support/Databases/com.plexapp.plugins.library.db` with `busy_timeout=5000`.
-- Use **`fcntl.flock(LOCK_SH | LOCK_NB)`** probe first to detect Docker-on-Windows (CIFS/SMB doesn't honor advisory locking). On failure, surface as Setup Health "Plex DB write unsafe on this filesystem."
-- Look up `tag_id` for marker type (12 = intro, 4 = credits) — never insert into `tags`.
-- INSERT into `taggings` with `extra_data` JSON carrying `{"pv:version":"5","pv:source":"media_preview_generator","pv:run_id":"<uuid>"}` — our provenance marker.
-- Single transaction per write, immediate close.
-- **Restore loop** (danrahn pattern): periodic scan of `taggings` looking for our provenance flag; if missing, re-INSERT (Plex's re-analysis wiped it).
+| Verb | Path | Purpose | When to use |
+|---|---|---|---|
+| `PUT /library/metadata/{id}/intro` | params: `force` (BoolInt), `threshold` (number) | Intro-only re-analysis | Plex Pass + intro_detection_enabled, item missing intro markers |
+| `PUT /library/metadata/{id}/credits` | params: `force` (BoolInt), `manual` (BoolInt) | Credits-only re-analysis | Plex Pass + credits_detection_enabled, item missing credits |
+| `PUT /library/metadata/{id}/analyze` | broad fallback | Full pipeline | Only when we explicitly want metadata + art + BIF + markers all together |
+
+plexapi has no helper for `/intro` and `/credits` — use `server.query(f'/library/metadata/{id}/intro', method=server._session.put)`. All three are fire-and-forget (return 200 immediately, scheduler does the work async). Poll `episode.reload(); episode.hasIntroMarker` for completion.
+
+**Direct DB write (when enabled) — the MarkerEditor pattern, not Casvt's incomplete pattern:**
+
+This is critical. Two tables must be written for markers to survive Plex's re-analysis:
+
+1. **`taggings` row** (movie-wide marker) — what Plex's metadata XML returns to clients.
+2. **`media_parts.extra_data` JSON** (per-file denormalized copy) — what Plex's analyzer reads. **Without this, markers vanish on next analyze.** This is the load-bearing detail that Casvt's `intro_marker_editor.py` misses and MarkerEditorForPlex gets right.
+
+Step-by-step:
+
+```python
+# 1. Resolve tag_id at write time — NEVER hard-code.
+# All markers (intro/credits/commercial) share ONE tags row with tag_type=12.
+# They are differentiated by taggings.text, NOT by separate tag_types.
+tag_id = conn.execute("SELECT id FROM tags WHERE tag_type=12 LIMIT 1").fetchone()
+if tag_id is None:
+    # Brand-new install never had markers — bootstrap the row.
+    tag_id = conn.execute(
+        "INSERT INTO tags (tag_type, created_at, updated_at) "
+        "VALUES (12, strftime('%s','now'), strftime('%s','now'))"
+    ).lastrowid
+
+# 2. For the metadata_item, enumerate ALL its media_parts
+#    (multi-version movies have multiple — 4K + 1080p share one metadata_item_id).
+parts = conn.execute("""
+    SELECT mp.id, mp.extra_data
+    FROM media_parts mp
+    JOIN media_items mi ON mp.media_item_id = mi.id
+    WHERE mi.metadata_item_id = ?
+""", (metadata_item_id,)).fetchall()
+
+# 3. INSERT into taggings (movie-level row).
+#    extra_data JSON shape depends on PMS version:
+#    PMS ≥1.40: {"pv:version":"5","url":"pv%3Aversion=5"}  for intros
+#               {"pv:version":"4","pv:final":"1","url":"pv%3Afinal=1&pv%3Aversion=4"} for FINAL credits
+#               {"pv:version":"4","url":"pv%3Aversion=4"}  for non-final credits
+#    PMS <1.40: legacy URL-encoded form (Plex tolerates both on read).
+next_index = conn.execute(
+    "SELECT COALESCE(MAX([index]), -1) + 1 FROM taggings WHERE metadata_item_id=?",
+    (metadata_item_id,)
+).fetchone()[0]
+conn.execute("""
+    INSERT INTO taggings
+    (metadata_item_id, tag_id, [index], text, time_offset, end_time_offset,
+     thumb_url, created_at, extra_data)
+    VALUES (?, ?, ?, ?, ?, ?, '', strftime('%s','now'), ?)
+""", (metadata_item_id, tag_id, next_index, marker_type, start_ms, end_ms, extra_data_json))
+
+# 4. UPDATE each media_part.extra_data with the denormalized JSON copy.
+#    This is the MarkerEditor pattern. Without it, marker disappears on re-analyze.
+for part_id, current_extra in parts:
+    merged = merge_marker_into_part_extra(current_extra, marker_type, start_ms, end_ms, final)
+    conn.execute(
+        "UPDATE media_parts SET extra_data=? WHERE id=?",
+        (merged, part_id)
+    )
+```
+
+**Editions vs versions:**
+- **Versions** (same movie, multiple files merged in Plex): one `metadata_item_id`, N `media_parts`. Write taggings once + every part's extra_data.
+- **Editions** (Director's Cut vs Theatrical — separate metadata items): write twice, once per edition.
+
+**Filesystem &amp; locking:**
+- DB path: `{plex_config}/Plug-in Support/Databases/com.plexapp.plugins.library.db`
+- `sqlite3.connect(path, timeout=30.0)` + `PRAGMA busy_timeout=30000` (MarkerEditor uses 30s; Casvt uses 20s). WAL mode is already on by PMS.
+- `fcntl.flock(LOCK_SH | LOCK_NB)` probe first to detect Docker-on-Windows (CIFS/SMB doesn't honor advisory locking). On failure, surface as `HealthCheckIssue` "Plex DB write unsafe on this filesystem" with severity=critical.
+- **Live writes are fine** — PMS keeps running. Markers become visible on next client metadata fetch; no PMS restart required.
+
+**Provenance — side-car DB, not flag in `taggings`:**
+- Create `markers_provenance.db` alongside our `jobs.db` (in `${CONFIG_DIR}`).
+- Schema mirrors MarkerEditor's `actions` table (the load-bearing fields):
+  ```sql
+  CREATE TABLE provenance (
+    plex_marker_id INTEGER PRIMARY KEY,    -- taggings.id
+    plex_server_id TEXT,                   -- our server_id
+    parent_guid TEXT,                      -- metadata_item.guid (stable across reinstalls)
+    metadata_item_id INTEGER,              -- not stable; secondary key only
+    marker_type TEXT,                      -- "intro" | "credits" | "commercial"
+    start_ms INTEGER, end_ms INTEGER, final INTEGER,
+    user_created INTEGER DEFAULT 1,        -- always 1 from our app
+    detection_run_id TEXT,                 -- our MarkerSet.detection_run_id
+    written_at INTEGER
+  );
+  ```
+- **Earlier hacks (now abandoned by MarkerEditor):** setting `taggings.thumb_url` to a sentinel string, appending `*` to `modified_at`. These were the V1–V5 patterns; we ship the V7 pattern (provenance side-car only) from day one.
+
+**Restore loop:** periodic task (default 6h) scans `provenance` table for `plex_marker_id`s that no longer exist in `taggings` (re-analysis purged). For each missing row, re-INSERT taggings + re-merge `media_parts.extra_data` using the saved fields. Resolve by `parent_guid` (stable), not `metadata_item_id` (changes on re-add).
+
+**Plex Pass requirement is on the PLAYER account:**
+- Our SQLite writes succeed regardless of Pass status, but Plex clients (web, iOS, Android, tvOS, Roku, Smart TVs) only render the skip-intro / skip-credits buttons when the **playback account** has Plex Pass.
+- Server-admin-Pass alone is enough to *write* markers (and for the timeline overlay in the admin's web UI), but family members without Pass watching from the same library won't see skip buttons. Surface this clearly in the Inspector tooltip when Pass status is missing.
 
 **Default behavior:** OFF. User must explicitly enable per-server in settings + click through a confirmation modal that quotes the failure modes.
 
