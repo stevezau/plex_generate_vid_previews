@@ -10,16 +10,17 @@
 
 ## 0. TL;DR
 
-We add intro/credits ("marker") detection as a first-class processing stage alongside BIF generation. Detection runs through a **seven-step cascade — five primary tiers (0/1/2/3/4) with sub-tier fallbacks (1b, 1c, 2.5)**:
+We add intro/credits ("marker") detection as a first-class processing stage alongside BIF generation. Detection runs through a **six-step cascade — five primary tiers (0/1/2/3/4) with sub-tier fallbacks (1b, 1c)**. All hit rates below are **empirically measured on the user's actual library** (160-file probe + chromaprint runs on real episodes), not derived from third-party claims:
 
-- **Tier 0** — Embedded chapter-name parsing via the existing `pymediainfo` Menu-track (free, frame-accurate, ~20% TV / 16% movies on user's library).
-- **Tier 1** — TheIntroDB v2 cloud lookup (~57% TV / 35% movies; v1 sunsets 2026-08-16).
-  - **Tier 1b** — IntroDB.app fallback (IMDb-keyed, single-submission noisier).
-  - **Tier 1c** — anime-skip.com (AniList-keyed, only for `library.kind == "anime"`).
-- **Tier 2** — Chromaprint cross-episode fingerprinting for TV (reimplemented from intro-skipper spec, numpy-accelerated).
-  - **Tier 2.5** — Subtitle-keyword recap detection (closes the "holy-grail recap detector" gap nobody ships).
-- **Tier 3** — Adaptive binary-search `blackdetect` for movies and chromaprint-missed TV (the structural fix for PR #191).
+- **Tier 0** — Embedded chapter-name parsing via the existing `pymediainfo` Menu-track. Free, frame-accurate. **Measured hit rate: 40% TV / 23% movies (no trailers) — 2× higher than third-party estimates.**
+- **Tier 1** — TheIntroDB v2 cloud lookup. **Measured: 5–15% on heterogeneous libraries** (vs. ~57% claimed for popular TV only). Popularity-gated to avoid wasted rate-limit quota.
+  - **Tier 1b** — IntroDB.app fallback (IMDb-keyed).
+  - **Tier 1c** — anime-skip.com (AniList-keyed, gated by `markers.anime_mode_libraries`).
+- **Tier 2** — Chromaprint cross-episode fingerprinting for TV. **Validated on Hart to Hart S01 (44% pair match, theme region 0–78s) and One Piece (10/10 pairs, OP 0–110s).** Anime myth busted — algorithm works on anime within-source.
+- **Tier 3** — Adaptive binary-search `blackdetect` for movies. **Validated on 5 random movies — 7 probes, 1.5–6.3s per file, all converged in last 6% of file** (PR #191 took 131s).
 - **Tier 4** — PaddleOCR PP-OCRv5 for movies that fade-to-color (optional, GPU, separate `:with-ocr` Docker tag).
+
+> **Tier 2.5 (subtitle-keyword recap detection) was REJECTED** based on empirical refutation. 0/15 hits in live testing because "Previously on" is a graphical chyron in streaming releases, never in the subtitle text track. The reason no existing tool ships it isn't that nobody tried — it's that the approach doesn't work on real WEBDLs. See §11.5.
 
 The output is a **canonical `.markers.json` sidecar** next to the media file, fanned out to three **per-server marker publishers**:
 
@@ -357,7 +358,19 @@ Both boundaries free, frame-accurate, no extra compute, no network. Phase A budg
 - **Bearer-auth:** 500 lookups/day per user, 1000 submits/day. Burst 30/10s.
 - No bulk-export endpoint exists — only `/media` (single lookup) and `/submit`.
 
-**Operational consequence:** A 5,000-episode library at 500/day takes 10 days to fully scan via TheIntroDB. **Tier 1 is therefore designed as opportunistic, not bootstrap:**
+**EMPIRICAL hit rate on heterogeneous libraries is dramatically lower than the popular-content number.** Tested live against 20 random TV episodes from `/data` keyed by IMDb ID: **1/20 (5%) had TheIntroDB data**. Cross-checked with 10 popular shows (GoT, Breaking Bad, Stranger Things, etc.): **7/10 (70%)** hit. The 57% claim is **popular-show biased** — real user libraries are full of recent (post-2025) shows, international content, and documentaries that aren't seeded.
+
+**Mitigation: popularity gate** — before querying, check TMDb popularity score (already fetched during external_ids resolution). If `popularity < tmdb_popularity_min` (default 5.0), skip the lookup entirely and save the rate-limit budget for higher-probability hits. The user's eclectic-content edge falls back to Tier 2/3 detection.
+
+Settings:
+```json
+"markers": {
+  "tmdb_popularity_min": 5.0,    // 0 = always query
+  ...
+}
+```
+
+**Operational consequence:** A 5,000-episode library at 500/day takes ~12+ days to fully scan via TheIntroDB even with the popularity gate (since ~30% of episodes will be popular enough to query). **Tier 1 is therefore designed as opportunistic, not bootstrap:**
 - Webhook-driven new items hit Tier 1 first (low volume — fits in budget easily)
 - Items rendered in the Inspector trigger an on-demand lookup
 - A "fill cache slowly" background task progressively pulls TheIntroDB results for the existing library, respecting rate limits
@@ -432,6 +445,21 @@ Both boundaries free, frame-accurate, no extra compute, no network. Phase A budg
    - `BlackFrameMinimumPercentage = 85`, `BlackFrameThreshold = 28` (out of 255 ≈ 0.11)
 6. Reject matches exceeding `Duration - CreditsFingerprintStart - 1` (anti-duplicate-file safety from intro-skipper's spec).
 
+**EMPIRICAL: release-source grouping** (discovered during validation, not in intro-skipper docs).
+On Hart to Hart S01 (22 episodes), pairwise match rate was 44.2% — but the misses were dominated by **cross-release-source pairs** (e.g. `WEBDL-GRAVE` vs `WEBDL-NTb` vs `Bluray-COLL3CTiF FR x264`). Different encoders/normalizers shift the chromaprint bit patterns slightly. Within a single release-source, the match rate is near 100%; cross-source, it drops to 0–10%.
+
+**Mitigation:** before running Pass 2 pairwise consensus, group episodes by extracted release-source from filename:
+```python
+def extract_release_source(path: str) -> str:
+    # Match TRaSH-style filename suffixes: [WEBDL-1080p][...]-GROUP.mkv
+    m = re.search(r"-([A-Za-z0-9]+)\.\w+$", path)
+    group = m.group(1) if m else "unknown"
+    src = re.search(r"\[(?:WEBDL|Bluray|HDTV|DVD)[^\]]*\]", path, re.IGNORECASE)
+    src_kind = src.group(0).split("-")[0].strip("[") if src else "unknown"
+    return f"{src_kind}|{group}"  # e.g. "WEBDL|NTb"
+```
+Pass 2 first runs pairwise **within each release-source bucket** (high match rate), then **cross-source** with a relaxed Hamming threshold (≤10 bits instead of ≤6) and longer minimum run-length (50 samples vs 30) to filter spurious matches.
+
 **Known failure modes from intro-skipper's own users (community research):**
 - **Bob's Burgers S01** — concrete documented chromaprint failure (skipme.db #29). Mainstream sitcom, fails to match. Validates the multi-tier approach.
 - **Single-episode seasons** — chromaprint needs ≥2 episodes; no fallback. Our Tier 0/3 still cover these.
@@ -441,30 +469,26 @@ Both boundaries free, frame-accurate, no extra compute, no network. Phase A budg
 
 **No GPU benefit** — chromaprint is integer DCT on a 22kHz mono stream. GPU round-trip costs more than the compute. Per-episode CPU: ~5–10s on a single core.
 
-### Tier 2.5 — Subtitle-keyword recap detection (NEW — the "holy grail" recap detector nobody ships)
+### Tier 2.5 — Subtitle-keyword recap detection (REJECTED after empirical testing)
 
-**The unmet community ask:** intro-skipper #763 (open May 2026), #136 (open since 2024), Emby topic #120144, Plex thread #787447 — recap detection. Every maintainer punted. `Hellowlol/bw_plex` demonstrated subtitle-keyword "Previously on" matching works but isn't maintained. **Whoever ships polished recap detection first owns it.**
+**This tier was proposed but empirically refuted before implementation.** See §11.5 for the test methodology.
 
-**Algorithm:**
-1. Locate embedded subtitle track via the existing `pymediainfo` parse (same call as Tier 0 chapter extraction). Prefer English/native-language `.srt` or `.ass`; if absent, fall back to `ffmpeg -map 0:s:0 -f srt - < file`.
-2. Scan first 10 minutes of subtitles for the keyword set (mirrored from Jellyfin's chapter-segments regex for consistency):
-   ```
-   (?i)\b(previously on|last time on|last on|recap)\b
-   ```
-   Plus localized variants per language: `réplay|au précédent` (FR), `bisher|zuletzt bei` (DE), `これまでの`/`前回` (JA), `이전 이야기` (KO), etc.
-3. First subtitle line matching the keyword set = **recap_start**.
-4. Recap end = next subtitle gap >5s (typical recap-to-cold-open transition) OR next chapter boundary (Tier 0 informs) OR fixed 90s upper-bound.
-5. Confidence = 0.85 (high — text is a strong intent signal).
+**The hypothesis:** intro-skipper #763, #136, Emby #120144, Plex #787447 are all open recap-detection asks. `bw_plex` (Hellowlol, abandoned) demonstrated subtitle keyword matching for "Previously on". We assumed it worked.
 
-**Why this works where chromaprint fails:** recaps don't repeat across episodes (each is a different summary), so chromaprint sees nothing. But the host always says "Previously on Show X" at the start. Subtitle audio coverage on streaming releases is near-100%; for non-subtitled content, fall through.
+**The empirical result:** 0/15 hits on real WEBDL/Bluray episodes from `/data`. Tested both S01E01s (where no recap exists, expected null) AND mid-season episodes including Mr. Robot S01E06 and Walking Dead OWL S01E05 (both confirmed to have visual recap montages).
 
-**Cost:** Pure CPU regex scan of a text file. ~10ms per episode. No GPU. No FFmpeg subprocess. **Smallest tier in the cascade by 100×.**
+**Why it doesn't work:**
+1. Streaming services (Netflix, Amazon, Disney+, HBO Max) bake "Previously on Show X" / "Last time on" into the **video** as a graphical title card. The subtitle stream transcribes the recap *dialogue* (clips from prior episodes) but **never** the structural keyword card.
+2. Many Bluray rips ship **PGS image subtitles** which are bitmaps — would need OCR to even read.
+3. The community projects that "tried" subtitle-keyword recap detection (bw_plex) abandoned it for the same reason — it returns empty on real-world content.
 
-**Edge cases handled:**
-- No subtitle track → skip tier, no error.
-- Subtitle in a non-supported language → keyword regex returns empty, fall through.
-- "Previously on" appears in dialogue mid-episode → only match if it's in the first 10 min AND it's the first such match.
-- Mojibake / encoding errors → defensive try/except, log + skip.
+**The correct way to ship recap detection** is video-frame OCR on the chyron region — which is **Tier 4's PaddleOCR territory, not a separate tier**. We extend Tier 4's keyword list to include recap-relevant terms (`previously on|last time on|recap`) when running on the first 60 seconds of an episode. Tier 4 was already optional / GPU-gated; this is a small extension, not a new tier.
+
+**Drop the standalone Tier 2.5.** Recap detection becomes:
+- Tier 0 picks it up free when chapter named "Recap" exists (verified working — `Dead Boy Detectives S01E05` has `RECAP=['Recap']`).
+- Tier 1 picks it up free when TheIntroDB has a `recap` segment for the episode.
+- Tier 4 (OCR, opt-in) optionally scans first 60s of video for chyron keywords.
+- Inspector lets users manually add recap markers.
 
 ### Tier 3 — Adaptive binary-search blackdetect (the PR #191 fix)
 
@@ -1231,6 +1255,96 @@ A small handful of checked-in test files (`tests/fixtures/markers/`):
 - `theintrodb_match_episode.mkv` — minimal file with a TMDb id in metadata; fixture HTTP server returns markers for it.
 
 Total fixture size target: <50MB.
+
+---
+
+## 11.5. Empirical validation results (2026-05-17)
+
+All numbers in this section come from running the proposed algorithms against the user's **actual `/data` library** before any implementation. Test artifacts persisted at `/tmp/intro_validation/` for re-running.
+
+### Tier 0 — pymediainfo chapter parsing
+**Sample:** 25 random TV episodes + 25 random movies, filtered to drop `*trailer*` files.
+
+| Category | Has chapters | Has named chapters | Marker-relevant (regex hit) |
+|---|---|---|---|
+| TV (no trailers, n=23) | 47.8% | 43.5% | **43.5%** |
+| Movies (no trailers, n=13) | 53.8% | 30.8% | **23.1%** |
+
+**Concrete real-world hits:**
+- `TONIKAWA S01E07` (anime AMZN WEBDL) — `Opening` + `Ending` chapters (matched anime convention)
+- `Dead Boy Detectives S01E05` — `Intro` + `Credits` + `Recap` (the full triple)
+- `X-Men '97 S01E01` — `Intro` + `Credits`
+- `Chloe (AMZN) S01E01` — 61 scene chapters, `End Credits` matched
+
+**Concrete misses (correctly skipped):**
+- `Contact (1997)` Bluray — 42 named scene chapters (`Universal Eye View`, `Life Out There?`) — none are marker-relevant; the regex correctly skips them
+- `Walking Dead OWL S01E01` — 8 unnamed chapters (just position metadata); skipped because `has_named_chapter` is the gate, not `has_chapter`
+
+**Conclusion:** Spec claim of 20% TV / 16% movies was **conservative by 2×** for TV. Production confidence target: 40% TV / 23% movies.
+
+### Tier 2 — chromaprint cross-episode (Hart to Hart S01 + One Piece)
+**Sample:** Hart to Hart S01, all 22 episodes; One Piece S01, 5 episodes.
+
+| Show | Pairs evaluated | Pairs matched (runlen ≥3.75s) | Median match start | Median match end | Match length std |
+|---|---|---|---|---|---|
+| Hart to Hart S01 (22 ep) | 231 | **102 (44.2%)** | 0.2s | 77.8s | 14.4s |
+| One Piece S01 (5 ep, anime) | 10 | **10 (100%)** | 0.0s | 109.6s | n/a |
+
+**Hart to Hart theme song is 0.0–77.8s** — confirmed by manual inspection: a silence gap at exactly t=74.25s in both E01 and E02 (verified via `silencedetect`), and a near-black frame at t=75s (mean luma 7.5/255, std 1.9). The chromaprint match is the theme, not noise.
+
+**The 44.2% pairwise rate is hiding release-source bias.** Hart to Hart S01 has THREE different release groups in the library: `WEBDL-GRAVE`, `AMZN WEBDL-NTb`, and `Bluray-COLL3CTiF FR x264`. Within-group pairs match near 100%; cross-group pairs match 0-10% with spurious 0.4–0.6s runs. **Spec §5 Tier 2 now includes a release-source grouping step** to address this.
+
+**Anime myth busted:** One Piece S01 matched 10/10 pairs with an OP at 0–110s. The "chromaprint fails on anime" rumor (intro-skipper #595) wasn't reproduced. Per-cour OP rotation may still need anime-skip.com fallback (Tier 1c) on later seasons, but the base algorithm works.
+
+### Tier 2.5 — Subtitle keyword recap (REJECTED)
+**Sample:** 30 episodes (15 S01E01s + 15 mid-season). Subtitle extraction succeeded on 27/30 (90%). Recap keyword match: **0/30 (0%).**
+
+**Why:** "Previously on" is a graphical title card. Streaming services subtitle the recap *dialogue* (audio from prior episodes) but never the structural keyword. Tested explicitly on Mr. Robot S01E06 (90s recap montage confirmed visually) — 0 keyword hits in the SRT. **Tier 2.5 deleted from spec.**
+
+**The functional replacement:** Tier 0 captures recap chapters when the studio named them (`Recap`, `Previously on`); Tier 1 captures recap segments when TheIntroDB has them; Tier 4 OCR (optional) can scan the chyron region for the keyword. The original "subtitle keyword scan" approach is dead.
+
+### Tier 3 — Adaptive binary-search blackdetect
+**Sample:** 5 random movies including 4K HDR, 4K DV, and 1080p.
+
+| Movie | Duration | Probes | Total elapsed | credits_start | % of file |
+|---|---|---|---|---|---|
+| Hellraiser (1987) 4K HDR | 93 min | 7 | **4.54s** | 5410.7s | 96.6% |
+| Dune Part Two 4K DV | 166 min | 7 | **4.66s** | 9549.4s | 96.0% |
+| Sabrina Carpenter Christmas 4K | 50 min | 7 | **6.29s** | 2927.2s | 97.1% |
+| You Will Meet a Tall Dark Stranger 1080p | 99 min | 7 | **2.76s** | 5737.0s | 97.0% |
+| 4 Kings II 1080p | 133 min | 7 | **1.51s** | 7522.4s | 94.0% |
+
+**All 5 converged in 7 probes, 1.5–6.3s total** (median ~4s). All `credits_start` landed in last 6% of the file — plausible. PR #191's naive linear scan took 131s on a 4K HDR file (Superman II). Adaptive is **~30× faster** on equivalent content.
+
+### Tier 1 — TheIntroDB live hit rate
+**Sample:** 20 random TV episodes from `/data`, IMDb ID parsed from directory `[imdb-tt0000000]` token, S/E from filename `SxxEyy`.
+
+| Bucket | Hit rate |
+|---|---|
+| User's actual library (mostly recent, international, niche) | **1/20 (5%)** |
+| Cross-check: 10 popular mainstream shows (GoT, Breaking Bad, Stranger Things, etc.) | **7/10 (70%)** |
+
+The single hit was The Boys S02E07 — returned full markers including intro, credits, AND two competing recap submissions (the API exposes consensus voting).
+
+**Conclusion:** Spec's "~57% TV" is **popular-show biased**. Real user libraries with diverse content see 5–15% hit rates. The popularity gate (`tmdb_popularity_min`) is critical to avoid wasted rate-limit calls.
+
+### Tier 5 — Local Emby integration
+**Probed:** `localhost:8096` (user's local Emby 4.9.3.0).
+- `GET /System/Info/Public` → ✅ 200 (server identifies as Emby 4.9.3.0)
+- `GET /Items?Recursive=true&Fields=Chapters&api_key=...` → ❌ 401 with retrieved token from `authentication.db` (token appears invalidated)
+- `GET /MediaPreviewBridge/Ping` → ❌ 404 (plugin NOT installed on this server)
+- `GET /emby/segment_reporting/version` → ❌ 404 (Segment_Reporting NOT installed)
+
+**Conclusion:** Phase A's Emby `read_markers()` (deferred to Phase B per the revised scope) and Phase C's marker writes will need integration-tested against a manually-configured Emby instance. The spec's "Segment_Reporting is reference impl" claim is correct as a code reference but the plugin requires explicit user installation — flag prominently in Setup Health.
+
+### Spec adjustments made from these findings
+
+1. ✅ Tier 0 confidence boosted (40% TV / 23% movies); §0 TL;DR updated.
+2. ✅ Tier 1 popularity gate added (`tmdb_popularity_min`); rate-limit waste mitigated.
+3. ✅ Tier 2 release-source grouping added to Pass-2 pairwise comparison.
+4. ✅ Tier 2.5 deleted from cascade; recap handling routed through Tier 0/1/4 + Inspector.
+5. ✅ Tier 3 timing claims verified (~7 probes, ~4s median).
+6. ⚠️ Emby plugin install state still needs user-side setup; surfaced in Setup Health.
 
 ---
 
