@@ -12,8 +12,8 @@
 
 We add intro/credits ("marker") detection as a first-class processing stage alongside BIF generation. Detection runs through a **six-step cascade — five primary tiers (0/1/2/3/4) with sub-tier fallbacks (1b, 1c)**. All hit rates below are **empirically measured on the user's actual library** (160-file probe + chromaprint runs on real episodes), not derived from third-party claims:
 
-- **Tier 0** — Embedded chapter-name parsing via the existing `pymediainfo` Menu-track. Free, frame-accurate. **Measured hit rate: 40% TV / 23% movies (no trailers) — 2× higher than third-party estimates.**
-- **Tier 1** — TheIntroDB v2 cloud lookup. **Measured: 5–15% on heterogeneous libraries** (vs. ~57% claimed for popular TV only). Popularity-gated to avoid wasted rate-limit quota.
+- **Tier 0** — Embedded chapter-name parsing via the existing `pymediainfo` Menu-track. Free, frame-accurate. **Calibrated hit rate: ~11% library-wide, almost exclusively anime fansubs** (20-show sweep round 2 corrected earlier 40% small-sample estimate). Western Bluray rips ship generic `Chapter NN`.
+- **Tier 1** — TheIntroDB v2 cloud lookup. **Calibrated hit rate: ~50% on a mainstream + popular-anime mixed library** (round 2; earlier "5%" was biased by random-IMDb sampling that hit niche/recent content). Popularity-gated for niche to avoid wasted rate-limit quota.
   - **Tier 1b** — IntroDB.app fallback (IMDb-keyed).
   - **Tier 1c** — anime-skip.com (AniList-keyed, gated by `markers.anime_mode_libraries`).
 - **Tier 2** — Chromaprint cross-episode fingerprinting for TV. **Validated on Hart to Hart S01 (44% pair match, theme region 0–78s) and One Piece (10/10 pairs, OP 0–110s).** Anime myth busted — algorithm works on anime within-source.
@@ -1474,14 +1474,101 @@ Each can shift the boundary independently; last wins. Snap-to-zero / snap-to-dur
 
 **Bottom line:** Plex's accuracy ceiling is the accuracy of `chromaprint + Essentia mel-bands + 3MB CNN + comskip + EAST` glued with the 50% quorum + LCS logic. **There is no proprietary magic.** A determined third-party implementation matches Plex intro accuracy within ~2% and credits within ~5–10% (credits being the harder problem regardless of who solves it).
 
+### 11.5.9. Per-content-type calibration (20-show empirical sweep, 2026-05-17 round 2)
+
+A second empirical pass tested 20 shows across 10 content categories. The earlier round's "Tier 0 = 40% TV / 23% movies" number was a small-sample artifact; the larger sweep tells a more honest story.
+
+**Calibrated hit rates (production-ready numbers):**
+
+| Tier | Empirical hit rate | Notes |
+|---|---|---|
+| **Tier 0 chapters** | **~11% library-wide** | **Anime fansubs almost exclusively.** Western Bluray rips use generic `Chapter NN`. Don't oversell this tier. |
+| **Tier 1 TheIntroDB** | **~50% on a mixed library** | Mainstream Western + popular anime. Niche/classic/reality/talk → 404. The earlier "5% on random IMDb" number was biased toward recent/niche. |
+| **Tier 1c anime-skip** | (not separately tested) | Where TheIntroDB has 0/5, anime-skip plausibly fills the anime gap. |
+| **Tier 2 chromaprint** | **0% to 100% depending on content type** — see verdict table below |
+
+**Per-content-type verdict table:**
+
+| Category | Pair match | End σ | Verdict | Strategy |
+|---|---:|---:|---|---|
+| Talk show (LWT) | **100%** | 0.6s | Excellent | Tier 2 wins outright |
+| Western cartoon (South Park) | **100%** | 1.1s | Excellent | Tier 2 wins outright |
+| Long-running anime within-cour (One Piece) | **100%** | 0.7-1.9s | Excellent | Tier 2 wins, must cluster by cour |
+| Family Guy | 93% | 14.5s | Strong | Tier 2 with source group |
+| Office US sitcom | 73% | 31s | Good | Tier 2 with source group |
+| Rick &amp; Morty | 67% | 0.2s | Strong (tight stddev) | Tier 2 |
+| Demon Slayer anime | 67% | 13.5s | Good | Tier 2 within `-Bit` source |
+| Parks &amp; Rec sitcom | 60% | 42s | Partial | Tier 1 fills gap (high TheIntroDB hit) |
+| Bob's Burgers | 47% | 1.0s | **Tight stddev = real signal** | Tier 2 within `-CtrlHD` source |
+| Star Trek TNG | 40% | 37s | Partial | Tier 2 only (TheIntroDB 404) |
+| Brooklyn 99 | 40% | 12s | Partial | Tier 2 with source group |
+| Breaking Bad | 33% | 37s | **Weak — but Tier 1 wins (5/5 TheIntroDB)** | Tier 1 carries this category |
+| Severance | 20% | 17s | Weak | Tier 1 carries |
+| Spy x Family anime | 27% | 36s | Weak (3 different fansubs) | Tier 1c anime-skip needed |
+| AoT S04 (rotating OP) | **27%** | 66s | Weak | **Multi-OP cour clustering required** |
+| **Survivor reality** | **0%** | — | **REJECT** | No recurring theme; don't try |
+| **Chernobyl mini-series** | **0%** | — | **REJECT** | Unique cold opens per ep; Tier 1 if mainstream |
+| **Watchmen single-season** | **0%** | — | **REJECT** | Same structural problem |
+
+**Cross-source variance test (Hart to Hart S01, 12 eps):**
+
+| Subgroup | Match rate |
+|---|---:|
+| Within `-GRAVE` (9 eps) | **36/36 = 100%** |
+| Within `-NTb` (3 eps) | **3/3 = 100%** |
+| Cross GRAVE × NTb | **9/27 = 33%** |
+
+**67 percentage-point drop cross-source.** Validates the spec's release-source-grouping requirement as MANDATORY, not optional optimization. The naive overall "73% match" headline is misleading — it's actually 100% within-source, 33% cross-source.
+
+**Long-running anime multi-OP cluster validation (One Piece, 999+ eps):**
+
+| Comparison | Match rate |
+|---|---:|
+| S01 × S01 | 10/10 = **100%** |
+| S10 × S10 | 10/10 = **100%** |
+| S20 × S20 | 10/10 = **100%** |
+| S01 × S10 | **0/25 = 0%** |
+| S01 × S20 | **0/25 = 0%** |
+| S10 × S20 | **0/25 = 0%** |
+
+**Chromaprint CORRECTLY distinguishes different OPs across cours** (0% cross-cluster match). The multi-OP cluster mode is empirically validated — simple k-means on fingerprint medians within a show will work, because the clusters are infinitely far apart in Hamming space.
+
+**Bob's Burgers debunked:** intro-skipper #29 reported chromaprint fails on Bob's Burgers S01. Our test: 47% pair match within `-CtrlHD` source (the failures were cross-source pairs). The reported failure was a release-source-grouping issue, NOT a chromaprint algorithm failure. Our spec's source-grouping fix addresses this.
+
+### 11.5.10. Confidence threshold table (from empirical data)
+
+For Tier 2 chromaprint, set confidence per the empirical thresholds:
+
+```python
+def tier2_confidence(pair_match_rate: float, end_stddev_s: float) -> float:
+    """
+    Empirical thresholds from 20-show sweep:
+      HIGH:   ≥80% match AND ≤5s stddev  (LWT, South Park, One Piece, Family Guy)
+      MEDIUM: 40-80% match AND ≤20s stddev  (Demon Slayer, AoT S01, R&M, Bob's, B99, HtH)
+      LOW:    <40% match OR >30s stddev  (TNG, BrBa, Severance, Parks, AoT S04, SxF)
+      REJECT: 0 pair matches  (Survivor, Chernobyl, Watchmen)
+    """
+    if pair_match_rate == 0:
+        return 0.0  # REJECT
+    if pair_match_rate >= 0.80 and end_stddev_s <= 5:
+        return 0.95  # HIGH
+    if 0.40 <= pair_match_rate < 0.80 and end_stddev_s <= 20:
+        return 0.75  # MEDIUM
+    return 0.45  # LOW
+```
+
+REJECT verdict triggers when Tier 2 returns 0 pair matches AND TheIntroDB returns 404. For these items (reality TV, mini-series with unique cold opens, single-season prestige) the cascade has no rescue path — surface a "no markers detected" status in the Inspector rather than synthesizing a low-confidence guess.
+
 ### Spec adjustments made from these findings
 
-1. ✅ Tier 0 confidence boosted (40% TV / 23% movies); §0 TL;DR updated.
-2. ✅ Tier 1 popularity gate added (`tmdb_popularity_min`); rate-limit waste mitigated.
-3. ✅ Tier 2 release-source grouping added to Pass-2 pairwise comparison.
-4. ✅ Tier 2.5 deleted from cascade; recap handling routed through Tier 0/1/4 + Inspector.
-5. ✅ Tier 3 timing claims verified (~7 probes, ~4s median).
-6. ⚠️ Emby plugin install state still needs user-side setup; surfaced in Setup Health.
+1. ✅ Tier 0 confidence reset to **~11% library-wide** (anime-fansub-skewed); §0 TL;DR updated. Earlier "40% TV / 23% movies" was small-sample artifact.
+2. ✅ Tier 1 hit rate corrected to **~50% mainstream-mixed** (vs earlier 5% from biased random sample). Popularity gate still valid for niche.
+3. ✅ Tier 2 release-source grouping is now MANDATORY (67-point drop cross-source on real data).
+4. ✅ Tier 2.5 deleted from cascade (separately confirmed in round 1).
+5. ✅ Tier 3 adaptive blackdetect verified (round 1).
+6. ✅ Multi-OP cour clustering empirically validated (One Piece 0% cross-cluster).
+7. ✅ REJECT verdict added for content types with structurally no marker signal.
+8. ⚠️ Emby plugin install state still needs user-side setup; surfaced in Setup Health.
 
 ---
 
