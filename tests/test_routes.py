@@ -3220,10 +3220,12 @@ class TestReprocessJob:
                 json={
                     "library_name": "Movies",
                     "config": {
-                        # Seed the retry-marker keys that production strips
-                        # on reprocess. If the SUT forgets to strip them
-                        # the new job re-uses retry state and behaves
-                        # differently from a fresh manual reprocess.
+                        # Seed the per-firing retry markers a retry child
+                        # would carry. ``is_retry_chain`` and the rest of
+                        # the chain-head bookkeeping are set below via
+                        # ``upsert_retry_chain_job`` — production's only
+                        # path for writing them — so the test exercises
+                        # the same key set the bug exposed.
                         "is_retry": True,
                         "retry_attempt": 2,
                         "max_retries": 3,
@@ -3237,8 +3239,23 @@ class TestReprocessJob:
         from media_preview_generator.web.jobs import get_job_manager
 
         jm = get_job_manager()
-        jm.start_job(job_id)
-        jm.complete_job(job_id)
+        # Drive the job into the terminal chain-exhausted state through
+        # the production API so the config carries every key
+        # ``upsert_retry_chain_job`` writes — ``is_retry_chain``,
+        # ``retry_chain_for``, ``retry_started_at``, ``retry_basename``,
+        # ``retry_max_attempts``, ``last_outcome``. Bypassing this and
+        # hand-seeding the keys was the original test's bug-blind spot.
+        jm.upsert_retry_chain_job(
+            canonical_path="/data/movie.mkv",
+            basename="movie.mkv",
+            attempt=3,
+            max_attempts=3,
+            next_run_at=None,
+            wait_seconds=None,
+            outcome="exhausted",
+            originating_job_id=job_id,
+            reason="Retry chain exhausted after 3 attempts",
+        )
 
         with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
             resp = client.post(f"/api/jobs/{job_id}/reprocess", headers=_api_headers())
@@ -3251,16 +3268,75 @@ class TestReprocessJob:
         # config-cloning + retry-key-stripping. Bare id != old_id was
         # bug-blind to a regression that just emitted a fresh empty job.
         assert body["library_name"] == "Movies", body
-        # Inspect the persisted new-job config — the retry-marker keys
-        # must be stripped so the new run starts fresh.
+        # Inspect the persisted new-job config — every chain-state key
+        # written by ``upsert_retry_chain_job`` must be stripped so the
+        # new run starts fresh. Asserting against the production
+        # constant ``RETRY_STATE_CONFIG_KEYS`` (rather than a hand-typed
+        # list) keeps the test and SUT pinned to the same source of
+        # truth — adding a new chain-state key only requires updating
+        # one place, and this test will automatically cover it.
+        from media_preview_generator.web.jobs import RETRY_STATE_CONFIG_KEYS
+
         new_job = jm.get_job(new_id)
         assert new_job is not None
-        for stripped_key in ("is_retry", "retry_attempt", "max_retries", "parent_job_id"):
+        for stripped_key in RETRY_STATE_CONFIG_KEYS:
             assert stripped_key not in new_job.config, (
                 f"reprocess must strip {stripped_key!r}; left in {new_job.config!r}"
             )
         # And the non-retry config (webhook_paths) is preserved.
         assert new_job.config.get("webhook_paths") == ["/data/movie.mkv"]
+
+    def test_reprocess_of_chain_head_completes_normally(self, client):
+        """Regression for issue #242: reprocess of a chain head must not hang.
+
+        Reproduces the production symptom exactly: a chain-completed job
+        is re-run, the new dispatch finds all outputs fresh (no retries
+        needed), and ``complete_job`` fires. Pre-fix the inherited
+        ``is_retry_chain=True`` routed this into the chain-active branch
+        and the new job stayed RUNNING forever.
+        """
+        from media_preview_generator.web.jobs import JobStatus, get_job_manager
+
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
+            create_resp = client.post(
+                "/api/jobs",
+                headers=_api_headers(),
+                json={"library_name": "The Neighborhood", "config": {}},
+            )
+        old_id = create_resp.get_json()["id"]
+
+        jm = get_job_manager()
+        # Land the old job in the post-chain-exhaustion state through
+        # the production API path (the only writer of ``is_retry_chain``).
+        jm.upsert_retry_chain_job(
+            canonical_path="",
+            basename="The Neighborhood",
+            attempt=3,
+            max_attempts=3,
+            next_run_at=None,
+            wait_seconds=None,
+            outcome="exhausted",
+            originating_job_id=old_id,
+            reason="Retry chain exhausted after 3 attempts",
+        )
+
+        with patch("media_preview_generator.web.routes.api_jobs._start_job_async"):
+            resp = client.post(f"/api/jobs/{old_id}/reprocess", headers=_api_headers())
+        assert resp.status_code == 201
+        new_id = resp.get_json()["id"]
+
+        # Simulate the new dispatch lifecycle: gate → RUNNING → all-fresh
+        # → complete_job(). Pre-fix this last call no-ops and the job
+        # never reaches COMPLETED.
+        jm.start_job(new_id)
+        jm.complete_job(new_id)
+
+        new_job = jm.get_job(new_id)
+        assert new_job is not None
+        assert new_job.status == JobStatus.COMPLETED, (
+            f"reprocess of a chain head must reach COMPLETED, got {new_job.status} "
+            f"(inherited is_retry_chain → stuck-RUNNING bug, issue #242)"
+        )
 
     def test_reprocess_nonexistent_job(self, client):
         resp = client.post("/api/jobs/nonexistent/reprocess", headers=_api_headers())

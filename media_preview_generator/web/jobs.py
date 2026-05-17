@@ -28,6 +28,43 @@ from loguru import logger
 # Message shown in UI when a job's log file was removed by retention policy.
 LOG_RETENTION_CLEARED_MESSAGE = "Log file was cleared due to log retention policy."
 
+# Every key ``upsert_retry_chain_job`` and ``_spawn_retry_job`` write
+# onto a Job's config to mark it as part of a retry chain. Single
+# source of truth — imported by ``reprocess_job`` to strip stale
+# chain state from a re-run's config so the new dispatch starts
+# fresh. Issue #242: a missing key here let stale ``is_retry_chain``
+# leak into a manually-rerun job's config, routing ``complete_job``
+# into the chain-active branch and stranding the dispatch in
+# RUNNING. Adding a new chain-state config key? Append it here.
+RETRY_STATE_CONFIG_KEYS: tuple[str, ...] = (
+    "is_retry",
+    "is_retry_chain",
+    "retry_chain_for",
+    "retry_started_at",
+    "retry_basename",
+    "retry_delay",
+    "retry_attempt",
+    "retry_max_attempts",
+    "retry_reason",
+    "last_outcome",
+    "max_retries",
+    "parent_job_id",
+    "webhook_retry_count",
+    "webhook_retry_delay",
+    "webhook_basenames",
+    "resolution_summary",
+    "scheduled_at",
+)
+
+# ``last_outcome`` values that mean a retry chain is actively firing
+# (a child dispatch is mid-flight, waiting for a slot, or scheduled
+# to fire). Used by ``complete_job``'s chain-active guard to skip
+# the terminal transition ONLY when the chain truly owns the
+# lifecycle. Terminal outcomes (``completed`` / ``exhausted``) and
+# absence (config-clone leakage) fall through to the normal
+# transition so the dispatch can land in COMPLETED / FAILED.
+_CHAIN_LIVE_OUTCOMES: frozenset[str] = frozenset({"scheduled", "queued_for_slot", "running"})
+
 
 def _synthesize_retry_chain_log_lines(job: "Job") -> list[str]:
     """Render a retry-chain Job's state as readable log-style lines.
@@ -1674,9 +1711,10 @@ class JobManager:
                     self._persist_job(job)
                     log_msg = f"Job {job_id} already cancelled; skipping completion update"
                     # Early return after logging outside the lock
-                elif job.config.get("is_retry_chain") and job.status in (
-                    JobStatus.PENDING,
-                    JobStatus.RUNNING,
+                elif (
+                    job.config.get("is_retry_chain")
+                    and job.status in (JobStatus.PENDING, JobStatus.RUNNING)
+                    and job.config.get("last_outcome") in _CHAIN_LIVE_OUTCOMES
                 ):
                     # Chain has taken over this Job's lifecycle. The
                     # original dispatch ran successfully but a publisher
@@ -1690,6 +1728,18 @@ class JobManager:
                     # own state machine (driven by ``upsert_retry_chain_job``)
                     # will land the terminal state when the chain finishes
                     # or exhausts.
+                    #
+                    # Defensive guard (issue #242): the ``last_outcome in
+                    # _CHAIN_LIVE_OUTCOMES`` check ensures we only skip
+                    # the transition when a chain firing is actually
+                    # pending/running. Without it, ANY config-clone path
+                    # that leaks ``is_retry_chain=True`` onto a fresh
+                    # dispatch (manual reprocess pre-fix, future schedule
+                    # clone, settings import) would strand the job in
+                    # RUNNING forever because no chain ever fires to
+                    # finalize it. The source-side strip in
+                    # ``reprocess_job`` is the primary fix; this is
+                    # belt-and-braces against the next leak path.
                     #
                     # BUT: still clear the worker-pool bookkeeping. The
                     # dispatch IS done — the worker pool has released

@@ -14,7 +14,14 @@ from ..auth import (
     regenerate_token,
     validate_token,
 )
-from ..jobs import PRIORITY_NORMAL, JobStatus, get_job_manager, is_user_visible_job, parse_priority
+from ..jobs import (
+    PRIORITY_NORMAL,
+    RETRY_STATE_CONFIG_KEYS,
+    JobStatus,
+    get_job_manager,
+    is_user_visible_job,
+    parse_priority,
+)
 from . import api
 from ._helpers import (
     MEDIA_ROOT,
@@ -1467,17 +1474,16 @@ def reprocess_job(job_id):
                 new_config["path_count"] = parent_cfg["path_count"]
             library_name = parent_job.library_name or library_name
 
-    for key in (
-        "is_retry",
-        "retry_delay",
-        "retry_attempt",
-        "max_retries",
-        "parent_job_id",
-        "webhook_retry_count",
-        "webhook_retry_delay",
-        "resolution_summary",
-        "scheduled_at",
-    ):
+    # Strip every retry-related key the old job's config might carry.
+    # Issue #242: leaving ``is_retry_chain`` set on the new job routed
+    # ``complete_job`` into the "chain drives lifecycle" branch
+    # (jobs.py:1677), which skips the COMPLETED transition entirely
+    # and left manually-rerun jobs stuck in RUNNING forever once the
+    # all-fresh fast path (no retries needed) was taken. The key set
+    # is owned by ``RETRY_STATE_CONFIG_KEYS`` (jobs.py) so this list
+    # can't drift from the actual writes ``upsert_retry_chain_job``
+    # and ``_spawn_retry_job`` perform.
+    for key in RETRY_STATE_CONFIG_KEYS:
         new_config.pop(key, None)
     new_job = job_manager.create_job(
         library_id=job.library_id,

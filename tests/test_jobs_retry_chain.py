@@ -831,6 +831,60 @@ class TestCompleteJobChainActiveGuard:
         # didn't drive the state machine.
         assert after.config["last_outcome"] == "scheduled"
 
+    def test_complete_job_transitions_when_chain_state_is_terminal(self, jm):
+        """Defense-in-depth for issue #242: if ``is_retry_chain=True`` leaks
+        onto a fresh dispatch's config (e.g. via a config-clone path that
+        forgets to strip it), and ``last_outcome`` indicates the chain has
+        already terminated (or was never live), ``complete_job`` MUST fall
+        through to the normal terminal transition instead of skipping it.
+
+        Without this guard the source-side strip in ``reprocess_job`` is
+        the ONLY line of defence — any future config-clone path that
+        leaks the flag would reproduce the production stuck-RUNNING bug.
+
+        Matrix collapse note: ``last_outcome="completed"`` falls through
+        the same frozenset-miss branch as ``"exhausted"`` (both are
+        terminal outcomes excluded from ``_CHAIN_LIVE_OUTCOMES``); a
+        separate test for ``completed`` would duplicate this one. Same
+        rationale on the live side: ``"queued_for_slot"`` collapses
+        with ``"scheduled"`` for the membership-hit case already pinned
+        by ``test_complete_job_skips_status_when_chain_active``.
+        """
+        job = jm.create_job(library_name="LeakedChainFlag", config={})
+        jm.start_job(job.id)
+        # Simulate a config-clone path that leaked ``is_retry_chain`` onto
+        # a fresh dispatch but did NOT mark the chain as actively firing.
+        # Production paths setting ``last_outcome`` to a live state always
+        # go through ``upsert_retry_chain_job``; this combination only
+        # arises through a clone bug.
+        job.config["is_retry_chain"] = True
+        job.config["last_outcome"] = "exhausted"
+        jm._persist_job(job)
+
+        jm.complete_job(job.id)
+
+        after = jm.get_job(job.id)
+        assert after.status == JobStatus.COMPLETED, (
+            f"complete_job must fall through when chain state is terminal/missing; "
+            f"got {after.status} (regression for issue #242 defensive guard)"
+        )
+
+    def test_complete_job_transitions_when_chain_flag_leaked_without_outcome(self, jm):
+        """Sibling of the terminal-outcome case: ``is_retry_chain`` set
+        but no ``last_outcome`` at all (the literal state a stale config
+        clone produces). MUST fall through to the normal transition."""
+        job = jm.create_job(library_name="LeakedNoOutcome", config={})
+        jm.start_job(job.id)
+        job.config["is_retry_chain"] = True
+        jm._persist_job(job)
+
+        jm.complete_job(job.id)
+
+        after = jm.get_job(job.id)
+        assert after.status == JobStatus.COMPLETED, (
+            f"complete_job must fall through when no live chain outcome is recorded; got {after.status}"
+        )
+
     def test_complete_job_clears_bookkeeping_when_chain_active(self, jm):
         """The guard skips the status transition but MUST still clear
         the worker-pool bookkeeping. Otherwise the Job leaks in
