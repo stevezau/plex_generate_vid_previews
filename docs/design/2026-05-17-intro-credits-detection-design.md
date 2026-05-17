@@ -1382,7 +1382,84 @@ The `Plex Commercial Skipper` binary contains the exact ComSkip CSV header `fram
 
 Plex uses this to identify NCOP (Non-Credit Opening) files — separate media parts that ARE the opening, named e.g. `MyShow_S01E03_NCOP1.mkv`. We adopt this regex verbatim for anime library handling — when a file matches, the entire file is the intro (no detection needed; just emit a 0–EOF intro marker).
 
-### 11.5.6. The accuracy moat — there isn't one
+### 11.5.7. Emby + Jellyfin algorithm spec — implementation-grade depth
+
+A separate research stream did IL decompilation of `Emby.Providers.dll` (the closed-source Emby Premiere server's intro detector) and a line-by-line walkthrough of intro-skipper's open-source code. The findings give us a re-implementation spec for our Python Tier 2.
+
+**Algorithm lineage (now confirmed):**
+```
+VictorBitca/matcher (Go, 2019) → puzzledsam (Python gist, 2019) →
+chefbennyj1/Emby.IntroSkip (C#, 2020) → Emby Premiere (C#, 4.7+) [licensed in]
+
+(Parallel branch:)
+ConfusedPolarBear's Jellyfin plugin (2021) → intro-skipper/intro-skipper (2024-26)
+```
+Emby's IL matches chefbennyj1's source 1:1 (verified by string and constant extraction).
+
+**The two competing algorithms — choose ours:**
+
+| Approach | Used by | Complexity | Pros | Cons |
+|---|---|---|---|---|
+| **Inverted index** | Jellyfin intro-skipper | O(N) per pair after index build | Fast, handles arbitrary intro offsets between episodes | Known mismatch shape (LHS/RHS independently sorted) |
+| **Sliding-window cross-correlation** | Emby Premiere (via chefbennyj1) | O(N²) per pair | Single internally-consistent offset; 3-sample lookahead filters spurious matches | Slower (4800-sample fp → 23M comparisons/pair vs 5K) |
+
+**Our recommendation:** start with Jellyfin's inverted-index, but **fix the LHS/RHS-mismatch bug** by tracking `(shift, lhsRange, rhsRange)` as a triple (not independent sorts), and **add pairwise consensus** (require ≥2 pair matches before accepting a candidate) which is strictly stronger than intro-skipper's "longest wins per episode" rule and addresses the ~80% accuracy ceiling intro-skipper hovers at.
+
+**Canonical constants for Python re-impl (Tier 2):**
+```python
+# Bit-identical to BOTH intro-skipper and Emby Premiere
+SAMPLE_DURATION = 4096 / 11025 / 3    # ≈ 0.12381 s; chromaprint emits 1 uint32 per this interval
+MAX_BIT_DIFF = 6                       # Jellyfin tightened from VictorBitca's 8 — popcount(XOR) ≤6/32
+MAX_TIME_SKIP = 3.5                    # s gap tolerance in contiguous-region search
+MIN_INTRO_DURATION = 15                # s
+MAX_INTRO_DURATION = 120               # s
+INVERTED_INDEX_SHIFT = 2               # soft fuzz on hash arithmetic neighbours
+ANALYSIS_PERCENT = 0.25                # first 25% of episode
+ANALYSIS_LENGTH_LIMIT = 600            # 10 min cap
+MIN_PAIRS_FOR_CONSENSUS = 2            # OUR addition; intro-skipper uses 1 → 80% ceiling
+```
+
+**SWAR popcount (bit-identical to Emby's GetFastHammingDistance + intro-skipper's BitOperations.PopCount):**
+```python
+def popcount32(x: np.ndarray) -> np.ndarray:
+    """Bit-identical to Emby Premiere's GetFastHammingDistance and
+    BitOperations.PopCount. Verified by manual IL trace."""
+    x = x.astype(np.uint32)
+    x = x - ((x >> 1) & 0x55555555)
+    x = (x & 0x33333333) + ((x >> 2) & 0x33333333)
+    x = (x + (x >> 4)) & 0x0f0f0f0f
+    x = x + (x >> 8)
+    x = x + (x >> 16)
+    return (x & 0x3f).astype(np.int32)
+```
+
+**Byte order:** Both Jellyfin and Emby use platform-endian `BitConverter.ToUInt32` on x64 (always LE). FFmpeg's chromaprint muxer also emits LE. Python: `np.frombuffer(data, dtype='<u4')`. **Do NOT use `>u4`.**
+
+**FFmpeg invocation (minimal portable):**
+```bash
+ffmpeg -i {path} -ss {start} -t {duration} -vn -sn -dn -f chromaprint -fp_format raw -
+```
+Emby and Jellyfin disagree on `-ac` and `-ar` flags but both end up in chromaprint's internal 11025-Hz-mono pipeline. The chromaprint muxer resamples regardless of input, so these flags don't affect output. Skipping them keeps our invocation portable.
+
+**Boundary refinement (intro-skipper's three-stage; Emby doesn't do this):**
+1. **Chapter snap** — find nearest chapter within `[end - 5s, end + 2s]` (asymmetric: shrink-favoring).
+2. **Silence snap** — `silencedetect=noise=-50dB:duration=0.1`, filter results to ≥0.33s duration, snap end to silence *start* (not end — viewer wants the moment audio drops).
+3. **Keyframe snap** — `-skip_frame nokey -vf showinfo`, parse `pts_time:`, snap end to nearest keyframe (makes player seek instant — no decode-from-non-keyframe).
+
+Each can shift the boundary independently; last wins. Snap-to-zero / snap-to-duration short-circuits when `end >= duration - 2s`.
+
+**Per-mode analyzer chain ordering (from intro-skipper's BaseItemAnalyzerTask):**
+
+| Mode | Order | Note |
+|---|---|---|
+| Intro | `[ChapterAnalyzer, ChromaprintAnalyzer]` | Chromaprint skipped for movies |
+| Credits (non-anime) | `[ChapterAnalyzer, BlackFrameAnalyzer, ChromaprintAnalyzer]` | BlackFrame first because TV credits typically have black bg |
+| Credits (anime) | `[ChapterAnalyzer, ChromaprintAnalyzer, BlackFrameAnalyzer]` | Flipped because anime credits are bright/animated |
+| Recap / Preview / Commercial | `[ChapterAnalyzer]` only | These modes are *only* detected from chapter names |
+
+**Test fixture** (HUGE leverage): VictorBitca/matcher repo has `Jojo-01.wav` through `Jojo-10.wav` (~17MB each, full episodes) as the canonical test corpus from the original algorithm author. Documented expected output: intros start near 0, end near 60s. **Pre-validated ground truth** — we can run our re-implementation against these 10 files BEFORE touching real Plex content. Phase B's first test.
+
+### 11.5.8. The accuracy moat — there isn't one
 
 | Component | Plex | OSS substitute | Match? |
 |---|---|---|---|
