@@ -1348,6 +1348,49 @@ The single hit was The Boys S02E07 — returned full markers including intro, cr
 
 ---
 
+## 11.6. SOTA accuracy ceiling — where our cascade sits and why
+
+A separate SOTA research stream (2026-05-17) put numbers on the ceiling:
+
+| Approach | F1 | Status |
+|---|---|---|
+| **Korolkov & Yanchenko 2025** — CLIP ViT-B + 16-head 16-layer attention | **0.91** | Academic best. No public weights. Reproducible (~$50 V100-hours + 27hr labeled corpus + ~2 weeks). |
+| **Hao et al. 2021** (Amazon Prime Video's deployed approach) | **0.73** | CNN + audio features + BiLSTM + CRF. No public release. AWS Rekognition tracks approximately this. |
+| **Plex / intro-skipper / our cascade** (audio fingerprint + chapters + blackdetect + OCR) | **~0.75–0.85** | FOSS Pareto frontier in 2026. |
+| **AWS Rekognition Video Segment Detection** | ~0.73 (matches Hao) | $0.05/min Technical Cues + $0.05/min Shot = $0.10/min. 5,000-ep library × 45min ≈ **$11,250 for one bootstrap scan**. Viable for small libraries, prohibitive for large. |
+| **TwelveLabs Marengo 3.0** | Not published for this task | $0.0307/min (~40% cheaper than AWS). Embeddings model — segmentation is BYO. |
+| **Cognitive Mill's "99.99%" marketing** | **Unverified** | Single self-published 2021 blog comparing against AWS on a Russian-telco dataset. Closed-source SaaS, no independent benchmark. Treat as a marketing number. |
+
+**The bottom line:** our cascade sits ~10-18 F1 points below the academic best (Korolkov 2025) and ~2-12 above the commercial baseline (AWS Rekognition / Hao 2021). The gap to SOTA is real but engineering-cost-significant; the gap *over* commercial baselines is solid given our free-and-local positioning.
+
+**Chromaprint specifically is the 2017-era technique.** Visual-embedding-based detection (CLIP + temporal attention) is now the academic SOTA. Audio fingerprinting survives in modern cascades as a free fast-path that nails the within-source TV case at near-100% within seconds — but it loses cross-source pairs (the Hart to Hart problem), and it cannot detect movies (no peer episodes). The cascade has to layer on top of it.
+
+### 11.6.1. New spec additions surfaced by SOTA research
+
+1. **Tier 2c — SoundFingerprinting escalation path** for cross-source chromaprint failures. When pairwise match rate within a season drops below 30%, escalate to **`SoundFingerprinting`** (MIT, peak-pair, used by plex-credits-detect — robust to bitrate/normalizer differences). 3× slower per second of audio but handles re-encodes well. Triggered automatically when chromaprint Pass 2 returns low confidence; the user never sees this complexity.
+
+2. **Tier 5 — Chapter-Llama (opt-in, future-ready)**. The first MIT-licensed open-source model that approaches SOTA. Llama-3.1-8B + LoRA adapters, public weights on HuggingFace (`lucas-ventura/chapter-llama`), runs locally on 16+GB VRAM. F1 45.3 on chapter generation overall, but precision is much higher on the subquestion "did it find an intro/credits/recap chapter." Deferred to a future Phase E — not needed for the v1 cascade but documented as the realistic open-source path to push past 0.85 F1.
+
+3. **No reliance on Cognitive Mill.** Their 99.99% claim is single-source marketing.
+
+4. **AWS Rekognition / Marengo as paid-tier escape hatches** for users with small libraries who want commercial-grade detection without local compute. Documented in §13 as "future paid-tier opt-in", not a v1 dependency.
+
+### 11.6.2. The signal hierarchy by marker type (from SOTA research)
+
+| Marker type | Best signal | Why |
+|---|---|---|
+| Intro (TV, themed audio) | **Audio fingerprint** | Theme music repeats; chromaprint within-source is near-100% at ~100× real-time CPU |
+| Intro (anime OP, themed audio) | **Audio fingerprint** + OCR title cards | Same; OCR verifies multi-OP boundaries |
+| Intro (movie) | **Tier 1 lookup** OR Tier 0 chapter | No peer episodes for audio fp |
+| Credits (TV or movie) | **OCR (PaddleOCR)** | Credits text IS the signal we want |
+| Recap | **OCR (chyron region)** | Recap audio is unique per episode; visual chyron is the consistent signal — subtitle keyword fails (we proved it) |
+| Black frames | `ffmpeg blackdetect` | The right tool for the right problem |
+| Studio logos | CLIP-class classifier (future) | Not a v1 target |
+
+The Korolkov 2025 paper bypasses this hierarchy by treating *all signals as visual* via CLIP embeddings. That's why it's 18 F1 points above the audio-fingerprint field. Our cascade trades that accuracy for ~3 orders of magnitude less compute.
+
+---
+
 ## 12. Phased rollout
 
 Implementation lands in four PRs against `feat/markers-detection`:
