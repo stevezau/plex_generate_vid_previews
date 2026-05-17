@@ -225,19 +225,49 @@ class MarkerPublisher(ABC):
 
 ## 5. Detection algorithms (the four-tier cascade)
 
-### Tier 1 — TheIntroDB lookup
+### Tier 1 — TheIntroDB lookup (live-verified 2026-05-17)
 
-**Endpoint:** `GET https://api.theintrodb.org/media?tmdbId={id}&season={s}&episode={e}` (TV) or `?tmdbId={id}` (movie).
+**Endpoint:** `GET https://api.theintrodb.org/v1/media?tmdb_id={id}[&season={s}&episode={e}]` (also accepts `imdb_id=tt0000000`). OpenAPI 2.0.0 spec mirrored to `docs/design/theintrodb-openapi-v2.yaml`.
 
-**Why first:** Zero local compute. TMDb-keyed (re-encodes/cuts hit the same record). Active May 2026 (commits within the last week). GPL-3 plugins prove the API is stable. Coverage will grow as users contribute back.
+**Verified response shape** (Breaking Bad S1E1, live):
+```json
+{
+  "tmdb_id": 1396, "type": "tv", "season": 1, "episode": 1,
+  "intro":   {"start_ms": 228000, "end_ms": 244000},
+  "credits": {"start_ms": 3431000, "end_ms": null},
+  "recap":   {"start_ms": null, "end_ms": null, "submission_count": 0},
+  "preview": {"start_ms": null, "end_ms": null, "submission_count": 0}
+}
+```
+`credits.end_ms = null` means "goes to EOF" (our publishers translate this to `Duration - 1` when emitting to servers that require both endpoints).
+
+**Real coverage (live `/v1/stats`):**
+- 1,744 shows + 272 movies (2,014 media items)
+- 45,274 episodes covered
+- 323,404 total submissions, 81,435 accepted
+- 295 contributors
+- Empirical hit rate: ~40% on popular TV S1E1, ~18% on popular movies. Long tail is sparse.
+
+**Rate limits (binding):**
+- **Anonymous:** 100 lookups/day per IP, 30/10s burst.
+- **Bearer-auth:** 500 lookups/day per user, 1000 submits/day. Burst 30/10s.
+- No bulk-export endpoint exists — only `/media` (single lookup) and `/submit`.
+
+**Operational consequence:** A 5,000-episode library at 500/day takes 10 days to fully scan via TheIntroDB. **Tier 1 is therefore designed as opportunistic, not bootstrap:**
+- Webhook-driven new items hit Tier 1 first (low volume — fits in budget easily)
+- Items rendered in the Inspector trigger an on-demand lookup
+- A "fill cache slowly" background task progressively pulls TheIntroDB results for the existing library, respecting rate limits
+- Tiers 2/3 carry the bulk of first-scan library bootstrap, not Tier 1
+
+**Auth model:** Bearer JWT — users sign up at theintrodb.org for free API key, paste into our settings. Without a key the app uses anonymous 100/day quota.
 
 **Identifier extraction:** new helper on each `MediaServer` subclass — `external_ids(item_id) -> {"tmdb": ..., "imdb": ...}`. Plex exposes via `Episode.guids` / `Movie.guids` (multi-value, format `tmdb://12345`). Emby/Jellyfin expose via `Items` response with `ProviderIds: {"Tmdb": "12345", "Imdb": "tt..."}`. Cached on `ProcessableItem` so we don't re-fetch.
 
 **Caching:** 24-hour TTL on misses (`{tmdb_id, season, episode} → empty`); permanent on hits (sidecar gets written).
 
-**Submit-back:** Per-user API key in settings (default off). Only submit detections where (a) we have ≥0.85 confidence and (b) two tiers agreed on the boundary within 2 seconds. Honors TheIntroDB's authentication model.
+**Submit-back:** Default OFF. When enabled and detector confidence ≥0.85 AND two tiers agreed on boundary within 2 seconds, POST `/v1/submit` with the user's own API key. Their submissions get 10× weight in TheIntroDB's averaging, so a regular user's contributions visibly improve their own coverage.
 
-**Failure mode:** API down → fall through to Tier 2/3. Never block the pipeline on TheIntroDB.
+**Failure mode:** API 5xx / rate-limit 429 → fall through to Tier 2/3. Never block the pipeline on TheIntroDB. Circuit-breaker pattern: after 5 consecutive failures within 60s, skip TheIntroDB for the next 5 minutes.
 
 ### Tier 2 — Chromaprint cross-episode (TV only)
 

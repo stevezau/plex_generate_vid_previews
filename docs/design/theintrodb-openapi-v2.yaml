@@ -1,0 +1,767 @@
+openapi: 3.0.3
+info:
+  title: TheIntroDB API
+  version: 2.0.0
+  description: |
+    API for managing intro timestamps for movies and TV shows.
+
+    ### Rate Limiting
+    All endpoints are subject to rate limiting to prevent abuse and ensure service stability. Limits are applied based on the client's IP address (for unauthenticated requests) or user ID (for authenticated requests). Exceeding these limits will result in a `429 Too Many Requests` error. Admins and moderators are exempt from rate limits.
+
+    - **/media endpoints**: 30 requests per 10 seconds
+    - **/submit endpoints**: 40 requests per 10 seconds
+    - **All other endpoints**: 50 requests per 10 seconds
+
+    When a rate limit is exceeded, the following headers are returned:
+    - `X-RateLimit-Limit`: The maximum number of requests allowed in the current window.
+    - `X-RateLimit-Remaining`: The number of requests remaining in the current window.
+    - `X-RateLimit-Reset`: The time in seconds until the rate limit window resets.
+
+    ### Usage Limiting
+    In addition to rate limiting, daily usage limits are enforced to ensure fair use. Limits reset every 24 hours. Exceeding the usage limit will also result in a `429 Too Many Requests` error.
+
+    **Authenticated Users (per account):**
+    - `GET /media`: 500 requests/day
+    - `POST /submit`: 1000 requests/day
+    - `GET /data/*`: 1000 requests/day
+    - Other authenticated endpoints: 1000 requests/day
+
+    **Unauthenticated Users (per IP address):**
+    - `GET /media`: 100 requests/day
+    - Other public endpoints: 200 requests/day
+
+    The API returns the following headers with each response to help you track your usage:
+    - `X-UsageLimit-Limit`: The maximum number of requests allowed in the current window.
+    - `X-UsageLimit-Remaining`: The number of requests remaining in the current window.
+    - `X-UsageLimit-Reset`: The time in seconds until the usage window resets.
+servers:
+  - url: https://api.theintrodb.org/v2
+    description: Production server
+
+paths:
+  /media:
+    get:
+      summary: Get media timestamps for a media item
+      description: |
+        Retrieve media timestamps for a specific movie or TV episode. Returns all segment types (intro, recap, credits, preview) with weighted averages calculated separately.
+
+        - For movies: Provide only `tmdb_id` to get media data for the movie
+        - For TV episodes: Provide `tmdb_id`, `season`, and `episode` to get media data for that episode
+
+        You can also provide an `imdb_id` instead of `tmdb_id`. When using `imdb_id`, the API attempts to resolve the corresponding TMDB ID and, for TV, map season/episode numbers using external metadata. This mapping may not always be accurate; **`tmdb_id` remains the preferred and canonical identifier. This also increases latency while it processes the request.**
+
+        **Without API key**: Only accepted submissions are included. Only media with at least one accepted submission return timestamps; otherwise 404.
+
+        **With optional API key** (Authorization: Bearer &lt;api_key&gt;): The response includes the requester's **pending and accepted** submissions for that media in the pool. The requester's own submissions (pending or accepted) are weighted 10× in the average, so their times influence the result more. This allows submitters to see their pending times immediately without waiting for acceptance.
+        - If there are no accepted submissions but the user has pending submissions for that media, the endpoint returns 200 with timestamps derived from their pending (and any accepted) submissions.
+        - Each segment type is calculated independently. If no submissions exist for a segment type, it's not included in the response (See 'TV episode media response with only multiple intro segments').
+      operationId: getMedia
+      security:
+        - {}
+        - bearerAuth: []
+      parameters:
+        - name: tmdb_id
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 10000000
+          description: The TMDB ID of the media item. Required when `imdb_id` is not provided.
+          example: 12345
+        - name: imdb_id
+          in: query
+          required: false
+          schema:
+            type: string
+            pattern: '^tt[0-9]{7,8}$'
+          description: |
+            Optional IMDB ID for the media item. When provided without `tmdb_id`, the API will attempt to resolve the corresponding TMDB ID and (for TV) map season/episode numbers using external metadata.
+
+            This mapping may not always be accurate; `tmdb_id` is preferred whenever available.
+          example: "tt0111161"
+        - name: season
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+          description: Season number (required when getting intro for a TV episode)
+          example: 1
+        - name: episode
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+          description: Episode number (required when getting intro for a TV episode)
+          example: 1
+      responses:
+        '200':
+          description: Successful response with all segment types and multiple credits
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MediaResponse'
+              examples:
+                movie-media:
+                  summary: Movie media response with all segments
+                  value:
+                    tmdb_id: 1084242
+                    type: "movie"
+                    intro:
+                      - start_ms: null
+                        end_ms: 23000
+                    recap:
+                      - start_ms: 25000
+                        end_ms: 134000
+                    credits:
+                      - start_ms: 5801777
+                        end_ms: 6371111
+                      - start_ms: 6408000
+                        end_ms: null
+                    preview:
+                      - start_ms: 1680000
+                        end_ms: 1740000
+                episode-media:
+                  summary: TV episode media response with only multiple intro segments
+                  value:
+                    tmdb_id: 12345
+                    type: "tv"
+                    season: 1
+                    episode: 1
+                    intro:
+                      - start_ms: 30000
+                        end_ms: 90000
+                      - start_ms: 120000
+                        end_ms: 150000
+        '400':
+          description: Bad request - missing or invalid parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missing-tmdb-id:
+                  summary: Missing tmdb_id parameter
+                  value:
+                    error: "tmdb_id is required"
+                invalid-tmdb-id:
+                  summary: Invalid tmdb_id format
+                  value:
+                    error: "invalid tmdb_id"
+                invalid-season:
+                  summary: Invalid season parameter
+                  value:
+                    error: "invalid season"
+                invalid-episode:
+                  summary: Invalid episode parameter
+                  value:
+                    error: "invalid episode"
+        '404':
+          description: Media not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                no-data:
+                  summary: No data found for this TMDB ID
+                  value:
+                    error: "no data found for this tmdb_id"
+                media-not-found:
+                  summary: Media not found for this episode/movie
+                  value:
+                    error: "media not found"
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /submit:
+    post:
+      summary: Submit segment timestamps
+      description: |
+        Submit segment timestamps (intro, recap, credits, or preview) for a movie or TV episode. Users can submit once per segment type per movie/episode.
+
+        **Authentication required**: This endpoint requires a valid API key.
+
+        **Segment types**:
+        - `intro`: Intro segment (start optional/null, end required)
+        - `recap`: Recap segment (start optional/null, end required)
+        - `credits`: Credits segment (start required, end optional/null = end of media)
+        - `preview`: Preview segment (start required, end optional/null = end of media)
+
+        **Time format**: Either both `start_sec` AND `end_sec` (seconds with decimals) OR both `start_ms` AND `end_ms` (milliseconds) must be provided. Formats cannot be mixed. For segment types that allow null end (credits, preview), end may be omitted (null) to mean end of media.
+
+        **Business rules**:
+
+        **Duration limits** (aligned with API constants): MinDuration 5s (5000 ms); MaxIntroDuration 200s (200000 ms); MaxRecapDuration 1200s (1200000 ms, 20 min); MaxCreditsDuration 1800s (1800000 ms, 30 min); MaxPreviewDuration 1800s (1800000 ms, 30 min). All start/end timestamps must not exceed 6 hours (MaxTimestampSeconds 21600, MaxTimestampMs 21600000).
+
+        - **Intro**: End required, start optional (can be null/0 meaning starts at beginning). Duration must be 0 (no intro) or MinDuration–MaxIntroDuration (5–200 seconds).
+        - **Recap**: End required, start optional (can be null/0 meaning starts at beginning). Duration must be 0 (no recap) or MinDuration–MaxRecapDuration (5–1200 seconds, 20 minutes).
+        - **Credits**: Start required (0 means no credits, otherwise must be >= MinDuration), end optional (null means end of video). If end provided, duration must be >= MinDuration (5s) and <= MaxCreditsDuration (1800s, 30 minutes).
+        - **Preview**: Start required, end optional (null means end of media). If end provided, duration must be >= MinDuration (5s) and <= MaxPreviewDuration (1800s, 30 minutes).
+        - **All times**: start and end values must not exceed 6 hours (21600 seconds or 21600000 ms).
+        - For TV shows, both `season` and `episode` are required
+        - For movies, `season` and `episode` must be omitted
+        - IMDB ID format must be `tt[0-9]{7,8}` if provided
+        - Users cannot submit multiple times for the same segment type per media/episode
+        - Segment times cannot overlap with the user's own other submissions for the same media/episode
+        - Locked/banned users cannot submit
+      operationId: submitMediaTimestamp
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubmissionRequest'
+            examples:
+              intro-submission:
+                summary: Intro segment submission
+                value:
+                  tmdb_id: 12345
+                  type: "movie"
+                  segment: "intro"
+                  start_sec: 30.0
+                  end_sec: 90.0
+                  imdb_id: "tt0111161"
+              recap-submission:
+                summary: Recap segment submission
+                value:
+                  tmdb_id: 12345
+                  type: "movie"
+                  segment: "recap"
+                  start_sec: 120.0
+                  end_sec: 150.0
+              credits-submission:
+                summary: Credits segment submission (null end)
+                value:
+                  tmdb_id: 12345
+                  type: "movie"
+                  segment: "credits"
+                  start_sec: 1800.0
+                  end_sec: null
+              tv-intro-submission:
+                summary: TV episode intro submission
+                value:
+                  tmdb_id: 67890
+                  type: "tv"
+                  segment: "intro"
+                  season: 1
+                  episode: 1
+                  start_sec: null
+                  end_sec: 85.2
+                  imdb_id: "tt0111161"
+              preview-submission:
+                summary: Preview segment submission (with end time)
+                value:
+                  tmdb_id: 67890
+                  type: "tv"
+                  segment: "preview"
+                  season: 1
+                  episode: 1
+                  start_sec: 1680.0
+                  end_sec: 1740.0
+              preview-submission-null-end:
+                summary: Preview segment (null end = end of media)
+                value:
+                  tmdb_id: 67890
+                  type: "tv"
+                  segment: "preview"
+                  season: 1
+                  episode: 1
+                  start_sec: 1680.0
+                  end_sec: null
+              movie-submission-ms:
+                summary: Movie submission using milliseconds
+                value:
+                  tmdb_id: 12345
+                  type: "movie"
+                  segment: "intro"
+                  start_ms: 30000
+                  end_ms: 90000
+                  imdb_id: "tt0111161"
+      responses:
+        '200':
+          description: Submission successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubmissionResponse'
+              examples:
+                successful-submission:
+                  summary: Successful submission
+                  value:
+                    ok: true
+                    submission:
+                      id: "550e8400-e29b-41d4-a716-446655440000"
+                      tmdbId: 12345
+                      type: "movie"
+                      segment: "intro"
+                      startMs: 30000
+                      endMs: 90000
+                      status: "pending"
+                      weight: 1
+                auto-accepted-submission:
+                  summary: Submission automatically accepted
+                  value:
+                    ok: true
+                    submission:
+                      id: "550e8400-e29b-41d4-a716-446655440001"
+                      tmdbId: 67890
+                      type: "tv"
+                      segment: "intro"
+                      season: 1
+                      episode: 1
+                      startMs: null
+                      endMs: 85200
+                      status: "accepted"
+                      weight: 2
+                credits-submission:
+                  summary: Credits submission with null end
+                  value:
+                    ok: true
+                    submission:
+                      id: "550e8400-e29b-41d4-a716-446655440002"
+                      tmdbId: 12345
+                      type: "movie"
+                      segment: "credits"
+                      startMs: 1800000
+                      endMs: null
+                      status: "pending"
+                      weight: 1
+        '400':
+          description: Bad request - invalid request body or validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalid-request-body:
+                  summary: Invalid JSON or missing required fields
+                  value:
+                    error: "Invalid request body"
+                    details: "Key: 'SubmissionRequest.TmdbID' Error:Field validation for 'TmdbID' failed on the 'required' tag"
+                invalid-times:
+                  summary: Invalid start/end times
+                  value:
+                    error: "end_sec must be greater than start_sec"
+                missing-time-fields:
+                  summary: Neither time format provided
+                  value:
+                    error: "Must provide either start_sec/end_sec OR start_ms/end_ms"
+                both-time-formats:
+                  summary: Both time formats provided
+                  value:
+                    error: "Provide either start_sec/end_sec OR start_ms/end_ms, not both"
+                incomplete-time-format:
+                  summary: Only one field of a time format provided
+                  value:
+                    error: "Both start_sec and end_sec must be provided together"
+                missing-season-episode:
+                  summary: Missing season/episode for TV submission
+                  value:
+                    error: "season and episode are required when type is 'tv'"
+                invalid-imdb-format:
+                  summary: Invalid IMDB ID format
+                  value:
+                    error: "imdb_id must match format: ^tt[0-9]{7,8}$"
+        '401':
+          description: Unauthorized - authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "Unauthorized"
+        '403':
+          description: Forbidden - user is locked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "Your account has been locked"
+        '409':
+          description: Conflict - user already submitted for this segment type (regular users only)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                duplicate-segment:
+                  summary: User already submitted this segment type
+                  value:
+                    error: "You have already submitted an intro segment for this media/episode. You can only submit once per segment type per movie or episode."
+                overlapping-segments:
+                  summary: Segment times overlap with existing segment
+                  value:
+                    error: "Segment times overlap with existing recap segment (120000-150000 ms). Segments cannot overlap."
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  responses:
+    TooManyRequests:
+      description: |
+        Too Many Requests. The client has exceeded a rate limit or a daily usage limit.
+        When a rate limit is exceeded, `X-RateLimit-*` headers are returned.
+        When a usage limit is exceeded, `X-UsageLimit-*` headers are returned.
+      headers:
+        X-RateLimit-Limit:
+          schema:
+            type: integer
+          description: The maximum number of requests allowed in the current window.
+        X-RateLimit-Remaining:
+          schema:
+            type: integer
+          description: The number of requests remaining in the current window.
+        X-RateLimit-Reset:
+          schema:
+            type: integer
+          description: The time in seconds until the rate limit window resets.
+        X-UsageLimit-Limit:
+          schema:
+            type: integer
+          description: The maximum number of requests allowed in the current 24-hour window.
+        X-UsageLimit-Remaining:
+          schema:
+            type: integer
+          description: The number of requests remaining in the current 24-hour window.
+        X-UsageLimit-Reset:
+          schema:
+            type: integer
+          description: The time in seconds until the usage window resets.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            rate-limit:
+              summary: Rate limit exceeded
+              value:
+                error: "Too Many Requests"
+            usage-limit:
+              summary: Usage limit exceeded
+              value:
+                error: "Usage limit exceeded"
+                code: "usage_limit_exceeded"
+                retry_after: "8.4 hours"
+  schemas:
+    SegmentTimestamp:
+      type: object
+      required:
+        - start_ms
+        - end_ms
+      properties:
+        start_ms:
+          type: integer
+          nullable: true
+          minimum: 0
+          description: |
+            Start time of the segment in milliseconds.
+            - For intro: null if starts at beginning (< 5s threshold)
+            - For recap: null if starts at beginning (< 5s threshold)
+            - For credits: always present
+            - For preview: always present
+          example: 30000
+        end_ms:
+          type: integer
+          nullable: true
+          minimum: 0
+          description: |
+            End time of the segment in milliseconds.
+            - For intro: always present
+            - For recap: always present
+            - For credits: null if end of video (majority of submissions had null)
+            - For preview: null if end of media
+          example: 90000
+
+    MediaResponse:
+      type: object
+      required:
+        - tmdb_id
+        - type
+      properties:
+        tmdb_id:
+          type: integer
+          minimum: 1
+          maximum: 10000000
+          description: The TMDB ID of the media item
+          example: 12345
+        type:
+          type: string
+          enum: [movie, tv]
+          description: The type of media
+          example: "movie"
+        season:
+          type: integer
+          nullable: true
+          minimum: 1
+          description: Season number (only present for TV episodes)
+          example: 1
+        episode:
+          type: integer
+          nullable: true
+          minimum: 1
+          description: Episode number (only present for TV episodes)
+          example: 1
+        intro:
+          type: array
+          items:
+            $ref: '#/components/schemas/SegmentTimestamp'
+          description: Intro segment timestamps
+        recap:
+          type: array
+          items:
+            $ref: '#/components/schemas/SegmentTimestamp'
+          description: Recap segment timestamps
+        credits:
+          type: array
+          items:
+            $ref: '#/components/schemas/SegmentTimestamp'
+          description: Credits segment timestamps
+        preview:
+          type: array
+          items:
+            $ref: '#/components/schemas/SegmentTimestamp'
+          description: Preview segment timestamps
+
+    SubmissionRequest:
+      type: object
+      required:
+        - tmdb_id
+        - type
+        - segment
+      properties:
+        tmdb_id:
+          type: integer
+          minimum: 1
+          maximum: 10000000
+          description: The TMDB ID of the media item
+          example: 12345
+        type:
+          type: string
+          enum: [movie, tv]
+          description: The type of media
+          example: "movie"
+        segment:
+          type: string
+          enum: [intro, recap, credits, preview]
+          description: |
+            The segment type to submit.
+            - intro: Intro segment (end required, start optional/can be null)
+            - recap: Recap segment (end required, start optional/can be null)
+            - credits: Credits segment (start required, end optional/can be null)
+            - preview: Preview segment (start required, end optional/null = end of media)
+          example: "intro"
+        season:
+          oneOf:
+            - type: integer
+              minimum: 1
+            - type: string
+              pattern: '^[1-9]\d*(,\s*[1-9]\d*)*$'
+          nullable: true
+          description: |
+            Season number (required when type is "tv", must be null/omitted when type is "movie").
+            Supports single numbers (1), comma-separated lists (1,2), ascending ranges (1-3), or a mix (1,3-4,6).
+            When multiple seasons are provided, all combinations with episodes will be created.
+          example: 1
+        episode:
+          oneOf:
+            - type: integer
+              minimum: 1
+            - type: string
+              pattern: '^[1-9]\d*(,\s*[1-9]\d*)*$'
+          nullable: true
+          description: |
+            Episode number (required when type is "tv", must be null/omitted when type is "movie").
+            Supports single numbers (1), comma-separated lists (1,2), ascending ranges (1-3), or a mix (1,3-4,6).
+            When multiple episodes are provided, all combinations with seasons will be created.
+          example: "4,5,6"
+        start_sec:
+          type: number
+          nullable: true
+          minimum: 0
+          maximum: 21600.0
+          description: |
+            Start time of the segment in seconds (supports decimal values). Must not exceed 6 hours (21600).
+            - Intro: Optional (null/0 means starts at beginning)
+            - Recap: Optional (null/0 means starts at beginning)
+            - Credits: Required (0 means no credits, otherwise must be >= 5 seconds)
+            - Preview: Required
+            Both start_sec and end_sec must be provided together, OR use start_ms/end_ms.
+          example: 30.5
+        end_sec:
+          type: number
+          nullable: true
+          minimum: 0
+          maximum: 21600.0
+          description: |
+            End time of the segment in seconds (must be greater than start_sec). Must not exceed 6 hours (21600).
+            - Intro: Required
+            - Recap: Required
+            - Credits: Optional (null means end of video)
+            - Preview: Optional (null means end of media)
+            Both start_sec and end_sec must be provided together (or end_sec omitted for credits/preview when end is end of media), OR use start_ms/end_ms.
+          example: 90.2
+        start_ms:
+          type: integer
+          nullable: true
+          minimum: 0
+          maximum: 21600000
+          description: |
+            Start time of the segment in milliseconds. Must not exceed 6 hours (21600000).
+            - Intro: Optional (null/0 means starts at beginning)
+            - Recap: Optional (null/0 means starts at beginning)
+            - Credits: Required (0 means no credits, otherwise must be >= 5000ms)
+            - Preview: Required
+            Both start_ms and end_ms must be provided together, OR use start_sec/end_sec.
+          example: 30500
+        end_ms:
+          type: integer
+          nullable: true
+          minimum: 0
+          maximum: 21600000
+          description: |
+            End time of the segment in milliseconds (must be greater than start_ms). Must not exceed 6 hours (21600000).
+            - Intro: Required
+            - Recap: Required
+            - Credits: Optional (null means end of video)
+            - Preview: Optional (null means end of media)
+            Both start_ms and end_ms must be provided together (or end_ms omitted for credits/preview when end is end of media), OR use start_sec/end_sec.
+          example: 90200
+        tvdb_id:
+          type: integer
+          description: Optional TVDB ID
+          example: 123456
+        imdb_id:
+          type: string
+          pattern: '^tt[0-9]{7,8}$'
+          description: |
+            Optional IMDB ID (must match format tt followed by 7-8 digits).
+
+            When present, the API may use external metadata to help link IMDB and TMDB IDs for lookups and submissions. This metadata may not always be accurate, and `tmdb_id` remains the preferred canonical identifier.
+          example: "tt0111161"
+
+    SubmissionResponse:
+      type: object
+      required:
+        - ok
+        - submission
+      properties:
+        ok:
+          type: boolean
+          description: Indicates if the submission was successful
+          example: true
+        submission:
+          $ref: '#/components/schemas/SubmissionData'
+
+    SubmissionData:
+      type: object
+      required:
+        - id
+        - tmdbId
+        - type
+        - segment
+        - status
+        - weight
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique identifier for the submission
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        tmdbId:
+          type: integer
+          minimum: 1
+          maximum: 10000000
+          description: The TMDB ID of the media item
+          example: 12345
+        type:
+          type: string
+          enum: [movie, tv]
+          description: The type of media
+          example: "movie"
+        segment:
+          type: string
+          enum: [intro, recap, credits, preview]
+          description: The segment type of this submission
+          example: "intro"
+        season:
+          type: integer
+          nullable: true
+          minimum: 1
+          description: Season number (only present for TV episodes)
+          example: 1
+        episode:
+          type: integer
+          minimum: 1
+          description: Episode number (only present for TV episodes)
+          example: 1
+        startMs:
+          type: integer
+          nullable: true
+          minimum: 0
+          description: |
+            Start time of the segment in milliseconds.
+            - Intro: null if starts at beginning
+            - Recap: null if starts at beginning
+            - Credits: always present
+            - Preview: always present
+          example: 30000
+        endMs:
+          type: integer
+          nullable: true
+          minimum: 0
+          description: |
+            End time of the segment in milliseconds.
+            - Intro: always present
+            - Recap: always present
+            - Credits: null if end of video
+            - Preview: null if end of media
+          example: 90000
+        status:
+          type: string
+          enum: [pending, accepted, rejected]
+          description: Current status of the submission
+          example: "pending"
+        weight:
+          type: number
+          minimum: 0
+          description: Weight of the submission (used in weighted average calculations)
+          example: 1.0
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string
+          description: Error message describing what went wrong
+          example: "tmdb_id is required"
+        details:
+          type: string
+          description: Additional error details (only present for some validation errors)
+          example: "Key: 'SubmissionRequest.TmdbID' Error:Field validation for 'TmdbID' failed on the 'required' tag"
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Bearer token authentication (API key)
