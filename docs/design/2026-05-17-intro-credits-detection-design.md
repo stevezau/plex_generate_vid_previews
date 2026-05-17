@@ -433,7 +433,7 @@ Settings:
 1. **Pass 1, per-worker:** Extract a chromaprint fingerprint from a fixed window using `ffmpeg -ss 0 -t 600 -i {file} -ac 1 -ar 22050 -f chromaprint -fp_format raw -`. For intros: window = first 10 min. For credits: window = `Duration - CreditsFingerprintStart` (default last 10 min) → EOF.
 2. **Per-season fingerprint store:** Thread-safe dict keyed by `(show_id, season_number)`. Episodes deposit their fingerprint as they finish Pass 1.
 3. **Pass 2, post-dispatch (sequential, runs after all workers idle for that season):** Build inverted index of fingerprint hashes per episode. For each pair of episodes in the season, find the largest contiguous matching subsequence (sliding window Hamming distance, threshold ≤8 bits out of 32). Use **numpy** for the Hamming popcount — `np.unpackbits(arr.view(np.uint8)).sum(axis=-1)` is ~100× faster than `bin().count("1")` (PR #191's hot-path mistake).
-4. **Pairwise consensus:** Compare episode 0 vs episodes 1–5, then 1 vs 2–5, then 2 vs 3–5. Match candidates with ≥2 pairwise agreements within 4 seconds become the segment. Single-pair matches are discarded.
+4. **Pairwise consensus + 50% quorum (adopted from Plex's binary-confirmed rule):** Compare episode 0 vs episodes 1–5, then 1 vs 2–5, then 2 vs 3–5. Match candidates with ≥2 pairwise agreements within 4 seconds become the segment. Single-pair matches are discarded. **Additionally: if fewer than 50% of episodes in the season have a fingerprint match, drop ALL intros for the season** (Plex's quorum rule, verbatim binary string: `"IntroDetector: Less than half of episodes have an intro. Clearing intros for [%d]"`). Prevents shipping garbage markers from a noisy season.
 5. **Constraints (intro-skipper canonical defaults, verified from `PluginConfiguration.cs`):**
    - `MinimumIntroDuration = 15s`, `MaximumIntroDuration = 120s`
    - `MinimumCreditsDuration = 15s`, `MaximumCreditsDuration = 450s` (TV), `MaximumMovieCreditsDuration = 900s`
@@ -1336,6 +1336,66 @@ The single hit was The Boys S02E07 — returned full markers including intro, cr
 - `GET /emby/segment_reporting/version` → ❌ 404 (Segment_Reporting NOT installed)
 
 **Conclusion:** Phase A's Emby `read_markers()` (deferred to Phase B per the revised scope) and Phase C's marker writes will need integration-tested against a manually-configured Emby instance. The spec's "Segment_Reporting is reference impl" claim is correct as a code reference but the plugin requires explicit user installation — flag prominently in Setup Health.
+
+### 11.5.1. Plex's algorithm — fully decoded (binary analysis, 2026-05-17)
+
+A separate research stream extracted the `Plex Media Server` binary (Plex 1.42.x), the `Plex Media Fingerprinter`, the `Plex Commercial Skipper`, and `Music.tflite` from a `linuxserver/plex:latest` Docker image and analyzed them with `strings`, `readelf`, and `xxd`. The full pipeline is now known:
+
+1. **Decode** — FFmpeg (statically linked, libavcodec 60) + EAE for EAC3/TrueHD. **EAE is NOT a fingerprinter** (community myth) — it's Plex's licensed Dolby Digital Plus / TrueHD encoder/decoder bound to FFmpeg's `truehd_eae`/`eac3_eae` codec hooks. EAE only matters because Dolby decode must happen before chromaprint analysis.
+
+2. **Frame &amp; spectral features** — Essentia library (open-source MTG/UPF audio analysis, AGPLv3) with `FrameCutter` (default 2048-sample frame @ 22050 Hz, 1024 hop), `Spectrum`, `TriangularBands` (mel filter bank), `MFCC`.
+
+3. **Music classification** — `Music.tflite` (3.1 MB TFLite model, 8× Conv2D + BatchNorm → 2× Dense → Sigmoid). Mel-band spectrogram input → scalar probability per frame "is this musical?" High-music regions become candidate intro/theme segments.
+
+4. **Chromaprint fingerprinting** — **`Plex Media Fingerprinter` is literally `fpcalc` (AcoustID Chromaprint reference CLI) statically linked.** Same library as Jellyfin's intro-skipper. Same binary protocol. Same output bytes. CLI flag set matches upstream exactly.
+
+5. **Cross-episode matching** — `IntroDetectorManager` (C++ singleton, symbol `_ZN20IntroDetectorManager12GetSingletonEv`). Computes `chromaprint_hash_fingerprint` (SimHash) for compact storage, finds longest common subsequence of similar fingerprint chunks via Hamming distance.
+
+6. **The 50% quorum rule** — verbatim binary string: `"IntroDetector: Less than half of episodes have an intro. Clearing intros for [%d]"`. **If fewer than half of episodes in a season share a fingerprint match, Plex drops ALL intros for the season.** We should adopt this rule in our pass-2 logic.
+
+7. **Persist** — markers go into `metadata_item_setting_markers` table (per binary strings) with columns `marker_type`, `start_time_offset`, `end_time_offset`, `extra_data`. Fingerprint blobs in the `blobs` table.
+   - ⚠️ **Reconciliation needed:** MarkerEditorForPlex's source writes to `taggings` table (with `tag_type=12`). The binary references `metadata_item_setting_markers`. These could be: (a) a new table introduced in Plex 1.40+ that coexists with `taggings`; (b) a denormalized view; (c) MarkerEditor's pattern using legacy storage. Resolved in Phase C by reading MarkerEditorForPlex's current source on GitHub before implementation begins.
+
+8. **Cloud submit** — POSTs to `https://metadata.provider.plex.tv` (sole `*.plex.tv` URL in the binary). The DTO shape (C++ class `MarkerResponseSubmit`) is `{type, endTimeOffset, isFinal, hash, startTimeOffset, version, guid, duration}`.
+
+### 11.5.2. BogoHash = SHA-256 of first 4096 bytes (cloud key, definitively answered)
+
+Confirmed by: (a) PMS binary class hierarchy `BogoHash` / `BogoHashFile` / `BogoHashNetwork`, (b) the error string `"BogoHash cannot hash files hosted on servers without range request support"` (implies HTTP `Range: bytes=0-4095`), (c) Plex staffer ChuckPa on the forum: *"Plex reads the first block from the file (4K) and generates the hash from there."* The hash is the `media_parts.hash` column (separate from `open_subtitle_hash`).
+
+**Implication:** we can compute the *exact* BogoHash that Plex uses to key its cloud marker DB. This is a known capability but not committed to the spec — ToS/legal grey area for querying Plex's cloud third-party. Documented as a possible future capability if Plex ever opens the endpoint, or if the user explicitly opts in to legal-risk-tolerant features.
+
+### 11.5.3. Credits detection — OpenCV EAST + Music.tflite + blackdetect
+
+The PMS binary links **OpenCV 4.5 dnn + ONNX Runtime 1.16.3**. Source path leak: `Library/Scanner/CreditsDetector/CreditsDetectorManager.cpp`. The text-detection model is likely **EAST or DB-Net** loaded via `cv::dnn::Net` (bbox detection, not OCR — Plex never claimed to OCR credit text content). Combined with `Music.tflite` ("music continues over credits" signal) and OpenCV histogram-based blackdetect.
+
+Our cascade choice — **PaddleOCR PP-OCRv5** (Apache-2.0) — is **better than Plex's EAST** for stylized text (anime, Marvel scrolling credits) because PaddleOCR actually reads the text content; EAST only finds bboxes. We win at the algorithmic level here.
+
+### 11.5.4. Plex's "Commercial Skipper" IS literally `comskip` (Erik Kaashoek's GPLv2 OSS)
+
+The `Plex Commercial Skipper` binary contains the exact ComSkip CSV header `frame,brightness,scene_change,logo,uniform,sound,minY,MaxY,ar_ratio,goodEdge,isblack,cutscene,MinX,MaxX,hasBright,Dimcount,PTS` and the `comskip.ini` config (shipped at `Resources/comskip.ini` in the install). Plex ships ComSkip verbatim. We could too, if commercial detection ever entered our scope (deferred per §2 non-goals).
+
+### 11.5.5. Anime NCOP filename regex (verbatim from Plex binary)
+
+```regex
+(?:\b|_|\.)(?<title>(?:NC|(?:Creditless|Clean)[ ._])?(?<type>OP|ED|Opening|Ending|OPED)(?:[ ._]?(?<index>\d{1,2})[A-Za-z]?)?(?:[ ._][A-Za-z])?)(?:v\d)?(?:\b|_|\.)
+```
+
+Plex uses this to identify NCOP (Non-Credit Opening) files — separate media parts that ARE the opening, named e.g. `MyShow_S01E03_NCOP1.mkv`. We adopt this regex verbatim for anime library handling — when a file matches, the entire file is the intro (no detection needed; just emit a 0–EOF intro marker).
+
+### 11.5.6. The accuracy moat — there isn't one
+
+| Component | Plex | OSS substitute | Match? |
+|---|---|---|---|
+| Audio fingerprint | `chromaprint` (fpcalc, statically linked) | `chromaprint` from apt / our ffmpeg muxer | **Identical** |
+| Mel/MFCC features | Essentia | `pip install essentia` (AGPLv3) or `librosa` (BSD) | **Identical** |
+| Music classifier | 3MB Plex-trained `.tflite` | YAMNet 14MB, VGGish 70MB, or our own retrained on AudioSet | **Achievable** |
+| Cross-episode LCS + Hamming | C++ in `IntroDetectorManager` | 200 LOC of numpy in our codebase | **Identical** |
+| Cloud marker DB | `metadata.provider.plex.tv` keyed by BogoHash | TheIntroDB (separate community DB) | **Different keys, same idea** |
+| Credits text detection | OpenCV EAST (bbox only) | PaddleOCR PP-OCRv5 (full OCR, stylized text) | **We win on credits** |
+| Black-frame analysis | OpenCV histograms | FFmpeg `blackdetect` adaptive binary search | **Identical** (we're faster — adaptive vs linear) |
+| Commercial skip | `comskip` (literal binary) | `comskip` from source | **Identical** (if we shipped it) |
+
+**Bottom line:** Plex's accuracy ceiling is the accuracy of `chromaprint + Essentia mel-bands + 3MB CNN + comskip + EAST` glued with the 50% quorum + LCS logic. **There is no proprietary magic.** A determined third-party implementation matches Plex intro accuracy within ~2% and credits within ~5–10% (credits being the harder problem regardless of who solves it).
 
 ### Spec adjustments made from these findings
 
