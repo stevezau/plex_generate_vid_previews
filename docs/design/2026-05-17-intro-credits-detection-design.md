@@ -10,13 +10,16 @@
 
 ## 0. TL;DR
 
-We add intro/credits ("marker") detection as a first-class processing stage alongside BIF generation. Detection runs through a **five-tier cascade**:
+We add intro/credits ("marker") detection as a first-class processing stage alongside BIF generation. Detection runs through a **seven-step cascade — five primary tiers (0/1/2/3/4) with sub-tier fallbacks (1b, 1c, 2.5)**:
 
-- **Tier 0:** Embedded chapter-name parsing — extends the existing `pymediainfo` parse with Menu-track handling + regex (Jellyfin's defaults). FREE (no new subprocess), frame-accurate. Live-verified hit rate on user's library: **20% TV / 16% movies**.
-- **Tier 1:** TheIntroDB v2 cloud lookup (TMDb/IMDb-keyed, community-curated, ~57% TV / ~35% movies hit rate; v1 sunsets 2026-08-16). With Tier 1b (IntroDB.app fallback) and Tier 1c (anime-skip.com for anime libraries).
-- **Tier 2:** Chromaprint cross-episode fingerprinting for TV (reimplemented from intro-skipper spec, numpy-accelerated).
-- **Tier 3:** Adaptive binary-search `blackdetect` for movies and chromaprint-missed TV (the structural fix for PR #191).
-- **Tier 4:** PaddleOCR PP-OCRv5 for movies that fade-to-color (optional, GPU, separate `:with-ocr` Docker tag).
+- **Tier 0** — Embedded chapter-name parsing via the existing `pymediainfo` Menu-track (free, frame-accurate, ~20% TV / 16% movies on user's library).
+- **Tier 1** — TheIntroDB v2 cloud lookup (~57% TV / 35% movies; v1 sunsets 2026-08-16).
+  - **Tier 1b** — IntroDB.app fallback (IMDb-keyed, single-submission noisier).
+  - **Tier 1c** — anime-skip.com (AniList-keyed, only for `library.kind == "anime"`).
+- **Tier 2** — Chromaprint cross-episode fingerprinting for TV (reimplemented from intro-skipper spec, numpy-accelerated).
+  - **Tier 2.5** — Subtitle-keyword recap detection (closes the "holy-grail recap detector" gap nobody ships).
+- **Tier 3** — Adaptive binary-search `blackdetect` for movies and chromaprint-missed TV (the structural fix for PR #191).
+- **Tier 4** — PaddleOCR PP-OCRv5 for movies that fade-to-color (optional, GPU, separate `:with-ocr` Docker tag).
 
 The output is a **canonical `.markers.json` sidecar** next to the media file, fanned out to three **per-server marker publishers**:
 
@@ -226,21 +229,48 @@ class MarkerPublisher(ABC):
 
 **Why a sidecar, not just a DB?** Single source of truth across publishers + survives our app rebuilds + visible to operators on disk + can be hand-edited + plays well with the `MediaPreviewBridge` Jellyfin plugin (extended in §7) which reads sidecars at scan time.
 
-**Example:**
+**Example (full schema with all fields, including the new `locked` / `seed` / `schema_version`):**
 ```json
 {
+  "schema_version": 1,
   "canonical_path": "/data/media/tv/Show/S01E01.mkv",
   "detection_run_id": "5f9e2a01-1234-...",
   "detector_version": "1.0.0",
   "detected_at": "2026-05-17T20:42:18Z",
   "segments": [
-    {"type": "intro", "start_ms": 0, "end_ms": 92000, "confidence": 0.91, "source": "detected", "detector": "chromaprint_v1"},
-    {"type": "credits", "start_ms": 2580000, "end_ms": 2710000, "confidence": 0.78, "final": true, "source": "detected", "detector": "blackdetect_binsearch_v1"}
+    {
+      "type": "intro",
+      "start_ms": 16000,
+      "end_ms": 92000,
+      "confidence": 0.91,
+      "final": false,
+      "source": "manual",
+      "detector": null,
+      "locked": true,
+      "seed": true
+    },
+    {
+      "type": "credits",
+      "start_ms": 2580000,
+      "end_ms": 2710000,
+      "confidence": 0.78,
+      "final": true,
+      "source": "detected",
+      "detector": "blackdetect_binsearch_v1",
+      "locked": false,
+      "seed": false
+    }
   ],
   "season_context": {"show_title": "Show", "season_number": 1, "episodes_compared": ["S01E02", "S01E03"]},
   "notes": {}
 }
 ```
+
+**Consumer rules for the new fields:**
+- **`locked: true`** — Marker publishers MUST treat this as authoritative; re-detection produces a parallel "candidate" segment but does NOT overwrite. Plex restore loop checks this before re-INSERTing.
+- **`seed: true`** — Tier 2 chromaprint pass-2 uses this segment's audio as the canonical fingerprint anchor when matching across the season (instead of pairwise consensus). At most one `seed=true` segment per `type` per season; deduplicate at the season-store level.
+- **`schema_version: 1`** — Bumped when the JSON shape changes. The C# plugin's deserializer uses `JsonExtensionData` for unknown fields (forward-compat); the Python publisher's loader bumps the schema gracefully.
+- Unknown source values (e.g. a future `"source": "user_supplied_db"`) — consumers MUST NOT raise; treat as `"detected"` and log.
 
 **Sidecar is read by:**
 - Marker publishers when fanning out to servers
@@ -263,7 +293,7 @@ The order is **cheapest first, then by precision, then by cost**. Each tier shor
 - Movies: **16%** with explicit credit-marker chapters
 - Blu-ray rips rarely have semantically-labelled chapters (generic `Chapter 01`); Netflix WEBDLs almost always have at least an "End Credits" boundary
 
-**Cost: piggyback on the existing `pymediainfo` parse** — the codebase already calls `MediaInfo.parse(video_file)` in `processing/generator.py:291` for codec/HDR detection. Chapter names are exposed on the `Menu` track of the parsed result; we just extend the existing parse-result handling. **No new subprocess, no new dependency.** Live-verified on a known chapter-bearing AMZN WEBDL.
+**Cost: piggyback on the existing `pymediainfo` parse** — the codebase already calls `MediaInfo.parse(video_file)` at `processing/generator.py:769` (inside the per-file pipeline; the `MediaInfo.can_parse()` at `:291` is just a startup probe). Chapter names are exposed on the `Menu` track of the parsed result; we just extend the existing parse-result handling. **No new subprocess, no new dependency.** Live-verified on a known chapter-bearing AMZN WEBDL.
 
 **Algorithm:**
 1. From the existing `MediaInfo.parse()` result, find the `Menu` track (`track.track_type == "Menu"`).
@@ -375,7 +405,9 @@ Both boundaries free, frame-accurate, no extra compute, no network. Phase A budg
 
 **Why:** Anime is a known weak spot for chromaprint cross-episode matching — many shows have multiple openings per cour (OP1 for episodes 1–13, OP2 for 14–25). anime-skip.com is the de-facto anime intro/credits DB (AniList/MAL-keyed, separate ecosystem from TheIntroDB).
 
-**Conditional activation:** This tier only fires when the item is in a library marked `kind="anime"` (auto-detected from TVDB/TMDB genre or explicit user override). For non-anime libraries this tier is skipped entirely — no extra latency.
+**Conditional activation:** This tier only fires when the user has explicitly marked a library as anime via a new per-library setting `markers.anime_mode_libraries: list[str]` (list of library IDs). Phase A adds this setting key (defaulted empty) + a Settings UI toggle "Treat this library as anime". Auto-detection from genre is a Phase D enhancement — not load-bearing for Phase A.
+
+(The existing `Library.kind` field at `servers/base.py:118` is opaque per its docstring and is set by server enumeration to `"movie"`/`"show"` — we don't repurpose it. The anime mode flag lives in our app-side settings, keyed by `(server_id, library_id)`.)
 
 **Coverage:** Reportedly strong for anime; verified live: yes, returns intro/outro for popular AniList IDs. Free; rate-limited (per their docs).
 
@@ -493,13 +525,21 @@ class PlexMarkerPublisher(MarkerPublisher):
 
 **Trigger native — use the NARROW endpoints, not `/analyze`:**
 
-| Verb | Path | Purpose | When to use |
+| Verb | Path | Params (BoolInt: `0`/`1` ints — Python `True`/`False` will 500) | Purpose |
 |---|---|---|---|
-| `PUT /library/metadata/{id}/intro` | params: `force` (BoolInt), `threshold` (number) | Intro-only re-analysis | Plex Pass + intro_detection_enabled, item missing intro markers |
-| `PUT /library/metadata/{id}/credits` | params: `force` (BoolInt), `manual` (BoolInt) | Credits-only re-analysis | Plex Pass + credits_detection_enabled, item missing credits |
-| `PUT /library/metadata/{id}/analyze` | broad fallback | Full pipeline | Only when we explicitly want metadata + art + BIF + markers all together |
+| `PUT /library/metadata/{id}/intro` | `force=1` (re-detect even if marker exists), `threshold=80` (audio similarity, 0–100) | Intro-only re-analysis |
+| `PUT /library/metadata/{id}/credits` | `force=1`, `manual=0` | Credits-only re-analysis |
+| `PUT /library/metadata/{id}/analyze` | (no params commonly used) | Full pipeline — only when we want metadata + art + BIF + markers together |
 
-plexapi has no helper for `/intro` and `/credits` — use `server.query(f'/library/metadata/{id}/intro', method=server._session.put)`. All three are fire-and-forget (return 200 immediately, scheduler does the work async). Poll `episode.reload(); episode.hasIntroMarker` for completion.
+plexapi has no helper for `/intro` and `/credits`. Use the documented `server.query()` idiom (note: `server._session` is technically private but is the stable access pattern across plexapi v4–v5):
+```python
+server.query(
+    f"/library/metadata/{rating_key}/intro",
+    method=server._session.put,
+    params={"force": 1, "threshold": 80},  # MUST be ints, not bools — Plex BoolInt rejects True/False
+)
+```
+All three endpoints are fire-and-forget (return 200 immediately, scheduler does the work async). Poll `episode.reload(); episode.hasIntroMarker` for completion. A test asserting `params` contains integer values (not bools) is mandatory — `assert isinstance(call_kwargs["params"]["force"], int) and not isinstance(call_kwargs["params"]["force"], bool)`.
 
 **Direct DB write (when enabled) — the MarkerEditor pattern, not Casvt's incomplete pattern:**
 
@@ -551,12 +591,53 @@ conn.execute("""
 # 4. UPDATE each media_part.extra_data with the denormalized JSON copy.
 #    This is the MarkerEditor pattern. Without it, marker disappears on re-analyze.
 for part_id, current_extra in parts:
-    merged = merge_marker_into_part_extra(current_extra, marker_type, start_ms, end_ms, final)
+    merged = merge_marker_into_part_extra(current_extra, marker_type, start_ms, end_ms, final, pms_version)
     conn.execute(
         "UPDATE media_parts SET extra_data=? WHERE id=?",
         (merged, part_id)
     )
 ```
+
+**The `merge_marker_into_part_extra` function — exact spec (cribbed from MarkerEditorForPlex `MediaAnalysisWriter.js:208-258`):**
+
+Input states for `current_extra`:
+- `NULL` or `""` or `'{}'` → treat as empty object; build new structure.
+- Already has `pv:intros` / `pv:credits` keys → parse, append new marker into the array, sort by `startTimeOffset`, re-serialize.
+- Has the legacy URL-encoded-only form (PMS <1.40) → parse from URL params, rebuild as ≥1.40 JSON if we're writing on PMS ≥1.40 (Plex tolerates both forms on read), else preserve legacy shape.
+
+**PMS ≥1.40 result shape (the form we always write):**
+```json
+{
+  "pv:intros": "{\"MediaPartMarkersArray\":{\"attributeName\":\"intros\",\"version\":5,\"MediaPartMarker\":[{\"startTimeOffset\":12000,\"endTimeOffset\":45000}]}}",
+  "pv:credits": "{\"MediaPartMarkersArray\":{\"attributeName\":\"credits\",\"version\":4,\"MediaPartMarker\":[{\"startTimeOffset\":5400000,\"endTimeOffset\":5460000,\"final\":true}]}}",
+  "url": "&pv%3Aintros=%7B%22Media...%7D&pv%3Acredits=%7B%22Media...%7D"
+}
+```
+
+**Key invariants** (test these explicitly):
+1. **Inner `MediaPartMarker` is always an array**, even when only one marker exists. Single-marker case: `[{startTimeOffset, endTimeOffset}]`.
+2. **`url` key contains URL-encoded copies of `pv:intros` and `pv:credits`** values. Plex reads this for non-JSON-aware client paths. Build from the JSON values using `urllib.parse.quote(value, safe="")`.
+3. **`final: true` only present on credits markers**, never on intros. Omit the field entirely (don't write `final: false`) for non-final.
+4. **JSON keys are sorted alphabetically** when re-serializing (Plex's own writes do this; mismatch can trigger re-write loops).
+5. **`attributeName` matches the parent key** — `pv:intros` value has `"attributeName":"intros"`.
+6. **`version: 5` for intros, `version: 4` for credits** (PMS ≥1.40). Older PMS uses `version: 4` for both; check `PMS-Version` HTTP response header at startup to pick.
+
+**Worked example — merging a credits marker into a row that already has an intro:**
+
+Existing `extra_data`:
+```json
+{"pv:intros":"{\"MediaPartMarkersArray\":{\"attributeName\":\"intros\",\"version\":5,\"MediaPartMarker\":[{\"startTimeOffset\":12000,\"endTimeOffset\":45000}]}}","url":"&pv%3Aintros=%7B%22MediaPartMarkersArray%22%3A%7B...%7D"}
+```
+
+New credits marker: `start_ms=5400000, end_ms=5460000, final=true`
+
+After merge:
+```json
+{"pv:credits":"{\"MediaPartMarkersArray\":{\"attributeName\":\"credits\",\"version\":4,\"MediaPartMarker\":[{\"startTimeOffset\":5400000,\"endTimeOffset\":5460000,\"final\":true}]}}","pv:intros":"{\"MediaPartMarkersArray\":{\"attributeName\":\"intros\",\"version\":5,\"MediaPartMarker\":[{\"startTimeOffset\":12000,\"endTimeOffset\":45000}]}}","url":"&pv%3Acredits=%7B%22MediaPartMarkersArray%22%3A...&pv%3Aintros=%7B%22MediaPartMarkersArray%22%3A%7B..."}
+```
+(Keys alphabetized: `pv:credits` before `pv:intros`; `url` appended with both URL-encoded copies.)
+
+Phase C tests must include `(NULL, "", "{}", legacy-URL-encoded, ≥1.40-with-intro-only, ≥1.40-with-both)` × `(adding intro, adding credits final, adding credits non-final)` = 18 test rows.
 
 **Editions vs versions:**
 - **Versions** (same movie, multiple files merged in Plex): one `metadata_item_id`, N `media_parts`. Write taggings once + every part's extra_data.
@@ -570,7 +651,7 @@ for part_id, current_extra in parts:
 
 **Provenance — side-car DB, not flag in `taggings`:**
 - Create `markers_provenance.db` alongside our `jobs.db` (in `${CONFIG_DIR}`).
-- Schema mirrors MarkerEditor's `actions` table (the load-bearing fields):
+- Schema mirrors MarkerEditor's `actions` table (the load-bearing fields) **plus our `locked` / `seed` fields** so the restore loop respects user intent:
   ```sql
   CREATE TABLE provenance (
     plex_marker_id INTEGER PRIMARY KEY,    -- taggings.id
@@ -580,10 +661,17 @@ for part_id, current_extra in parts:
     marker_type TEXT,                      -- "intro" | "credits" | "commercial"
     start_ms INTEGER, end_ms INTEGER, final INTEGER,
     user_created INTEGER DEFAULT 1,        -- always 1 from our app
+    locked INTEGER DEFAULT 0,              -- mirrors MarkerSegment.locked — restore loop checks this
+    seed INTEGER DEFAULT 0,                -- mirrors MarkerSegment.seed — needed when re-seeding fingerprint pass-2
     detection_run_id TEXT,                 -- our MarkerSet.detection_run_id
+    source TEXT DEFAULT 'detected',        -- mirrors MarkerSegment.source
+    detector TEXT,                         -- e.g. "chromaprint_v1"
     written_at INTEGER
   );
+  CREATE INDEX idx_provenance_parent_guid ON provenance(parent_guid);
+  CREATE INDEX idx_provenance_locked ON provenance(locked) WHERE locked = 1;
   ```
+- **Restore loop checks `locked`:** when re-INSERTing a wiped marker, if the latest-known `locked=1` value disagrees with the candidate detection, the user's value wins and the candidate goes to the Inspector's "pending review" queue.
 - **Earlier hacks (now abandoned by MarkerEditor):** setting `taggings.thumb_url` to a sentinel string, appending `*` to `modified_at`. These were the V1–V5 patterns; we ship the V7 pattern (provenance side-car only) from day one.
 
 **Restore loop:** periodic task (default 6h) scans `provenance` table for `plex_marker_id`s that no longer exist in `taggings` (re-analysis purged). For each missing row, re-INSERT taggings + re-merge `media_parts.extra_data` using the saved fields. Resolve by `parent_guid` (stable), not `metadata_item_id` (changes on re-add).
@@ -624,6 +712,12 @@ class EmbyMarkerPublisher(MarkerPublisher):
 ```python
 class JellyfinMarkerPublisher(MarkerPublisher):
     def supports_write(self) -> WriteCapability:
+        # Phase A: returns READ_ONLY unconditionally (no write capability yet
+        # regardless of plugin version — avoid surfacing Setup Health warnings
+        # for users who don't need marker writes).
+        # Phase C: enables the version check below once MarkerBridgeController ships.
+        if not _PHASE_C_ENABLED:
+            return WriteCapability.READ_ONLY
         if self._media_preview_bridge_supports_markers():
             return WriteCapability.PLUGIN
         return WriteCapability.READ_ONLY
@@ -958,31 +1052,59 @@ A single file can produce multiple result rows (BIF + markers each count separat
 
 ### Phases
 
+Hook point: detection runs inside `Worker._process_item` (`jobs/worker.py:340`) **AFTER** the existing BIF phase returns its `ProcessingResult`. The new code calls a new module function `run_marker_detection_phase()` that orchestrates the tiers:
+
 ```python
-def process_item(item: ProcessableItem, config: Config, ...) -> list[ProcessingResult]:
+# Inside Worker._process_item, after the existing BIF call:
+def _run_marker_pipeline(item: ProcessableItem, config: Config, ...) -> list[ProcessingResult]:
     results = []
 
-    # Phase 1: BIF (existing, unchanged)
-    bif_result = run_bif_phase(item, config)
-    results.append(bif_result)
+    if not config.markers.enabled or not (config.markers.detect_intros or config.markers.detect_credits):
+        return [ProcessingResult.MARKERS_SKIPPED_DISABLED]
 
-    # Phase 2: Marker detection (new)
-    if config.markers.enabled and (config.markers.detect_intros or config.markers.detect_credits):
-        markers, det_result = run_marker_detection_phase(item, config, fingerprint_store)
-        results.append(det_result)
+    # Detection cascade — early-exit when a tier returns sufficient-confidence markers
+    markers, det_result = run_marker_detection_phase(item, config, fingerprint_store)
+    results.append(det_result)
 
-        # Phase 3: Marker publish (new)
-        if markers and config.markers.write_to_server:
-            pub_results = run_marker_publish_phase(item, markers, config, registry)
-            results.extend(pub_results)
+    # Publish phase — gated by per-server write_to_server flag, NOT skipped on bridged-marker mode
+    if markers and any(s.write_to_server for s in registry.servers if config.markers_for(s).enabled):
+        pub_results = run_marker_publish_phase(item, markers, config, registry)
+        results.extend(pub_results)
 
     return results
 ```
 
+**Detection sub-phases inside `run_marker_detection_phase()`** (run sequentially, gated by per-tier setting flags; accumulate evidence rather than always early-exit):
+
+| Sub-phase | Tier | When skipped | Output |
+|---|---|---|---|
+| **2a — Chapter parse** | Tier 0 | `tier0_chapter_parsing == false` | List of `MarkerSegment(source="chapter")` |
+| **2b — Cloud lookup** | Tier 1/1b/1c | `tier1_theintrodb == false` and `tier1b == false` and not anime+1c-enabled | List of `MarkerSegment(source="theintrodb"/"introdb"/"anime_skip")` |
+| **2c — Subtitle extract** (Tier 2.5 prep) | — | `tier2_5_subtitle_recap == false` OR no English/native subs | Path to extracted `.srt` in /tmp, cleaned up at end of phase |
+| **2d — Subtitle scan** | Tier 2.5 | Sub-phase 2c yielded no subs | `MarkerSegment(type="recap", source="subtitle_recap")` |
+| **2e — Chromaprint pass 1** (per-episode) | Tier 2 | not TV OR `tier2_chromaprint == false` OR fewer than `season_min_episodes` in this season | Fingerprint deposited in season store; no segment yet |
+| **2f — Adaptive blackdetect** | Tier 3 | not (movie OR Tier 2 missed credits for this item) | `MarkerSegment(type="credits", source="detected", detector="blackdetect_binsearch_v1")` |
+| **2g — OCR fallback** | Tier 4 | `tier4_ocr == false` OR `paddleocr` module not importable | `MarkerSegment(type="credits", source="detected", detector="paddleocr_v1")` |
+
+**Important:** Tier 2 (chromaprint) doesn't produce segments inside per-item processing — it just deposits the fingerprint. The post-dispatch pass-2 (cross-episode pairwise match) runs **after** all workers complete their pass-1 for a given season; that's the "season completion" hook in §5 Tier 2. Pass-2 results emit `MARKERS_DETECTED` against the affected episodes via a follow-up dispatcher job (a new low-priority job type `marker_post_detection`).
+
 ### Retry semantics
 
-- **Detection failure** — same retry cascade as BIF (GPU fallback to CPU, etc.). Doesn't block BIF.
-- **Publish failure** — distinct from detection failure. Sidecar still exists; user can manually `Apply` from Inspector. No auto-retry — publisher errors are typically structural (plugin not installed, DB locked) and a blind retry won't help.
+- **Detection failure within a single tier** — log + move to next tier. Never block the pipeline.
+- **Whole detection-phase failure** (rare — e.g. corrupted pymediainfo parse) — surfaces as `MARKERS_DETECTION_FAILED` outcome. BIF was already successful so the item isn't fully failed.
+- **Publish failure** — distinct from detection failure. Sidecar still exists; user can manually `Apply` from Inspector. No auto-retry — publisher errors are typically structural (plugin not installed, DB locked) and a blind retry won't help. Falls into the same `retry_reason` field the BIF pipeline already uses.
+- **Locked markers** — re-detection still RUNS but produces a parallel "candidate" segment with `source="detected"` and `locked=false`; the existing locked segment is preserved. Inspector shows the diff.
+
+### Cross-server bridge phase (separate from per-item pipeline)
+
+The cross-server bridge described in §7.5.5 is **NOT** part of the per-item `_process_item` flow — it's a separate user-initiated action from the Inspector (and a scheduled background task in Phase D). Flow:
+
+1. User clicks "Push to other servers" in Inspector for a single item OR triggers a "Sync from Plex → all enabled servers" library-wide task.
+2. Background dispatcher creates a new job (`source="bridge"`). For each item:
+   - `PlexMarkerPublisher.read_markers()` → `list[MarkerSegment]` with `source="native_plex"`.
+   - For each target server: `target_publisher.write_markers(item_id, segments)`.
+   - Bridged markers **bypass** the `min_confidence_to_write` gate because they came from a server's native detection (already vetted).
+3. Failure semantics: each per-server publish wrapped in its own try/except so one server's failure doesn't block the others. Surfaces in job summary as per-server publish counts.
 
 ### Pass-2 (cross-episode) coordination
 
@@ -1116,20 +1238,33 @@ Total fixture size target: <50MB.
 
 Implementation lands in four PRs against `feat/markers-detection`:
 
-### Phase A — Scaffolding + Tier 0 chapters + TheIntroDB (PR #1)
+### Phase A — Minimum read-only viewer (PR #1, ~1 week)
 
-- `markers/` package skeleton: `types.py`, `detector.py`, `publisher.py`, `sidecar.py`
-- **Tier 0 chapter-name parser** — `ChapterDetector` using `ffprobe -show_chapters` + Jellyfin's regex defaults. Writes `.markers.json` sidecars on hits. Highest leverage per line of code; covers 20% TV / 16% movies on the user's library.
-- **Tier 1 TheIntroDB v2 client** — lookups + per-user cache (positive forever, 404 14 days). Per-server `markers.theintrodb_api_key` setting (optional).
-- **Tier 1c anime-skip.com client** — gated to anime libraries via TVDB/TMDB genre + `kind=anime` library marker.
-- Read paths only on the publisher side — for each server type, implement `read_markers()`. **No writes yet** in Phase A.
-- Settings schema additions, migration in `upgrade.py`
-- `MARKERS_*` `ProcessingResult` outcomes wired (`MARKERS_DETECTED`, `MARKERS_DETECTED_EMPTY`, `MARKERS_SKIPPED_DISABLED`)
-- Inspector page showing: server-reported markers (read from Plex/Emby/Jellyfin), Tier 0 chapter-derived markers, TheIntroDB hits. No detection-of-our-own yet, no apply-to-server yet.
+**Scope tightened after architecture review.** The previous Phase A draft was ~2-3 weeks of work labeled "1 week" (TheIntroDB + anime-skip + 3 publisher reads + sharded cache + 10 settings keys + Inspector). Phase A now ships **only the minimum that's useful on its own**; Tier 1b/1c, sidecar writes, cache sharding, and Emby/Jellyfin reads move to Phase B.
 
-  **Inspector scope decision for Phase A:** Ship the Markers Inspector as a **standalone page at `/markers`** (sibling route to the existing `/bif-viewer`), NOT yet inside a unified `/inspector?tab=...` shell. The current `bif_viewer` route is a single-purpose page (`web/routes/pages.py:104`, `templates/bif_viewer.html`); migrating it into a tabbed shell is a separate ~2-day project that we defer to **Phase D**. In Phase D both pages move under `/inspector` with tabs (`?tab=frames` redirects from `/bif-viewer`, `?tab=markers` from `/markers`). Phase A users see two separate inspector pages temporarily.
+**Phase A deliverables:**
+1. `markers/` package skeleton: `types.py` (`MarkerSegment`, `MarkerSet`), `detector.py` (interfaces only), `publisher.py` (interfaces only), `sidecar.py` (read/write helpers). ~½ day.
+2. **Tier 0 `ChapterDetector`** — pymediainfo Menu-track parser at `generator.py:769` piggyback + regex defaults + mojibake-defensive parsing. ~½ day.
+3. **Tier 1 TheIntroDB v2 client** (lookup only, no submit-back) — auth, per-user cache (positive forever, 404 14 days), circuit breaker after 5 consecutive 5xx. ~1.5 days.
+4. **`external_ids(item_id)`** helper on each `MediaServer` subclass — Plex `guids`, Emby/Jellyfin `ProviderIds`. ~½ day.
+5. **`PlexMarkerPublisher.read_markers()` only** — read existing markers via plexapi. Emby/Jellyfin read paths defer to Phase B (Plex has years of existing markers worth viewing; non-Plex value is less in Phase A).
+6. Settings migration v13→v14 — adds **only Phase A keys**: `enabled`, `detect_intros`, `detect_credits`, `tier0_chapter_parsing`, `tier1_theintrodb`, `theintrodb_api_key`, `min_confidence_to_write`, `cache_dir`, `chapter_regex`. Other §10 keys land in their consuming phase to avoid hard-coding feature flags whose code hasn't shipped.
+7. `MARKERS_DETECTED`, `MARKERS_DETECTED_EMPTY`, `MARKERS_SKIPPED_DISABLED` `ProcessingResult` outcomes (no `MARKERS_PUBLISHED` yet — no writes).
+8. Standalone `/markers` Inspector page (NOT yet unified with BIF viewer) — search box, server picker, displays for a selected item: server-reported markers (Plex only in Phase A), Tier 0 chapter markers, Tier 1 TheIntroDB hits. **No** "apply to server" button yet, **no** manual edit yet, **no** waveform yet — those land in B/C/D.
 
-**Estimated:** 1 week. Useful on its own — gives users a multi-server marker viewer + frame-accurate chapter-based detection + community-DB enrichment, all read-only.
+**Deferred from earlier Phase A draft (moved to Phase B):**
+- Tier 1c anime-skip.com client
+- Tier 1b IntroDB.app fallback
+- Sidecar JSON writes (no detection-of-our-own yet means no sidecars to write)
+- Cache sharding directory layout (no significant cache volume yet at Phase A)
+- Emby + Jellyfin `read_markers()`
+- Audio waveform generation in Inspector
+
+**Estimated:** 5-7 days. Useful on its own — gives users a Plex marker viewer + frame-accurate chapter-based detection + TheIntroDB community-DB enrichment.
+
+### Phase A.5 — Sidecar + writes scaffolding (if Phase A took less than estimated)
+
+Tier 1b/1c clients, Emby/Jellyfin `read_markers()`, sidecar JSON write helpers, cache sharding. ~½ week. Folded back into Phase B if Phase A runs long.
 
 ### Phase B — Detection algorithms (PR #2)
 
