@@ -14,7 +14,7 @@ We add intro/credits ("marker") detection as a first-class processing stage alon
 
 - **Plex** — read existing markers via plexapi; trigger native detection (`episode.analyze()`) for Plex Pass users; for non-Pass users, write directly to the `taggings` SQLite table with provenance/restore (off by default, big warnings).
 - **Emby** — read via `GET /Items/{Id}?Fields=Chapters`; trigger native scheduled task; write via the existing community `sydlexius/Segment_Reporting` plugin's `POST /emby/segment_reporting/update_segment` endpoint (we require this plugin be installed; surfaced as a Setup Health check).
-- **Jellyfin** — read via `GET /MediaSegments/{itemId}`; write via a **new C# companion plugin we ship** (`MediaPreviewSegments`) implementing `IMediaSegmentProvider`, reading our sidecars and re-emitting as `MediaSegmentDto`. Distributed via a plugin manifest URL hosted from our app's web server.
+- **Jellyfin** — read via `GET /MediaSegments/{itemId}`; write by **extending our existing `Jellyfin.Plugin.MediaPreviewBridge` plugin** (already shipped for trickplay registration, distributed via `stevezau.github.io/media_preview_generator/jellyfin-plugin/manifest.json`). Add a new `MarkerBridgeController` (`POST /MediaPreviewBridge/Markers/{itemId}`) plus an `IMediaSegmentProvider` implementation so Jellyfin's scheduled scan also picks up our sidecars. No new plugin install for users — version bump only.
 
 A new **Marker Inspector** UI page (sibling of the BIF Inspector) lets users search, visualize the timeline against an audio waveform, compare our detected markers vs. the server's existing ones, manually nudge boundaries, and one-click apply.
 
@@ -197,7 +197,7 @@ class MarkerPublisher(ABC):
 
 **Location:** `<canonical_path>.markers.json` (next to the media file, mirroring Jellyfin's trickplay-sidecar convention).
 
-**Why a sidecar, not just a DB?** Single source of truth across publishers + survives our app rebuilds + visible to operators on disk + can be hand-edited + plays well with `MediaPreviewSegments` Jellyfin plugin which reads sidecars at scan time.
+**Why a sidecar, not just a DB?** Single source of truth across publishers + survives our app rebuilds + visible to operators on disk + can be hand-edited + plays well with the `MediaPreviewBridge` Jellyfin plugin (extended in §7) which reads sidecars at scan time.
 
 **Example:**
 ```json
@@ -217,7 +217,7 @@ class MarkerPublisher(ABC):
 
 **Sidecar is read by:**
 - Marker publishers when fanning out to servers
-- `MediaPreviewSegments` Jellyfin plugin at scan time
+- `MediaPreviewBridge` Jellyfin plugin (`IMediaSegmentProvider`) at scan time
 - Marker Inspector UI for display
 - Future re-publish flows ("apply existing detections to a newly-added server")
 
@@ -346,7 +346,7 @@ class EmbyMarkerPublisher(MarkerPublisher):
 ```python
 class JellyfinMarkerPublisher(MarkerPublisher):
     def supports_write(self) -> WriteCapability:
-        if self._media_preview_segments_plugin_installed():
+        if self._media_preview_bridge_supports_markers():
             return WriteCapability.PLUGIN
         return WriteCapability.READ_ONLY
 ```
@@ -355,34 +355,65 @@ class JellyfinMarkerPublisher(MarkerPublisher):
 
 **Trigger native:** N/A — Jellyfin has no native algorithm. Only intro-skipper plugin (which we don't own) can detect.
 
-**Write via plugin (our `MediaPreviewSegments`):**
-- The plugin is a `IMediaSegmentProvider` shim that reads `<canonical_path>.markers.json` and emits `MediaSegmentDto[]` when Jellyfin's "Media segment scan" task asks for them.
-- Our app doesn't POST to Jellyfin — it just writes the sidecar. The plugin handles the rest at scan time.
-- After writing the sidecar, our publisher calls `POST /ScheduledTasks/Running/{MediaSegmentScanTaskId}` to trigger a rescan so users see the markers immediately.
+**Write via plugin (the existing `MediaPreviewBridge`, extended in §7):**
+- Two write paths share the same underlying segment manager:
+  1. **Push:** Publisher writes `<canonical_path>.markers.json` next to media, then calls `POST /MediaPreviewBridge/Markers/{itemId}` for immediate replace + UI feedback.
+  2. **Pull:** The plugin's `IMediaSegmentProvider` implementation re-reads the same sidecar during Jellyfin's scheduled "Media segment scan" — covers cases where the immediate push 500s or the sidecar gets edited out-of-band.
 
-**Plugin install detection:** Probe `GET /Plugins` for `MediaPreviewSegments`. If absent, raise `HealthCheckIssue` with severity=critical (you literally can't write markers to Jellyfin without it) + link to our hosted manifest URL.
+**Plugin install/version detection:** Probe `GET /MediaPreviewBridge/Ping` (already exists). If the returned `version` is `>= 10.11.1.0` (the marker-capable bump), we can write markers; if older, raise a `HealthCheckIssue` (severity=recommended) "Update `MediaPreviewBridge` to ≥10.11.1.0 to enable marker writes." If the endpoint 404s, the plugin isn't installed at all — same `HealthCheckIssue` with a link to the existing manifest.
 
-**Default behavior:** OFF until plugin installed.
+**Default behavior:** OFF until plugin installed AND user explicitly enables in settings.
 
 ---
 
-## 7. Companion Jellyfin plugin: `MediaPreviewSegments`
+## 7. Extending the existing `MediaPreviewBridge` Jellyfin plugin
 
-### Scope
+We **already ship** a Jellyfin plugin at `jellyfin-plugin/` — `Jellyfin.Plugin.MediaPreviewBridge` (`net9.0`, targeting Jellyfin `10.11.0`). It currently exposes:
 
-A tiny C# .NET plugin that implements `IMediaSegmentProvider`. ~200 lines including config UI. Its **only** job: at scan time, read `<canonical_path>.markers.json` next to each item's media file and emit `MediaSegmentDto[]`.
+- `GET /MediaPreviewBridge/Ping` — anonymous, plugin-detection probe
+- `GET /MediaPreviewBridge/ResolvePath?path=…` — admin, file path → item id
+- `POST /MediaPreviewBridge/Trickplay/{itemId}` — admin, registers externally-written trickplay tiles via `ITrickplayManager.SaveTrickplayInfo`
 
-### Why we ship it instead of leaning on intro-skipper
+CI workflow `.github/workflows/jellyfin-plugin.yml` already builds the DLL, releases via GitHub releases, and hosts a Jellyfin-compatible manifest at `https://stevezau.github.io/media_preview_generator/jellyfin-plugin/manifest.json`. Users who want trickplay already have it installed.
 
-intro-skipper is GPL-3, has its own detection algorithm (we don't want to duplicate), stores in its own SQLite, and replaces any segments with `SegmentProviderId` matching its own. We need our own provider id (`MediaPreviewSegments`) so our segments coexist with intro-skipper's without overwriting them.
+### Adding marker capability to the same plugin
 
-### Interface
+We add **one new controller** + an `IMediaSegmentProvider` implementation to the existing project. No new plugin, no new manifest, no new install flow — users who already have `MediaPreviewBridge` for trickplay pick up the marker capability on their next plugin update.
+
+**New REST endpoint** (parallels the trickplay registration shape):
 
 ```csharp
-public class MediaPreviewSegmentsProvider : IMediaSegmentProvider
+// jellyfin-plugin/Api/MarkerBridgeController.cs (new file)
+[ApiController]
+[Authorize(Policy = "RequiresElevation")]
+[Route("MediaPreviewBridge")]
+public class MarkerBridgeController : ControllerBase
 {
-    public string Name => "Media Preview Segments";
-    public string Id => "MediaPreviewSegments";
+    [HttpPost("Markers/{itemId:guid}")]
+    public async Task<IActionResult> RegisterMarkers([FromRoute] Guid itemId, CancellationToken ct)
+    {
+        // Reads <item.Path>.markers.json, validates schema, hands off to
+        // the segment manager's "replace segments by SegmentProviderId" path
+        // with our provider id "MediaPreviewBridge".
+    }
+
+    [HttpDelete("Markers/{itemId:guid}")]
+    public async Task<IActionResult> ClearMarkers([FromRoute] Guid itemId, CancellationToken ct)
+    {
+        // Lets the publisher invalidate stale markers on re-detection.
+    }
+}
+```
+
+**`IMediaSegmentProvider` implementation** (new file, same project):
+
+```csharp
+// jellyfin-plugin/Providers/MarkerSegmentProvider.cs (new file)
+public class MarkerSegmentProvider : IMediaSegmentProvider
+{
+    public string Name => "Media Preview Bridge";
+    // Stable id — matches what RegisterMarkers writes through.
+    public string Id => "MediaPreviewBridge";
 
     public ValueTask<bool> Supports(BaseItem item, CancellationToken ct)
         => ValueTask.FromResult(item is Episode || item is Movie);
@@ -390,58 +421,47 @@ public class MediaPreviewSegmentsProvider : IMediaSegmentProvider
     public async Task<IReadOnlyList<MediaSegmentDto>> GetMediaSegments(
         MediaSegmentGenerationRequest request, CancellationToken ct)
     {
-        var item = _libraryManager.GetItemById(request.ItemId);
-        var sidecarPath = item.Path + ".markers.json";
-        if (!File.Exists(sidecarPath)) return Array.Empty<MediaSegmentDto>();
-        var json = await File.ReadAllTextAsync(sidecarPath, ct);
-        var markerSet = JsonSerializer.Deserialize<MarkerSet>(json);
-        return markerSet.Segments
-            .Where(s => s.Confidence >= _config.MinConfidence)
-            .Select(s => new MediaSegmentDto
-            {
-                Id = Guid.NewGuid(),
-                ItemId = request.ItemId,
-                Type = MapType(s.Type),
-                StartTicks = s.StartMs * 10_000L,
-                EndTicks = s.EndMs * 10_000L,
-            })
-            .ToList();
+        // Read <item.Path>.markers.json, validate, return MediaSegmentDto[].
+        // Falls back to empty list (not exception) on missing sidecar so
+        // Jellyfin's scheduled scan stays clean on items we haven't
+        // processed yet.
     }
 
     public Task CleanupExtractedData(Guid itemId, CancellationToken ct) => Task.CompletedTask;
 }
 ```
 
-### Distribution
+### Why two redundant paths (REST `POST` + `IMediaSegmentProvider`)
 
-- **Source repo:** `media_preview_generator/plugins/jellyfin/MediaPreviewSegments/` in this repo (lives alongside the Python code; Dockerfile copies the prebuilt `.dll` into the image for hosting).
-- **Build:** GitHub Actions matrix job — `dotnet build -c Release -f net8.0`, output to `dist/`. Versioned alongside the main app.
-- **Manifest URL:** Our web app serves a Jellyfin-compatible plugin manifest at `GET /api/plugins/jellyfin/manifest.json` listing the latest release + checksum + the `.dll` download URL.
-- **User install flow:**
-  1. Jellyfin → Dashboard → Plugins → Repositories → add `http://<our-host>/api/plugins/jellyfin/manifest.json`
-  2. Catalog → Install `Media Preview Segments`
-  3. Restart Jellyfin
-  4. Our Setup Health check turns green
-- **Config UI:** A minimal config page in the plugin (just `MinConfidence` and an enabled toggle). Users mostly configure via our app's web UI; the plugin is dumb.
+`IMediaSegmentProvider` only runs during Jellyfin's scheduled "Media segment scan" task — fine for steady-state but laggy for "I just detected, show me the marker in the player now." The `POST /Markers/{itemId}` endpoint forces an immediate replace so the publisher gets confirm-on-write semantics. Both paths share the same underlying `IMediaSegmentManager` call and the same `SegmentProviderId`, so they're consistent.
 
-### Why not the official Jellyfin plugin catalog
+### Coexistence with intro-skipper
 
-We can submit to the official catalog as a follow-up, but the manifest URL approach lets us iterate without their review cycle.
+Our `SegmentProviderId = "MediaPreviewBridge"` doesn't collide with intro-skipper's `"intro-skipper"`. Jellyfin's `MediaSegmentManager.RunSegmentPluginProviders()` uses delete-and-replace **scoped to each provider id**, so the two plugins coexist — users can run both and Jellyfin merges segments at query time.
+
+### Version bump
+
+Current plugin version is `10.11.0.2`. Marker addition bumps to `10.11.1.0`. Users with the existing plugin auto-upgrade via the catalog UI.
 
 ---
 
-## 8. Marker Inspector UI
+## 8. Unified Inspector UI (Frames + Markers + Audio tabs)
 
-### Route
+### Route refactor
 
-`/inspector/markers` (sibling of `/bif-viewer`).
+The existing BIF Inspector at `/bif-viewer` becomes the **Frames** tab of a unified `/inspector`. The page-level layout (server picker, search box, results list) is shared; per-tab content swaps.
+
+Route migration:
+- `/bif-viewer` → 301 redirect to `/inspector?tab=frames` (back-compat)
+- New `/inspector?tab=markers` — this section
+- Future `/inspector?tab=audio` — placeholder (waveform inspector, post-Phase D)
 
 ### Page layout (text mockup)
 
 ```
-┌─ Marker Inspector ──────────────────────────────────────────────────┐
+┌─ Inspector ─────────────────────────────────────────────────────────┐
 │ Server: [Plex (Home) ▼]  Search: [show name s01e02______] [Search] │
-├─────────────────────────────────────────────────────────────────────┤
+├ [Frames]  [Markers]  [Audio]  ─────────────────────────────────────┤
 │ Show — S01E02                                                       │
 │ /data/media/tv/Show/S01E02.mkv • 47:21 • intro+credits detected     │
 │                                                                     │
@@ -462,7 +482,8 @@ We can submit to the official catalog as a follow-up, but the manifest URL appro
 
 ### Components
 
-- **Search box** — reuses existing per-vendor search API (`/api/bif/servers/<id>/search`).
+- **Shared search box** — reuses existing per-vendor search API (`/api/bif/servers/<id>/search`). Search results show which tabs have data (e.g. ⓕ Frames available, ⓜ Markers detected, ⓘ tooltips per spec).
+- **Tab state** — preserved in URL query (`?tab=markers&server=plex-1&q=...`) so deep-linking works and back/forward navigation feels native.
 - **Audio waveform** — generated once per file, cached as PNG via `ffmpeg -i {file} -filter_complex showwavespic=s=1200x80 -frames:v 1 {png}`. ~1s per file. Cached next to sidecar.
 - **Timeline rows:**
   - "INTRO (server)" / "CREDITS (server)" — what the server currently reports.
@@ -643,7 +664,7 @@ Implementation lands in four PRs against `feat/markers-detection`:
 - `PlexMarkerPublisher` — read, trigger native, direct DB write (with provenance/restore loop)
 - `EmbyMarkerPublisher` — read, trigger native, write via Segment_Reporting
 - `JellyfinMarkerPublisher` — read, write via sidecar consumed by our plugin
-- `MediaPreviewSegments` C# plugin — build, manifest endpoint, distribution
+- **Extend `MediaPreviewBridge` plugin** — add `MarkerBridgeController` + `MarkerSegmentProvider` (see §7), bump version to `10.11.1.0`, ship via existing CI workflow (`.github/workflows/jellyfin-plugin.yml`) and manifest URL
 - Setup Health checks for plugin presence
 - Inspector "Apply to server" button works end-to-end
 
@@ -674,12 +695,19 @@ Implementation lands in four PRs against `feat/markers-detection`:
 4. **Chromaprint false matches on shows with shared theme music** (e.g., MCU shows). The `Duration - CreditsFingerprintStart - 1` anti-duplicate check handles same-file re-encodes but not different files with the same outro theme. Mitigation: confidence floor + require pairwise consensus before publishing.
 5. **GPU OCR Docker bloat.** PaddleOCR adds ~2GB to image size if bundled. Mitigation: Tier 4 is opt-in; we ship two Dockerfiles or a separate `:ocr` tag.
 
-### Open questions for the user
+### Resolved decisions (2026-05-17 review)
 
-1. **Submit-back to TheIntroDB by default?** Pro: grows the public corpus and benefits everyone. Con: contributes user data (timing patterns) to a third-party service. Recommendation: opt-in only.
-2. **C# plugin: separate repo or subdir?** Recommendation: subdir of this repo (`plugins/jellyfin/`), built in our CI, hosted from our web app's manifest endpoint. Simplest distribution.
-3. **OCR Tier 4: bundled or separate image tag?** Recommendation: separate `:with-ocr` Docker tag to avoid the 2GB hit for users who don't want it.
-4. **Should the Marker Inspector replace or augment the BIF Inspector?** They share search + per-server abstraction. Could unify under `/inspector` with tabs (Frames / Markers / Audio). Punt to Phase D decision.
+1. **TheIntroDB submit-back is opt-in only** — default off. User enables in settings + provides their per-user API key.
+2. **Jellyfin plugin: extend the existing `MediaPreviewBridge`** — we already ship it at `jellyfin-plugin/` with CI + manifest at `stevezau.github.io/media_preview_generator/jellyfin-plugin/manifest.json`. Users who already have the plugin (for trickplay) get marker capability via version bump. See §7.
+3. **OCR Tier 4** — see below, still open.
+4. **Inspector unified with tabs** — `/bif-viewer` redirects to `/inspector?tab=frames`; markers live at `/inspector?tab=markers`. Shared search/server-picker shell. See §8.
+
+### Still open
+
+3. **OCR Tier 4 — should it ship?** Three concrete options to choose between:
+   - **(a) Drop Tier 4 entirely.** Skip the OCR fallback. Movies that Tier 1 (TheIntroDB) and Tier 3 (blackdetect binary search) both miss simply don't get a credits marker — user can manually nudge in the Inspector. Simplest. Smallest image. Worst movie coverage.
+   - **(b) Bundle PaddleOCR in the main Docker image (+~2GB).** Every user's image is ~2GB larger, even users who never enable OCR. Best UX (one image, just toggle a setting). Worst for users on small VPS / Raspberry Pi.
+   - **(c) Ship a separate `:with-ocr` Docker tag.** Users who want OCR pull `plex-previews:with-ocr` instead of `plex-previews:latest`. Default image stays small; opt-in image is bigger. Most flexibility. Slightly more CI work.
 
 ---
 
