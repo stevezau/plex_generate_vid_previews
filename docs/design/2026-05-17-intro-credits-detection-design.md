@@ -26,6 +26,16 @@ The output is a **canonical `.markers.json` sidecar** next to the media file, fa
 
 A new **Markers Inspector** page (standalone at `/markers` in Phase A; merges with BIF Inspector into a unified `/inspector?tab=…` in Phase D) lets users search, visualize the timeline against an audio waveform, compare our detected markers vs. the server's existing ones, manually nudge boundaries, and one-click apply.
 
+**Community-validated UX features that turn this into a category-creating tool** (see §7.5):
+- **Locked markers** — re-detection never overrides user edits (the 5+ year community pain across Plex/Emby/Jellyfin).
+- **Apply-pattern-to-season** — user fixes S01E01's intro; tool uses that segment's audio as the canonical fingerprint to detect intros across the season (nurbles 2020, never built anywhere).
+- **Per-show overrides** — auto-skip yes/ask/no, extended detection windows past 10-min server ceilings, per-show disable. (Plex literally cannot do this.)
+- **Multi-OP anime mode** — detects N distinct intros per season for shows that change OPs mid-cour (intro-skipper dismissed as out-of-scope).
+- **Subtitle-keyword recap detector (Tier 2.5)** — finds "Previously on" via subtitle parsing. Closes the holy-grail recap-detection gap every existing tool has punted on.
+- **Per-client compatibility matrix** — Inspector surfaces which markers will render in which clients (Swiftfin/Roku/Tizen blind spots are unspoken nightmare; we tell users upfront).
+- **Cross-server marker bridge** — read Plex Pass markers, push to Jellyfin/Emby. Solves the family/shared-user entitlement gap + migration story.
+- **Cache sharding** from day one (50TB libraries need 256-way directory sharding — `ototos`'s 500,000-file projection).
+
 Phased rollout in four PRs (A → D):
 - **A** — Scaffolding + Tier 0 chapters + TheIntroDB read-only Inspector (~1 week, useful on its own)
 - **B** — Tier 2 chromaprint + Tier 3 blackdetect detection algorithms + sidecar writes (~2 weeks)
@@ -137,8 +147,10 @@ class MarkerSegment:
     end_ms: int
     confidence: float                # 0.0–1.0
     final: bool = False              # for credits only: this is the LAST credits segment
-    source: str = "detected"         # "detected" | "native_plex" | "native_emby" | "theintrodb" | "manual"
-    detector: str | None = None      # e.g. "chromaprint_v1", "blackdetect_binsearch_v1"
+    source: str = "detected"         # "detected" | "native_plex" | "native_emby" | "theintrodb" | "introdb" | "anime_skip" | "skipmedb" | "manual" | "chapter" | "subtitle_recap"
+    detector: str | None = None      # e.g. "chromaprint_v1", "blackdetect_binsearch_v1", "subtitle_keyword_v1"
+    locked: bool = False             # if True, re-detection NEVER overrides this segment. User-set via Inspector. Closes the 5+ year "Plex re-analyze wipes my edits" community pain (Frugglehost, MarkerEditor #26).
+    seed: bool = False               # if True, this is a USER-PROVIDED FINGERPRINT SEED — re-detection uses this segment's audio as the canonical pattern when applied to a show/season. Implements nurbles 2020 "use manually marked intros as patterns".
 
 
 @dataclass(frozen=True)
@@ -150,6 +162,7 @@ class MarkerSet:
     detected_at: str                 # ISO timestamp
     segments: tuple[MarkerSegment, ...]
     season_context: dict | None = None  # for TV: {show_id, season_number, episodes_compared}
+    schema_version: int = 1          # bump when shape changes
     notes: dict[str, Any] = field(default_factory=dict)
 
 
@@ -376,9 +389,50 @@ Both boundaries free, frame-accurate, no extra compute, no network. Phase A budg
 2. **Per-season fingerprint store:** Thread-safe dict keyed by `(show_id, season_number)`. Episodes deposit their fingerprint as they finish Pass 1.
 3. **Pass 2, post-dispatch (sequential, runs after all workers idle for that season):** Build inverted index of fingerprint hashes per episode. For each pair of episodes in the season, find the largest contiguous matching subsequence (sliding window Hamming distance, threshold ≤8 bits out of 32). Use **numpy** for the Hamming popcount — `np.unpackbits(arr.view(np.uint8)).sum(axis=-1)` is ~100× faster than `bin().count("1")` (PR #191's hot-path mistake).
 4. **Pairwise consensus:** Compare episode 0 vs episodes 1–5, then 1 vs 2–5, then 2 vs 3–5. Match candidates with ≥2 pairwise agreements within 4 seconds become the segment. Single-pair matches are discarded.
-5. **Constraints:** Intro 15s–2min, in first 25% or 10min (whichever smaller). Credits 30s–4min. Reject matches exceeding `Duration - CreditsFingerprintStart - 1` (anti-duplicate-file safety from intro-skipper's spec).
+5. **Constraints (intro-skipper canonical defaults, verified from `PluginConfiguration.cs`):**
+   - `MinimumIntroDuration = 15s`, `MaximumIntroDuration = 120s`
+   - `MinimumCreditsDuration = 15s`, `MaximumCreditsDuration = 450s` (TV), `MaximumMovieCreditsDuration = 900s`
+   - Intro search window: first `DefaultAnalysisPercent = 25%` of episode OR `DefaultAnalysisLengthLimit = 10 min`, whichever is shorter ⚠️ — **Emby's 10-min hardcoded ceiling problem is the same Plex has; our settable max gets us past intros that start later (NCIS:Sydney-style recap+cold-open episodes).**
+   - **`MaximumFingerprintPointDifferences = 6`** (Hamming bits — corrected from earlier spec's "8")
+   - `MaximumTimeSkip = 3.5s` (max gap between matched fingerprint points)
+   - `InvertedIndexShift = 2`
+   - `ChromaprintConstants.SampleDuration = 4096 / 11025 / 3 ≈ 0.124s` per fingerprint point
+   - `BlackFrameMinimumPercentage = 85`, `BlackFrameThreshold = 28` (out of 255 ≈ 0.11)
+6. Reject matches exceeding `Duration - CreditsFingerprintStart - 1` (anti-duplicate-file safety from intro-skipper's spec).
+
+**Known failure modes from intro-skipper's own users (community research):**
+- **Bob's Burgers S01** — concrete documented chromaprint failure (skipme.db #29). Mainstream sitcom, fails to match. Validates the multi-tier approach.
+- **Single-episode seasons** — chromaprint needs ≥2 episodes; no fallback. Our Tier 0/3 still cover these.
+- **Cold-open shows** — intro after a 2-min teaser (X-Files, Murder She Wrote). Plex's "ignore intros past 50% of file" rule kills these. Our window default is 600s but configurable per-show.
+- **Anime mid-season OP change** — single-fingerprint-per-season model fails on cours (#658 was dismissed by intro-skipper team). We support **N fingerprints per season** when `library.kind == "anime"` (see Tier 1c + anime mode below).
+- **Recap mis-classified as intro** — when ED audio plays as recap in episode 1 (Anime issue #595). Our subtitle-recap detector (Tier 2.5) provides an independent signal.
 
 **No GPU benefit** — chromaprint is integer DCT on a 22kHz mono stream. GPU round-trip costs more than the compute. Per-episode CPU: ~5–10s on a single core.
+
+### Tier 2.5 — Subtitle-keyword recap detection (NEW — the "holy grail" recap detector nobody ships)
+
+**The unmet community ask:** intro-skipper #763 (open May 2026), #136 (open since 2024), Emby topic #120144, Plex thread #787447 — recap detection. Every maintainer punted. `Hellowlol/bw_plex` demonstrated subtitle-keyword "Previously on" matching works but isn't maintained. **Whoever ships polished recap detection first owns it.**
+
+**Algorithm:**
+1. Locate embedded subtitle track via the existing `pymediainfo` parse (same call as Tier 0 chapter extraction). Prefer English/native-language `.srt` or `.ass`; if absent, fall back to `ffmpeg -map 0:s:0 -f srt - < file`.
+2. Scan first 10 minutes of subtitles for the keyword set (mirrored from Jellyfin's chapter-segments regex for consistency):
+   ```
+   (?i)\b(previously on|last time on|last on|recap)\b
+   ```
+   Plus localized variants per language: `réplay|au précédent` (FR), `bisher|zuletzt bei` (DE), `これまでの`/`前回` (JA), `이전 이야기` (KO), etc.
+3. First subtitle line matching the keyword set = **recap_start**.
+4. Recap end = next subtitle gap >5s (typical recap-to-cold-open transition) OR next chapter boundary (Tier 0 informs) OR fixed 90s upper-bound.
+5. Confidence = 0.85 (high — text is a strong intent signal).
+
+**Why this works where chromaprint fails:** recaps don't repeat across episodes (each is a different summary), so chromaprint sees nothing. But the host always says "Previously on Show X" at the start. Subtitle audio coverage on streaming releases is near-100%; for non-subtitled content, fall through.
+
+**Cost:** Pure CPU regex scan of a text file. ~10ms per episode. No GPU. No FFmpeg subprocess. **Smallest tier in the cascade by 100×.**
+
+**Edge cases handled:**
+- No subtitle track → skip tier, no error.
+- Subtitle in a non-supported language → keyword regex returns empty, fall through.
+- "Previously on" appears in dialogue mid-episode → only match if it's in the first 10 min AND it's the first such match.
+- Mojibake / encoding errors → defensive try/except, log + skip.
 
 ### Tier 3 — Adaptive binary-search blackdetect (the PR #191 fix)
 
@@ -669,6 +723,158 @@ Current plugin version is `10.11.0.2`. Marker addition bumps to `10.11.1.0`. Use
 
 ---
 
+## 7.5. Community-validated UX features (the differentiator)
+
+Five rounds of community-sentiment research (r/PleX + Plex forums, r/jellyfin + intro-skipper repos, Emby community forums, cross-server homelab patterns, GitHub feature-request issues) converged on a clear pattern: the **detection** problem is mostly solved (intro-skipper, Plex Pass, EmbyCredits). The **UX around manual control, cross-server portability, and the algorithms' blind spots** is universally complained about. This section captures the load-bearing UX features that make our app a category-creating tool rather than another detector clone.
+
+### 7.5.1. Locked markers + per-show overrides (Gap #2 from community synthesis)
+
+**The pain (5.75 years on the Plex forum):** Frugglehost (Nov 2023, Plex #593807) and intro-skipper #685 (DavidSpivey Feb 2026) both ask for the same thing — once the user has manually fixed a marker, **NEVER overwrite it on re-detection**. MarkerEditorForPlex documents this as its #1 known limitation. No tool in the ecosystem handles this cleanly.
+
+**Our model:**
+
+- `MarkerSegment.locked: bool` — if true, the marker is read-only to detection. The detection pipeline produces a parallel "candidate" segment instead of overwriting. The Inspector shows both with a "your edit" vs "current detection" diff.
+- **Per-show settings dict** in our settings.json keyed by canonical show id (Plex `ratingKey`, Jellyfin/Emby item id, or our internal show-fingerprint):
+  ```json
+  "per_show_overrides": {
+    "show:plex:42891": {
+      "auto_skip_intro": "yes",    // yes | ask | no | inherit
+      "auto_skip_credits": "ask",
+      "intro_window_sec": 1200,    // extend past 10-min default — fixes Emby ceiling + Plex 595750 anime cold-open
+      "anime_multi_op_mode": true, // see 7.5.4
+      "disabled": false
+    }
+  }
+  ```
+- Plex literally **cannot** disable skip-intro per show (forum mod OttoKerner confirmed in thread #903175); our per-show toggle is unique.
+
+### 7.5.2. Apply-pattern-to-season (Gap #1 — the 5.75-year-old killer feature)
+
+**The pain (nurbles, Plex 619135, July 2020):** *"use manually marked intros as patterns for season-wide detection."* The user manually nudges S01E01's intro boundary to where it should be; the tool should use that audio segment as the **canonical fingerprint** when running chromaprint comparison across the rest of the season. **Nobody has shipped this** in 5+ years.
+
+**Our implementation:**
+- User adjusts intro boundary in Inspector → `MarkerSegment.seed = true` is set on save.
+- Next time Tier 2 chromaprint runs on any episode in the same season, the seeded segment's audio (sliced from the source file) is loaded as the **anchor fingerprint** — every other episode is matched against this anchor rather than pairwise consensus.
+- Confidence floor relaxes when matching against a seed (the user has vouched for the audio).
+- One seed per type per season is the cap.
+- Phase B detection job emits a `MARKERS_SEEDED` outcome distinct from `MARKERS_DETECTED`.
+
+### 7.5.3. Per-client compatibility matrix in the Inspector
+
+**The pain (community-confirmed, dozens of issues):** Users write perfect markers, only to discover their TV doesn't render the skip button. The truth-table from research:
+
+| Client | Plex intro | Plex credits | Emby intro | Emby credits | Jellyfin segments |
+|---|---|---|---|---|---|
+| Web | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Android TV / Fire TV | ✅ | ✅ | ✅ | ✅ | ✅ (0.18+) |
+| Android mobile | ✅ | ✅ | ✅ | ✅ | partial |
+| iOS Plex / Emby | ✅ | ✅ | ✅ | ✅ | — |
+| Swiftfin (iOS/tvOS Jellyfin) | — | — | — | — | ❌ (#1525 since Apr 2025) |
+| Apple TV native | ✅ (8.39+, Sept 2024) | ✅ | ❌ | ❌ (Infuse 8.1.9 fills gap, June 2025) | — |
+| Infuse (Apple TV) | ✅ | ✅ | ✅ | ✅ (8.1.9+) | ❌ (no Jellyfin server-plugin support) |
+| LG webOS | ✅ | ✅ | ✅ (1.0.37+) | partial | ⚠️ broken button, auto-skip works (#272) |
+| Samsung Tizen | ✅ | ✅ | ⚠️ inconsistent | ❌ | ❌ broken since 10.10 (#305) |
+| Roku | ✅ | ✅ | ❌ | ❌ | ❌ |
+| Plex for Windows | ❌ no auto-skip (#917472) | ❌ | n/a | n/a | n/a |
+| Kodi (jellyfin-kodi) | ⚠️ multi-marker breaks #1859 | ⚠️ | n/a | n/a | ⚠️ EDL-only |
+| Findroid (Jellyfin) | — | — | — | — | ❌ |
+| Streamyfin (Jellyfin) | — | — | — | — | ❌ broken in 10.11 (#994) |
+| Plex for Windows credits | ❌ | ❌ | — | — | — |
+
+**Inspector UI:** for each marker we display the per-client truth-table with green/yellow/red dots so users know whether writing this marker will actually surface in their playback environment. **No other tool surfaces this** — users find out by trial and error.
+
+We maintain a `client_compatibility.json` file shipped in the app, updated on each release as bugs ship/regress.
+
+### 7.5.4. Multi-OP anime mode (intro-skipper dismissed; we ship it)
+
+**The pain:** Anime cours commonly swap OP between episodes 12 and 13. Plex's "one fingerprint per season" model picks the first OP and silently stops detecting after the change (Plex 595750, LrrrAc Aug 2020). intro-skipper #658 (28 comments, dismissed) — the maintainer concluded "more harm than good." **Anime is the heaviest skip-intro user demographic, completely unserved.**
+
+**Our model:**
+- When `library.kind == "anime"` OR per-show override `anime_multi_op_mode: true`, Tier 2 chromaprint switches modes:
+  - **Cluster pass:** after Pass 1 fingerprints are collected, cluster episodes by fingerprint similarity (KMeans-style, but on Hamming-distance graph: episodes with mutual fingerprint matches form a cluster).
+  - **Per-cluster matching:** run pairwise consensus within each cluster separately. The biggest two clusters typically correspond to OP1 (early cour) and OP2 (late cour).
+  - **Output:** N distinct fingerprints per season, each tagged with the episode range it applies to.
+- Settings: `markers.anime_max_op_clusters: int = 4` (configurable per library).
+- Tier 1c (anime-skip.com) hits first for AniList-mapped libraries.
+- We also handle Bollywood song detection (intro-skipper #547, dismissed as "out of scope") via a separate `markers.detect_song_segments` flag — uses the same chromaprint clustering approach to find recurring high-tempo audio segments mid-episode. Off by default; opt-in for Indian-cinema libraries.
+
+### 7.5.5. Cross-server marker bridge (Plex → Jellyfin/Emby; THE killer feature)
+
+**The pain (HN user theossuary, Plex 937108 shared-user issue):** *"haven't been able to move over to Jellyfin after the drama around the integration of skip intro"* — markers are a migration blocker. Plex Pass holders' SHARED users (not Home users) can't see skip-intro even though the markers exist on the server. **No tool bridges markers between servers.**
+
+**Our model:**
+- `PlexMarkerPublisher.read_markers()` → produces a `MarkerSet` with `source: "native_plex"`.
+- "Push to other servers" action in the Inspector: select any combination of enabled servers; the publisher writes the same set of markers via each server's normal path.
+- This solves THREE problems at once:
+  1. **Family/shared users on Plex** — admin's Plex Pass markers, pushed to a Jellyfin instance the family also uses, render correctly because Jellyfin doesn't entitlement-gate.
+  2. **Migration from Plex to Jellyfin** — preserves years of marker fixes the user has accumulated.
+  3. **Backup against Plex re-analyze** — markers stored in our sidecar + Jellyfin MediaSegments are wipe-resistant.
+
+- "Pull from server" reverse action: read markers from a server, write to sidecar (no destination = use as backup).
+
+### 7.5.6. EDL sidecar export (free Kodi support)
+
+EDL format is the de facto interchange standard Kodi reads natively. Output: `<canonical_path>.edl` from our `MarkerSet`. Lines:
+```
+0.0   92.0   3   # intro (action 3 = scene marker)
+2580.0 2700.0 3  # credits
+```
+Free Kodi compatibility, also gives users a portable record outside our app's DB. **Phase D feature, ~50 lines of code.**
+
+### 7.5.7. Submit-back to MULTIPLE community DBs (TheIntroDB + SkipMe.db)
+
+Two parallel crowd-sourced DBs exist. Both want submissions; the ecosystem isn't winner-take-all yet. Our submit-back flow pushes to both (when each user opts in with their respective API keys). **Doubles user contribution leverage** at almost no cost.
+
+### 7.5.8. Cache sharding from day one
+
+**The pain (user `ototos`, Jellyfin forum):** 20,000 chromaprint files for 2TB of TV; **projected 500,000 files for a 50TB library**. Flat directory = inode pressure = filesystem death.
+
+**Our cache layout:**
+```
+${CONFIG_DIR}/markers_cache/
+  fingerprints/
+    a3/
+      a3f9b27c.../{file_hash}.chromaprint.npy
+    b1/
+      ...
+  theintrodb/
+    {tmdb_id}_s{s}_e{e}.json
+  introdb/
+    ...
+```
+First 2 hex chars of canonical path's SHA1 as a subdirectory. Caps any single directory at ~256 files even at 65k entries. Defensively cap at 16 levels deep if needed.
+
+### 7.5.9. Bulk-edit grid view (Phase D)
+
+**The pain (Plex #593807, kamhouse 2020):** *"Spreadsheet-style interface with unlimited skip zones and auto-skip dropdown options."* Existing tools edit one episode at a time.
+
+Inspector's bulk view (`/inspector?tab=markers&view=library`):
+- One row per episode in a season.
+- Columns: title, intro_start, intro_end, credits_start, credits_end, confidence, locked, status (✅ pushed / ⚠️ pending / ❌ error).
+- Inline cell editing with frame-thumbnail preview on hover.
+- "Bulk shift" action: select N rows, apply ±N seconds to a chosen field, dry-run preview, then apply.
+- "Bulk lock" action: lock N rows from detection overwriting.
+
+### 7.5.10. Webhook on segment events
+
+intro-skipper #508 (closed). Jellyfin-plugin-webhook doesn't fire on segment writes. We emit our own webhook events:
+- `markers.detected` — new markers written to sidecar
+- `markers.published` — successfully pushed to ≥1 server
+- `markers.publish_failed` — push to server failed (per-server detail in payload)
+- `markers.user_edited` — user manually adjusted in Inspector
+
+Compatible with existing Jellyfin/Plex webhook receivers (Notifiarr, Discord bots).
+
+### Feature gaps we explicitly skip
+
+Honest about what doesn't make the cut for v1:
+- **Sonarr/Radarr OnImport custom-script hook** — natural fit but ~1 week of polish work; defer to Phase D++ once core stabilizes.
+- **CLIP+Multihead transformer detector** (Korolkov 2025) — F1 91%, beats chromaprint, but no published weights. Future Phase F if we want to push past chromaprint's ceiling.
+- **Mobile iOS marker editor** — community gap (Android-only segment-editor-mobile exists). Our Inspector is mobile-web-responsive but not native. Defer indefinitely.
+- **MKV chapter-name write** — would give free Jellyfin chapter-segments-plugin support, but `CLAUDE.md` rule "media paths read-only" rules out file mutations on user's library. Document as alternative architecture for users who don't have that constraint.
+
+---
+
 ## 8. Unified Inspector UI (Frames + Markers + Audio tabs)
 
 ### Route refactor
@@ -825,23 +1031,53 @@ Per-server, under `output.markers`:
     "theintrodb_base_url": "https://api.theintrodb.org/v2",
     "introdb_base_url": "https://api.introdb.app",
     "anime_skip_base_url": "https://api.aniskip.com/v2",
+    "skipmedb_base_url": "https://db.skipme.workers.dev",
+    "skipmedb_submit": false,
     "cache_dir": "/config/data/markers_cache",
+    "cache_shard_depth": 2,
     "max_concurrent_detections": 2,
     "chapter_regex": {
       "intro": "(?i)\\b(intro|opening)\\b|^OP$",
       "credits": "(?i)\\b(outro|closing|credits|ending)\\b|^ED$",
       "recap": "(?i)\\b(recap|last time on|last on|previously on)\\b",
       "preview": "(?i)\\b(preview|next time on|next on|sneak peek)\\b"
-    }
+    },
+    "subtitle_recap_keywords": {
+      "en": "(?i)\\b(previously on|last time on|last on|recap)\\b",
+      "fr": "(?i)\\b(précédemment|au précédent|résumé)\\b",
+      "de": "(?i)\\b(bisher|zuletzt bei|was bisher)\\b",
+      "ja": "(これまでの|前回)",
+      "ko": "(이전 이야기)",
+      "es": "(?i)\\b(anteriormente en|en el episodio anterior)\\b"
+    },
+    "per_show_overrides": {},
+    "client_compatibility_path": "/config/data/markers_cache/client_compatibility.json",
+    "anime_max_op_clusters": 4,
+    "edl_export": false,
+    "webhook_events": ["markers.detected", "markers.published", "markers.publish_failed", "markers.user_edited"]
   }
 }
 ```
 
-The `chapter_regex` is user-overridable; defaults mirror `jellyfin/jellyfin-plugin-chapter-segments/PluginConfiguration.cs` for cross-platform parity.
+The `chapter_regex` and `subtitle_recap_keywords` are user-overridable; chapter defaults mirror `jellyfin/jellyfin-plugin-chapter-segments/PluginConfiguration.cs` for cross-platform parity.
+
+**`per_show_overrides`** is the killer feature key (see §7.5.1) — keyed by canonical show id (`"show:{server_id}:{vendor_item_id}"`), value is a dict of per-show flags:
+```json
+"per_show_overrides": {
+  "show:plex-default:42891": {
+    "auto_skip_intro": "yes",
+    "auto_skip_credits": "ask",
+    "intro_window_sec": 1200,
+    "anime_multi_op_mode": true,
+    "disabled": false,
+    "locked_segments_count": 3
+  }
+}
+```
 
 ### Migration
 
-`upgrade.py` adds the `markers` dict to every existing server entry with `enabled: false`. No existing settings touched.
+`upgrade.py` adds the `markers` dict to every existing server entry with `enabled: false`. Adds the global `markers` dict to root. Bumps schema version from v13 to v14. No existing settings touched.
 
 ---
 
