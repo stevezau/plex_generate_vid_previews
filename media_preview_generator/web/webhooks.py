@@ -1411,6 +1411,8 @@ def _extract_plex_payload(req) -> tuple[dict | None, str | None]:
 
 def _resolve_plex_paths_from_rating_key(
     rating_key: int | str,
+    *,
+    server_id: str | None = None,
 ) -> tuple[list[str], str | None]:
     """Look up a Plex item by ratingKey and return its file paths and a
     formatted display title.
@@ -1422,11 +1424,19 @@ def _resolve_plex_paths_from_rating_key(
     derives a descriptive title from the same fetched item so callers
     don't need a second Plex round trip.
 
+    Args:
+        rating_key: The Plex ``ratingKey`` from the webhook Metadata.
+        server_id: Optional ``media_servers[].id`` pinning the lookup to
+            a specific Plex install. Required for multi-Plex installs —
+            without it the lookup projects from ``media_servers[0]`` and
+            misses every ratingKey owned only by the second (or later)
+            Plex. Issue #244 shadow in the webhook flow.
+
     Returns ``([], None)`` on any failure (item not found, Plex
     unreachable, no media parts).
     """
     try:
-        from ..config import load_config
+        from ..config import derive_legacy_plex_view, load_config
         from ..plex_client import plex_server, retry_plex_call
     except ImportError as exc:
         logger.debug("Webhook: cannot import plex client modules: {}", exc)
@@ -1446,6 +1456,27 @@ def _resolve_plex_paths_from_rating_key(
             exc,
         )
         return [], None
+
+    # Multi-Plex routing: when the caller knows which Plex sent the
+    # webhook (matched the payload's Server.uuid against
+    # server_identity), project that Plex's URL/token onto ``config``
+    # so the plex_server() call connects to the right server.
+    # Without this, ``load_config`` returns the legacy view derived
+    # from media_servers[0], and a Plex-B-only ratingKey lookup
+    # silently fails with "ratingKey not recognised".
+    try:
+        raw_servers = get_settings_manager().get("media_servers") or []
+        plex_view = derive_legacy_plex_view(raw_servers, server_id=server_id)
+        if plex_view.get("plex_url"):
+            config.plex_url = plex_view["plex_url"]
+        if plex_view.get("plex_token"):
+            config.plex_token = plex_view["plex_token"]
+    except Exception as exc:
+        logger.debug(
+            "Plex webhook lookup: per-server view projection failed ({}). "
+            "Falling back to load_config()'s default Plex.",
+            exc,
+        )
 
     try:
         plex = plex_server(config)
@@ -1566,13 +1597,117 @@ def _classify_plex_event(data: dict) -> tuple[str, tuple | None]:
     return event, None
 
 
-def _resolve_plex_webhook_paths_and_title(metadata: dict, rating_key) -> tuple[list[str], str]:
+def _resolve_plex_source_server_id(payload: dict) -> str | None:
+    """Map a native Plex webhook payload to a configured ``media_servers[].id``.
+
+    Two routing signals are checked, in precedence order:
+
+    1. ``?server_id=`` query string — explicit operator pin. The value
+       must match a persisted ``media_servers[].id`` exactly. Mirrors
+       the Sonarr/Radarr webhook pattern (webhooks.py:1325) and beats
+       any payload heuristic.
+    2. ``payload["Server"]["uuid"]`` — Plex sends the source server's
+       ``machineIdentifier`` in every webhook. We match it against each
+       enabled Plex's persisted ``server_identity`` (captured at
+       test-connection time). Locally-generated UUIDs never appear in
+       vendor payloads, so we match on identity, not id.
+
+    Returns ``None`` when nothing matches — the caller should treat that
+    as "fall back to media_servers[0]'s view," which preserves the
+    pre-fix behaviour for single-Plex installs and any payload that
+    can't be confidently disambiguated. Identity collisions (the
+    extremely rare cloned-VM case where two configured Plex installs
+    share the same machineIdentifier) also return ``None`` because we
+    can't tell which one to use; the warning matches webhook_router.py's
+    handling of the same case.
+    """
+    pin_id = (request.args.get("server_id") or "").strip() or None
+
+    raw_servers = []
+    try:
+        raw_servers = get_settings_manager().get("media_servers") or []
+    except Exception as exc:
+        logger.debug("Plex webhook routing: could not read media_servers ({}); falling back to no pin.", exc)
+        return pin_id if pin_id else None
+
+    if pin_id:
+        # Strict pin validation: id must point at an ENABLED PLEX entry.
+        # Accepting any id and letting ``derive_legacy_plex_view`` filter
+        # downstream would silently fall back to media_servers[0]'s view
+        # — the same first-Plex ghost this whole helper exists to
+        # eliminate — when the operator pinned a typo'd id, a disabled
+        # Plex, or (worse) an Emby/Jellyfin id by mistake.
+        match = next(
+            (
+                e
+                for e in raw_servers
+                if isinstance(e, dict)
+                and e.get("id") == pin_id
+                and (e.get("type") or "").lower() == "plex"
+                and e.get("enabled", True)
+            ),
+            None,
+        )
+        if match is not None:
+            return pin_id
+        logger.warning(
+            "Plex webhook routing: ``?server_id={!r}`` doesn't match any enabled Plex server "
+            "(it may be disabled, a different vendor, or a typo). Falling back to payload-uuid "
+            "matching. Check the URL registered with this Plex on the Servers page.",
+            pin_id,
+        )
+
+    server_block = payload.get("Server") if isinstance(payload, dict) else None
+    payload_uuid = ""
+    if isinstance(server_block, dict):
+        raw_uuid = server_block.get("uuid")
+        if isinstance(raw_uuid, str):
+            payload_uuid = raw_uuid.strip()
+    if not payload_uuid:
+        return None
+
+    matches = [
+        e
+        for e in raw_servers
+        if isinstance(e, dict)
+        and (e.get("type") or "").lower() == "plex"
+        and e.get("enabled", True)
+        and e.get("server_identity") == payload_uuid
+    ]
+    if len(matches) == 1:
+        return str(matches[0].get("id") or "") or None
+    if len(matches) > 1:
+        logger.warning(
+            "Plex webhook routing: two or more configured Plex servers share the same "
+            "machineIdentifier ({!r}, {} matches). Can't tell which one this webhook came from — "
+            "falling back to the default Plex view. Fix by re-installing one server so it has a "
+            "fresh identity, or pin the URL with ``?server_id=<id>``.",
+            payload_uuid,
+            len(matches),
+        )
+    return None
+
+
+def _resolve_plex_webhook_paths_and_title(
+    metadata: dict,
+    rating_key,
+    *,
+    server_id: str | None = None,
+) -> tuple[list[str], str]:
     """Recover the file paths + display title for a library.new Plex webhook.
 
     Tries the cheap path first: file paths embedded in the payload's
     ``Media[].Part[].file`` fields. Plex includes these inconsistently
     (present for some media types but not all), so falls back to a Plex
     API lookup by ratingKey when the embedded paths or title are missing.
+
+    Args:
+        metadata: The ``Metadata`` block of the Plex webhook payload.
+        rating_key: The Plex ``ratingKey`` from the same payload.
+        server_id: Optional ``media_servers[].id`` of the originating
+            Plex (resolved from the payload's ``Server.uuid`` or a
+            ``?server_id=`` query override). Forwarded to the ratingKey
+            lookup so multi-Plex installs hit the right server.
 
     Returns ``(paths, display_title)``. Either may be empty if every
     resolution strategy fails — the caller is responsible for the
@@ -1593,7 +1728,10 @@ def _resolve_plex_webhook_paths_and_title(metadata: dict, rating_key) -> tuple[l
                         paths.append(file_path.strip())
 
     if not paths or display_title is None:
-        resolved_paths, resolved_title = _resolve_plex_paths_from_rating_key(rating_key)
+        resolved_paths, resolved_title = _resolve_plex_paths_from_rating_key(
+            rating_key,
+            server_id=server_id,
+        )
         if not paths:
             paths = resolved_paths
         if display_title is None:
@@ -1642,6 +1780,22 @@ def plex_webhook():
     metadata = _as_dict(data.get("Metadata"))
     rating_key = metadata.get("ratingKey")
 
+    # Multi-Plex routing: figure out which configured Plex this webhook
+    # came from BEFORE we fall back to a ratingKey lookup that needs
+    # to hit that exact server. Two signals, in precedence:
+    #   1. ``?server_id=`` query string — explicit operator pin. Mirrors
+    #      the Sonarr webhook pattern at line 1325. Wins because it's
+    #      an explicit deployment decision, not a heuristic.
+    #   2. ``Server.uuid`` in the payload matched against each
+    #      configured Plex's persisted ``server_identity`` (captured
+    #      from a successful test-connection probe — Plex's
+    #      ``machineIdentifier``). The locally-generated id never
+    #      appears in vendor payloads, so we match on identity, not id.
+    # Falls back to ``None`` when nothing matches — single-Plex installs
+    # and unknown-identity multi-Plex installs both behave the same as
+    # they always did (project from media_servers[0]).
+    resolved_server_id = _resolve_plex_source_server_id(data)
+
     if not rating_key:
         raw_title = str(metadata.get("title", "")).strip() or "Plex item"
         fallback_display = _format_plex_title_from_metadata(metadata) or raw_title
@@ -1655,7 +1809,11 @@ def plex_webhook():
         _add_history_entry("plex", "library.new", fallback_display, "ignored_no_path")
         return jsonify({"success": False, "error": "Missing Metadata.ratingKey"}), 400
 
-    paths, display_title = _resolve_plex_webhook_paths_and_title(metadata, rating_key)
+    paths, display_title = _resolve_plex_webhook_paths_and_title(
+        metadata,
+        rating_key,
+        server_id=resolved_server_id,
+    )
 
     if not paths:
         logger.warning(
@@ -1677,7 +1835,20 @@ def plex_webhook():
             200,
         )
 
-    queued_any = any(_schedule_webhook_job("plex", display_title, path) for path in paths)
+    # Thread the resolved Plex server through to the dispatcher so:
+    #   1. The Jobs UI's source chip / server column shows the right Plex.
+    #   2. The dedup key ``(source, server_id, canonical_path)`` doesn't
+    #      collapse Plex-A and Plex-B events for the same path within the
+    #      60s window.
+    #   3. The orchestrator's full-scan gate (issue #244 part 1) sees a
+    #      pin and routes the webhook job to that Plex only — without
+    #      this the gate's ``enabled_plex_count >= 2`` branch fans the
+    #      path out to both Plex servers (double processing).
+    # Mirrors the Sonarr handler at line 1325-1329.
+    job_kwargs: dict = {}
+    if resolved_server_id:
+        job_kwargs["server_id"] = resolved_server_id
+    queued_any = any(_schedule_webhook_job("plex", display_title, path, **job_kwargs) for path in paths)
 
     if not queued_any:
         _add_history_entry("plex", "library.new", display_title, "ignored_no_path")
