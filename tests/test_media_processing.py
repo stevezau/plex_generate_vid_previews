@@ -39,6 +39,29 @@ from media_preview_generator.processing import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _safe_keyframe_probe(monkeypatch):
+    """Patch the issue-#238 keyframe probe + duplicate-check to safe
+    no-op defaults for the duration of every test in this file.
+
+    The probe and the post-extract validator were added in the fix for
+    duplicate-thumbnail bugs on files whose keyframe spacing exceeds
+    the user's thumbnail interval.  In production they call ffprobe
+    and hash JPGs on disk; in these tests neither is realistic — the
+    video path is fake and ``subprocess.run`` is a blanket MagicMock.
+    Letting the real probe run here would always return ``None``
+    (unsafe) and force the no-skip-frame retry path, breaking every
+    assertion about the first attempt's command shape.
+
+    The dedicated probe behaviour itself is covered in
+    ``test_processing_keyframe_probe.py``.
+    """
+    from media_preview_generator.processing import generator as _gen
+
+    monkeypatch.setattr(_gen, "_probe_max_keyframe_gap", lambda _file: 0.5)
+    monkeypatch.setattr(_gen, "_has_duplicate_thumbnails", lambda *_a, **_kw: False)
+
+
 class TestBIFGeneration:
     """Test BIF file generation."""
 
