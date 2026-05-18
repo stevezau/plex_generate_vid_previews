@@ -427,7 +427,14 @@ def _enumerate_plex_full_scan_items(
     from ..processing import get_processor_for
     from ..servers.base import ServerType
 
-    plex_cfg = next((c for c in registry.configs() if c.type is ServerType.PLEX), None)
+    # Defence in depth for issue #244: the gate at
+    # :func:`_should_use_multi_server_full_scan` routes 2+ enabled Plex
+    # installs to the multi-server path, so reaching this site with more
+    # than one enabled Plex would itself be the bug. Filter on ``enabled``
+    # here too so a "[disabled Plex-A, enabled Plex-B]" layout doesn't
+    # connect to the disabled one when ``media_servers[0]`` happens to be
+    # disabled — the user's intent is the enabled server.
+    plex_cfg = next((c for c in registry.configs() if c.type is ServerType.PLEX and c.enabled), None)
     if plex_cfg is None:
         return
     plex_processor = get_processor_for(ServerType.PLEX)
@@ -1763,14 +1770,13 @@ def _should_use_multi_server_full_scan(config, pinned_type: str) -> bool:
     * Pinned to a non-Plex server.
     * No Plex configured at all.
     * At least one non-Plex server (Emby / Jellyfin) is enabled.
+    * Two or more enabled Plex servers are configured.
 
     The legacy Plex-only branch only fires for the pure single-Plex install.
-    Reason: :func:`_run_plex_full_scan_phase` builds its registry via
-    ``ServerRegistry.from_legacy_config`` which has empty per-server
-    path_mappings — on a multi-server install Plex items come back with
-    their remote view paths (``/media/Movies/...``) and every worker fails
-    with "source missing" because the registry doesn't know how to
-    translate those.
+    It enumerates exactly one Plex config (the first enabled match from
+    ``registry.configs()``) and has no notion of ``server_id_filter`` —
+    so on a 2-Plex install pinning to the second Plex would still scan
+    the first, silently. Issue #244 (May 2026) was the live reproducer.
     """
     no_webhook_paths = not getattr(config, "webhook_paths", None)
     if not no_webhook_paths:
@@ -1778,17 +1784,24 @@ def _should_use_multi_server_full_scan(config, pinned_type: str) -> bool:
     non_plex_pin = bool(pinned_type) and pinned_type != "plex"
     no_plex_at_all = not (config.plex_url and config.plex_token)
     has_non_plex_server = False
+    enabled_plex_count = 0
     try:
         from ..web.settings_manager import get_settings_manager
 
         raw = get_settings_manager().get("media_servers") or []
-        has_non_plex_server = any(
-            isinstance(e, dict) and (e.get("type") or "").lower() in ("emby", "jellyfin") and e.get("enabled", True)
-            for e in raw
-        )
+        for entry in raw:
+            if not isinstance(entry, dict) or not entry.get("enabled", True):
+                continue
+            entry_type = (entry.get("type") or "").lower()
+            if entry_type in ("emby", "jellyfin"):
+                has_non_plex_server = True
+            elif entry_type == "plex":
+                enabled_plex_count += 1
     except Exception:
         has_non_plex_server = False
-    return non_plex_pin or no_plex_at_all or has_non_plex_server
+        enabled_plex_count = 0
+    multi_plex = enabled_plex_count >= 2
+    return non_plex_pin or no_plex_at_all or has_non_plex_server or multi_plex
 
 
 def _maybe_log_path_mapping_misconfig(aggregate_outcome: dict, processed: int) -> bool:
@@ -2333,6 +2346,17 @@ def run_processing(
 
         if _should_use_multi_server_full_scan(config, pinned_type):
             library_ids = list(getattr(config, "plex_library_ids", None) or [])
+            # Operator breadcrumb so a multi-Plex install that just got
+            # routed through the fan-out path (issue #244 fix) can be
+            # spotted in logs without grepping the gate function. The
+            # pre-fix log trail was identical for legacy and multi-server
+            # paths, so a 2-Plex no-pin scan looked like it had always
+            # walked both servers when in fact it only walked the first.
+            logger.info(
+                "Full-scan dispatch: multi-server path (pin={!r}). Walks every "
+                "enabled server matching the pin; honours server_id_filter end-to-end.",
+                sid_filter,
+            )
             scan_warnings: list[str] = []
             outcome_counts = _run_full_scan_multi_server(
                 config,
