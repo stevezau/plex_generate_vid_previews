@@ -1889,3 +1889,331 @@ class TestPreviewsReadinessDismissal:
         assert response.status_code == 200
         check = response.get_json()["sections"][0]["checks"][0]
         assert "dismissed" not in check
+
+
+class TestDisabledServerGates:
+    """Disabled servers must never be probed by ANY endpoint.
+
+    The user disables a server to pause it. Every probe-style endpoint
+    (test-connection, previews-readiness, health-check + apply, refresh-
+    libraries, install/uninstall-plugin, trickplay-readiness/fix-all,
+    vendor-extraction + status, scheduled-trickplay) must short-circuit
+    *before* instantiating a live client — otherwise a stale tab, a
+    bookmarked URL, or a third-party automation can wake a paused
+    server.
+
+    Bug-blind guard: each test asserts that ``_instantiate_for_probe``
+    is NEVER called, not just that the response shape looks right. A
+    future change that removes the gate but happens to return the same
+    JSON shape would still fail these tests.
+    """
+
+    @staticmethod
+    def _seed_disabled_plex():
+        _seed_media_servers(
+            [
+                {
+                    "id": "plex-paused",
+                    "type": "plex",
+                    "name": "Paused Plex",
+                    "enabled": False,
+                    "url": "http://plex:32400",
+                    "auth": {"method": "token", "token": "tok"},
+                    "libraries": [],
+                }
+            ]
+        )
+
+    @staticmethod
+    def _seed_disabled_jellyfin():
+        _seed_media_servers(
+            [
+                {
+                    "id": "jf-paused",
+                    "type": "jellyfin",
+                    "name": "Paused JF",
+                    "enabled": False,
+                    "url": "http://jellyfin:8096",
+                    "auth": {"method": "api_key", "api_key": "k"},
+                    "libraries": [],
+                }
+            ]
+        )
+
+    @pytest.fixture
+    def probe_spy(self, monkeypatch):
+        """Replace _instantiate_for_probe with a recording spy.
+
+        Any call to the spy is a regression — the disabled gate must
+        run before any live client is built. Tests assert ``spy.calls``
+        stays empty.
+        """
+
+        class Spy:
+            def __init__(self):
+                self.calls = []
+
+            def __call__(self, cfg):
+                self.calls.append(cfg)
+                raise AssertionError(
+                    "_instantiate_for_probe was called for a disabled server — "
+                    "the disabled-gate short-circuit is missing on this route."
+                )
+
+        spy = Spy()
+        monkeypatch.setattr(
+            "media_preview_generator.web.routes.api_servers._instantiate_for_probe",
+            spy,
+        )
+        return spy
+
+    def _assert_disabled_envelope(self, response, *, expected_status: int = 409):
+        assert response.status_code == expected_status
+        body = response.get_json() or {}
+        assert body.get("ok") is False
+        assert body.get("disabled") is True
+        # Both keys present so any frontend handler (some read ``error``,
+        # some read ``message``) renders a clear message.
+        assert "disabled" in (body.get("message") or "").lower()
+        assert "disabled" in (body.get("error") or "").lower()
+
+    def test_test_connection_short_circuits_when_disabled(self, client, auth_headers, probe_spy):
+        self._seed_disabled_plex()
+        response = client.post("/api/servers/plex-paused/test-connection", headers=auth_headers)
+        self._assert_disabled_envelope(response)
+        assert probe_spy.calls == []
+
+    def test_previews_readiness_short_circuits_when_disabled(self, client, auth_headers, probe_spy):
+        self._seed_disabled_plex()
+        response = client.get("/api/servers/plex-paused/previews-readiness", headers=auth_headers)
+        self._assert_disabled_envelope(response)
+        # The envelope shape mirrors the readiness contract so a frontend
+        # that bypasses its own pre-gate still renders cleanly.
+        body = response.get_json()
+        assert body.get("vendor") == "plex"
+        assert body.get("sections") == []
+        assert probe_spy.calls == []
+
+    def test_health_check_short_circuits_when_disabled(self, client, auth_headers, probe_spy):
+        self._seed_disabled_jellyfin()
+        response = client.get("/api/servers/jf-paused/health-check", headers=auth_headers)
+        self._assert_disabled_envelope(response)
+        assert probe_spy.calls == []
+
+    def test_health_check_apply_short_circuits_when_disabled(self, client, auth_headers, probe_spy):
+        self._seed_disabled_jellyfin()
+        response = client.post(
+            "/api/servers/jf-paused/health-check/apply",
+            headers=auth_headers,
+            json={},
+        )
+        self._assert_disabled_envelope(response)
+        assert probe_spy.calls == []
+
+    def test_refresh_libraries_short_circuits_when_disabled(self, client, auth_headers, probe_spy):
+        self._seed_disabled_plex()
+        response = client.post("/api/servers/plex-paused/refresh-libraries", headers=auth_headers)
+        self._assert_disabled_envelope(response)
+        assert probe_spy.calls == []
+
+    def test_install_plugin_short_circuits_when_disabled(self, client, auth_headers, probe_spy):
+        self._seed_disabled_jellyfin()
+        response = client.post("/api/servers/jf-paused/install-plugin", headers=auth_headers)
+        self._assert_disabled_envelope(response)
+        assert probe_spy.calls == []
+
+    def test_uninstall_plugin_short_circuits_when_disabled(self, client, auth_headers, probe_spy):
+        self._seed_disabled_jellyfin()
+        response = client.post("/api/servers/jf-paused/uninstall-plugin", headers=auth_headers)
+        self._assert_disabled_envelope(response)
+        assert probe_spy.calls == []
+
+    def test_trickplay_readiness_short_circuits_when_disabled(self, client, auth_headers, probe_spy):
+        self._seed_disabled_jellyfin()
+        response = client.get("/api/servers/jf-paused/trickplay-readiness", headers=auth_headers)
+        self._assert_disabled_envelope(response)
+        assert probe_spy.calls == []
+
+    def test_trickplay_fix_all_short_circuits_when_disabled(self, client, auth_headers, probe_spy):
+        self._seed_disabled_jellyfin()
+        response = client.post(
+            "/api/servers/jf-paused/trickplay-fix-all",
+            headers=auth_headers,
+            json={"install_plugin": True},
+        )
+        self._assert_disabled_envelope(response)
+        assert probe_spy.calls == []
+
+    def test_vendor_extraction_short_circuits_when_disabled(self, client, auth_headers, probe_spy):
+        self._seed_disabled_plex()
+        response = client.post(
+            "/api/servers/plex-paused/vendor-extraction",
+            headers=auth_headers,
+            json={"scan_extraction": False},
+        )
+        self._assert_disabled_envelope(response)
+        assert probe_spy.calls == []
+
+    def test_vendor_extraction_status_short_circuits_when_disabled(self, client, auth_headers, probe_spy):
+        self._seed_disabled_plex()
+        response = client.get(
+            "/api/servers/plex-paused/vendor-extraction/status",
+            headers=auth_headers,
+        )
+        self._assert_disabled_envelope(response)
+        assert probe_spy.calls == []
+
+    def test_scheduled_trickplay_short_circuits_when_disabled(self, client, auth_headers, probe_spy):
+        self._seed_disabled_jellyfin()
+        response = client.post(
+            "/api/servers/jf-paused/scheduled-trickplay",
+            headers=auth_headers,
+            json={"enabled": False},
+        )
+        self._assert_disabled_envelope(response)
+        assert probe_spy.calls == []
+
+    def test_output_status_short_circuits_when_disabled(self, client, auth_headers, monkeypatch):
+        """output-status must not wake a disabled Plex server.
+
+        The Plex branch of this route builds a live ``PlexServer`` via
+        ``ServerRegistry.from_settings(...).get(server_id)`` to look up
+        the per-item bundle hash. That instantiation hits Plex on
+        connect, so a disabled server must short-circuit BEFORE the
+        registry build.
+
+        Spies on ``ServerRegistry.from_settings`` (not ``_instantiate_for_probe``
+        — output-status takes a different code path through the
+        registry).
+        """
+        self._seed_disabled_plex()
+
+        from media_preview_generator.servers import registry as _registry_mod
+
+        calls: list = []
+        original = _registry_mod.ServerRegistry.from_settings
+
+        def spy_from_settings(*args, **kwargs):
+            calls.append("registry_built")
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(_registry_mod.ServerRegistry, "from_settings", spy_from_settings)
+
+        response = client.get(
+            "/api/servers/plex-paused/output-status",
+            headers=auth_headers,
+            query_string={"path": "/data/movies/Foo.mkv", "item_id": "12345"},
+        )
+        self._assert_disabled_envelope(response)
+        assert calls == [], "ServerRegistry must not be built for a disabled output-status request"
+
+    def test_enabled_server_still_probes(self, client, auth_headers, monkeypatch):
+        """Sanity-check the opposite cell: enabled servers DO get probed.
+
+        Without this, a regression that gates regardless of state would
+        pass every test above. Asserts ``_instantiate_for_probe`` IS
+        called when the server is enabled.
+        """
+        _seed_media_servers(
+            [
+                {
+                    "id": "plex-on",
+                    "type": "plex",
+                    "name": "Live Plex",
+                    "enabled": True,
+                    "url": "http://plex:32400",
+                    "auth": {"method": "token", "token": "tok"},
+                    "libraries": [],
+                }
+            ]
+        )
+
+        calls: list = []
+        from media_preview_generator.servers import ConnectionResult
+        from media_preview_generator.servers.plex import PlexServer
+
+        def fake_test(self):
+            calls.append("probed")
+            return ConnectionResult(ok=True, server_id="x", server_name="X", version="1", message="OK")
+
+        monkeypatch.setattr(PlexServer, "test_connection", fake_test)
+        response = client.post("/api/servers/plex-on/test-connection", headers=auth_headers)
+        assert response.status_code == 200
+        assert response.get_json()["ok"] is True
+        assert calls == ["probed"], "enabled server should be probed exactly once"
+
+    def test_enabled_default_when_key_missing(self, client, auth_headers, monkeypatch):
+        """A media_servers entry without an ``enabled`` key behaves as enabled.
+
+        Back-compat: settings files saved before the toggle existed must
+        still probe. The matrix here is the third cell (enabled=True,
+        enabled=False, enabled-missing). Without this row, a regression
+        that flipped the default to disabled would silently pass — the
+        D34-style "tested two of three branches" gap the project guide
+        calls out.
+        """
+        _seed_media_servers(
+            [
+                {
+                    "id": "plex-legacy",
+                    "type": "plex",
+                    "name": "Legacy Plex",
+                    # NOTE: no ``enabled`` key — pre-toggle settings shape
+                    "url": "http://plex:32400",
+                    "auth": {"method": "token", "token": "tok"},
+                    "libraries": [],
+                }
+            ]
+        )
+
+        from media_preview_generator.servers import ConnectionResult
+        from media_preview_generator.servers.plex import PlexServer
+
+        monkeypatch.setattr(
+            PlexServer,
+            "test_connection",
+            lambda self: ConnectionResult(ok=True, server_id="x", server_name="X", version="1", message="OK"),
+        )
+        response = client.post("/api/servers/plex-legacy/test-connection", headers=auth_headers)
+        assert response.status_code == 200
+        assert response.get_json()["ok"] is True
+
+    def test_create_disabled_server_does_not_probe_identity(self, client, auth_headers, monkeypatch):
+        """A user adding an initially-disabled server must not trigger an identity probe.
+
+        ``_probe_for_identity`` runs during ``POST /api/servers`` to auto-
+        discover the server's UUID for webhook matching. For a disabled
+        entry it must short-circuit — same rule as every other probe
+        path. The identity gets re-populated on the next save after the
+        user re-enables the server.
+        """
+        calls: list = []
+        from media_preview_generator.servers import ConnectionResult
+        from media_preview_generator.servers.plex import PlexServer
+
+        def fake_test(self):
+            calls.append("probed")
+            return ConnectionResult(ok=True, server_id="machine-abc", server_name="P", version="1", message="OK")
+
+        monkeypatch.setattr(PlexServer, "test_connection", fake_test)
+
+        response = client.post(
+            "/api/servers",
+            headers=auth_headers,
+            json={
+                "type": "plex",
+                "name": "Pre-disabled",
+                "enabled": False,
+                "url": "http://plex:32400",
+                "auth": {"method": "token", "token": "tok"},
+                "libraries": [],
+            },
+        )
+        # Create still succeeds (the entry is persisted); the identity
+        # probe is what's gated, not the save itself.
+        assert response.status_code == 201
+        assert calls == [], "_probe_for_identity must not probe a disabled entry on create"
+        # And no server_identity was recorded for the disabled entry.
+        servers = get_settings_manager().get("media_servers") or []
+        assert len(servers) == 1
+        assert not servers[0].get("server_identity"), "disabled entry must not carry a probed identity"

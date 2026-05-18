@@ -1259,8 +1259,15 @@
         }
         // Unified "Previews readiness" card — one probe per modal open.
         // Fire-and-forget so the modal opens instantly; the card renders
-        // itself when the probe returns.
-        runReadinessProbe(server.id, server.type || '');
+        // itself when the probe returns. Disabled servers MUST NOT be
+        // probed (we'd wake a server the user explicitly paused); show a
+        // static "Disabled" state instead and let the user re-enable
+        // before running checks.
+        if (server.enabled === false) {
+            _renderReadinessDisabled(server.id);
+        } else {
+            runReadinessProbe(server.id, server.type || '');
+        }
 
         // D24 — vendor-aware re-auth UI: show ONE block matching the
         // server's type, hide the others, and reset all input state so
@@ -1801,6 +1808,29 @@
     // binding is initialised before any caller can reach it (avoids the
     // latent TDZ footgun a future top-level call would expose).
     const _readinessDataByServer = new Map();
+
+    // Render the readiness card's "Server is disabled" state WITHOUT
+    // probing the network. Mirrors the backend's _disabled_response
+    // contract on /api/servers/<id>/previews-readiness — the two layers
+    // agree so a disabled server is never woken by this modal whether
+    // the user opened Edit from the card glyph or via an external link.
+    function _renderReadinessDisabled(serverId) {
+        const group = document.getElementById('editReadinessGroup');
+        const badge = document.getElementById('editReadinessBadge');
+        const body = document.getElementById('editReadinessBody');
+        const fixCtl = document.getElementById('editReadinessFixControls');
+        const fixResult = document.getElementById('editReadinessFixResult');
+        const pluginCtl = document.getElementById('editReadinessPluginControls');
+        if (!group || !badge || !body || !fixCtl) return;
+        group.classList.remove('d-none');
+        fixCtl.classList.add('d-none');
+        if (pluginCtl) pluginCtl.classList.add('d-none');
+        if (fixResult) { fixResult.className = 'small text-muted'; fixResult.textContent = ''; }
+        badge.className = 'badge ms-1 bg-secondary';
+        badge.textContent = 'disabled';
+        body.innerHTML = '<div class="small text-muted"><i class="bi bi-pause-circle me-1"></i>This server is disabled — checks are paused. Re-enable it on the Servers page to run readiness checks.</div>';
+        _readinessDataByServer.delete(serverId);
+    }
 
     async function runReadinessProbe(serverId, serverType) {
         const group = document.getElementById('editReadinessGroup');

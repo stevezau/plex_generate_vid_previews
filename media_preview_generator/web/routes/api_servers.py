@@ -59,6 +59,55 @@ def _save_media_servers(servers: list[dict]) -> None:
     get_settings_manager().set("media_servers", servers)
 
 
+def _is_disabled(target: dict) -> bool:
+    """True when the persisted media-servers entry is disabled.
+
+    Treats a missing ``enabled`` key as ``True`` for back-compat — older
+    settings.json files predate the per-server enable toggle.
+    """
+    return not bool(target.get("enabled", True))
+
+
+def _disabled_response(target: dict, *, include_readiness_envelope: bool = False) -> tuple[Any, int]:
+    """Standard 'server is disabled' short-circuit for probe-style endpoints.
+
+    Disabled servers must not be probed — no network calls, no live
+    client instantiation. Every endpoint that would otherwise hit the
+    server (test-connection, previews-readiness, health-check,
+    refresh-libraries, install-plugin) returns this envelope when the
+    target's ``enabled`` flag is False, so a stale tab or external
+    caller can never wake a paused server.
+
+    Returns HTTP 409 Conflict — the request can't be served because the
+    server's current persisted state forbids it. Both ``error`` and
+    ``message`` are included so every JS handler (some read ``error``,
+    some read ``message``) renders a clear notice without bespoke
+    plumbing per endpoint.
+
+    ``include_readiness_envelope`` widens the shape with the
+    ``sections``/``vendor``/``overall_ok`` keys that the previews-
+    readiness card renderer expects, so a caller that bypasses the
+    frontend's pre-gate still gets a non-blank panel.
+    """
+    name = str(target.get("name") or "").strip() or "This server"
+    msg = f"{name} is disabled. Re-enable it on the Servers page to run checks."
+    body: dict[str, Any] = {
+        "ok": False,
+        "disabled": True,
+        "message": msg,
+        "error": msg,
+    }
+    if include_readiness_envelope:
+        body.update(
+            {
+                "vendor": str(target.get("type") or "").lower(),
+                "overall_ok": False,
+                "sections": [],
+            }
+        )
+    return jsonify(body), 409
+
+
 def _probe_for_identity(entry: dict) -> str | None:
     """Probe the candidate config and return its self-reported identity.
 
@@ -69,7 +118,16 @@ def _probe_for_identity(entry: dict) -> str | None:
     is deliberately allowed; the webhook router falls back to the
     "single candidate of this vendor" heuristic when identity is
     missing.
+
+    Returns ``None`` immediately when ``entry.enabled`` is False —
+    disabled servers must never be probed, even during a save. The
+    identity field can be re-populated later by the next save after
+    the user re-enables the server (any URL/auth change triggers a
+    re-probe via update_server).
     """
+    if not bool(entry.get("enabled", True)):
+        return None
+
     try:
         cfg = server_config_from_dict(entry)
     except UnsupportedServerTypeError:
@@ -498,6 +556,9 @@ def refresh_server_libraries(server_id: str):
     if target_entry is None or target_index is None:
         return jsonify({"error": f"server {server_id!r} not found"}), 404
 
+    if _is_disabled(target_entry):
+        return _disabled_response(target_entry)
+
     try:
         target_cfg = server_config_from_dict(target_entry)
     except UnsupportedServerTypeError as exc:
@@ -800,6 +861,9 @@ def test_existing_server_connection(server_id: str):
     if target is None:
         return jsonify({"ok": False, "message": f"server {server_id!r} not found"}), 404
 
+    if _is_disabled(target):
+        return _disabled_response(target)
+
     try:
         cfg = server_config_from_dict(target)
     except Exception as exc:
@@ -860,6 +924,9 @@ def install_jellyfin_plugin(server_id: str):
     if target is None:
         return jsonify({"ok": False, "error": f"server {server_id!r} not found"}), 404
 
+    if _is_disabled(target):
+        return _disabled_response(target)
+
     try:
         cfg = server_config_from_dict(target)
     except Exception as exc:
@@ -899,6 +966,9 @@ def uninstall_jellyfin_plugin(server_id: str):
     target = next((s for s in raw_servers if isinstance(s, dict) and s.get("id") == server_id), None)
     if target is None:
         return jsonify({"ok": False, "error": f"server {server_id!r} not found"}), 404
+
+    if _is_disabled(target):
+        return _disabled_response(target)
 
     try:
         cfg = server_config_from_dict(target)
@@ -940,6 +1010,9 @@ def previews_readiness(server_id: str):
     target = next((s for s in raw_servers if isinstance(s, dict) and s.get("id") == server_id), None)
     if target is None:
         return jsonify({"ok": False, "error": f"server {server_id!r} not found"}), 404
+
+    if _is_disabled(target):
+        return _disabled_response(target, include_readiness_envelope=True)
 
     try:
         cfg = server_config_from_dict(target)
@@ -1076,6 +1149,9 @@ def jellyfin_trickplay_readiness(server_id: str):
     if target is None:
         return jsonify({"ok": False, "error": f"server {server_id!r} not found"}), 404
 
+    if _is_disabled(target):
+        return _disabled_response(target)
+
     try:
         cfg = server_config_from_dict(target)
     except Exception as exc:
@@ -1113,6 +1189,9 @@ def jellyfin_trickplay_fix_all(server_id: str):
     target = next((s for s in raw_servers if isinstance(s, dict) and s.get("id") == server_id), None)
     if target is None:
         return jsonify({"ok": False, "error": f"server {server_id!r} not found"}), 404
+
+    if _is_disabled(target):
+        return _disabled_response(target)
 
     try:
         cfg = server_config_from_dict(target)
@@ -1235,6 +1314,9 @@ def set_vendor_extraction(server_id: str):
     if target is None:
         return jsonify({"error": f"server {server_id!r} not found"}), 404
 
+    if _is_disabled(target):
+        return _disabled_response(target)
+
     try:
         cfg = server_config_from_dict(target)
     except Exception as exc:
@@ -1323,6 +1405,9 @@ def set_scheduled_trickplay(server_id: str):
     if target is None:
         return jsonify({"error": f"server {server_id!r} not found"}), 404
 
+    if _is_disabled(target):
+        return _disabled_response(target)
+
     try:
         cfg = server_config_from_dict(target)
     except Exception as exc:
@@ -1359,6 +1444,9 @@ def get_vendor_extraction_status(server_id: str):
     target = next((s for s in raw_servers if isinstance(s, dict) and s.get("id") == server_id), None)
     if target is None:
         return jsonify({"error": f"server {server_id!r} not found"}), 404
+
+    if _is_disabled(target):
+        return _disabled_response(target)
 
     try:
         cfg = server_config_from_dict(target)
@@ -1418,6 +1506,9 @@ def get_server_health_check(server_id: str):
     target = next((s for s in raw_servers if isinstance(s, dict) and s.get("id") == server_id), None)
     if target is None:
         return jsonify({"error": f"server {server_id!r} not found"}), 404
+
+    if _is_disabled(target):
+        return _disabled_response(target)
 
     try:
         cfg = server_config_from_dict(target)
@@ -1497,6 +1588,9 @@ def apply_server_health_fixes(server_id: str):
     target = next((s for s in raw_servers if isinstance(s, dict) and s.get("id") == server_id), None)
     if target is None:
         return jsonify({"error": f"server {server_id!r} not found"}), 404
+
+    if _is_disabled(target):
+        return _disabled_response(target)
 
     try:
         cfg = server_config_from_dict(target)
@@ -1634,6 +1728,9 @@ def get_output_status(server_id: str):
     target = next((s for s in raw_servers if isinstance(s, dict) and s.get("id") == server_id), None)
     if target is None:
         return jsonify({"error": f"server {server_id!r} not found"}), 404
+
+    if _is_disabled(target):
+        return _disabled_response(target)
 
     try:
         cfg = server_config_from_dict(target)

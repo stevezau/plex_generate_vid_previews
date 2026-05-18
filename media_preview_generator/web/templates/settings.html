@@ -199,12 +199,43 @@
                     <div class="col-md-6 mb-3">
                         <label for="thumbnailInterval" class="form-label">
                             Thumbnail Interval
-                            <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Seconds between thumbnails in the preview strip. Default 10s matches Plex's standard preview cadence and the BIF community convention — your existing sidecar BIFs (the -320-10.bif files alongside videos) use the same value. Lower to 5s for finer scrubbing if you don't mind bigger BIF files and longer jobs."><i class="bi bi-info-circle"></i></button>
+                            <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Seconds between thumbnails. Lower numbers give finer scrubbing in your player. Videos already contain 'snapshot' frames stored at intervals — when those are closer together than your interval, we reuse them (fast). When they're further apart, we fully decode the video to produce unique thumbnails (correct, but slower for that file). We check each file automatically and pick the right path."><i class="bi bi-info-circle"></i></button>
                         </label>
                         <div class="input-group">
                             <input type="number" class="form-control has-stepper" id="thumbnailInterval"
                                    min="1" max="60" value="10">
                             <span class="input-group-text">seconds</span>
+                        </div>
+                        <!-- Issue #238 — surfaces the slow-path tradeoff when the user picks
+                             an interval below the 10s default. Visibility is toggled by the
+                             input-change handler in the DOMContentLoaded block below; default
+                             value=10 means the notice ships hidden. Tone is informational —
+                             a lower interval is a valid choice, we just want the user to know
+                             what happens on certain files. -->
+                        <div class="alert alert-info py-2 mt-2 small d-none" id="thumbnailIntervalSlowPathNotice">
+                            <div class="d-flex">
+                                <i class="bi bi-info-circle-fill me-2 mt-1"></i>
+                                <div>
+                                    <strong>Heads up: at <span id="thumbnailIntervalNoticeValue">10</span> seconds, some files may take longer to process.</strong>
+                                    <p class="mb-1 mt-1">
+                                        Videos already contain "snapshot" frames — complete pictures stored at intervals.
+                                        When those snapshots are <strong>closer together than your interval</strong>, we
+                                        just reuse them — fast. When they're <strong>spaced further apart than your
+                                        interval</strong>, we fully decode the video to generate a unique frame for each
+                                        slot — correct, but slower for that file.
+                                    </p>
+                                    <p class="mb-1">
+                                        We check every file automatically and pick the right path. The slower path
+                                        mainly hits <strong>streaming downloads</strong> (web releases), which often
+                                        have 4–9 second gaps between snapshots. <strong>TV episodes and Blu-ray rips</strong>
+                                        usually have snapshots every 1–2 seconds and stay fast at any interval.
+                                    </p>
+                                    <p class="mb-0">
+                                        Shorter intervals give finer scrubbing in your player — the tradeoff is
+                                        that some files take longer to process. Both choices are fine.
+                                    </p>
+                                </div>
+                            </div>
                         </div>
                     </div>
                     <div class="col-md-6 mb-3">
@@ -664,6 +695,12 @@ document.addEventListener('DOMContentLoaded', function() {
         document.getElementById('qualityValue').textContent = this.value;
     });
 
+    // Issue #238 — wire the slow-path notice. The helper itself lives at module
+    // scope (see _refreshThumbnailIntervalNotice below) so loadSettings() can
+    // call it after restoring the saved value.
+    document.getElementById('thumbnailInterval').addEventListener('input', _refreshThumbnailIntervalNotice);
+    _refreshThumbnailIntervalNotice();
+
     // Tonemap algorithm description
     document.getElementById('tonemapAlgorithm').addEventListener('change', updateTonemapDescription);
 
@@ -682,6 +719,24 @@ document.addEventListener('DOMContentLoaded', function() {
         document.getElementById('requeueMaxAge').disabled = !this.checked;
     });
 });
+
+// Issue #238 — show or hide the slow-path notice based on the current value
+// in the Thumbnail Interval input. <10s shows the notice; ≥10s hides it.
+// Defined at module scope (rather than inside DOMContentLoaded) so
+// ``loadSettings()`` can call it after restoring the saved value.
+function _refreshThumbnailIntervalNotice() {
+    var input = document.getElementById('thumbnailInterval');
+    var notice = document.getElementById('thumbnailIntervalSlowPathNotice');
+    var valueSpan = document.getElementById('thumbnailIntervalNoticeValue');
+    if (!input || !notice) return;
+    var v = parseInt(input.value, 10);
+    if (Number.isFinite(v) && v < 10) {
+        if (valueSpan) valueSpan.textContent = String(v);
+        notice.classList.remove('d-none');
+    } else {
+        notice.classList.add('d-none');
+    }
+}
 
 // Format a minute count as a short human-readable string (45 → "45m",
 // 720 → "12h"). Used by the Max requeue age slider so the live value reads
@@ -731,6 +786,12 @@ async function loadSettings() {
         window._gpuConfig = settings.gpu_config || [];
         document.getElementById('cpuThreads').value = settings.cpu_threads ?? 1;
         document.getElementById('thumbnailInterval').value = settings.thumbnail_interval || 10;
+        // Issue #238 — keep the slow-path notice in sync with the loaded value.
+        // Defined inside DOMContentLoaded; reference it via window so the call
+        // site works regardless of script-load ordering.
+        if (typeof _refreshThumbnailIntervalNotice === 'function') {
+            _refreshThumbnailIntervalNotice();
+        }
         document.getElementById('thumbnailQuality').value = settings.thumbnail_quality || 4;
         document.getElementById('qualityValue').textContent = settings.thumbnail_quality || 4;
         document.getElementById('tonemapAlgorithm').value = settings.tonemap_algorithm || 'hable';

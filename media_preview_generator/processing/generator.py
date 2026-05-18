@@ -25,10 +25,12 @@ import array
 import contextlib
 import contextvars
 import glob
+import hashlib
 import os
 import re
 import shutil
 import struct
+import subprocess
 import sys
 import threading
 import time
@@ -735,6 +737,108 @@ def _clean_output_images(output_folder: str) -> None:
             pass
 
 
+def _probe_max_keyframe_gap(video_file: str) -> float | None:
+    """Scan the whole file's packets (no decode) and return the biggest
+    gap, in seconds, between consecutive keyframes on the first video
+    stream.
+
+    Used by :func:`generate_images` to decide whether
+    ``-skip_frame:v nokey`` is safe at the user's configured thumbnail
+    interval.  When the largest keyframe gap exceeds the interval, the
+    fast keyframe-only decode path produces duplicate thumbnails — the
+    fps filter has no fresh input frames to choose from between
+    keyframes, so it repeats the previous one across multiple output
+    slots (issue #238).
+
+    Returns:
+        Max keyframe gap in seconds, or ``None`` when the probe could
+        not reach a verdict (corrupt headers, ffprobe failure, fewer
+        than two keyframes found).  Callers must treat ``None`` as
+        "not safe" — better to take the slow path on a quirky file
+        than ship a BIF full of duplicate frames.
+    """
+    try:
+        proc = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "packet=pts_time,flags",
+                "-of",
+                "csv=p=0",
+                video_file,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return None
+    if proc.returncode != 0:
+        return None
+
+    kf_times: list[float] = []
+    for line in proc.stdout.splitlines():
+        parts = line.strip().split(",")
+        if len(parts) < 2:
+            continue
+        flags = parts[-1]
+        # FFprobe flags column contains "K" (or "K_", "K__") on keyframe
+        # packets and "_" on non-key. Pure "K" substring check is fine.
+        if "K" not in flags:
+            continue
+        try:
+            kf_times.append(float(parts[0]))
+        except ValueError:
+            continue
+
+    if len(kf_times) < 2:
+        return None
+    return max(b - a for a, b in zip(kf_times, kf_times[1:], strict=False))
+
+
+def _has_duplicate_thumbnails(output_folder: str, threshold: float = 0.05) -> bool:
+    """Return ``True`` when more than ``threshold`` fraction of the
+    ``img-*.jpg`` files in ``output_folder`` are byte-identical to the
+    immediately preceding image in lexicographic (== timestamp) order.
+
+    This is the post-extract safety net for the keyframe-probe upfront
+    check (issue #238).  When the probe wrongly cleared the fast path
+    — typically because the file has mid-file GOP variations the probe
+    couldn't see — the resulting frame-pack contains runs of identical
+    JPEGs.  A high adjacent-duplicate ratio is the unambiguous signature
+    of that bug (legitimate consecutive-identical frames from fade-outs
+    or solid colour cuts stay well under 5%).
+
+    Hashing ~7000 JPGs of a 4-hour movie takes ~150 ms on warm cache,
+    so this runs unconditionally on every successful fast-path output.
+    """
+    paths = sorted(glob.glob(os.path.join(output_folder, "img-*.jpg")))
+    if len(paths) < 2:
+        return False
+    dup_pairs = 0
+    prev_hash: bytes | None = None
+    for p in paths:
+        try:
+            with open(p, "rb") as f:
+                # MD5 used here as a fast byte-identity hash, not for any
+                # security property — adjacent JPGs that match byte-for-byte
+                # are the bug signature (see issue #238). ``usedforsecurity=
+                # False`` tells FIPS / bandit this is non-cryptographic.
+                h = hashlib.md5(f.read(), usedforsecurity=False).digest()
+        except OSError:
+            prev_hash = None
+            continue
+        if prev_hash is not None and h == prev_hash:
+            dup_pairs += 1
+        prev_hash = h
+    return dup_pairs > len(paths) * threshold
+
+
 def generate_images(
     video_file: str,
     output_folder: str,
@@ -973,6 +1077,55 @@ def generate_images(
     # first and falls back via the retry below if the decoder rejects it.
     use_skip_initial = not (use_libplacebo or dv5_software_fallback)
 
+    # Issue #238 — pre-flight keyframe probe.
+    #
+    # ``-skip_frame:v nokey`` tells the decoder to drop every non-keyframe
+    # packet, so the fps filter only sees frames at keyframe positions.
+    # When the gap between consecutive keyframes is larger than the user's
+    # thumbnail interval, the fps filter has no fresh input frame for some
+    # output slots and emits the previous keyframe again — producing runs
+    # of byte-identical thumbnails (the BIF then claims interval=2 s but
+    # the content only changes every 4–10 s).
+    #
+    # The probe scans the whole file in packet-only mode (~1–5 s typical,
+    # no decode work) so we never miss mid-file GOP variations.  When the
+    # max gap exceeds the interval we disable the fast path up front, and
+    # log a user-friendly WARN line explaining what happened in plain
+    # language (no jargon, no FFmpeg flags).
+    if use_skip_initial:
+        # No upfront cancel-check before the probe: ffprobe has its own
+        # 120-second timeout and the existing cancel-checks inside the
+        # FFmpeg invocations downstream already cover "user cancelled
+        # mid-job".  Adding one here would bypass the FFmpeg-terminate
+        # path that callers (and tests) rely on.
+        max_gap = _probe_max_keyframe_gap(video_file)
+        interval = config.plex_bif_frame_interval
+        if max_gap is None:
+            logger.warning(
+                "Slow path for '{}': we couldn't read this file's snapshot frame layout. "
+                "To play it safe we'll fully decode the video instead of reusing snapshot "
+                "frames — correct, but slower for this file.",
+                os.path.basename(video_file),
+            )
+            use_skip_initial = False
+        elif max_gap > interval:
+            logger.warning(
+                "Slow path for '{}': this video stores a fresh snapshot frame every ~{:.1f}s, "
+                "while you've asked for thumbnails every {}s. We'll fully decode the video to "
+                "make each thumbnail unique — correct, but slower for this file.",
+                os.path.basename(video_file),
+                max_gap,
+                interval,
+            )
+            use_skip_initial = False
+        else:
+            logger.debug(
+                "keyframe-probe: file='{}' max_gap={:.2f}s interval={}s → keep -skip_frame nokey",
+                video_file,
+                max_gap,
+                interval,
+            )
+
     # Ensure output folder exists
     os.makedirs(output_folder, exist_ok=True)
 
@@ -1003,6 +1156,32 @@ def generate_images(
         stderr_lines = retry_stderr_lines
         if retry_stderr_lines:
             stderr_lines_all.extend(retry_stderr_lines)
+
+    # Issue #238 — post-extract validation (belt-and-braces with the
+    # pre-flight probe above).  When the fast path produced output that
+    # looks healthy at the rc level but is full of duplicate thumbnails
+    # — which happens on the rare file whose keyframe spacing the probe
+    # cleared but whose mid-file GOP is actually too sparse — re-run
+    # without ``-skip_frame nokey``.  The check itself is cheap
+    # (~150 ms hashing 7K JPGs on warm cache) so it runs unconditionally
+    # whenever we just took the fast path.
+    if rc == 0 and use_skip_initial and not did_retry:
+        if _has_duplicate_thumbnails(output_folder):
+            if cancel_check and cancel_check():
+                raise CancellationError(f"Processing cancelled for {video_file}")
+            did_retry = True
+            logger.warning(
+                "Re-running '{}' without snapshot reuse: the first pass produced duplicate "
+                "thumbnails even though the upfront check looked safe. This file has unusual "
+                "snapshot spacing — taking the slow path now.",
+                os.path.basename(video_file),
+            )
+            _clean_output_images(output_folder)
+            retry_rc, seconds, speed, retry_stderr_lines = _run_ffmpeg(use_skip=False, init_vulkan=use_libplacebo)
+            rc = retry_rc
+            stderr_lines = retry_stderr_lines
+            if retry_stderr_lines:
+                stderr_lines_all.extend(retry_stderr_lines)
 
     # Count images first to see if we have any (even if rc != 0, we might have partial success)
     image_count = len(glob.glob(os.path.join(output_folder, "img*.jpg")))
