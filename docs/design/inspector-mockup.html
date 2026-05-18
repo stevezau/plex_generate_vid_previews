@@ -1,1301 +1,933 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-bs-theme="dark">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Marker Inspector — design mockup</title>
-<link rel="preconnect" href="https://fonts.googleapis.com" />
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@10..48,400;10..48,500;10..48,600;10..48,700;10..48,800&family=IBM+Plex+Mono:wght@300;400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+
+<!-- Bootstrap 5.3 — same version + CDN the app uses (see base.html) -->
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-T3c6CoIi6uLrA9TneNEoa7RxnatzjcDSCmG1MXxSR1GAsXEV/Dwwykc2MPK8M2HN" crossorigin="anonymous">
+<link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
 
 <style>
+  /* Mirror of style.css tokens from the live app — verbatim so this
+     mockup uses the same brand colors / surfaces / focus ring it would
+     have once dropped into web/static/css/. */
   :root {
-    --bg: #0A0A0C;
-    --surface: #131318;
-    --surface-2: #1A1A21;
-    --surface-3: #22222A;
-    --border: #2A2A33;
-    --border-strong: #3A3A47;
-    --text: #E8E8E2;
-    --text-2: #A6A69F;
-    --text-3: #6B6B73;
-    --intro: #5EEAD4;
-    --credits: #F59E0B;
-    --recap: #A78BFA;
-    --commercial: #F87171;
-    --preview: #818CF8;
-    --good: #84CC16;
-    --warn: #FACC15;
-    --err: #EF4444;
-    --plex: #E5A00D;
-    --emby: #52B54B;
-    --jelly: #AA5CC3;
-    --shadow-lg: 0 24px 60px -12px rgba(0,0,0,.6);
-
-    --font-display: 'Bricolage Grotesque', sans-serif;
-    --font-body: 'IBM Plex Sans', sans-serif;
-    --font-mono: 'IBM Plex Mono', monospace;
+    --plex-orange: #e5a00d;
+    --plex-orange-soft: rgba(229, 160, 13, 0.12);
+    --plex-gray: #1a1a2e;
+    --plex-dark: #0f0f1a;
+    --surface-1: rgba(255, 255, 255, 0.04);
+    --surface-2: rgba(255, 255, 255, 0.06);
+    --surface-border: rgba(255, 255, 255, 0.08);
+    --radius-sm: 0.375rem;
+    --radius:    0.5rem;
+    --radius-lg: 0.75rem;
+    --focus-ring: 0 0 0 0.2rem rgba(229, 160, 13, 0.45);
+  }
+  html[data-bs-theme="dark"] {
+    --bs-body-bg: var(--plex-dark);
+    --bs-secondary-bg: var(--plex-gray);
+    --bs-tertiary-bg: #16162a;
+    --bs-border-color: var(--surface-border);
+    --bs-primary: var(--plex-orange);
+    --bs-primary-rgb: 229, 160, 13;
+  }
+  html[data-bs-theme="light"] {
+    --bs-body-bg: #e4e7eb;
+    --bs-secondary-bg: #fbfcfd;
+    --bs-tertiary-bg: #eceff3;
+    --bs-body-color: #1e293b;
+    --bs-secondary-color: #64748b;
+    --bs-border-color: #e2e8f0;
+    --bs-primary: var(--plex-orange);
+    --bs-primary-rgb: 229, 160, 13;
   }
 
-  * { box-sizing: border-box; }
-  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); }
   body {
-    font-family: var(--font-body);
-    font-size: 14px;
-    line-height: 1.55;
-    font-feature-settings: "ss01" 1, "ss02" 1, "cv11" 1;
-    min-height: 100vh;
-    background-image:
-      radial-gradient(at 12% 8%, rgba(94,234,212,.06) 0px, transparent 50%),
-      radial-gradient(at 87% 18%, rgba(245,158,11,.04) 0px, transparent 50%),
-      radial-gradient(at 50% 90%, rgba(167,139,250,.04) 0px, transparent 50%);
+    background: var(--bs-body-bg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                 "Helvetica Neue", Arial, sans-serif;
   }
 
-  ::-webkit-scrollbar { width: 10px; height: 10px; }
-  ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 5px; }
-  ::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
-
-  .container { max-width: 1200px; margin: 0 auto; padding: 0 32px; }
-
-  /* ---------- top nav ---------- */
-  .topnav {
-    position: sticky; top: 0; z-index: 50;
-    backdrop-filter: blur(18px) saturate(1.4);
-    background: rgba(10,10,12,.7);
-    border-bottom: 1px solid var(--border);
+  /* page-header pattern mirrors base.html — flex+space-between, with
+     an override on the preview-inspector page to centre everything.
+     The Marker Inspector follows the centred Preview-Inspector pattern. */
+  .page-header {
+    margin: 1.75rem 0 1.25rem;
   }
-  .topnav-inner {
-    display: flex; align-items: center; gap: 24px;
-    padding: 14px 32px;
-    max-width: 1400px; margin: 0 auto;
+  .page-title {
+    font-size: 1.75rem;
+    font-weight: 600;
+    margin: 0 0 .25rem;
+    letter-spacing: -0.01em;
   }
-  .brand {
-    display: flex; align-items: center; gap: 10px;
-    font-family: var(--font-display);
-    font-weight: 700;
-    letter-spacing: -0.03em;
-    font-size: 18px;
-  }
-  .brand-mark {
-    width: 22px; height: 22px;
-    background: linear-gradient(135deg, var(--intro), var(--credits));
-    border-radius: 4px;
-    box-shadow: 0 0 24px rgba(94,234,212,.4);
-    display: grid; place-items: center;
-    color: #0A0A0C; font-weight: 800; font-size: 12px;
-    font-family: var(--font-mono);
-  }
-  .nav-links { display: flex; gap: 4px; margin-left: 24px; }
-  .nav-links a {
-    color: var(--text-2); text-decoration: none;
-    padding: 8px 12px; border-radius: 6px;
-    font-size: 13px; font-weight: 500;
-    transition: all .18s ease;
-  }
-  .nav-links a:hover { color: var(--text); background: var(--surface-2); }
-  .nav-links a.active {
-    color: var(--text); background: var(--surface-2);
-    box-shadow: inset 0 -2px 0 var(--intro);
-  }
-  .nav-right { margin-left: auto; display: flex; align-items: center; gap: 14px; }
-  .scan-pill {
-    display: inline-flex; align-items: center; gap: 8px;
-    background: var(--surface-2); border: 1px solid var(--border);
-    padding: 6px 12px; border-radius: 999px;
-    font-family: var(--font-mono); font-size: 12px;
-    color: var(--text-2);
-  }
-  .scan-pill .dot {
-    width: 7px; height: 7px; border-radius: 50%;
-    background: var(--good);
-    box-shadow: 0 0 0 0 rgba(132,204,22,.7);
-    animation: ping 1.6s ease-in-out infinite;
-  }
-  @keyframes ping {
-    0%   { box-shadow: 0 0 0 0 rgba(132,204,22,.7); }
-    70%  { box-shadow: 0 0 0 8px rgba(132,204,22,0); }
-    100% { box-shadow: 0 0 0 0 rgba(132,204,22,0); }
-  }
-
-  /* ---------- section meta ---------- */
-  .section { padding: 64px 0; border-bottom: 1px dashed var(--border); }
-  .section:last-child { border-bottom: none; }
-  .sec-label {
-    display: flex; align-items: center; gap: 12px;
-    margin-bottom: 8px;
-    font-family: var(--font-mono); font-size: 11px;
-    text-transform: uppercase; letter-spacing: 0.14em;
-    color: var(--text-3);
-  }
-  .sec-num {
-    background: var(--surface-2); border: 1px solid var(--border);
-    padding: 2px 8px; border-radius: 4px;
-    color: var(--intro);
-  }
-  .sec-title {
-    font-family: var(--font-display);
-    font-size: 38px; font-weight: 600;
-    letter-spacing: -0.035em;
-    line-height: 1.05;
-    margin: 0 0 12px;
-  }
-  .sec-sub {
-    font-size: 15px; color: var(--text-2);
-    max-width: 720px; margin-bottom: 36px;
-    line-height: 1.6;
-  }
-
-  /* ---------- hero ---------- */
-  .hero { padding: 88px 0 60px; }
-  .hero-tag {
-    display: inline-flex; align-items: center; gap: 8px;
-    background: linear-gradient(180deg, rgba(94,234,212,.08), rgba(94,234,212,.02));
-    border: 1px solid rgba(94,234,212,.18);
-    padding: 6px 14px; border-radius: 999px;
-    font-family: var(--font-mono); font-size: 11px;
-    letter-spacing: 0.08em; text-transform: uppercase;
-    color: var(--intro);
-    margin-bottom: 24px;
-  }
-  .hero h1 {
-    font-family: var(--font-display);
-    font-size: clamp(48px, 6vw, 80px);
-    font-weight: 700; letter-spacing: -0.04em;
-    line-height: 0.95;
-    margin: 0 0 24px;
-    max-width: 900px;
-  }
-  .hero h1 em {
-    font-style: normal;
-    background: linear-gradient(110deg, var(--intro) 0%, var(--credits) 50%, var(--recap) 100%);
-    -webkit-background-clip: text;
-    background-clip: text;
-    color: transparent;
-  }
-  .hero p {
-    font-size: 17px; color: var(--text-2);
-    max-width: 680px; line-height: 1.55;
-    margin: 0 0 36px;
-  }
-  .hero-meta {
-    display: flex; gap: 32px;
-    padding-top: 24px;
-    border-top: 1px solid var(--border);
-    font-family: var(--font-mono); font-size: 12px;
-  }
-  .hero-meta dt { color: var(--text-3); margin-bottom: 4px; }
-  .hero-meta dd { color: var(--text); margin: 0; font-weight: 500; }
-
-  /* ---------- inspector (main view) ---------- */
-  .inspector {
-    background: linear-gradient(180deg, var(--surface), var(--surface-2));
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    overflow: hidden;
-    box-shadow: var(--shadow-lg);
-  }
-  .insp-header {
-    display: flex; align-items: center; gap: 16px;
-    padding: 14px 18px;
-    background: var(--surface-2);
-    border-bottom: 1px solid var(--border);
-  }
-  .server-picker {
-    display: inline-flex; align-items: center; gap: 8px;
-    background: var(--surface-3); border: 1px solid var(--border);
-    padding: 6px 10px 6px 8px; border-radius: 6px;
-    font-family: var(--font-mono); font-size: 12px;
-    cursor: pointer;
-    transition: border-color .18s ease;
-  }
-  .server-picker:hover { border-color: var(--border-strong); }
-  .server-picker .sv-dot {
-    width: 8px; height: 8px; border-radius: 50%;
-    background: var(--plex);
-  }
-  .server-picker.emby .sv-dot { background: var(--emby); }
-  .server-picker.jelly .sv-dot { background: var(--jelly); }
-
-  .search-input {
-    flex: 1; max-width: 480px;
-    background: var(--surface-3); border: 1px solid var(--border);
-    padding: 8px 12px; border-radius: 6px;
-    color: var(--text); font-family: var(--font-body); font-size: 13px;
-    outline: none;
-    transition: border-color .18s ease, box-shadow .18s ease;
-  }
-  .search-input:focus {
-    border-color: var(--intro);
-    box-shadow: 0 0 0 3px rgba(94,234,212,.12);
-  }
-  .insp-tabs { display: flex; gap: 0; margin-left: auto; }
-  .insp-tabs .tab {
-    padding: 8px 14px;
-    font-family: var(--font-mono); font-size: 12px;
-    color: var(--text-3);
-    cursor: pointer; background: transparent; border: none;
-    transition: color .18s ease;
-    position: relative;
-  }
-  .insp-tabs .tab:hover { color: var(--text-2); }
-  .insp-tabs .tab.active { color: var(--text); }
-  .insp-tabs .tab.active::after {
-    content: ''; position: absolute; left: 12px; right: 12px; bottom: -1px;
-    height: 2px; background: var(--intro);
-  }
-
-  .insp-body { padding: 24px 24px 28px; }
-
-  .item-title {
-    display: flex; align-items: baseline; gap: 12px;
-    margin-bottom: 4px;
-  }
-  .item-title h2 {
-    font-family: var(--font-display);
-    font-size: 26px; font-weight: 600;
-    letter-spacing: -0.02em;
+  .page-subtitle {
+    color: var(--bs-secondary-color);
     margin: 0;
+    font-size: 0.95rem;
   }
-  .ep-tag {
-    font-family: var(--font-mono); font-size: 12px;
-    color: var(--text-3);
-    background: var(--surface-3);
-    padding: 2px 8px; border-radius: 4px;
-  }
-  .item-sub {
-    font-family: var(--font-mono); font-size: 12px;
-    color: var(--text-3);
-    margin-bottom: 20px;
-    display: flex; gap: 16px; flex-wrap: wrap;
-  }
-  .item-sub span { display: inline-flex; align-items: center; gap: 6px; }
-  .item-sub .dotsep { color: var(--border-strong); }
 
-  /* timeline */
-  .timeline-wrap {
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 18px;
-    margin-bottom: 16px;
+  /* card patterns echo the app — 1px border, no shadow. */
+  .card {
+    background: var(--bs-secondary-bg);
+    border-color: var(--surface-border);
   }
-  .timeline {
-    position: relative;
-    height: 180px;
+  html[data-bs-theme="light"] .card { border-color: var(--bs-border-color); }
+
+  /* Plex orange is reserved for primary CTAs (matches style.css guidance) */
+  .btn-primary {
+    background-color: var(--plex-orange);
+    border-color: var(--plex-orange);
+    color: #1a1a2e;
+    font-weight: 600;
+  }
+  .btn-primary:hover, .btn-primary:focus {
+    background-color: #f1b020; border-color: #f1b020; color: #1a1a2e;
+  }
+  .btn:focus-visible { box-shadow: var(--focus-ring); }
+
+  /* tab styling mimics nav-pills nav-fill the app uses. */
+  .nav-pills .nav-link.active {
+    background-color: var(--plex-orange-soft);
+    color: var(--plex-orange);
+    font-weight: 500;
+  }
+  .nav-pills .nav-link { color: var(--bs-secondary-color); }
+  html[data-bs-theme="dark"] .nav-pills .nav-link.active { color: var(--plex-orange); }
+
+  /* small navbar inside top — same as base.html's overall nav */
+  .navbar-brand .brand-icon {
+    width: 1.5rem; height: 1.5rem;
+    background: linear-gradient(135deg, var(--plex-orange), #f1b020);
+    border-radius: var(--radius-sm);
+    display: inline-grid; place-items: center;
+    color: #1a1a2e; font-weight: 700; font-size: 0.85rem;
+    margin-right: 0.5rem; vertical-align: -0.35rem;
+  }
+
+  /* ---------- timeline ---------- */
+  .timeline-wrap {
+    background: var(--bs-tertiary-bg);
+    border: 1px solid var(--bs-border-color);
+    border-radius: var(--radius);
+    padding: 1rem 1rem 1.25rem;
   }
   .tl-ruler {
-    position: relative; height: 18px;
-    border-bottom: 1px solid var(--border);
-    margin-bottom: 8px;
+    position: relative; height: 1.25rem;
+    border-bottom: 1px solid var(--bs-border-color);
+    margin-bottom: .5rem;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Consolas, monospace;
+    font-size: 0.7rem;
+    color: var(--bs-secondary-color);
   }
   .tl-ruler span {
-    position: absolute; top: 2px;
-    font-family: var(--font-mono); font-size: 10px;
-    color: var(--text-3);
-    transform: translateX(-50%);
+    position: absolute; top: 2px; transform: translateX(-50%);
   }
   .tl-ruler span::before {
     content: ''; position: absolute; bottom: -8px; left: 50%;
-    width: 1px; height: 6px; background: var(--border);
+    width: 1px; height: 6px; background: var(--bs-border-color);
   }
-
   .waveform {
     height: 70px;
-    background: var(--surface);
-    border-radius: 4px;
+    background: var(--bs-secondary-bg);
+    border-radius: var(--radius-sm);
     overflow: hidden;
-    position: relative;
-    margin-bottom: 10px;
+    margin-bottom: .5rem;
   }
   .waveform svg { width: 100%; height: 100%; display: block; }
-
-  .marker-rows { position: relative; display: grid; gap: 4px; }
+  .marker-rows { display: grid; gap: 4px; }
   .marker-row {
     height: 22px; position: relative;
-    background: var(--surface);
-    border-radius: 3px;
-    overflow: visible;
+    background: var(--bs-secondary-bg);
+    border-radius: var(--radius-sm);
   }
-  .marker-row .label {
+  .marker-row .row-label {
     position: absolute; left: 8px; top: 50%; transform: translateY(-50%);
-    font-family: var(--font-mono); font-size: 10px;
-    color: var(--text-3);
-    z-index: 2;
-    pointer-events: none;
+    font-family: ui-monospace, SFMono-Regular, monospace;
+    font-size: 0.7rem;
+    color: var(--bs-secondary-color);
+    z-index: 2; pointer-events: none;
     letter-spacing: 0.04em;
   }
   .marker {
     position: absolute; top: 2px; bottom: 2px;
     border-radius: 2px;
     display: flex; align-items: center; justify-content: center;
-    font-family: var(--font-mono); font-size: 10px;
+    font-family: ui-monospace, SFMono-Regular, monospace;
+    font-size: 0.7rem;
     color: rgba(0,0,0,.85); font-weight: 600;
     transition: filter .18s ease;
   }
-  .marker:hover { filter: brightness(1.1); }
-  .m-intro { background: var(--intro); box-shadow: 0 0 12px rgba(94,234,212,.3); }
-  .m-credits { background: var(--credits); box-shadow: 0 0 12px rgba(245,158,11,.3); }
-  .m-recap { background: var(--recap); box-shadow: 0 0 12px rgba(167,139,250,.3); }
-  .m-detected { background: transparent; border: 1.5px dashed; color: var(--text); }
-  .m-detected.m-intro { border-color: var(--intro); }
-  .m-detected.m-credits { border-color: var(--credits); }
-  .m-detected.m-recap { border-color: var(--recap); }
-
+  .marker.detected { background: transparent; border: 1.5px dashed; color: var(--bs-body-color); }
+  .m-intro    { background: #5EEAD4; }
+  .m-credits  { background: #F59E0B; }
+  .m-recap    { background: #A78BFA; }
+  .detected.m-intro   { border-color: #5EEAD4; }
+  .detected.m-credits { border-color: #F59E0B; }
+  .detected.m-recap   { border-color: #A78BFA; }
+  .marker:hover { filter: brightness(1.08); }
   .marker .handle {
     position: absolute; top: -2px; bottom: -2px; width: 6px;
-    background: rgba(255,255,255,.15);
-    cursor: ew-resize;
-    border-radius: 2px;
+    background: rgba(255,255,255,.15); cursor: ew-resize; border-radius: 2px;
   }
   .marker .handle.l { left: -3px; }
   .marker .handle.r { right: -3px; }
 
-  /* meta + actions */
-  .insp-meta {
-    display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px;
-    margin: 16px 0 20px;
+  /* meta cards under timeline — small dl tiles */
+  .meta-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: .75rem; }
+  .meta-tile {
+    background: var(--bs-tertiary-bg);
+    border: 1px solid var(--bs-border-color);
+    border-radius: var(--radius-sm); padding: .65rem .8rem;
   }
-  .meta-card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 6px; padding: 12px 14px;
+  .meta-tile dt {
+    font-size: 0.7rem; text-transform: uppercase;
+    letter-spacing: 0.08em; color: var(--bs-secondary-color);
+    margin-bottom: .25rem; font-weight: 500;
   }
-  .meta-card dt {
-    font-family: var(--font-mono); font-size: 10px;
-    text-transform: uppercase; letter-spacing: 0.1em;
-    color: var(--text-3); margin-bottom: 6px;
-  }
-  .meta-card dd { margin: 0; font-size: 13px; }
-  .meta-card .conf {
-    display: inline-flex; align-items: center; gap: 6px;
-    font-family: var(--font-mono);
-  }
-  .meta-card .conf::before {
-    content: ''; width: 8px; height: 8px; border-radius: 50%;
-    background: var(--good);
-  }
+  .meta-tile dd { margin: 0; font-size: 0.85rem; }
 
-  /* compatibility */
-  .compat {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 14px 16px; margin-bottom: 20px;
-  }
-  .compat-h {
-    display: flex; align-items: center; gap: 10px;
-    font-family: var(--font-mono); font-size: 11px;
-    text-transform: uppercase; letter-spacing: 0.1em;
-    color: var(--text-3); margin-bottom: 10px;
-  }
+  /* compatibility chips */
   .compat-grid {
-    display: grid; grid-template-columns: repeat(auto-fit, minmax(110px,1fr)); gap: 6px;
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 0.4rem;
   }
-  .client {
-    display: flex; align-items: center; gap: 7px;
-    font-family: var(--font-mono); font-size: 11px;
-    background: var(--surface-2);
-    padding: 6px 9px; border-radius: 4px;
-    color: var(--text-2);
-  }
-  .client .ind {
-    width: 6px; height: 6px; border-radius: 50%;
-  }
-  .client.ok .ind { background: var(--good); }
-  .client.warn .ind { background: var(--warn); }
-  .client.bad .ind { background: var(--err); }
-  .client.ok { color: var(--text); }
 
-  /* actions */
-  .actions {
-    display: flex; gap: 8px; flex-wrap: wrap;
-    padding-top: 16px;
-    border-top: 1px solid var(--border);
-  }
-  button.btn {
-    font-family: var(--font-mono); font-size: 12px;
-    background: var(--surface-3); color: var(--text);
-    border: 1px solid var(--border);
-    padding: 8px 14px; border-radius: 6px;
-    cursor: pointer;
-    transition: all .18s ease;
-    display: inline-flex; align-items: center; gap: 8px;
-  }
-  button.btn:hover { background: var(--surface-2); border-color: var(--border-strong); }
-  button.btn.primary {
-    background: var(--intro); color: #0A0A0C;
-    border-color: var(--intro); font-weight: 600;
-  }
-  button.btn.primary:hover { background: #7EF0DC; }
-  button.btn.danger {
-    background: rgba(239,68,68,.1); color: var(--err);
-    border-color: rgba(239,68,68,.3);
-  }
-  button.btn.ghost { background: transparent; }
-
-  /* ---------- server matrix ---------- */
-  .server-states {
+  /* server state cards — three or four per row */
+  .state-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
-    gap: 16px;
+    grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
+    gap: 1rem;
   }
-  .ss-card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    overflow: hidden;
-    position: relative;
-    transition: border-color .18s ease;
+  .server-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    display: inline-block; margin-right: 6px;
+    vertical-align: 1px;
   }
-  .ss-card:hover { border-color: var(--border-strong); }
-  .ss-head {
-    display: flex; align-items: center; gap: 10px;
-    padding: 12px 14px;
-    background: var(--surface-2);
-    border-bottom: 1px solid var(--border);
-  }
-  .ss-server {
-    font-family: var(--font-mono); font-size: 11px;
-    text-transform: uppercase; letter-spacing: 0.1em;
-    color: var(--text-3);
-  }
-  .ss-server .badge {
-    display: inline-block; width: 8px; height: 8px; border-radius: 50%;
-    margin-right: 6px; vertical-align: middle;
-  }
-  .ss-body { padding: 14px 16px; }
-  .ss-cap {
-    display: inline-flex; align-items: center; gap: 6px;
-    font-family: var(--font-mono); font-size: 11px;
-    padding: 3px 8px; border-radius: 4px;
-    margin-bottom: 8px;
-  }
-  .cap-write { background: rgba(132,204,22,.12); color: var(--good); }
-  .cap-trig { background: rgba(94,234,212,.12); color: var(--intro); }
-  .cap-read { background: rgba(166,166,159,.12); color: var(--text-2); }
-  .cap-dbg { background: rgba(250,204,21,.12); color: var(--warn); }
-  .cap-fail { background: rgba(239,68,68,.12); color: var(--err); }
+  .dot-plex  { background: var(--plex-orange); }
+  .dot-emby  { background: #52B54B; }
+  .dot-jelly { background: #AA5CC3; }
+  .dot-grey  { background: var(--bs-secondary-color); }
 
-  .ss-cap::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
-  .ss-h { font-family: var(--font-display); font-size: 16px; font-weight: 600; margin: 4px 0 6px; letter-spacing: -0.01em; }
-  .ss-desc { font-size: 13px; color: var(--text-2); margin: 0 0 12px; line-height: 1.5; }
-  .ss-cta {
-    display: flex; gap: 6px;
-    font-family: var(--font-mono); font-size: 11px;
-  }
-  .ss-cta a {
-    color: var(--intro); text-decoration: none;
-    padding: 4px 8px; border-radius: 4px;
-    background: rgba(94,234,212,.06);
-    border: 1px solid rgba(94,234,212,.15);
-    transition: all .18s ease;
-  }
-  .ss-cta a:hover { background: rgba(94,234,212,.14); }
-  .ss-cta a.warn { color: var(--warn); background: rgba(250,204,21,.06); border-color: rgba(250,204,21,.18); }
-  .ss-cta a.ghost { color: var(--text-2); background: transparent; border-color: var(--border); }
-
-  /* ---------- library dashboard ---------- */
-  .lib-dash {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 28px 28px 24px;
-    box-shadow: var(--shadow-lg);
-  }
-  .lib-head { display: flex; align-items: flex-end; justify-content: space-between; margin-bottom: 24px; gap: 24px; flex-wrap: wrap; }
-  .lib-numbers { display: flex; gap: 36px; }
-  .lib-stat {
-    font-family: var(--font-display);
-  }
-  .lib-stat .v {
-    font-size: 36px; font-weight: 600;
-    letter-spacing: -0.025em; line-height: 1;
-    font-variant-numeric: tabular-nums;
-    display: flex; align-items: baseline; gap: 6px;
-  }
-  .lib-stat .v small {
-    font-size: 14px; color: var(--text-3);
-    font-family: var(--font-mono); font-weight: 400;
-  }
-  .lib-stat .l {
-    font-family: var(--font-mono); font-size: 11px;
-    text-transform: uppercase; letter-spacing: 0.1em;
-    color: var(--text-3); margin-top: 8px;
-  }
-  .lib-eta {
-    font-family: var(--font-mono); font-size: 12px;
-    color: var(--text-2);
-    padding: 8px 12px;
-    background: var(--surface-2); border: 1px solid var(--border);
-    border-radius: 6px;
-  }
-  .lib-eta b { color: var(--text); }
-
+  /* library dashboard segmented bar */
   .lib-bar {
-    height: 8px; background: var(--surface-3);
-    border-radius: 4px; overflow: hidden;
-    display: flex; margin-bottom: 14px;
+    height: 0.5rem; background: var(--bs-tertiary-bg);
+    border-radius: 4px; overflow: hidden; display: flex;
   }
   .lib-seg { height: 100%; }
-  .lib-seg.s1 { background: var(--good); }       /* fully detected + published */
-  .lib-seg.s2 { background: var(--intro); }       /* detected, not yet published */
-  .lib-seg.s3 { background: var(--warn); }        /* in progress */
-  .lib-seg.s4 { background: var(--err); opacity: .6; } /* failed/rejected */
-  .lib-legend { display: flex; gap: 20px; flex-wrap: wrap; font-family: var(--font-mono); font-size: 11px; color: var(--text-2); }
-  .lib-legend .sw {
-    display: inline-block; width: 10px; height: 10px;
-    border-radius: 2px; margin-right: 6px; vertical-align: -1px;
-  }
 
-  /* per-library breakdown */
-  .lib-table { margin-top: 28px; }
-  .lib-row {
-    display: grid;
-    grid-template-columns: 1fr 60px 200px 100px;
-    align-items: center; gap: 16px;
-    padding: 12px 0;
-    border-top: 1px solid var(--border);
-    font-family: var(--font-mono); font-size: 12px;
-  }
-  .lib-row.head {
-    border-top: none;
-    font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em;
-    color: var(--text-3); padding-bottom: 8px;
-  }
-  .lib-row .name { color: var(--text); font-family: var(--font-body); font-size: 13px; font-weight: 500; }
-  .lib-row .ct { color: var(--text-2); text-align: right; }
-  .lib-row .progress {
-    height: 6px; background: var(--surface-3); border-radius: 3px; overflow: hidden;
-    display: flex; position: relative;
-  }
-  .lib-row .progress .fill { height: 100%; background: var(--intro); }
-  .lib-row .pct { color: var(--text); text-align: right; font-weight: 500; }
-
-  /* ---------- bridge view ---------- */
-  .bridge {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 28px;
-    overflow: hidden;
-  }
-  .bridge-head {
-    display: flex; align-items: center; gap: 14px; margin-bottom: 24px;
-  }
-  .bridge-arrow {
-    width: 32px; height: 32px;
-    background: var(--surface-2); border-radius: 50%;
-    display: grid; place-items: center;
-    color: var(--intro);
-  }
-  .bridge-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
-  .bridge-pane {
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 16px;
-  }
-  .bridge-pane h4 {
-    display: flex; align-items: center; gap: 8px;
-    font-family: var(--font-mono); font-size: 11px;
-    text-transform: uppercase; letter-spacing: 0.1em;
-    color: var(--text-3);
-    margin: 0 0 12px;
-  }
-  .bridge-pane h4 .badge { width: 8px; height: 8px; border-radius: 50%; }
-  .br-mini-tl {
-    background: var(--surface);
-    border-radius: 4px;
-    height: 24px; position: relative;
-    margin-bottom: 8px;
-  }
-  .br-mini-tl .mk {
-    position: absolute; top: 3px; bottom: 3px;
-    border-radius: 2px;
-  }
-  .br-list { font-family: var(--font-mono); font-size: 11px; color: var(--text-2); line-height: 1.7; }
-  .br-list b { color: var(--text); font-weight: 500; }
-
-  /* ---------- bulk grid ---------- */
-  .bulk {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    overflow: hidden;
-  }
-  .bulk-toolbar {
-    display: flex; align-items: center; gap: 8px;
-    padding: 12px 16px;
-    background: var(--surface-2);
-    border-bottom: 1px solid var(--border);
-    font-family: var(--font-mono); font-size: 12px;
-  }
-  .bulk-toolbar .count {
-    color: var(--text-2); margin-right: auto;
-  }
-  .bulk-table {
-    font-family: var(--font-mono); font-size: 12px;
-    width: 100%;
-  }
-  .bulk-table thead {
-    background: var(--surface-2);
-    color: var(--text-3);
-    font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
-  }
-  .bulk-table th, .bulk-table td {
-    padding: 10px 14px;
-    text-align: left;
-    border-bottom: 1px solid var(--border);
-  }
-  .bulk-table tbody tr:hover { background: var(--surface-2); }
-  .bulk-table .lock { color: var(--credits); }
-  .bulk-table .seed { color: var(--recap); }
-  .bulk-table .conf-h { color: var(--good); }
-  .bulk-table .conf-m { color: var(--warn); }
-  .bulk-table .conf-l { color: var(--err); }
-
-  /* ---------- pipeline diagram ---------- */
-  .pipeline {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 28px;
-  }
+  /* pipeline diagram */
   .pipe-flow {
     display: grid;
     grid-template-columns: repeat(7, 1fr);
-    gap: 8px;
-    margin-bottom: 20px;
+    gap: 0.5rem;
   }
   .pipe-node {
-    background: var(--surface-2);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 14px 12px;
+    background: var(--bs-tertiary-bg);
+    border: 1px solid var(--bs-border-color);
+    border-radius: var(--radius-sm);
+    padding: 0.75rem 0.6rem;
     text-align: center;
-    position: relative;
   }
-  .pipe-node.existing { border-color: rgba(166,166,159,.2); }
   .pipe-node.new {
-    border-color: rgba(94,234,212,.3);
-    background: linear-gradient(180deg, rgba(94,234,212,.04), rgba(94,234,212,.01));
+    border-color: rgba(94,234,212,.35);
+    background: linear-gradient(180deg, rgba(94,234,212,.05), transparent);
   }
-  .pipe-node .num {
-    font-family: var(--font-mono); font-size: 10px;
-    color: var(--text-3);
-    margin-bottom: 6px;
+  .pipe-node .tag {
+    font-size: 0.65rem; text-transform: uppercase; letter-spacing: .08em;
+    color: var(--bs-secondary-color); margin-bottom: .35rem; display: block;
+    font-family: ui-monospace, monospace;
   }
-  .pipe-node.new .num { color: var(--intro); }
-  .pipe-node h5 {
-    font-family: var(--font-display); font-size: 13px;
-    font-weight: 600; margin: 0 0 4px;
-  }
-  .pipe-node p {
-    font-family: var(--font-mono); font-size: 10px;
-    color: var(--text-2); margin: 0; line-height: 1.4;
-  }
-  .pipe-legend {
-    display: flex; gap: 20px;
-    font-family: var(--font-mono); font-size: 11px;
-    color: var(--text-2);
-    padding-top: 16px; border-top: 1px solid var(--border);
-  }
-  .pipe-legend .ch {
-    width: 12px; height: 12px;
-    border: 1px solid; border-radius: 3px;
-    display: inline-block; vertical-align: -2px; margin-right: 6px;
+  .pipe-node.new .tag { color: #5EEAD4; }
+  .pipe-node h6 { font-size: 0.85rem; margin: 0 0 .25rem; }
+  .pipe-node .help {
+    font-size: 0.7rem; color: var(--bs-secondary-color);
+    margin: 0; font-family: ui-monospace, monospace;
   }
 
-  /* ---------- edge cases ---------- */
-  .edge-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-    gap: 16px;
+  /* small monospace helpers */
+  .ts {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Consolas, monospace;
+    font-size: 0.85rem;
   }
-  .edge {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 18px;
-  }
-  .edge-icon {
-    width: 28px; height: 28px;
-    border-radius: 6px;
-    background: var(--surface-2);
-    display: grid; place-items: center;
-    margin-bottom: 12px;
-    font-family: var(--font-mono); font-weight: 600; font-size: 14px;
-  }
-  .edge-icon.reject { background: rgba(239,68,68,.1); color: var(--err); }
-  .edge-icon.partial { background: rgba(250,204,21,.1); color: var(--warn); }
-  .edge-icon.locked { background: rgba(245,158,11,.1); color: var(--credits); }
-  .edge-icon.bridge { background: rgba(167,139,250,.1); color: var(--recap); }
-  .edge h4 {
-    font-family: var(--font-display); font-size: 16px; font-weight: 600;
-    letter-spacing: -0.01em; margin: 0 0 6px;
-  }
-  .edge p {
-    font-size: 13px; color: var(--text-2); margin: 0;
-    line-height: 1.55;
-  }
+  .text-mono { font-family: ui-monospace, SFMono-Regular, monospace; }
+  code { background: var(--bs-tertiary-bg); padding: 0 4px; border-radius: 3px; }
 
-  /* ---------- footer ---------- */
-  footer {
-    border-top: 1px solid var(--border);
-    padding: 28px 0;
-    font-family: var(--font-mono); font-size: 11px;
-    color: var(--text-3);
-    display: flex; align-items: center; justify-content: space-between;
+  /* section separator (still part of the app's looser flow) */
+  .mockup-section {
+    border-top: 1px solid var(--bs-border-color);
+    margin-top: 3rem; padding-top: 2.5rem;
   }
-  footer a { color: var(--text-2); text-decoration: none; }
-  footer a:hover { color: var(--text); }
-
-  /* state highlight on inspector when toggled */
-  .ss-card.is-selected {
-    border-color: var(--intro);
-    box-shadow: 0 0 0 1px var(--intro), 0 0 24px -8px rgba(94,234,212,.3);
+  .mockup-section:first-of-type { border-top: none; margin-top: 0; padding-top: 1rem; }
+  .mockup-section .lead-note {
+    color: var(--bs-secondary-color); font-size: 0.875rem;
+    max-width: 720px;
   }
 </style>
 </head>
+
 <body>
 
-<!-- TOP NAV -->
-<header class="topnav">
-  <div class="topnav-inner">
-    <div class="brand">
-      <div class="brand-mark">M</div>
-      MarkersInspector
-    </div>
-    <nav class="nav-links">
-      <a href="#inspector" class="active">Inspector</a>
-      <a href="#servers">Servers</a>
-      <a href="#library">Library</a>
-      <a href="#bridge">Bridge</a>
-      <a href="#bulk">Bulk</a>
-      <a href="#pipeline">Pipeline</a>
-    </nav>
-    <div class="nav-right">
-      <div class="scan-pill">
-        <span class="dot"></span>
-        Library scan · 2,341 / 5,000
-      </div>
+<!-- TOP NAV — mirrors base.html — Bootstrap navbar with brand mark + tabs -->
+<nav class="navbar navbar-expand-lg border-bottom" style="background: var(--bs-secondary-bg);">
+  <div class="container-fluid px-4">
+    <a class="navbar-brand fw-semibold" href="#">
+      <span class="brand-icon">M</span>Media Preview Generator
+    </a>
+    <ul class="navbar-nav me-auto mb-2 mb-lg-0">
+      <li class="nav-item"><a class="nav-link text-secondary" href="#"><i class="bi bi-speedometer2 me-1"></i>Dashboard</a></li>
+      <li class="nav-item"><a class="nav-link text-secondary" href="#"><i class="bi bi-hdd-stack me-1"></i>Servers</a></li>
+      <li class="nav-item"><a class="nav-link text-secondary" href="#"><i class="bi bi-clock-history me-1"></i>Automation</a></li>
+      <li class="nav-item"><a class="nav-link text-secondary" href="#"><i class="bi bi-film me-1"></i>Preview Inspector</a></li>
+      <li class="nav-item"><a class="nav-link active text-warning" href="#" style="color: var(--plex-orange) !important;"><i class="bi bi-bookmark-star me-1"></i>Marker Inspector <span class="badge bg-warning text-dark ms-1" style="font-size: 0.65rem;">NEW</span></a></li>
+      <li class="nav-item"><a class="nav-link text-secondary" href="#"><i class="bi bi-card-text me-1"></i>Logs</a></li>
+      <li class="nav-item"><a class="nav-link text-secondary" href="#"><i class="bi bi-gear me-1"></i>Settings</a></li>
+    </ul>
+    <div class="d-flex align-items-center gap-2">
+      <span class="badge text-bg-secondary"><i class="bi bi-cpu me-1"></i>2,341 / 5,000 scanned</span>
+      <button class="btn btn-sm btn-outline-secondary" id="themeToggle" title="Toggle theme">
+        <i class="bi bi-circle-half"></i>
+      </button>
     </div>
   </div>
-</header>
+</nav>
 
-<!-- HERO -->
-<section class="container hero">
-  <div class="hero-tag">design mockup · phase a/b/c states · 2026-05-17</div>
-  <h1>Find every <em>intro</em>, <em>credits</em>, and <em>recap</em> across all your media servers.</h1>
-  <p>One detection cascade — chapters, TheIntroDB, audio fingerprinting, blackdetect, OCR — feeding three servers from a single canonical sidecar. This mockup shows the Inspector in every state we have to handle.</p>
-  <dl class="hero-meta">
-    <div><dt>Detection cascade</dt><dd>5 tiers · 11% chapter · 50% TheIntroDB</dd></div>
-    <div><dt>Servers</dt><dd>Plex · Emby · Jellyfin</dd></div>
-    <div><dt>Test corpus</dt><dd>20 shows · 10 categories · verified</dd></div>
-    <div><dt>SOTA ceiling</dt><dd>F1 0.91 · ours est. 0.80</dd></div>
-  </dl>
-</section>
+<div class="container py-3">
 
-<!-- INSPECTOR: SINGLE ITEM -->
-<section class="section" id="inspector">
-  <div class="container">
-    <div class="sec-label"><span class="sec-num">01</span> Single-item view</div>
-    <h2 class="sec-title">Inspector — one episode, four signals, one decision.</h2>
-    <p class="sec-sub">Search any item across every connected server. See what the server reports, what we detected, where they disagree, and which clients will actually render the skip button. Drag handles to nudge a boundary; click "Lock" to make it survive re-analysis forever.</p>
-
-    <div class="inspector">
-      <div class="insp-header">
-        <div class="server-picker" id="serverPicker">
-          <span class="sv-dot"></span>
-          <span>Plex · Home</span>
-        </div>
-        <input class="search-input" placeholder="Search shows or episodes  ·  e.g. 'Severance s01e03'" value="Severance — S01E03" />
-        <div class="insp-tabs">
-          <button class="tab">Frames</button>
-          <button class="tab active">Markers</button>
-          <button class="tab">Audio</button>
-        </div>
+  <!-- ───────── MARKER INSPECTOR (single-item view) ───────── -->
+  <section id="inspector" class="mockup-section">
+    <header class="page-header preview-inspector-header">
+      <div class="w-100 text-center">
+        <h1 class="page-title"><i class="bi bi-bookmark-star me-2 text-warning"></i>Marker Inspector</h1>
+        <p class="page-subtitle">Find intro, credits and recap markers across every server. Compare what's there with what we'd detect.</p>
       </div>
+    </header>
 
-      <div class="insp-body">
-        <div class="item-title">
-          <h2>Severance</h2>
-          <span class="ep-tag">S01·E03 — In Perpetuity</span>
-        </div>
-        <div class="item-sub">
-          <span>📁 /data/tv/Severance/S01/Severance.S01E03.WEBDL-2160p.x265-av1svasi.mkv</span>
-          <span class="dotsep">·</span>
-          <span>Runtime 50:18</span>
-          <span class="dotsep">·</span>
-          <span>tmdb: 95396</span>
-          <span class="dotsep">·</span>
-          <span>imdb: tt11280740</span>
-        </div>
-
-        <div class="timeline-wrap">
-          <div class="timeline">
-            <div class="tl-ruler">
-              <span style="left:0%">00:00</span>
-              <span style="left:10%">05:00</span>
-              <span style="left:20%">10:00</span>
-              <span style="left:30%">15:00</span>
-              <span style="left:40%">20:00</span>
-              <span style="left:50%">25:00</span>
-              <span style="left:60%">30:00</span>
-              <span style="left:70%">35:00</span>
-              <span style="left:80%">40:00</span>
-              <span style="left:90%">45:00</span>
-              <span style="left:100%">50:00</span>
-            </div>
-            <div class="waveform">
-              <svg viewBox="0 0 1000 70" preserveAspectRatio="none" id="waveform">
-                <!-- generated by JS below -->
-              </svg>
-            </div>
-
-            <div class="marker-rows">
-              <div class="marker-row">
-                <span class="label">SERVER (Plex)</span>
-                <div class="marker m-intro" style="left:5%; width:5%;">intro</div>
-                <div class="marker m-credits" style="left:92%; width:7%;">credits</div>
+    <!-- search card — same shape as bif_viewer.html -->
+    <div class="row justify-content-center mb-4">
+      <div class="col-lg-9">
+        <div class="card">
+          <div class="card-body py-3">
+            <ul class="nav nav-pills nav-fill mb-3" role="tablist">
+              <li class="nav-item"><button class="nav-link active" type="button"><i class="bi bi-search me-1"></i>Search media servers</button></li>
+              <li class="nav-item"><button class="nav-link" type="button"><i class="bi bi-clipboard me-1"></i>Paste File Path</button></li>
+              <li class="nav-item"><button class="nav-link" type="button"><i class="bi bi-grid-3x3 me-1"></i>Browse season</button></li>
+            </ul>
+            <div class="row g-2 align-items-stretch">
+              <div class="col-md-4">
+                <select class="form-select">
+                  <option><span class="server-dot dot-plex"></span>Plex — Home</option>
+                  <option>Emby — Office</option>
+                  <option>Jellyfin — Main</option>
+                </select>
               </div>
-              <div class="marker-row">
-                <span class="label">DETECTED</span>
-                <div class="marker m-detected m-intro" style="left:4.5%; width:5.2%;">
-                  <span class="handle l"></span>intro · 91%<span class="handle r"></span>
-                </div>
-                <div class="marker m-detected m-credits" style="left:91.6%; width:7.4%;">
-                  <span class="handle l"></span>credits · 78%<span class="handle r"></span>
-                </div>
-              </div>
-              <div class="marker-row">
-                <span class="label">RECAP</span>
-                <div class="marker m-detected m-recap" style="left:0.5%; width:3%;">
-                  <span class="handle l"></span>recap · 86%<span class="handle r"></span>
+              <div class="col-md-8">
+                <div class="input-group">
+                  <input type="text" class="form-control" value="Severance — S01E03">
+                  <button class="btn btn-primary" type="button"><i class="bi bi-search me-1"></i>Search</button>
                 </div>
               </div>
             </div>
           </div>
         </div>
+      </div>
+    </div>
 
-        <div class="insp-meta">
-          <div class="meta-card">
-            <dt>Intro detector</dt>
-            <dd><span class="conf">chromaprint v1 · pairs 14/22 · σ 3.2s</span></dd>
+    <!-- result panel — same row pattern as bif_viewer.html viewerPanel -->
+    <div class="row justify-content-center mb-3">
+      <div class="col-lg-10">
+
+        <!-- Metadata badge row -->
+        <div class="d-flex flex-wrap gap-2 align-items-center mb-3">
+          <span class="badge text-bg-primary-subtle text-primary-emphasis">Severance</span>
+          <span class="badge text-bg-secondary-subtle text-secondary-emphasis">S01·E03 — In Perpetuity</span>
+          <span class="badge text-bg-info-subtle text-info-emphasis"><i class="bi bi-clock me-1"></i>50:18</span>
+          <span class="badge text-bg-secondary-subtle text-secondary-emphasis text-mono">tmdb: 95396</span>
+          <span class="badge text-bg-secondary-subtle text-secondary-emphasis text-mono">imdb: tt11280740</span>
+          <span class="text-muted small ms-2 text-mono">Severance.S01E03.WEBDL-2160p.x265-av1svasi.mkv</span>
+        </div>
+
+        <!-- Timeline card -->
+        <div class="card mb-3">
+          <div class="card-header py-2 d-flex justify-content-between align-items-center">
+            <span class="small fw-semibold"><i class="bi bi-bookmark-star me-1"></i>Markers timeline</span>
+            <div class="btn-group btn-group-sm" role="group">
+              <button class="btn btn-outline-secondary active" type="button">Compare</button>
+              <button class="btn btn-outline-secondary" type="button">Server only</button>
+              <button class="btn btn-outline-secondary" type="button">Detected only</button>
+            </div>
           </div>
-          <div class="meta-card">
-            <dt>Credits detector</dt>
-            <dd><span class="conf">blackdetect_binsearch · 7 probes · 4.1s</span></dd>
-          </div>
-          <div class="meta-card">
-            <dt>Recap source</dt>
-            <dd><span class="conf">tier 0 chapter "Previously on"</span></dd>
+          <div class="card-body p-3">
+            <div class="timeline-wrap">
+              <div class="tl-ruler">
+                <span style="left:0%">00:00</span>
+                <span style="left:10%">05:00</span>
+                <span style="left:20%">10:00</span>
+                <span style="left:30%">15:00</span>
+                <span style="left:40%">20:00</span>
+                <span style="left:50%">25:00</span>
+                <span style="left:60%">30:00</span>
+                <span style="left:70%">35:00</span>
+                <span style="left:80%">40:00</span>
+                <span style="left:90%">45:00</span>
+                <span style="left:100%">50:18</span>
+              </div>
+              <div class="waveform"><svg id="waveform" viewBox="0 0 1000 70" preserveAspectRatio="none"></svg></div>
+              <div class="marker-rows">
+                <div class="marker-row">
+                  <span class="row-label">SERVER (PLEX)</span>
+                  <div class="marker m-intro" style="left:5%; width:5%;">intro</div>
+                  <div class="marker m-credits" style="left:92%; width:7%;">credits</div>
+                </div>
+                <div class="marker-row">
+                  <span class="row-label">DETECTED</span>
+                  <div class="marker detected m-intro" style="left:4.5%; width:5.2%;"><span class="handle l"></span>intro · 91%<span class="handle r"></span></div>
+                  <div class="marker detected m-credits" style="left:91.6%; width:7.4%;"><span class="handle l"></span>credits · 78%<span class="handle r"></span></div>
+                </div>
+                <div class="marker-row">
+                  <span class="row-label">RECAP</span>
+                  <div class="marker detected m-recap" style="left:0.5%; width:3%;"><span class="handle l"></span>recap · 86%<span class="handle r"></span></div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
-        <div class="compat">
-          <div class="compat-h">
-            <span>Client compatibility — where the skip button will render</span>
+        <!-- Meta + compatibility row -->
+        <div class="row g-3 mb-3">
+          <div class="col-lg-7">
+            <div class="card h-100">
+              <div class="card-header py-2"><span class="small fw-semibold"><i class="bi bi-info-circle me-1"></i>Detection sources</span></div>
+              <div class="card-body p-3">
+                <dl class="meta-grid m-0">
+                  <div class="meta-tile">
+                    <dt>Intro detector</dt>
+                    <dd><span class="text-mono">chromaprint_v1</span><br><small class="text-muted">pairs 14/22 · σ 3.2s</small></dd>
+                  </div>
+                  <div class="meta-tile">
+                    <dt>Credits detector</dt>
+                    <dd><span class="text-mono">blackdetect_binsearch</span><br><small class="text-muted">7 probes · 4.1s</small></dd>
+                  </div>
+                  <div class="meta-tile">
+                    <dt>Recap source</dt>
+                    <dd><span class="text-mono">tier 0 chapter</span><br><small class="text-muted">"Previously on"</small></dd>
+                  </div>
+                </dl>
+              </div>
+            </div>
           </div>
-          <div class="compat-grid">
-            <div class="client ok"><span class="ind"></span>Plex Web</div>
-            <div class="client ok"><span class="ind"></span>iOS / Android</div>
-            <div class="client ok"><span class="ind"></span>Apple TV 8.39+</div>
-            <div class="client warn"><span class="ind"></span>LG webOS</div>
-            <div class="client bad"><span class="ind"></span>Win Player</div>
-            <div class="client ok"><span class="ind"></span>Roku</div>
-            <div class="client bad"><span class="ind"></span>Family share</div>
+          <div class="col-lg-5">
+            <div class="card h-100">
+              <div class="card-header py-2"><span class="small fw-semibold"><i class="bi bi-display me-1"></i>Client compatibility</span></div>
+              <div class="card-body p-3">
+                <div class="compat-grid">
+                  <span class="badge text-bg-success-subtle text-success-emphasis"><i class="bi bi-check-circle me-1"></i>Plex Web</span>
+                  <span class="badge text-bg-success-subtle text-success-emphasis"><i class="bi bi-check-circle me-1"></i>iOS / Android</span>
+                  <span class="badge text-bg-success-subtle text-success-emphasis"><i class="bi bi-check-circle me-1"></i>Apple TV 8.39+</span>
+                  <span class="badge text-bg-warning-subtle text-warning-emphasis"><i class="bi bi-exclamation-triangle me-1"></i>LG webOS</span>
+                  <span class="badge text-bg-danger-subtle text-danger-emphasis"><i class="bi bi-x-circle me-1"></i>Windows</span>
+                  <span class="badge text-bg-success-subtle text-success-emphasis"><i class="bi bi-check-circle me-1"></i>Roku</span>
+                  <span class="badge text-bg-danger-subtle text-danger-emphasis"><i class="bi bi-x-circle me-1"></i>Family share</span>
+                </div>
+                <div class="form-text mt-2 small">Family-share users without their own Plex Pass won't see the skip button.</div>
+              </div>
+            </div>
           </div>
         </div>
 
-        <div class="actions">
-          <button class="btn primary">Apply to Plex · trigger native</button>
-          <button class="btn">Push to Jellyfin</button>
-          <button class="btn">Push to Emby</button>
-          <button class="btn ghost">Lock as canonical</button>
-          <button class="btn ghost">Re-detect</button>
-          <button class="btn ghost">Submit to TheIntroDB</button>
-          <button class="btn danger">Reject our detection</button>
+        <!-- Action bar -->
+        <div class="card">
+          <div class="card-body py-3 d-flex flex-wrap gap-2 align-items-center">
+            <button class="btn btn-primary btn-sm"><i class="bi bi-arrow-right-circle me-1"></i>Apply to Plex · trigger native</button>
+            <button class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-up-right-circle me-1"></i>Push to Jellyfin</button>
+            <button class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-up-right-circle me-1"></i>Push to Emby</button>
+            <button class="btn btn-outline-secondary btn-sm"><i class="bi bi-lock me-1"></i>Lock as canonical</button>
+            <button class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-clockwise me-1"></i>Re-detect</button>
+            <button class="btn btn-outline-secondary btn-sm"><i class="bi bi-cloud-arrow-up me-1"></i>Submit to TheIntroDB</button>
+            <button class="btn btn-sm btn-outline-danger ms-auto"><i class="bi bi-x-circle me-1"></i>Reject our detection</button>
+          </div>
         </div>
       </div>
     </div>
-  </div>
-</section>
+  </section>
 
-<!-- SERVER MATRIX -->
-<section class="section" id="servers">
-  <div class="container">
-    <div class="sec-label"><span class="sec-num">02</span> Per-server state matrix</div>
-    <h2 class="sec-title">Same feature, ten distinct user states.</h2>
-    <p class="sec-sub">Every server has a different write-path situation, plugin requirement, and capability. The Inspector adapts to each. Below are the ten states we have to handle gracefully — the most common will be the first three.</p>
+  <!-- ───────── PER-SERVER STATE MATRIX ───────── -->
+  <section id="servers" class="mockup-section">
+    <header class="page-header">
+      <div>
+        <h2 class="page-title h3"><i class="bi bi-hdd-stack me-2"></i>Per-server state</h2>
+        <p class="page-subtitle lead-note">Eight distinct UX situations the Inspector must handle gracefully. Each card mirrors what a user will see in their <em>Servers</em> tab.</p>
+      </div>
+    </header>
 
-    <div class="server-states">
-      <article class="ss-card is-selected">
-        <header class="ss-head">
-          <span class="ss-server"><span class="badge" style="background:var(--plex)"></span>Plex — Home</span>
-        </header>
-        <div class="ss-body">
-          <span class="ss-cap cap-trig">trigger native · plex pass</span>
-          <h4 class="ss-h">Plex Pass + native detection enabled</h4>
-          <p class="ss-desc">Server auto-detects markers. We read them and surface anything Plex missed. Trigger re-analysis with one click; we never write to the DB.</p>
-          <div class="ss-cta">
-            <a href="#">Trigger re-analyze</a>
-            <a href="#" class="ghost">View settings →</a>
+    <div class="state-grid">
+
+      <div class="card">
+        <div class="card-header py-2 d-flex align-items-center justify-content-between">
+          <span class="small fw-semibold"><span class="server-dot dot-plex"></span>Plex — Home</span>
+          <span class="badge text-bg-success-subtle text-success-emphasis">Trigger native</span>
+        </div>
+        <div class="card-body">
+          <h6 class="mb-1">Plex Pass + native detection on</h6>
+          <p class="text-secondary small mb-2">Server auto-detects markers. We read them, surface anything Plex missed. Trigger re-analysis with one click; we never write to the DB.</p>
+          <div class="d-flex gap-2">
+            <button class="btn btn-sm btn-primary"><i class="bi bi-play me-1"></i>Trigger re-analyze</button>
+            <button class="btn btn-sm btn-outline-secondary">Settings</button>
           </div>
         </div>
-      </article>
+      </div>
 
-      <article class="ss-card">
-        <header class="ss-head">
-          <span class="ss-server"><span class="badge" style="background:var(--plex)"></span>Plex — Family</span>
-        </header>
-        <div class="ss-body">
-          <span class="ss-cap cap-dbg">direct DB write · no Plex Pass</span>
-          <h4 class="ss-h">No Pass — direct SQLite write</h4>
-          <p class="ss-desc">We write to <code>taggings</code> + <code>media_parts.extra_data</code> using the MarkerEditor pattern. Survives re-analysis via provenance/restore loop. Big warning before first write.</p>
-          <div class="ss-cta">
-            <a href="#" class="warn">Enable DB write</a>
-            <a href="#" class="ghost">Review safety →</a>
+      <div class="card">
+        <div class="card-header py-2 d-flex align-items-center justify-content-between">
+          <span class="small fw-semibold"><span class="server-dot dot-plex"></span>Plex — Family</span>
+          <span class="badge text-bg-warning-subtle text-warning-emphasis">Direct DB write</span>
+        </div>
+        <div class="card-body">
+          <h6 class="mb-1">No Pass — direct SQLite write</h6>
+          <p class="text-secondary small mb-2">We write to <code>taggings</code> + <code>media_parts.extra_data</code> using the MarkerEditor pattern. Provenance/restore loop survives re-analysis. Big warning before first write.</p>
+          <div class="d-flex gap-2">
+            <button class="btn btn-sm btn-warning text-dark"><i class="bi bi-exclamation-triangle me-1"></i>Enable DB write</button>
+            <button class="btn btn-sm btn-outline-secondary">Review safety</button>
           </div>
         </div>
-      </article>
+      </div>
 
-      <article class="ss-card">
-        <header class="ss-head">
-          <span class="ss-server"><span class="badge" style="background:var(--emby)"></span>Emby — Office</span>
-        </header>
-        <div class="ss-body">
-          <span class="ss-cap cap-write">plugin write · premiere + segment_reporting</span>
-          <h4 class="ss-h">Premiere + Segment_Reporting plugin</h4>
-          <p class="ss-desc">Native intros (10-min ceiling) + our credits/recap via Segment_Reporting's <code>/update_segment</code> endpoint. Both signals merged in the Inspector view.</p>
-          <div class="ss-cta">
-            <a href="#">Push markers</a>
-            <a href="#" class="ghost">Plugin status v1.3.0</a>
+      <div class="card">
+        <div class="card-header py-2 d-flex align-items-center justify-content-between">
+          <span class="small fw-semibold"><span class="server-dot dot-emby"></span>Emby — Office</span>
+          <span class="badge text-bg-success-subtle text-success-emphasis">Plugin write</span>
+        </div>
+        <div class="card-body">
+          <h6 class="mb-1">Premiere + Segment_Reporting plugin</h6>
+          <p class="text-secondary small mb-2">Native intros (10-min ceiling) + our credits/recap via <code>POST /emby/segment_reporting/update_segment</code>. Both sources merged in the timeline.</p>
+          <div class="d-flex gap-2">
+            <button class="btn btn-sm btn-primary"><i class="bi bi-arrow-up-right me-1"></i>Push markers</button>
+            <button class="btn btn-sm btn-outline-secondary">Plugin v1.3.0</button>
           </div>
         </div>
-      </article>
+      </div>
 
-      <article class="ss-card">
-        <header class="ss-head">
-          <span class="ss-server"><span class="badge" style="background:var(--emby)"></span>Emby — Spare box</span>
-        </header>
-        <div class="ss-body">
-          <span class="ss-cap cap-read">read only · premiere · no plugin</span>
-          <h4 class="ss-h">Premiere but plugin missing</h4>
-          <p class="ss-desc">We can read native chapters + markers but can't write. Setup Health surfaces the gap with a one-click install link to sydlexius/Segment_Reporting.</p>
-          <div class="ss-cta">
-            <a href="#" class="warn">Install plugin →</a>
-            <a href="#" class="ghost">Why this matters</a>
+      <div class="card">
+        <div class="card-header py-2 d-flex align-items-center justify-content-between">
+          <span class="small fw-semibold"><span class="server-dot dot-emby"></span>Emby — Spare</span>
+          <span class="badge text-bg-secondary-subtle text-secondary-emphasis">Read only</span>
+        </div>
+        <div class="card-body">
+          <h6 class="mb-1">Premiere but plugin missing</h6>
+          <p class="text-secondary small mb-2">We can read native chapters + markers but can't write. Setup Health flags this with a one-click install link to <code>sydlexius/Segment_Reporting</code>.</p>
+          <div class="d-flex gap-2">
+            <button class="btn btn-sm btn-warning text-dark"><i class="bi bi-puzzle me-1"></i>Install plugin</button>
+            <button class="btn btn-sm btn-outline-secondary">Why?</button>
           </div>
         </div>
-      </article>
+      </div>
 
-      <article class="ss-card">
-        <header class="ss-head">
-          <span class="ss-server"><span class="badge" style="background:var(--jelly)"></span>Jellyfin — Main</span>
-        </header>
-        <div class="ss-body">
-          <span class="ss-cap cap-write">plugin write · MediaPreviewBridge v10.11.1+</span>
-          <h4 class="ss-h">MediaPreviewBridge upgraded</h4>
-          <p class="ss-desc">Full integration. Sidecar JSON written next to media; <code>POST /MediaPreviewBridge/Markers/{id}</code> + scheduled scan keep MediaSegments in sync.</p>
-          <div class="ss-cta">
-            <a href="#">Apply to server</a>
-            <a href="#" class="ghost">Plugin v10.11.1.0</a>
+      <div class="card">
+        <div class="card-header py-2 d-flex align-items-center justify-content-between">
+          <span class="small fw-semibold"><span class="server-dot dot-jelly"></span>Jellyfin — Main</span>
+          <span class="badge text-bg-success-subtle text-success-emphasis">Plugin write</span>
+        </div>
+        <div class="card-body">
+          <h6 class="mb-1">MediaPreviewBridge v10.11.1.0+</h6>
+          <p class="text-secondary small mb-2">Full integration. Sidecar JSON written next to media; <code>POST /MediaPreviewBridge/Markers/{id}</code> + scheduled scan keep MediaSegments in sync.</p>
+          <div class="d-flex gap-2">
+            <button class="btn btn-sm btn-primary"><i class="bi bi-arrow-up-right me-1"></i>Apply to server</button>
+            <button class="btn btn-sm btn-outline-secondary">Plugin v10.11.1.0</button>
           </div>
         </div>
-      </article>
+      </div>
 
-      <article class="ss-card">
-        <header class="ss-head">
-          <span class="ss-server"><span class="badge" style="background:var(--jelly)"></span>Jellyfin — Lab</span>
-        </header>
-        <div class="ss-body">
-          <span class="ss-cap cap-dbg">plugin older · v10.11.0.2</span>
-          <h4 class="ss-h">MediaPreviewBridge needs update</h4>
-          <p class="ss-desc">Existing trickplay plugin is too old for marker writes. One-click upgrade prompt; no new install needed — same manifest URL.</p>
-          <div class="ss-cta">
-            <a href="#" class="warn">Update plugin</a>
-            <a href="#" class="ghost">Changelog →</a>
+      <div class="card">
+        <div class="card-header py-2 d-flex align-items-center justify-content-between">
+          <span class="small fw-semibold"><span class="server-dot dot-jelly"></span>Jellyfin — Lab</span>
+          <span class="badge text-bg-warning-subtle text-warning-emphasis">Update needed</span>
+        </div>
+        <div class="card-body">
+          <h6 class="mb-1">MediaPreviewBridge needs upgrade</h6>
+          <p class="text-secondary small mb-2">Existing trickplay plugin is too old (10.11.0.2) for marker writes. One-click upgrade; same manifest URL, no re-install.</p>
+          <div class="d-flex gap-2">
+            <button class="btn btn-sm btn-warning text-dark"><i class="bi bi-arrow-up-circle me-1"></i>Update plugin</button>
+            <button class="btn btn-sm btn-outline-secondary">Changelog</button>
           </div>
         </div>
-      </article>
+      </div>
 
-      <article class="ss-card">
-        <header class="ss-head">
-          <span class="ss-server"><span class="badge" style="background:var(--jelly)"></span>Jellyfin — Friend</span>
-        </header>
-        <div class="ss-body">
-          <span class="ss-cap cap-read">read only · plugin missing</span>
-          <h4 class="ss-h">No plugin installed</h4>
-          <p class="ss-desc">Read-only mode. Inspector still shows markers Jellyfin already has + everything we detected. Install instructions ship with a paste-ready manifest URL.</p>
-          <div class="ss-cta">
-            <a href="#" class="warn">Install plugin</a>
-            <a href="#" class="ghost">Manifest URL</a>
+      <div class="card">
+        <div class="card-header py-2 d-flex align-items-center justify-content-between">
+          <span class="small fw-semibold"><span class="server-dot dot-jelly"></span>Jellyfin — Friend</span>
+          <span class="badge text-bg-secondary-subtle text-secondary-emphasis">Read only</span>
+        </div>
+        <div class="card-body">
+          <h6 class="mb-1">No plugin installed</h6>
+          <p class="text-secondary small mb-2">Read-only mode. Inspector still shows markers Jellyfin already has + everything we detected. Install instructions include a paste-ready manifest URL.</p>
+          <div class="d-flex gap-2">
+            <button class="btn btn-sm btn-warning text-dark"><i class="bi bi-puzzle me-1"></i>Install plugin</button>
+            <button class="btn btn-sm btn-outline-secondary">Manifest URL</button>
           </div>
         </div>
-      </article>
+      </div>
 
-      <article class="ss-card">
-        <header class="ss-head">
-          <span class="ss-server"><span class="badge" style="background:var(--text-3)"></span>Server unreachable</span>
-        </header>
-        <div class="ss-body">
-          <span class="ss-cap cap-fail">offline · 5 min cool-down</span>
-          <h4 class="ss-h">Connection failing</h4>
-          <p class="ss-desc">Last seen 6m ago. Detection still runs; markers queue in our sidecar and publish when the server is back.</p>
-          <div class="ss-cta">
-            <a href="#">Retry connection</a>
-            <a href="#" class="ghost">View logs</a>
+      <div class="card">
+        <div class="card-header py-2 d-flex align-items-center justify-content-between">
+          <span class="small fw-semibold"><span class="server-dot dot-grey"></span>Server unreachable</span>
+          <span class="badge text-bg-danger-subtle text-danger-emphasis">Offline</span>
+        </div>
+        <div class="card-body">
+          <h6 class="mb-1">Connection failing</h6>
+          <p class="text-secondary small mb-2">Last seen 6m ago. Detection still runs; markers queue in our sidecar and publish when the server is back.</p>
+          <div class="d-flex gap-2">
+            <button class="btn btn-sm btn-outline-secondary"><i class="bi bi-arrow-clockwise me-1"></i>Retry</button>
+            <button class="btn btn-sm btn-outline-secondary">View logs</button>
           </div>
         </div>
-      </article>
+      </div>
+
     </div>
-  </div>
-</section>
+  </section>
 
-<!-- LIBRARY DASHBOARD -->
-<section class="section" id="library">
-  <div class="container">
-    <div class="sec-label"><span class="sec-num">03</span> Library coverage</div>
-    <h2 class="sec-title">Bootstrap is a multi-day operation — track it.</h2>
-    <p class="sec-sub">5,000 episodes × 5-tier cascade is a multi-day job at TheIntroDB's rate-limit + chromaprint's CPU budget. Show progress, ETA, what's failing, what's been deprioritised.</p>
-
-    <div class="lib-dash">
-      <div class="lib-head">
-        <div class="lib-numbers">
-          <div class="lib-stat"><div class="v">47<small>%</small></div><div class="l">Library coverage</div></div>
-          <div class="lib-stat"><div class="v">2,341</div><div class="l">Episodes processed</div></div>
-          <div class="lib-stat"><div class="v">187</div><div class="l">REJECT verdict</div></div>
-          <div class="lib-stat"><div class="v">94<small>/min</small></div><div class="l">Current throughput</div></div>
-        </div>
-        <div class="lib-eta">ETA full library · <b>18h 42m</b></div>
+  <!-- ───────── LIBRARY COVERAGE DASHBOARD ───────── -->
+  <section id="library" class="mockup-section">
+    <header class="page-header">
+      <div>
+        <h2 class="page-title h3"><i class="bi bi-bar-chart me-2"></i>Library coverage</h2>
+        <p class="page-subtitle lead-note">Bootstrap is a multi-day job. Track it, prioritise it, see which libraries are stuck on REJECT.</p>
       </div>
+    </header>
 
-      <div class="lib-bar">
-        <div class="lib-seg s1" style="width:38%"></div>
-        <div class="lib-seg s2" style="width:6%"></div>
-        <div class="lib-seg s3" style="width:3%"></div>
-        <div class="lib-seg s4" style="width:4%"></div>
-      </div>
-      <div class="lib-legend">
-        <span><span class="sw" style="background:var(--good)"></span>Detected + published · 38%</span>
-        <span><span class="sw" style="background:var(--intro)"></span>Detected, pending push · 6%</span>
-        <span><span class="sw" style="background:var(--warn)"></span>In flight · 3%</span>
-        <span><span class="sw" style="background:var(--err); opacity:.6"></span>REJECT (no signal) · 4%</span>
-        <span><span class="sw" style="background:var(--surface-3)"></span>Not yet scanned · 49%</span>
-      </div>
+    <div class="card mb-3">
+      <div class="card-body">
+        <div class="row g-3 align-items-end mb-3">
+          <div class="col-md-2">
+            <div class="text-muted small text-uppercase fw-semibold">Library coverage</div>
+            <div class="display-6 fw-semibold mb-0">47<small class="text-muted h5">%</small></div>
+          </div>
+          <div class="col-md-2">
+            <div class="text-muted small text-uppercase fw-semibold">Processed</div>
+            <div class="h3 fw-semibold mb-0 text-mono">2,341</div>
+          </div>
+          <div class="col-md-2">
+            <div class="text-muted small text-uppercase fw-semibold">REJECT verdict</div>
+            <div class="h3 fw-semibold mb-0 text-mono text-danger">187</div>
+          </div>
+          <div class="col-md-2">
+            <div class="text-muted small text-uppercase fw-semibold">Throughput</div>
+            <div class="h3 fw-semibold mb-0 text-mono">94<small class="text-muted">/min</small></div>
+          </div>
+          <div class="col-md-4 text-end">
+            <span class="badge text-bg-primary-subtle text-primary-emphasis fs-6 px-3 py-2">ETA full library · <strong>18h 42m</strong></span>
+          </div>
+        </div>
 
-      <div class="lib-table">
-        <div class="lib-row head"><span>Library</span><span class="ct">Items</span><span>Coverage</span><span class="pct">% done</span></div>
-        <div class="lib-row">
-          <span class="name">TV Shows — main</span>
-          <span class="ct">4,521</span>
-          <span class="progress"><span class="fill" style="width:52%"></span></span>
-          <span class="pct">52%</span>
+        <div class="lib-bar mb-2">
+          <div class="lib-seg" style="width:38%; background:#198754;"></div>
+          <div class="lib-seg" style="width:6%; background:#5EEAD4;"></div>
+          <div class="lib-seg" style="width:3%; background:#ffc107;"></div>
+          <div class="lib-seg" style="width:4%; background:#dc3545; opacity:.65;"></div>
         </div>
-        <div class="lib-row">
-          <span class="name">Anime</span>
-          <span class="ct">2,180</span>
-          <span class="progress"><span class="fill" style="width:71%; background:var(--recap)"></span></span>
-          <span class="pct">71%</span>
-        </div>
-        <div class="lib-row">
-          <span class="name">Movies</span>
-          <span class="ct">9,753</span>
-          <span class="progress"><span class="fill" style="width:24%; background:var(--credits)"></span></span>
-          <span class="pct">24%</span>
-        </div>
-        <div class="lib-row">
-          <span class="name">Reality TV <span style="color:var(--text-3); font-family:var(--font-mono); font-size:11px; margin-left:8px;">(REJECT — no signal)</span></span>
-          <span class="ct">412</span>
-          <span class="progress"><span class="fill" style="width:100%; background:var(--err); opacity:.5"></span></span>
-          <span class="pct" style="color:var(--err)">skipped</span>
-        </div>
-        <div class="lib-row">
-          <span class="name">Mini-series</span>
-          <span class="ct">87</span>
-          <span class="progress"><span class="fill" style="width:8%; background:var(--warn)"></span></span>
-          <span class="pct">8%</span>
+        <div class="d-flex gap-3 flex-wrap small text-secondary">
+          <span><i class="bi bi-square-fill text-success"></i> Detected + published 38%</span>
+          <span><i class="bi bi-square-fill" style="color:#5EEAD4"></i> Detected, pending push 6%</span>
+          <span><i class="bi bi-square-fill text-warning"></i> In flight 3%</span>
+          <span><i class="bi bi-square-fill text-danger"></i> REJECT (no signal) 4%</span>
+          <span><i class="bi bi-square-fill text-secondary"></i> Not yet scanned 49%</span>
         </div>
       </div>
     </div>
-  </div>
-</section>
 
-<!-- CROSS-SERVER BRIDGE -->
-<section class="section" id="bridge">
-  <div class="container">
-    <div class="sec-label"><span class="sec-num">04</span> Cross-server bridge</div>
-    <h2 class="sec-title">Plex Pass markers → Jellyfin · the killer feature.</h2>
-    <p class="sec-sub">If you pay for Plex Pass, you already have great intro markers — but only on Plex, and only for accounts that also have Pass. Push them to Jellyfin (where everyone can see them) in one click.</p>
-
-    <div class="bridge">
-      <div class="bridge-head">
-        <h3 style="font-family:var(--font-display); font-size:20px; font-weight:600; letter-spacing:-0.02em; margin:0;">Breaking Bad — S03E07 · Half Measures</h3>
-        <div class="bridge-arrow">→</div>
+    <div class="card">
+      <div class="card-header py-2"><span class="small fw-semibold"><i class="bi bi-collection me-1"></i>Per-library breakdown</span></div>
+      <div class="card-body p-0">
+        <table class="table table-sm mb-0 align-middle">
+          <thead class="table-secondary">
+            <tr>
+              <th>Library</th>
+              <th class="text-end">Items</th>
+              <th style="width: 30%;">Coverage</th>
+              <th class="text-end">% done</th>
+              <th class="text-end">Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>TV Shows — main</td>
+              <td class="text-end text-mono">4,521</td>
+              <td><div class="progress" style="height:6px;"><div class="progress-bar bg-primary" style="width:52%"></div></div></td>
+              <td class="text-end text-mono">52%</td>
+              <td class="text-end"><button class="btn btn-sm btn-outline-secondary">Pause</button></td>
+            </tr>
+            <tr>
+              <td>Anime</td>
+              <td class="text-end text-mono">2,180</td>
+              <td><div class="progress" style="height:6px;"><div class="progress-bar" style="width:71%; background:#A78BFA"></div></div></td>
+              <td class="text-end text-mono">71%</td>
+              <td class="text-end"><button class="btn btn-sm btn-outline-secondary">Pause</button></td>
+            </tr>
+            <tr>
+              <td>Movies</td>
+              <td class="text-end text-mono">9,753</td>
+              <td><div class="progress" style="height:6px;"><div class="progress-bar bg-warning" style="width:24%"></div></div></td>
+              <td class="text-end text-mono">24%</td>
+              <td class="text-end"><button class="btn btn-sm btn-outline-secondary">Pause</button></td>
+            </tr>
+            <tr>
+              <td>Reality TV <span class="badge text-bg-danger-subtle text-danger-emphasis ms-2">REJECT</span></td>
+              <td class="text-end text-mono">412</td>
+              <td><div class="progress" style="height:6px;"><div class="progress-bar bg-danger opacity-50" style="width:100%"></div></div></td>
+              <td class="text-end text-mono text-danger">skipped</td>
+              <td class="text-end"><button class="btn btn-sm btn-outline-secondary">Why?</button></td>
+            </tr>
+            <tr>
+              <td>Mini-series</td>
+              <td class="text-end text-mono">87</td>
+              <td><div class="progress" style="height:6px;"><div class="progress-bar bg-warning" style="width:8%"></div></div></td>
+              <td class="text-end text-mono">8%</td>
+              <td class="text-end"><button class="btn btn-sm btn-outline-secondary">Pause</button></td>
+            </tr>
+          </tbody>
+        </table>
       </div>
+    </div>
+  </section>
 
-      <div class="bridge-grid">
-        <div class="bridge-pane">
-          <h4><span class="badge" style="background:var(--plex)"></span>Source · Plex Home</h4>
-          <div class="br-mini-tl">
-            <div class="mk m-intro" style="left:0.5%; width:4.5%;"></div>
-            <div class="mk m-intro" style="left:0.5%; width:4.5%; background:var(--intro)"></div>
-            <div class="mk m-credits" style="left:93%; width:7%; background:var(--credits)"></div>
+  <!-- ───────── CROSS-SERVER BRIDGE ───────── -->
+  <section id="bridge" class="mockup-section">
+    <header class="page-header">
+      <div>
+        <h2 class="page-title h3"><i class="bi bi-arrow-left-right me-2"></i>Cross-server bridge</h2>
+        <p class="page-subtitle lead-note">Plex Pass markers → Jellyfin in one click. Solves the "family share gets no skip" problem.</p>
+      </div>
+    </header>
+
+    <div class="card">
+      <div class="card-header py-2 d-flex align-items-center">
+        <span class="small fw-semibold"><i class="bi bi-arrow-right-circle me-1"></i>Breaking Bad — S03E07 · Half Measures</span>
+        <span class="ms-auto badge text-bg-primary-subtle text-primary-emphasis">Bridged · 2,041 / 2,180 episodes</span>
+      </div>
+      <div class="card-body">
+        <div class="row g-3">
+          <div class="col-md-6">
+            <div class="border rounded p-3">
+              <div class="d-flex align-items-center gap-2 mb-2">
+                <span class="server-dot dot-plex"></span>
+                <strong class="small">Source · Plex Home</strong>
+                <span class="badge text-bg-success-subtle text-success-emphasis ms-auto">Plex Pass · native</span>
+              </div>
+              <div class="position-relative mb-2" style="height:24px; background:var(--bs-tertiary-bg); border-radius:4px;">
+                <div class="marker m-intro" style="left:0.5%; width:4.5%;"></div>
+                <div class="marker m-credits" style="left:93%; width:7%;"></div>
+              </div>
+              <div class="small text-secondary text-mono">
+                <div><strong class="text-body">intro</strong> 00:01 → 02:45 · plex_pass · v5</div>
+                <div><strong class="text-body">credits</strong> 46:24 → end · plex_pass · v4 final</div>
+                <div class="text-muted">source: native_plex · BogoHash 4a8c…fe92</div>
+              </div>
+            </div>
           </div>
-          <p class="br-list">
-            <b>intro</b> 00:01 → 02:45 · plex_pass · v5<br>
-            <b>credits</b> 46:24 → end · plex_pass · v4 final<br>
-            <span style="color:var(--text-3)">source: native_plex · BogoHash 4a8c…fe92</span>
-          </p>
-        </div>
-        <div class="bridge-pane">
-          <h4><span class="badge" style="background:var(--jelly)"></span>Target · Jellyfin Main</h4>
-          <div class="br-mini-tl">
-            <div class="mk m-intro" style="left:0.5%; width:4.5%; background:var(--intro); opacity:.55;"></div>
-            <div class="mk m-credits" style="left:93%; width:7%; background:var(--credits); opacity:.55;"></div>
+          <div class="col-md-6">
+            <div class="border rounded p-3">
+              <div class="d-flex align-items-center gap-2 mb-2">
+                <span class="server-dot dot-jelly"></span>
+                <strong class="small">Target · Jellyfin Main</strong>
+                <span class="badge text-bg-warning-subtle text-warning-emphasis ms-auto">Queued · 2 markers</span>
+              </div>
+              <div class="position-relative mb-2" style="height:24px; background:var(--bs-tertiary-bg); border-radius:4px;">
+                <div class="marker m-intro" style="left:0.5%; width:4.5%; opacity:.55;"></div>
+                <div class="marker m-credits" style="left:93%; width:7%; opacity:.55;"></div>
+              </div>
+              <div class="small text-secondary text-mono">
+                <div><strong class="text-body">intro</strong> 00:01 → 02:45 · MediaPreviewBridge · queued</div>
+                <div><strong class="text-body">credits</strong> 46:24 → end · MediaPreviewBridge · queued</div>
+                <div class="text-muted">target: MediaSegments via /MediaPreviewBridge/Markers/{id}</div>
+              </div>
+            </div>
           </div>
-          <p class="br-list">
-            <b>intro</b> 00:01 → 02:45 · MediaPreviewBridge · queued<br>
-            <b>credits</b> 46:24 → end · MediaPreviewBridge · queued<br>
-            <span style="color:var(--text-3)">target: MediaSegments via /MediaPreviewBridge/Markers/{id}</span>
-          </p>
+        </div>
+
+        <div class="d-flex flex-wrap gap-2 mt-3 pt-3 border-top">
+          <button class="btn btn-primary btn-sm"><i class="bi bi-arrow-right me-1"></i>Bridge this episode</button>
+          <button class="btn btn-outline-secondary btn-sm"><i class="bi bi-collection me-1"></i>Bridge whole season</button>
+          <button class="btn btn-outline-secondary btn-sm"><i class="bi bi-tv me-1"></i>Bridge whole show</button>
+          <button class="btn btn-outline-secondary btn-sm ms-auto"><i class="bi bi-clock me-1"></i>Schedule nightly bridge</button>
         </div>
       </div>
+    </div>
+  </section>
 
-      <div class="actions" style="margin-top: 20px;">
-        <button class="btn primary">Bridge this episode →</button>
-        <button class="btn">Bridge whole season</button>
-        <button class="btn">Bridge whole show</button>
-        <button class="btn ghost">Schedule nightly bridge</button>
+  <!-- ───────── BULK EDITOR ───────── -->
+  <section id="bulk" class="mockup-section">
+    <header class="page-header">
+      <div>
+        <h2 class="page-title h3"><i class="bi bi-table me-2"></i>Bulk editor <span class="badge bg-secondary fs-6 ms-2">Phase D</span></h2>
+        <p class="page-subtitle lead-note">Spreadsheet view — shift 30 episodes' intro-end by ±N seconds, dry-run preview, then commit.</p>
+      </div>
+    </header>
+
+    <div class="card">
+      <div class="card-header py-2 d-flex flex-wrap gap-2 align-items-center">
+        <span class="small fw-semibold"><i class="bi bi-collection me-1"></i>Severance — Season 1 · 9 episodes</span>
+        <div class="vr"></div>
+        <button class="btn btn-sm btn-outline-secondary"><i class="bi bi-check-square me-1"></i>6 selected</button>
+        <button class="btn btn-sm btn-outline-secondary">Shift intro_end ±N</button>
+        <button class="btn btn-sm btn-outline-secondary"><i class="bi bi-lock me-1"></i>Lock all</button>
+        <button class="btn btn-sm btn-outline-secondary"><i class="bi bi-arrow-clockwise me-1"></i>Re-detect</button>
+        <button class="btn btn-primary btn-sm ms-auto"><i class="bi bi-check2 me-1"></i>Apply changes</button>
+      </div>
+      <div class="card-body p-0">
+        <table class="table table-sm table-hover align-middle mb-0">
+          <thead class="table-secondary">
+            <tr>
+              <th style="width:36px;"><input type="checkbox"></th>
+              <th>Episode</th>
+              <th class="text-mono">Intro start</th>
+              <th class="text-mono">Intro end</th>
+              <th class="text-mono">Credits start</th>
+              <th class="text-mono">Conf.</th>
+              <th>Flags</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody class="text-mono small">
+            <tr><td><input type="checkbox" checked></td><td>S01E01 — Good News About Hell</td><td>0:04</td><td>1:32</td><td>45:18</td><td class="text-success">0.94</td><td><i class="bi bi-lock-fill text-warning"></i></td><td><span class="badge text-bg-success-subtle text-success-emphasis">published</span></td></tr>
+            <tr><td><input type="checkbox" checked></td><td>S01E02 — Half Loop</td><td>0:03</td><td>1:31</td><td>43:02</td><td class="text-success">0.92</td><td></td><td><span class="badge text-bg-success-subtle text-success-emphasis">published</span></td></tr>
+            <tr class="table-active"><td><input type="checkbox"></td><td>S01E03 — In Perpetuity</td><td>0:05</td><td>1:34</td><td>46:21</td><td class="text-warning">0.78</td><td><i class="bi bi-star-fill text-info"></i></td><td><span class="badge text-bg-warning-subtle text-warning-emphasis">pending</span></td></tr>
+            <tr><td><input type="checkbox" checked></td><td>S01E04 — The You You Are</td><td>0:05</td><td>1:33</td><td>44:11</td><td class="text-success">0.89</td><td></td><td><span class="badge text-bg-success-subtle text-success-emphasis">published</span></td></tr>
+            <tr><td><input type="checkbox" checked></td><td>S01E05 — The Grim Barbarity of Optics</td><td>0:04</td><td>1:32</td><td>42:48</td><td class="text-success">0.91</td><td></td><td><span class="badge text-bg-success-subtle text-success-emphasis">published</span></td></tr>
+            <tr><td><input type="checkbox"></td><td>S01E06 — Hide and Seek</td><td>—</td><td>—</td><td>44:55</td><td class="text-danger">0.41</td><td></td><td><span class="badge text-bg-danger-subtle text-danger-emphasis">low conf</span></td></tr>
+            <tr><td><input type="checkbox" checked></td><td>S01E07 — Defiant Jazz</td><td>0:05</td><td>1:34</td><td>45:09</td><td class="text-success">0.88</td><td></td><td><span class="badge text-bg-success-subtle text-success-emphasis">published</span></td></tr>
+            <tr><td><input type="checkbox" checked></td><td>S01E08 — What's for Dinner?</td><td>0:04</td><td>1:33</td><td>43:34</td><td class="text-success">0.93</td><td></td><td><span class="badge text-bg-success-subtle text-success-emphasis">published</span></td></tr>
+            <tr><td><input type="checkbox" checked></td><td>S01E09 — The We We Are</td><td>0:05</td><td>1:34</td><td>52:11</td><td class="text-success">0.95</td><td></td><td><span class="badge text-bg-success-subtle text-success-emphasis">published</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="card-footer py-2 small text-muted">
+        <i class="bi bi-info-circle me-1"></i><strong>Flags:</strong> <i class="bi bi-lock-fill text-warning"></i> Locked (re-detection won't override) · <i class="bi bi-star-fill text-info"></i> Seed (this segment's audio anchors season-wide chromaprint matching)
       </div>
     </div>
-  </div>
-</section>
+  </section>
 
-<!-- BULK GRID -->
-<section class="section" id="bulk">
-  <div class="container">
-    <div class="sec-label"><span class="sec-num">05</span> Bulk editor (Phase D)</div>
-    <h2 class="sec-title">Spreadsheet view — shift 30 episodes at once.</h2>
-    <p class="sec-sub">When the algorithm gets a season's intro off by 5 seconds across every episode, you don't want to fix it 30 times. Select rows, shift by ±N seconds, dry-run the change, then commit.</p>
-
-    <div class="bulk">
-      <div class="bulk-toolbar">
-        <button class="btn ghost" style="padding:5px 10px;">▾ Select 6</button>
-        <button class="btn ghost" style="padding:5px 10px;">Shift intro_end ±N</button>
-        <button class="btn ghost" style="padding:5px 10px;">Lock all</button>
-        <button class="btn ghost" style="padding:5px 10px;">Re-detect</button>
-        <span class="count">Severance — Season 1 · 9 episodes</span>
-        <button class="btn primary" style="padding:6px 12px;">Apply changes</button>
+  <!-- ───────── PIPELINE INTEGRATION ───────── -->
+  <section id="pipeline" class="mockup-section">
+    <header class="page-header">
+      <div>
+        <h2 class="page-title h3"><i class="bi bi-diagram-3 me-2"></i>Pipeline integration</h2>
+        <p class="page-subtitle lead-note">Detection hooks into <code>Worker._process_item</code> after BIF generation — same worker pool, same retry cascade, same SocketIO progress events.</p>
       </div>
-      <table class="bulk-table">
-        <thead>
-          <tr>
-            <th style="width:36px;">☐</th>
-            <th>Episode</th>
-            <th>Intro start</th>
-            <th>Intro end</th>
-            <th>Credits start</th>
-            <th>Conf.</th>
-            <th>Flags</th>
-            <th>Status</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr><td>☑</td><td>S01E01 — Good News About Hell</td><td>0:04</td><td>1:32</td><td>45:18</td><td class="conf-h">0.94</td><td><span class="lock">🔒</span></td><td>✓ published</td></tr>
-          <tr><td>☑</td><td>S01E02 — Half Loop</td><td>0:03</td><td>1:31</td><td>43:02</td><td class="conf-h">0.92</td><td></td><td>✓ published</td></tr>
-          <tr><td>☐</td><td>S01E03 — In Perpetuity</td><td>0:05</td><td>1:34</td><td>46:21</td><td class="conf-m">0.78</td><td><span class="seed">★</span></td><td>pending</td></tr>
-          <tr><td>☑</td><td>S01E04 — The You You Are</td><td>0:05</td><td>1:33</td><td>44:11</td><td class="conf-h">0.89</td><td></td><td>✓ published</td></tr>
-          <tr><td>☑</td><td>S01E05 — The Grim Barbarity of Optics</td><td>0:04</td><td>1:32</td><td>42:48</td><td class="conf-h">0.91</td><td></td><td>✓ published</td></tr>
-          <tr><td>☐</td><td>S01E06 — Hide and Seek</td><td>—</td><td>—</td><td>44:55</td><td class="conf-l">0.41</td><td></td><td>⚠ low conf</td></tr>
-          <tr><td>☑</td><td>S01E07 — Defiant Jazz</td><td>0:05</td><td>1:34</td><td>45:09</td><td class="conf-h">0.88</td><td></td><td>✓ published</td></tr>
-          <tr><td>☑</td><td>S01E08 — What's for Dinner?</td><td>0:04</td><td>1:33</td><td>43:34</td><td class="conf-h">0.93</td><td></td><td>✓ published</td></tr>
-          <tr><td>☑</td><td>S01E09 — The We We Are</td><td>0:05</td><td>1:34</td><td>52:11</td><td class="conf-h">0.95</td><td></td><td>✓ published</td></tr>
-        </tbody>
-      </table>
-    </div>
-  </div>
-</section>
+    </header>
 
-<!-- PIPELINE -->
-<section class="section" id="pipeline">
-  <div class="container">
-    <div class="sec-label"><span class="sec-num">06</span> Pipeline integration</div>
-    <h2 class="sec-title">It fits into the existing BIF pipeline — same worker, new phases.</h2>
-    <p class="sec-sub">Detection hooks into <code>Worker._process_item</code> AFTER the existing BIF generation. Same retry semantics, same cancellation propagation, same SocketIO progress events. The cross-server bridge runs as a separate job.</p>
+    <div class="card mb-3">
+      <div class="card-body">
+        <div class="pipe-flow mb-3">
+          <div class="pipe-node"><span class="tag">existing</span><h6>Scan / Webhook</h6><p class="help">Sonarr · Radarr · manual</p></div>
+          <div class="pipe-node"><span class="tag">existing</span><h6>Frame extract</h6><p class="help">FFmpeg + HDR detect</p></div>
+          <div class="pipe-node"><span class="tag">existing</span><h6>BIF generation</h6><p class="help">Pack tiles + publish</p></div>
+          <div class="pipe-node new"><span class="tag">new · 2a</span><h6>Tier 0 chapters</h6><p class="help">pymediainfo Menu</p></div>
+          <div class="pipe-node new"><span class="tag">new · 2b</span><h6>Tier 1 cloud</h6><p class="help">TheIntroDB · IntroDB · anime-skip</p></div>
+          <div class="pipe-node new"><span class="tag">new · 2c-d</span><h6>Tier 2 chromaprint</h6><p class="help">Pass 1 + pass 2 + blackdetect</p></div>
+          <div class="pipe-node new"><span class="tag">new · 3</span><h6>Publish markers</h6><p class="help">Per-server fan-out</p></div>
+        </div>
 
-    <div class="pipeline">
-      <div class="pipe-flow">
-        <div class="pipe-node existing"><div class="num">existing</div><h5>Scan / Webhook</h5><p>Sonarr · Radarr · manual</p></div>
-        <div class="pipe-node existing"><div class="num">existing</div><h5>Frame extract</h5><p>FFmpeg + HDR detect</p></div>
-        <div class="pipe-node existing"><div class="num">existing</div><h5>BIF generation</h5><p>Pack tiles + publish</p></div>
-        <div class="pipe-node new"><div class="num">new · 2a</div><h5>Tier 0 chapters</h5><p>pymediainfo Menu</p></div>
-        <div class="pipe-node new"><div class="num">new · 2b</div><h5>Tier 1 cloud</h5><p>TheIntroDB · IntroDB · anime-skip</p></div>
-        <div class="pipe-node new"><div class="num">new · 2c-d</div><h5>Tier 2 chromaprint</h5><p>Pass 1 + pass 2 + blackdetect</p></div>
-        <div class="pipe-node new"><div class="num">new · 3</div><h5>Publish markers</h5><p>Per-server fan-out</p></div>
-      </div>
-
-      <div class="pipe-legend">
-        <span><span class="ch" style="border-color:rgba(166,166,159,.4);"></span>Reuses existing pipeline · BIF, FFmpeg, worker pool, SocketIO</span>
-        <span><span class="ch" style="border-color:var(--intro); background:rgba(94,234,212,.06)"></span>New phases · share frame cache + retry cascade</span>
+        <div class="d-flex gap-3 flex-wrap small text-secondary pt-2 border-top">
+          <span><span class="badge text-bg-secondary-subtle text-secondary-emphasis">existing</span> reuses BIF, FFmpeg, worker pool, SocketIO, retry cascade</span>
+          <span><span class="badge text-bg-success-subtle text-success-emphasis">new</span> shares frame cache + retry queue with BIF generation</span>
+        </div>
       </div>
     </div>
-  </div>
-</section>
 
-<!-- EDGE CASES -->
-<section class="section">
-  <div class="container">
-    <div class="sec-label"><span class="sec-num">07</span> Edge cases</div>
-    <h2 class="sec-title">Be honest when there's no signal.</h2>
-    <p class="sec-sub">Some content has no recurring theme (reality TV), unique cold opens per episode (mini-series), or no peer to compare against (single-season prestige). The Inspector tells the user clearly, rather than synthesising a low-confidence guess.</p>
-
-    <div class="edge-grid">
-      <div class="edge">
-        <div class="edge-icon reject">✕</div>
-        <h4>REJECT — Reality TV</h4>
-        <p>Survivor / Real Housewives / MAFS — no recurring intro audio. We don't try. Inspector shows "no markers detected" with a category-specific explanation.</p>
-      </div>
-      <div class="edge">
-        <div class="edge-icon partial">~</div>
-        <h4>Partial — Mini-series</h4>
-        <p>Chernobyl / Watchmen — chromaprint fails (unique cold opens) but TheIntroDB has data 60% of the time. Surface Tier 1 hit with confidence.</p>
-      </div>
-      <div class="edge">
-        <div class="edge-icon locked">🔒</div>
-        <h4>Locked — manual edit</h4>
-        <p>You nudged S01E03's intro end. Re-detection runs anyway, but produces a parallel candidate. Inspector shows the diff; you choose.</p>
-      </div>
-      <div class="edge">
-        <div class="edge-icon bridge">⇄</div>
-        <h4>Bridge — Plex → Jellyfin</h4>
-        <p>Plex Pass user wants Jellyfin to skip too. Read Plex's markers via plexapi, push to Jellyfin via our plugin. One click. No re-detection.</p>
-      </div>
-      <div class="edge">
-        <div class="edge-icon partial">⚠</div>
-        <h4>Rate limit — TheIntroDB</h4>
-        <p>500 lookups/day burned. We don't block detection — fall back to Tier 2/3 chromaprint immediately. Inspector tells you when quota resets.</p>
-      </div>
-      <div class="edge">
-        <div class="edge-icon reject">×</div>
-        <h4>Plugin missing — Jellyfin</h4>
-        <p>Read-only mode. The Inspector still shows everything we detected; "Apply" button replaced by "Install MediaPreviewBridge" with paste-ready manifest URL.</p>
+    <!-- Integration-gap callout, mirrors the app's info banner pattern -->
+    <div class="alert alert-warning d-flex align-items-start gap-2">
+      <i class="bi bi-exclamation-triangle-fill flex-shrink-0 fs-5 mt-1"></i>
+      <div>
+        <strong>Integration gaps that need explicit design before Phase B/C:</strong>
+        <ul class="mb-0 mt-1 small">
+          <li>Frame cache reuse — can Tier 3 blackdetect use BIF's already-extracted frames?</li>
+          <li>GPU pool sharing — detection has <code>max_concurrent_detections</code>; how does it negotiate with BIF workers?</li>
+          <li>SocketIO progress events — BIF emits per-frame; what does detection emit?</li>
+          <li>Setup wizard — markers not yet in <code>setup.html</code> onboarding flow</li>
+          <li>Scheduler — no marker-backfill task in APScheduler yet</li>
+        </ul>
       </div>
     </div>
-  </div>
-</section>
+  </section>
 
-<footer class="container">
-  <span>Mockup · /docs/design/inspector-mockup.html · PR #241 · 2026-05-17</span>
-  <span>
-    <a href="https://github.com/stevezau/media_preview_generator/pull/241">PR #241 →</a>
-  </span>
-</footer>
+  <!-- ───────── EDGE CASES ───────── -->
+  <section id="edges" class="mockup-section">
+    <header class="page-header">
+      <div>
+        <h2 class="page-title h3"><i class="bi bi-shield-exclamation me-2"></i>Edge cases</h2>
+        <p class="page-subtitle lead-note">Be honest when there's no signal. Reality TV and mini-series with unique cold opens get a REJECT verdict — not a wrong marker.</p>
+      </div>
+    </header>
 
+    <div class="row g-3">
+      <div class="col-md-6 col-lg-4">
+        <div class="card h-100">
+          <div class="card-body">
+            <span class="badge text-bg-danger-subtle text-danger-emphasis mb-2"><i class="bi bi-x-circle me-1"></i>REJECT</span>
+            <h6>Reality TV</h6>
+            <p class="text-secondary small mb-0">Survivor / Real Housewives / MAFS — no recurring intro audio. We don't try. Inspector shows "no markers detected" with a category-specific explanation.</p>
+          </div>
+        </div>
+      </div>
+      <div class="col-md-6 col-lg-4">
+        <div class="card h-100">
+          <div class="card-body">
+            <span class="badge text-bg-warning-subtle text-warning-emphasis mb-2"><i class="bi bi-exclamation-circle me-1"></i>PARTIAL</span>
+            <h6>Mini-series</h6>
+            <p class="text-secondary small mb-0">Chernobyl / Watchmen — chromaprint fails (unique cold opens) but TheIntroDB has data 60% of the time. Surface Tier 1 hit with confidence.</p>
+          </div>
+        </div>
+      </div>
+      <div class="col-md-6 col-lg-4">
+        <div class="card h-100">
+          <div class="card-body">
+            <span class="badge text-bg-info-subtle text-info-emphasis mb-2"><i class="bi bi-lock me-1"></i>LOCKED</span>
+            <h6>Manual edit</h6>
+            <p class="text-secondary small mb-0">You nudged S01E03's intro end. Re-detection runs anyway, but produces a parallel candidate. Inspector shows the diff; you choose.</p>
+          </div>
+        </div>
+      </div>
+      <div class="col-md-6 col-lg-4">
+        <div class="card h-100">
+          <div class="card-body">
+            <span class="badge text-bg-primary-subtle text-primary-emphasis mb-2"><i class="bi bi-arrow-left-right me-1"></i>BRIDGE</span>
+            <h6>Plex → Jellyfin</h6>
+            <p class="text-secondary small mb-0">Plex Pass user wants Jellyfin to skip too. Read Plex's markers via plexapi, push to Jellyfin via our plugin. One click. No re-detection.</p>
+          </div>
+        </div>
+      </div>
+      <div class="col-md-6 col-lg-4">
+        <div class="card h-100">
+          <div class="card-body">
+            <span class="badge text-bg-warning-subtle text-warning-emphasis mb-2"><i class="bi bi-speedometer2 me-1"></i>RATE LIMIT</span>
+            <h6>TheIntroDB 429</h6>
+            <p class="text-secondary small mb-0">500 lookups/day burned. We don't block — fall back to Tier 2/3 chromaprint immediately. Inspector shows when quota resets.</p>
+          </div>
+        </div>
+      </div>
+      <div class="col-md-6 col-lg-4">
+        <div class="card h-100">
+          <div class="card-body">
+            <span class="badge text-bg-secondary-subtle text-secondary-emphasis mb-2"><i class="bi bi-puzzle me-1"></i>PLUGIN MISSING</span>
+            <h6>Jellyfin no MediaPreviewBridge</h6>
+            <p class="text-secondary small mb-0">Read-only mode. Inspector still shows everything we detected; "Apply" replaced by "Install plugin" with paste-ready manifest URL.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <footer class="text-center text-muted small py-4 mt-5 border-top">
+    Mockup — <code>docs/design/inspector-mockup.html</code> — PR #241 — 2026-05-17 ·
+    <a href="https://github.com/stevezau/media_preview_generator/pull/241" class="text-muted">PR #241 →</a>
+  </footer>
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 <script>
-  // generate a fake waveform (peaks bunched around intro + credits, dialogue mid)
+  // generate faux waveform — bunched energy at intro + credits, dialogue mid
   (function() {
     const svg = document.getElementById('waveform');
     if (!svg) return;
@@ -1303,15 +935,10 @@
     const peaks = [];
     for (let i = 0; i < BARS; i++) {
       const p = i / BARS;
-      // base
       let h = 0.08 + Math.random() * 0.18;
-      // intro peak around 0.06
       if (p > 0.005 && p < 0.06) h += Math.sin((p - 0.005) / 0.055 * Math.PI) * 0.55;
-      // dialogue regions (variable)
       if (p > 0.07 && p < 0.85) h += Math.random() * 0.30 + 0.1 * Math.sin(p * 60);
-      // quiet pre-credits
       if (p > 0.85 && p < 0.92) h *= 0.4;
-      // credits theme around 0.95
       if (p > 0.92 && p < 0.99) h += Math.sin((p - 0.92) / 0.07 * Math.PI) * 0.65;
       peaks.push(Math.min(h, 1));
     }
@@ -1321,39 +948,21 @@
       const h = peaks[i] * H * 0.92;
       const y = (H - h) / 2;
       const x = i * bw + bw * 0.15;
-      // color by region
       const p = i / BARS;
       let col = 'rgba(166,166,159,.45)';
       if (p > 0.005 && p < 0.06) col = 'rgba(94,234,212,.85)';
       else if (p > 0.92 && p < 0.99) col = 'rgba(245,158,11,.85)';
-      svgStr += `<rect x="${x}" y="${y}" width="${bw * 0.7}" height="${h}" fill="${col}" rx="1" />`;
+      svgStr += `<rect x="${x}" y="${y}" width="${bw * 0.7}" height="${h}" fill="${col}" rx="1"/>`;
     }
     svg.innerHTML = svgStr;
   })();
 
-  // server card selection
-  document.querySelectorAll('.ss-card').forEach(card => {
-    card.addEventListener('click', () => {
-      document.querySelectorAll('.ss-card').forEach(c => c.classList.remove('is-selected'));
-      card.classList.add('is-selected');
-    });
+  // theme toggle — mirrors base.html behavior
+  document.getElementById('themeToggle').addEventListener('click', () => {
+    const html = document.documentElement;
+    const cur = html.getAttribute('data-bs-theme');
+    html.setAttribute('data-bs-theme', cur === 'dark' ? 'light' : 'dark');
   });
-
-  // nav active state on scroll
-  const sections = document.querySelectorAll('section[id]');
-  const links = document.querySelectorAll('.nav-links a');
-  function setActive() {
-    let cur = '';
-    sections.forEach(s => {
-      const top = s.getBoundingClientRect().top;
-      if (top < 120) cur = s.id;
-    });
-    links.forEach(a => {
-      a.classList.toggle('active', a.getAttribute('href') === '#' + cur);
-    });
-  }
-  window.addEventListener('scroll', setActive);
-  setActive();
 </script>
 
 </body>
