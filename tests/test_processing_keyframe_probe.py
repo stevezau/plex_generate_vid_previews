@@ -427,7 +427,13 @@ def test_integration_probe_unsafe_disables_skip_frame(
     warns = [r for r in loguru_caplog.records if r.levelname == "WARNING" and "Slow path" in r.message]
     assert len(warns) == 1, f"Expected one Slow-path WARN, got {len(warns)}"
     assert "snapshot frame every" in warns[0].message
-    assert "10s" in warns[0].message  # the actual gap value, not the interval
+    # The measured gap appears in the message at one-decimal precision
+    # (formatted with ``~{:.1f}s``).  Synthetic data was 0.0 → 10.0.
+    assert "~10.0s" in warns[0].message
+    # Interval is rendered as a plain integer in the message.
+    assert "every 2s" in warns[0].message
+    # No prescriptive "set to 10s" hint — softer copy keeps it informational.
+    assert "Tip:" not in warns[0].message
     # Validator never consulted — we already knew the file was unsafe.
     mock_has_dupes.assert_not_called()
 

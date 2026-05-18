@@ -1111,10 +1111,8 @@ def generate_images(
         elif max_gap > interval:
             logger.warning(
                 "Slow path for '{}': this video stores a fresh snapshot frame every ~{:.1f}s, "
-                "but you've set thumbnails every {}s. Reusing snapshots would give you duplicate "
-                "thumbnails, so we'll fully decode the video to make each one unique — correct, "
-                "but slower for this file. Tip: set Settings → Thumbnail Interval to 10s to keep "
-                "files like this on the fast path.",
+                "while you've asked for thumbnails every {}s. We'll fully decode the video to "
+                "make each thumbnail unique — correct, but slower for this file.",
                 os.path.basename(video_file),
                 max_gap,
                 interval,

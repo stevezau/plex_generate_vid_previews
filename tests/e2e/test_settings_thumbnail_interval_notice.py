@@ -91,15 +91,25 @@ class TestThumbnailIntervalNotice:
         expect(page.locator("#thumbnailIntervalNoticeValue")).to_have_text("3")
 
     def test_notice_explains_in_plain_language(self, authed_page: Page, app_url: str) -> None:
-        """Sanity check on the user-facing copy — no FFmpeg jargon must leak."""
+        """Sanity check on the user-facing copy — no FFmpeg jargon must leak.
+
+        Tone is informational, not prescriptive: a lower interval is a valid
+        user choice (finer scrubbing in the player).  The notice must not
+        push the user toward 10s.
+        """
         page = _settings_page(authed_page, app_url, interval=2)
         notice = page.locator("#thumbnailIntervalSlowPathNotice")
         text = notice.inner_text()
+        text_lc = text.lower()
         # Plain-English signals we explicitly want present.
-        assert "snapshot" in text.lower()
-        assert "fast" in text.lower() and "slow" in text.lower()
-        assert "10 seconds" in text
+        assert "snapshot" in text_lc
+        assert "fast" in text_lc and "slow" in text_lc
+        # Reassurance phrasing that lower intervals are a fine choice.
+        assert "both choices are fine" in text_lc or "tradeoff" in text_lc
         # Jargon that must NOT appear in this user-facing copy.
         forbidden = ["keyframe", "GOP", "skip_frame", "fps filter", "BIF", "Plex"]
         for term in forbidden:
             assert term not in text, f"User-facing notice should not mention '{term}'"
+        # Prescriptive phrasings we explicitly removed in the softer rewrite.
+        for term in ["Set this to 10", "set it to 10", "Want everything fast"]:
+            assert term not in text, f"Notice must not push the user toward 10s — found '{term}'"

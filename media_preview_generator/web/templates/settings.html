@@ -199,7 +199,7 @@
                     <div class="col-md-6 mb-3">
                         <label for="thumbnailInterval" class="form-label">
                             Thumbnail Interval
-                            <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Seconds between thumbnails. 10 seconds (default) keeps every video on the fast path — we reuse snapshot frames already in the video. Lower numbers (5, 2) give finer scrubbing, but on videos whose snapshots are spaced wider apart than your interval, we have to fully decode the video to generate unique thumbnails — much slower per file. We check each file at the start and pick the right path automatically."><i class="bi bi-info-circle"></i></button>
+                            <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Seconds between thumbnails. Lower numbers give finer scrubbing in your player. Videos already contain 'snapshot' frames stored at intervals — when those are closer together than your interval, we reuse them (fast). When they're further apart, we fully decode the video to produce unique thumbnails (correct, but slower for that file). We check each file automatically and pick the right path."><i class="bi bi-info-circle"></i></button>
                         </label>
                         <div class="input-group">
                             <input type="number" class="form-control has-stepper" id="thumbnailInterval"
@@ -209,27 +209,31 @@
                         <!-- Issue #238 — surfaces the slow-path tradeoff when the user picks
                              an interval below the 10s default. Visibility is toggled by the
                              input-change handler in the DOMContentLoaded block below; default
-                             value=10 means the notice ships hidden. -->
-                        <div class="alert alert-warning py-2 mt-2 small d-none" id="thumbnailIntervalSlowPathNotice">
+                             value=10 means the notice ships hidden. Tone is informational —
+                             a lower interval is a valid choice, we just want the user to know
+                             what happens on certain files. -->
+                        <div class="alert alert-info py-2 mt-2 small d-none" id="thumbnailIntervalSlowPathNotice">
                             <div class="d-flex">
-                                <i class="bi bi-exclamation-triangle-fill me-2 mt-1"></i>
+                                <i class="bi bi-info-circle-fill me-2 mt-1"></i>
                                 <div>
-                                    <strong>Heads up: at <span id="thumbnailIntervalNoticeValue">10</span> seconds, some videos will take much longer.</strong>
+                                    <strong>Heads up: at <span id="thumbnailIntervalNoticeValue">10</span> seconds, some files may take longer to process.</strong>
                                     <p class="mb-1 mt-1">
                                         Videos already contain "snapshot" frames — complete pictures stored at intervals.
-                                        When the gap between snapshots is <strong>smaller than your interval</strong> we just
-                                        reuse them — fast. When the gap is <strong>larger than your interval</strong>, we'd
-                                        end up filling slots with the same picture over and over, so we fully decode the
-                                        video and generate a unique frame for each slot — correct, but often 10–25× slower
-                                        per file.
+                                        When those snapshots are <strong>closer together than your interval</strong>, we
+                                        just reuse them — fast. When they're <strong>spaced further apart than your
+                                        interval</strong>, we fully decode the video to generate a unique frame for each
+                                        slot — correct, but slower for that file.
                                     </p>
                                     <p class="mb-1">
-                                        We check every file at the start of processing and pick the right path automatically.
-                                        <strong>TV episodes and Blu-ray rips</strong> usually have snapshots every 1–2 seconds
-                                        and stay fast. <strong>Streaming downloads</strong> (web releases) often have 4–9 second
-                                        gaps and go to the slow path.
+                                        We check every file automatically and pick the right path. The slower path
+                                        mainly hits <strong>streaming downloads</strong> (web releases), which often
+                                        have 4–9 second gaps between snapshots. <strong>TV episodes and Blu-ray rips</strong>
+                                        usually have snapshots every 1–2 seconds and stay fast at any interval.
                                     </p>
-                                    <p class="mb-0">Want everything fast? Set this to <strong>10 seconds</strong>.</p>
+                                    <p class="mb-0">
+                                        Shorter intervals give finer scrubbing in your player — the tradeoff is
+                                        that some files take longer to process. Both choices are fine.
+                                    </p>
                                 </div>
                             </div>
                         </div>
