@@ -13,6 +13,7 @@ import os
 import re
 import uuid
 from typing import Any
+from urllib.parse import urlparse
 
 from flask import jsonify, request
 from loguru import logger
@@ -321,6 +322,19 @@ def _validate_server_payload(
     url = str(data.get("url") or base.get("url") or "").strip()
     if not url:
         return None, "url is required"
+    # Issue #247 follow-up: a bare hostname like ``EmbyTest4`` (or
+    # ``localhost:8096`` — urlparse reads ``localhost`` as the scheme)
+    # used to slip through and surface the raw ``requests`` error
+    # "Invalid URL '<host>/System/Info': No scheme supplied" deep in
+    # the Emby/Jellyfin probe. ``api_plex.py``'s legacy endpoint catches
+    # this for Plex; doing it here covers create/update/test-connection
+    # for every vendor uniformly.
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return None, (
+            f"Invalid URL {url!r}. Include the scheme and host, "
+            "e.g. http://emby:8096 or https://plex.example.com:32400."
+        )
 
     auth_in = data.get("auth")
     if is_update and auth_in is not None:
