@@ -523,8 +523,10 @@
         $('#step-result-save').addEventListener('click', saveServer);
         $('#quickConnectStart').addEventListener('click', startQuickConnect);
         $('#plexOAuthStart').addEventListener('click', startPlexOAuth);
-        const addSelected = $('#plexAddSelected');
-        if (addSelected) addSelected.addEventListener('click', addSelectedPlexServers);
+        // Batch-add was removed (silently mis-pinned config folder on the
+        // second server, and forced multi-Plex installs to re-edit every
+        // server anyway). One sign-in adds one server; the user signs in
+        // again from the next "Add Server" click.
 
         // Browse button for the Add Server modal's Plex config folder
         // field. The Edit modal already has its own wiring at the bottom
@@ -626,13 +628,20 @@
             $('#plexDiscoveredList').classList.remove('d-none');
             return;
         }
+        // Radio (not checkbox) — adding more than one Plex server in a
+        // single sign-in always required post-add per-server config
+        // (config folder, path mappings) anyway, and the old multi-pick
+        // path silently cleared the URL field on the second tick which
+        // confused every user who saw it. One pick at a time matches
+        // the linear flow: pick → Test connection → Save → (sign in
+        // again to add another).
         list.innerHTML = servers.map((s, idx) => {
             const ownedBadge = s.owned ? '<span class="badge bg-success">owned</span>' : '<span class="badge bg-secondary">shared</span>';
             const localBadge = s.local ? '<span class="badge bg-info ms-1">local</span>' : '';
             const sslBadge = s.ssl ? '<span class="badge bg-secondary ms-1">https</span>' : '';
             return `
                 <label class="list-group-item d-flex align-items-start gap-2">
-                    <input type="checkbox" class="form-check-input mt-1 plex-server-pick"
+                    <input type="radio" name="plexDiscoveredPick" class="form-check-input mt-1 plex-server-pick"
                            data-idx="${idx}"
                            data-uri="${escapeHtml(s.uri || '')}"
                            data-name="${escapeHtml(s.name || '')}"
@@ -650,93 +659,23 @@
 
         $$('.plex-server-pick').forEach((el) => {
             el.addEventListener('change', () => {
-                const checked = $$('.plex-server-pick:checked');
-                const count = checked.length;
-                $('#plexSelectedCount').textContent = String(count);
-                $('#plexAddSelected').classList.toggle('d-none', count < 1);
-
-                // Single-pick convenience: when exactly one is ticked,
-                // populate the wizard fields so the user can hit "Test
-                // connection" and customise. Multi-pick clears them
-                // (the batch path doesn't need them).
-                if (count === 1) {
-                    const one = checked[0];
-                    $('#serverUrl').value = one.dataset.uri;
-                    if (!$('#serverName').value) $('#serverName').value = one.dataset.name;
-                } else {
-                    $('#serverUrl').value = '';
+                if (!el.checked) return;  // radio "change" fires for the newly-selected one only
+                // Always auto-fill: the user picked this server, the
+                // form below is now the per-server config page (URL,
+                // name pre-filled; config folder + path mappings stay
+                // user-controlled). Force-overwrite serverUrl so a
+                // stale value from a previous pick doesn't linger.
+                $('#serverUrl').value = el.dataset.uri || '';
+                if (!$('#serverName').value) $('#serverName').value = el.dataset.name || '';
+                // Surface the test-connection CTA visually: scroll it
+                // into view so a user on a tall list doesn't have to
+                // hunt for "what's next?" after picking.
+                const testBtn = document.getElementById('step-connect-test');
+                if (testBtn && testBtn.scrollIntoView) {
+                    testBtn.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
                 }
             });
         });
-    }
-
-    /**
-     * Batch-add every ticked Plex server in one go. Each becomes its
-     * own ``media_servers`` entry with the same Plex token + the
-     * machine_id pulled from /api/v2/resources as ``server_identity``.
-     * Avoids the connection-test step (already trusted: user just
-     * proved control of the plex.tv account).
-     */
-    async function addSelectedPlexServers() {
-        const checked = Array.from($$('.plex-server-pick:checked'));
-        if (checked.length === 0) return;
-        const plexConfigFolder = $('#plexConfigFolder').value.trim() || '/config/plex';
-        const btn = $('#plexAddSelected');
-        const orig = btn.innerHTML;
-        btn.disabled = true;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Adding…';
-
-        const results = [];
-        for (const el of checked) {
-            const idx = parseInt(el.dataset.idx, 10);
-            const server = plexDiscoveredCache[idx] || {};
-            const payload = {
-                type: 'plex',
-                name: server.name || el.dataset.name || 'Plex',
-                enabled: true,
-                url: server.uri || el.dataset.uri,
-                auth: { method: 'token', token: wizard.plexToken },
-                server_identity: server.machine_id || el.dataset.machineId || null,
-                libraries: [],
-                path_mappings: [],
-                output: {
-                    adapter: 'plex_bundle',
-                    plex_config_folder: plexConfigFolder,
-                    frame_interval: 10,
-                },
-            };
-            const r = await api('POST', '/api/servers', payload);
-            results.push({ name: payload.name, ok: r.ok, message: r.data && r.data.error });
-        }
-
-        btn.disabled = false;
-        btn.innerHTML = orig;
-
-        const failed = results.filter((r) => !r.ok);
-        if (failed.length === 0) {
-            // All saved — close modal + reload list (and notify any
-            // listening page so the setup wizard can advance).
-            const modalEl = document.getElementById('addServerModal');
-            if (modalEl && window.bootstrap) {
-                const inst = window.bootstrap.Modal.getInstance(modalEl);
-                if (inst) inst.hide();
-            }
-            document.dispatchEvent(new CustomEvent('mediaServerAdded', {
-                detail: { count: results.length, type: 'plex' },
-            }));
-            if (typeof loadServers === 'function' && document.getElementById('serverList')) {
-                loadServers();
-            }
-        } else {
-            showToast(
-                `Saved ${results.length - failed.length}/${results.length}`,
-                failed.map((f) => `${f.name}: ${f.message || 'unknown error'}`).join('; '),
-                'warning',
-            );
-            if (typeof loadServers === 'function' && document.getElementById('serverList')) {
-                loadServers();
-            }
-        }
     }
 
     function configureAuthForType(type) {
