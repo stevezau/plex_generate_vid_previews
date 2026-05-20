@@ -91,10 +91,21 @@ def _infer_server_from_library_id(library_id: str) -> tuple[str | None, str | No
     """Find the configured media server that owns ``library_id``.
 
     Returns (server_id, server_name, server_type) or (None, None, None)
-    when the id matches no configured library. Used by the manual job
-    creation path to attribute single-library jobs to their server even
-    when the caller didn't pass server_id (D2 — older /Start New Job
-    submissions and any external API caller that sends only library_ids).
+    when the id matches no configured library OR when two or more
+    enabled servers share the same library id (Plex assigns library
+    ids sequentially per-server starting at "1", so multi-Plex installs
+    almost always have id collisions — silently picking the first
+    match was the cause of issue #244's wrong-server scans).
+
+    Used by the manual job creation path to attribute single-library
+    jobs to their server even when the caller didn't pass server_id
+    (D2 — older /Start New Job submissions and any external API caller
+    that sends only library_ids). Modern UI sends ``server_id``
+    explicitly; the inference is a fallback for un-updated clients and
+    must refuse rather than guess when it can't disambiguate.
+
+    Disabled servers don't compete for the id — they're off-air and
+    can't satisfy a job either way.
     """
     if not library_id:
         return None, None, None
@@ -107,17 +118,25 @@ def _infer_server_from_library_id(library_id: str) -> tuple[str | None, str | No
         return None, None, None
     if not isinstance(raw, list):
         return None, None, None
+    matches: list[dict] = []
     for entry in raw:
-        if not isinstance(entry, dict):
+        if not isinstance(entry, dict) or not entry.get("enabled", True):
             continue
         for lib in entry.get("libraries") or []:
             if isinstance(lib, dict) and str(lib.get("id") or "") == needle:
-                return (
-                    entry.get("id"),
-                    entry.get("name") or entry.get("id"),
-                    (entry.get("type") or "").lower() or None,
-                )
-    return None, None, None
+                matches.append(entry)
+                break  # one library match per server is enough
+    if len(matches) != 1:
+        # Zero matches → unknown id. Multiple → ambiguous (multi-Plex
+        # id collision); refuse to guess so the caller / UI is forced
+        # to pass server_id explicitly.
+        return None, None, None
+    entry = matches[0]
+    return (
+        entry.get("id"),
+        entry.get("name") or entry.get("id"),
+        (entry.get("type") or "").lower() or None,
+    )
 
 
 def _infer_server_from_library_ids(

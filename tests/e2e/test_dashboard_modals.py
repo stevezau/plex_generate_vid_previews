@@ -126,11 +126,135 @@ class TestNewJobModalNonPlex:
     and POST to /api/jobs *without* the Plex-only validation gate that used
     to silently zero-output the request."""
 
+    def test_multi_plex_pin_to_second_server_sends_correct_server_id(self, authed_page: Page, app_url: str) -> None:
+        """Issue #244 reproducer: two Plex servers, both have a library
+        id="1" (Plex assigns ids per-server starting at 1). User picks
+        the SECOND Plex's library. The submit MUST carry
+        ``server_id="plex-calypso"`` — the id of the originating server,
+        NOT ``"plex-kraken"`` which the library-id inference would
+        wrongly pick first."""
+        mock_dashboard_defaults(authed_page)
+        servers = [
+            {
+                "id": "plex-kraken",
+                "name": "Plex - Kraken",
+                "type": "plex",
+                "enabled": True,
+                "url": "http://kraken:32400",
+            },
+            {
+                "id": "plex-calypso",
+                "name": "Plex - Calypso - 4k",
+                "type": "plex",
+                "enabled": True,
+                "url": "http://calypso:32400",
+            },
+        ]
+        mock_media_servers_status(authed_page, servers=servers)
+        mock_servers_list(authed_page, servers=servers)
+        # Both servers expose a library with id="1" — the collision is
+        # the whole point of this regression.
+        authed_page.route(
+            "**/api/libraries**",
+            lambda r: _fulfill_json(
+                r,
+                {
+                    "libraries": [
+                        {
+                            "id": "1",
+                            "name": "movies",
+                            "type": "movie",
+                            "server_id": "plex-kraken",
+                            "server_name": "Plex - Kraken",
+                            "server_type": "plex",
+                        },
+                        {
+                            "id": "1",
+                            "name": "4k Movies",
+                            "type": "movie",
+                            "server_id": "plex-calypso",
+                            "server_name": "Plex - Calypso - 4k",
+                            "server_type": "plex",
+                        },
+                    ],
+                },
+            ),
+        )
+        authed_page.goto(f"{app_url}/")
+        authed_page.wait_for_load_state("domcontentloaded")
+
+        captured: list[dict] = []
+
+        def handler(route: Route) -> None:
+            if route.request.method == "POST":
+                try:
+                    captured.append(route.request.post_data_json or {})
+                except Exception:
+                    captured.append({})
+                _fulfill_json(route, {"id": "job-1", "status": "queued"})
+            else:
+                route.continue_()
+
+        authed_page.route("**/api/jobs", handler)
+
+        authed_page.locator('button:has-text("Start New Job")').click()
+        expect(authed_page.locator("#newJobForm")).to_be_visible(timeout=2000)
+        authed_page.wait_for_timeout(400)
+
+        # Precondition: the rendered DOM must actually contain the
+        # second-Plex checkbox we're about to click. Without this guard
+        # a future renderer change that drops one of the per-server
+        # groups would leave the JS evaluate's ``cb.checked = true``
+        # as a no-op on a null reference and the assertion below would
+        # pass trivially (form submits with no library_ids, backend
+        # returns 400, ``captured`` stays empty — the test's other
+        # asserts would never run). Same defensive shape as
+        # tests/e2e/test_wizard_step2_libraries.py's locator-visible
+        # gates before any DOM-state-mutating script.
+        expect(authed_page.locator('input[data-server-id="plex-calypso"][value="1"]')).to_be_visible(timeout=1500)
+
+        # Pick the SECOND Plex's "4k Movies" library specifically — the
+        # checkbox carries ``data-server-id="plex-calypso"``. Pre-fix the
+        # UI ignored that attribute and the backend inference picked
+        # Kraken's "movies" (same id="1") instead.
+        authed_page.evaluate(
+            "(async () => {"
+            "  const all = document.getElementById('jobLibraryAll');"
+            "  all.checked = false;"
+            "  if (typeof toggleAllLibraries === 'function') toggleAllLibraries(all);"
+            "  const cb = document.querySelector('input[data-server-id=\"plex-calypso\"]');"
+            "  if (cb) { cb.checked = true; cb.dispatchEvent(new Event('change')); }"
+            "  if (typeof startNewJob === 'function') { try { await startNewJob(); } catch(_){} }"
+            "})()"
+        )
+        authed_page.wait_for_timeout(800)
+
+        assert captured, "POST /api/jobs never fired"
+        body = captured[0]
+        # The bug-blind anti-pattern: only asserting library_ids was
+        # exactly how D34 hid; the regression here is in WHICH server
+        # gets the pin, not whether the request fires.
+        assert body.get("library_ids") == ["1"], body
+        assert body.get("server_id") == "plex-calypso", (
+            f"#244 regression: UI must send server_id='plex-calypso' for a tick on the "
+            f"second Plex's library, NOT fall back to the inference that picks Kraken. "
+            f"Got body={body!r}"
+        )
+
     def test_jellyfin_full_scan_posts_to_jobs_endpoint(self, jellyfin_dashboard_page: Page) -> None:
-        """Post-dropdown-removal contract: ticking a Jellyfin-only library
-        must submit library_ids with the Jellyfin ids. The server pin is
-        inferred server-side by api_jobs._infer_server_from_library_ids,
-        so the client no longer sends server_id directly."""
+        """Ticking a Jellyfin-only library must submit ``library_ids``
+        with the Jellyfin ids AND ``server_id`` set to the owning Jellyfin.
+
+        Behaviour change after issue #244: pre-fix the client deliberately
+        omitted ``server_id`` and let the backend infer it from
+        ``library_ids``. The inference picks the first ``media_servers[]``
+        entry whose ``libraries[]`` contains a matching id, which is
+        wrong on multi-Plex installs (Plex assigns library ids per-server
+        starting at "1", so the same id usually exists on both Plex
+        servers). The fix: the UI knows which server each library tick
+        belongs to (data-server-id attribute) and sends it explicitly
+        when every tick resolves to one server.
+        """
         captured: list[dict] = []
 
         def handler(route: Route) -> None:
@@ -149,9 +273,6 @@ class TestNewJobModalNonPlex:
         expect(jellyfin_dashboard_page.locator("#newJobForm")).to_be_visible(timeout=2000)
         jellyfin_dashboard_page.wait_for_timeout(400)
 
-        # Un-tick "All Libraries" and tick the single Jellyfin library so
-        # the submit carries library_ids=["lib-1"]. Server-side inference
-        # resolves that to server_id=jf-1 at the API layer.
         jellyfin_dashboard_page.evaluate(
             "(async () => {"
             "  const all = document.getElementById('jobLibraryAll');"
@@ -167,11 +288,10 @@ class TestNewJobModalNonPlex:
         assert captured, "POST /api/jobs never fired for the Jellyfin full-scan request"
         body = captured[0]
         assert body.get("library_ids") == ["lib-1"], body
-        # The client no longer sends server_id — the pin is inferred
-        # server-side from library_ids. Pin the contract so we catch a
-        # regression that accidentally re-adds the dropdown.
-        assert "server_id" not in body, (
-            f"server_id must not be sent by the client; it's inferred server-side. Body: {body}"
+        # Single-server selection MUST carry server_id so the backend
+        # doesn't fall back to library-id inference (the cause of #244).
+        assert body.get("server_id") == "jf-1", (
+            f"server_id must be sent when every ticked library belongs to one server. Body: {body}"
         )
 
 
