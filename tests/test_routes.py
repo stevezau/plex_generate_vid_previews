@@ -4061,6 +4061,64 @@ class TestLibrariesAPI:
         token_seen = any(kwargs.get("headers", {}).get("X-Plex-Token") == "test-token" for _, kwargs in captured)
         assert token_seen, f"_fetch_libraries_via_http didn't pass X-Plex-Token; calls: {captured!r}"
 
+    def test_get_libraries_filters_out_disabled_libraries(self, client):
+        """/api/libraries must hide libraries the user has disabled in
+        Settings → Servers → Edit. Pre-fix the endpoint returned every
+        library the live Plex API surfaced, so disabled ones showed up
+        as tickable rows in the Start New Job picker. Ticking one then
+        running the job silently produced "No libraries to scan"
+        because the downstream enumerator (_shared.py:94) filters on
+        ``lib.enabled``. The user expected disabled = hidden everywhere.
+        """
+        from media_preview_generator.servers.base import Library
+        from media_preview_generator.web.settings_manager import get_settings_manager
+
+        sm = get_settings_manager()
+        sm.set(
+            "media_servers",
+            [
+                {
+                    "id": "plex-test",
+                    "type": "plex",
+                    "name": "Test Plex",
+                    "enabled": True,
+                    "url": "http://plex:32400",
+                    "auth": {"token": "tok"},
+                    "libraries": [
+                        {"id": "1", "name": "Movies", "enabled": True, "kind": "movie"},
+                        {"id": "2", "name": "TV", "enabled": False, "kind": "episode"},
+                        {"id": "3", "name": "Audiobooks", "enabled": False, "kind": "track"},
+                    ],
+                }
+            ],
+        )
+
+        fake_server = MagicMock()
+        fake_server.list_libraries.return_value = [
+            Library(id="1", name="Movies", enabled=True, kind="movie", remote_paths=()),
+            Library(id="2", name="TV", enabled=False, kind="episode", remote_paths=()),
+            Library(id="3", name="Audiobooks", enabled=False, kind="track", remote_paths=()),
+        ]
+        fake_registry = MagicMock()
+        fake_registry.get.return_value = fake_server
+
+        with patch(
+            "media_preview_generator.servers.ServerRegistry.from_settings",
+            return_value=fake_registry,
+        ):
+            resp = client.get("/api/libraries", headers=_api_headers())
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        ids = [lib["id"] for lib in data["libraries"]]
+        # Bug-blind guard: assert the disabled libraries are absent by id,
+        # not just check the count — a future regression that swaps order
+        # or renames libraries silently would pass a length check but
+        # land disabled rows in the picker.
+        assert "1" in ids, f"enabled library 'Movies' (id=1) must be in response; got {ids!r}"
+        assert "2" not in ids, f"disabled library 'TV' (id=2) must be filtered; got {ids!r}"
+        assert "3" not in ids, f"disabled library 'Audiobooks' (id=3) must be filtered; got {ids!r}"
+
     def test_get_libraries_no_config(self, client):
         """Libraries endpoint with no Plex AND no other media servers returns
         empty (multi-server world: 'no config' = no media servers configured,

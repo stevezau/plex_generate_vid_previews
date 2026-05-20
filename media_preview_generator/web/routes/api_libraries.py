@@ -165,6 +165,16 @@ def _libraries_for_configured_server(server_id: str) -> tuple[list[dict] | None,
     rows: list[dict] = []
     try:
         for lib in server.list_libraries():
+            # Disabled libraries can't be scanned (the downstream
+            # enumerator at processing/_shared.py:94 filters them out
+            # via lib.enabled), so showing them in pickers /
+            # dashboards just produces silent "no libraries to scan"
+            # surprises when a user ticks one. The Edit Server modal
+            # uses /api/servers/<id> (which returns the full list with
+            # enabled flags) to toggle them — this endpoint is for
+            # "show me what's actionable."
+            if not lib.enabled:
+                continue
             rows.append(
                 {
                     "id": str(lib.id),
