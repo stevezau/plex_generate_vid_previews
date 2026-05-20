@@ -525,6 +525,29 @@
         $('#plexOAuthStart').addEventListener('click', startPlexOAuth);
         const addSelected = $('#plexAddSelected');
         if (addSelected) addSelected.addEventListener('click', addSelectedPlexServers);
+
+        // Browse button for the Add Server modal's Plex config folder
+        // field. The Edit modal already has its own wiring at the bottom
+        // of this file (editPlexConfigBrowseBtn → editPlexConfigFolder);
+        // this is the matching pair for the partial used in #step-connect
+        // and the setup wizard. The button lives inside the shared
+        // _server_connection_form partial so both surfaces inherit it,
+        // but only the modal needs the click handler bound — the setup
+        // wizard hides this partial under #auth-fields-token-plex on
+        // /setup (the wizard uses its own wizardPlexConfigFolder block
+        // at step 3 with its own browse wiring).
+        const plexCfgBrowseBtn = $('#plexConfigFolderBrowseBtn');
+        if (plexCfgBrowseBtn) {
+            plexCfgBrowseBtn.addEventListener('click', () => {
+                const cfgInput = $('#plexConfigFolder');
+                if (!cfgInput) return;
+                const start = (cfgInput.value || '').trim() || '/';
+                window.openFolderPicker(start, (picked) => {
+                    cfgInput.value = picked;
+                    _validateLocalPathInput(cfgInput);
+                });
+            });
+        }
     });
 
     // ---------- Plex OAuth + auto-discovery ------------------------------------

@@ -117,6 +117,25 @@ class TestAddServerModal:
         # And the manual-token input is in the DOM.
         expect(servers_page.locator("#plexToken")).to_be_attached()
 
+    def test_add_plex_modal_has_browse_button_next_to_config_folder(self, servers_page: Page):
+        """The Plex config folder field in the Add Server modal must
+        have a Browse button — matching the same field on the Edit
+        modal (#editPlexConfigBrowseBtn) and the setup wizard
+        (#wizardPlexConfigFolderBrowseBtn). Pre-fix the partial
+        ``_server_connection_form.html`` only had the input; users had
+        to type the path blind."""
+        _force_open_wizard(servers_page)
+        servers_page.locator('.server-type-btn[data-type="plex"]').click()
+        expect(servers_page.locator("#step-connect")).to_be_visible(timeout=2000)
+        expect(servers_page.locator("#auth-fields-token-plex")).to_be_visible(timeout=1000)
+        # The browse button must exist in the DOM alongside the input.
+        expect(servers_page.locator("#plexConfigFolder")).to_be_visible()
+        expect(servers_page.locator("#plexConfigFolderBrowseBtn")).to_be_visible()
+        # Clicking it must open the folder picker modal (the same
+        # #folderPickerModal that the Edit / wizard browse buttons use).
+        servers_page.locator("#plexConfigFolderBrowseBtn").click()
+        expect(servers_page.locator("#folderPickerModal")).to_be_visible(timeout=2000)
+
 
 @pytest.mark.e2e
 class TestServersAPIIntegration:
