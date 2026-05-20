@@ -1110,6 +1110,43 @@ class TestTestConnection:
         assert response.status_code == 400
         assert response.get_json()["ok"] is False
 
+    def test_url_without_scheme_is_rejected_with_friendly_error(self, client, auth_headers):
+        """Issue #247 follow-up: typing a bare hostname like ``EmbyTest4``
+        into the Add-Server URL field used to bubble up the raw
+        ``requests`` error ``"Invalid URL 'EmbyTest4/System/Info': No
+        scheme supplied"`` because ``_validate_server_payload`` only
+        checked that ``url`` was non-empty.
+
+        Plex's legacy ``/api/plex/test-connection`` already rejected this
+        with a friendly hint (see ``api_plex.py``); the generic vendor-
+        agnostic ``/api/servers/test-connection`` did not, so Emby +
+        Jellyfin users got the raw exception. Pinning the hint and 400
+        so future refactors can't silently drop the validation.
+
+        Bug-blindness guard: asserts the response message names BOTH
+        the bad URL and the example scheme, not just ``response.status_code
+        == 400`` — a regression that returned 400 for a different reason
+        (e.g. missing name) would pass a status-only check.
+        """
+        for vendor, bad_url in (("emby", "EmbyTest4"), ("jellyfin", "jf-host:8096"), ("plex", "plex.local")):
+            response = client.post(
+                "/api/servers/test-connection",
+                headers=auth_headers,
+                json={
+                    "type": vendor,
+                    "name": "T",
+                    "url": bad_url,
+                    "auth": {"method": "api_key", "api_key": "k"},
+                },
+            )
+            assert response.status_code == 400, f"{vendor}: expected 400, got {response.status_code}"
+            body = response.get_json()
+            assert body["ok"] is False
+            assert bad_url in body["message"], f"{vendor}: message should quote the bad URL, got {body['message']!r}"
+            assert "http://" in body["message"], (
+                f"{vendor}: message should show the scheme example, got {body['message']!r}"
+            )
+
 
 class TestOutputStatus:
     def _seed_emby(self, *, libraries=None):
