@@ -2613,10 +2613,14 @@ function showNewJobModal() {
     if (sortByEl) sortByEl.value = '';
 
     // Always show all libraries grouped by server. The per-server scope
-    // is inferred from the tick selection at submit time (api_jobs.py's
-    // _infer_server_from_library_ids), so a separate "Media Server"
-    // picker would be redundant — one click instead of two for the
-    // common case of "tick a few libraries on one server."
+    // is sent explicitly via the data-server-id attribute the renderer
+    // stamps on each library checkbox (see startNewJob's collapsing of
+    // ``selectedServerIds`` into a single ``server_id`` field). A
+    // separate "Media Server" picker would be redundant — one click
+    // instead of two for the common case of "tick a few libraries on
+    // one server." Issue #244: the backend used to infer the server
+    // from library_ids alone, which silently mis-routed on multi-Plex
+    // because Plex assigns library ids per-server starting at "1".
     _renderJobLibraryList(libraries);
     _updateJobScopeBadge();
 
@@ -2697,9 +2701,11 @@ function _renderJobLibraryList(libs) {
 }
 
 // Compute the computed-scope preview (one server vs. fan-out) from the
-// current tick state. Must match the server-side inference in
-// api_jobs.py::_infer_server_from_library_ids — if one diverges from the
-// other, users will see a badge that doesn't match actual behaviour.
+// current tick state — same per-checkbox data-server-id values that
+// startNewJob collapses into the request's ``server_id`` field. This is
+// the authoritative scope computation; the backend's
+// ``_infer_server_from_library_ids`` is a refusing fallback for clients
+// that don't send server_id (see issue #244).
 function _updateJobScopeBadge() {
     const badge = document.getElementById('jobScopeBadge');
     if (!badge) return;
@@ -2772,6 +2778,12 @@ async function startNewJob() {
 
     let selectedLibraryIds = [];
     let libraryName = 'All Libraries';
+    // Collect the ticked checkboxes' ``data-server-id`` so we can send
+    // ``server_id`` explicitly when every tick belongs to one server.
+    // Issue #244: relying on the backend's library-id-based inference
+    // mis-routes when two Plex servers share a library id (Plex assigns
+    // ids per-server starting at "1", so collisions are normal).
+    let selectedServerIds = new Set();
 
     if (!allLibrariesCheckbox.checked) {
         // Get selected library checkboxes
@@ -2784,6 +2796,10 @@ async function startNewJob() {
         }
 
         selectedLibraryIds = selectedIdsLocal;
+        for (const cb of selectedCheckboxes) {
+            const sid = (cb.getAttribute('data-server-id') || '').trim();
+            if (sid) selectedServerIds.add(sid);
+        }
         // Build a display name from the looked-up library names so the
         // Jobs page shows which libraries were picked, not just a count.
         // Previously multi-library selections collapsed to "3 Libraries"
@@ -2819,16 +2835,20 @@ async function startNewJob() {
         jobConfig.sort_by = sortBy;
     }
 
-    // No explicit server_id on the wire — api_jobs.create_job runs
-    // _infer_server_from_library_ids(selected_library_ids) and pins
-    // automatically when every tick resolves to one server. Mixed
-    // selection intentionally stays unpinned for cross-server fan-out.
+    // Explicit ``server_id`` when every ticked library belongs to one
+    // server — the UI already knows this from the rendered library
+    // groups (data-server-id attribute) and shouldn't make the backend
+    // re-derive it from library_ids alone. Multi-server selections
+    // stay unpinned so the cross-server fan-out path still works.
     const jobPayload = {
         library_ids: selectedLibraryIds,
         library_name: libraryName,
         priority: priority,
         config: jobConfig,
     };
+    if (selectedServerIds.size === 1) {
+        jobPayload.server_id = Array.from(selectedServerIds)[0];
+    }
 
     // Retry once on transient network errors ("Failed to fetch" from
     // server congestion).
