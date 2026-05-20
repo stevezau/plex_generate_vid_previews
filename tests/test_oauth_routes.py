@@ -270,8 +270,9 @@ class TestPlexServerRoutes:
 
         Regression test: the multi-server "Add Plex Server" wizard captures
         the token from this response to populate the per-server entry's
-        auth.token field. Without it, addSelectedPlexServers fans out with
-        auth.token=null and every saved Plex server fails to authenticate.
+        auth.token field on save. Without it, the saved Plex server has
+        ``auth.token=null`` and fails to authenticate on every subsequent
+        connection attempt.
 
         The legacy single-Plex setup.html flow also benefits — it ignores
         the token client-side but the saved settings.plex_token is still
