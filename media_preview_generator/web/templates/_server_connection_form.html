@@ -137,7 +137,16 @@
             <label class="form-label">Plex config folder
                 <button type="button" class="info-icon ms-1" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Where Plex stores its config — the folder this app needs to write preview files into. This is the path INSIDE this container (i.e. where you mounted your Plex config volume), not the path on your host."><i class="bi bi-info-circle"></i></button>
             </label>
-            <input type="text" id="plexConfigFolder" class="form-control" placeholder="/config/plex">
+            <div class="input-group">
+                <input type="text" id="plexConfigFolder" class="form-control" placeholder="/config/plex">
+                <button type="button" class="btn btn-outline-secondary"
+                        id="plexConfigFolderBrowseBtn"
+                        title="Browse folders">
+                    <i class="bi bi-folder2-open"></i>
+                </button>
+                <div class="invalid-feedback small"></div>
+                <div class="valid-feedback small">Looks like a valid Plex config folder</div>
+            </div>
             <div class="form-text">
                 Preview files land in <code>{this folder}/Media/localhost/...</code>.
                 Common Docker bind: <code>-v /path/to/plex/config:/config/plex</code>.
