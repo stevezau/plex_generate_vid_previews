@@ -99,6 +99,16 @@ class TestAddServerModal:
         expect(servers_page.locator("#step-connect")).to_be_visible(timeout=2000)
         # Emby supports password + api_key auth, so the picker is shown.
         expect(servers_page.locator("#auth-method-section")).to_be_visible(timeout=1000)
+        # Issue #247 regression: configureAuthForType used to call
+        # ``$('#auth-quick').parentElement.classList.toggle('d-none', …)``
+        # which targeted the ENTIRE .btn-group containing all three
+        # auth-method radios. On Emby it hid the whole picker so the
+        # user was stuck on Password with no way to reach API Key.
+        # Pin that the API Key label is reachable for Emby.
+        expect(servers_page.locator('label[for="auth-key"]')).to_be_visible(timeout=1000)
+        expect(servers_page.locator('label[for="auth-pw"]')).to_be_visible(timeout=1000)
+        # And Quick Connect is hidden for Emby (Jellyfin-only feature).
+        expect(servers_page.locator('label[for="auth-quick"]')).to_be_hidden()
 
     def test_picking_jellyfin_shows_auth_method_picker(self, servers_page: Page):
         _force_open_wizard(servers_page)

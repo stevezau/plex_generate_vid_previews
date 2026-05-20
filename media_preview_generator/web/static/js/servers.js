@@ -695,9 +695,15 @@
             $$('input[name="authMethod"]').forEach((r) => {
                 r.checked = r.value === defaultMethod;
             });
-            // Quick Connect only makes sense on Jellyfin.
-            $('#auth-quick').parentElement.classList.toggle('d-none', type !== 'jellyfin');
-            $$('label[for=auth-quick]').forEach((l) => l.classList.toggle('d-none', type !== 'jellyfin'));
+            // Quick Connect only makes sense on Jellyfin — hide just
+            // its radio + its label, NOT the parent .btn-group.
+            // Issue #247: the previous ``.parentElement`` toggle hid
+            // the WHOLE auth-method picker (Quick Connect + Password +
+            // API Key) for Emby, leaving the user stuck on the default
+            // Password method with no way to reach API Key.
+            const hideQuick = type !== 'jellyfin';
+            $('#auth-quick').classList.toggle('d-none', hideQuick);
+            $$('label[for=auth-quick]').forEach((l) => l.classList.toggle('d-none', hideQuick));
             renderAuthFields();
         }
     }
