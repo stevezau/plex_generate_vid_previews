@@ -19,6 +19,7 @@ from loguru import logger
 from ..utils import is_docker_environment
 from .paths import (  # noqa: F401
     _legacy_settings_to_path_mappings,
+    detect_unhealthy_media_mounts,
     expand_path_mapping_candidates,
     get_path_mapping_pairs,
     is_path_excluded,

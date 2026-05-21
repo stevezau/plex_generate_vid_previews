@@ -778,7 +778,37 @@ def _try_reuse_existing_bif(
     return 0
 
 
-def _probe_sibling_mounts(canonical_path: str, registry) -> str | None:
+def _missing_on_disk_message(canonical_path: str, sibling_candidates: list[str]) -> str:
+    """Build the operator-facing "missing on disk" warning.
+
+    Pure string builder so the wording — including the list of sibling
+    mounts actually probed and the mount-problem hint — is unit-testable
+    without the full ``process_canonical_path`` harness. When sibling
+    mounts were probed and none held the file, that's the signal the
+    media volume may not be mounted in this container rather than a path
+    typo (see project_stale_bindmount_missing_on_disk).
+    """
+    base = (
+        f"Source video file is missing on disk: {canonical_path}. "
+        "This often happens when a webhook fires before the file finishes copying, or "
+        "when the file was moved/deleted between scan and dispatch."
+    )
+    if sibling_candidates:
+        base += (
+            f" Also checked {len(sibling_candidates)} sibling mount(s) — none held the file: "
+            f"{', '.join(sibling_candidates)}. If the file is clearly present on the host, the "
+            "media volume may not be mounted inside this container (stale bind-mount / unmounted NFS)."
+        )
+    else:
+        base += (
+            " If the file is supposed to be there, check that the media volume is mounted inside "
+            "this container and the path mapping under Settings → Media Servers."
+        )
+    base += " The rest of the queue is unaffected."
+    return base
+
+
+def _probe_sibling_mounts(canonical_path: str, registry) -> tuple[str | None, list[str]]:
     """Find an existing copy of ``canonical_path`` on a SIBLING local mount.
 
     Plex's indexed path can drift from disk reality when a post-import
@@ -792,13 +822,17 @@ def _probe_sibling_mounts(canonical_path: str, registry) -> str | None:
     trailing path under each sibling. Return the first one whose file
     actually exists on disk, or ``None`` if no sibling holds it.
 
-    Returns ``None`` for the single-mount case (no siblings to probe)
-    or when the canonical_path doesn't sit under any known prefix.
+    Returns ``(rebound_path, tried)`` where ``rebound_path`` is the live
+    sibling location (or ``None``) and ``tried`` is the ordered list of
+    sibling paths actually stat'd — the caller folds that into the
+    "missing on disk" warning so the operator can see every disk was
+    probed (the stale-bind-mount signature). Both are empty/``None`` for
+    the single-mount case or when the path sits under no known prefix.
     """
     try:
         configs = list(registry.configs())
     except Exception:
-        return None
+        return None, []
 
     # Collect every distinct local_prefix across all enabled servers
     # that has a non-empty value. Sort longest-first so a match against
@@ -815,7 +849,7 @@ def _probe_sibling_mounts(canonical_path: str, registry) -> str | None:
             if local:
                 prefixes.add(local)
     if len(prefixes) < 2:
-        return None  # No siblings to probe.
+        return None, []  # No siblings to probe.
 
     sorted_prefixes = sorted(prefixes, key=len, reverse=True)
     matched_prefix: str | None = None
@@ -826,18 +860,27 @@ def _probe_sibling_mounts(canonical_path: str, registry) -> str | None:
             suffix = canonical_path[len(p) :]
             break
     if matched_prefix is None or suffix is None:
-        return None
+        return None, []
 
+    tried: list[str] = []
     for sibling in sorted_prefixes:
         if sibling == matched_prefix:
             continue
         candidate = sibling + suffix
+        tried.append(candidate)
         try:
             if os.path.isfile(candidate):
-                return candidate
+                logger.debug("Sibling-mount probe: {} found at sibling mount {}", canonical_path, candidate)
+                return candidate, tried
         except OSError:
             continue
-    return None
+    logger.debug(
+        "Sibling-mount probe for {}: none of the {} sibling mount(s) held the file ({})",
+        canonical_path,
+        len(tried),
+        ", ".join(tried),
+    )
+    return None, tried
 
 
 def _summarise_results(results: list[PublisherResult], status: MultiServerStatus) -> str:
@@ -1244,7 +1287,7 @@ def process_canonical_path(
         # then try the same trailing path under each SIBLING local_prefix.
         # First match wins. If none match, fall through to the original
         # SKIPPED_FILE_NOT_FOUND path (still retryable).
-        rebound_path = _probe_sibling_mounts(canonical_path, registry)
+        rebound_path, sibling_candidates = _probe_sibling_mounts(canonical_path, registry)
         if rebound_path:
             logger.info(
                 "Source missing at canonical path {} — found at sibling mount {}. "
@@ -1305,14 +1348,7 @@ def process_canonical_path(
                 ", ".join(f"{srv.name}/{adp.name}" for srv, adp, _ in publishers),
             )
         else:
-            logger.warning(
-                "Source video file is missing on disk: {}. "
-                "This often happens when a webhook fires before the file finishes copying, or "
-                "when the file was moved/deleted between scan and dispatch. "
-                "If the file is supposed to be there, check your media mount and the path mapping "
-                "under Settings → Media Servers. The rest of the queue is unaffected.",
-                canonical_path,
-            )
+            logger.warning(_missing_on_disk_message(canonical_path, sibling_candidates))
             # SKIPPED_FILE_NOT_FOUND (not FAILED) so the webhook-retry path
             # in job_runner picks it up and reschedules — webhooks fire at
             # download-START in many *arrs, so a "file missing" right now

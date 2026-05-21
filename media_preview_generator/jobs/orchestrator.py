@@ -112,7 +112,25 @@ def _resolve_webhook_path_to_canonical(path: str, server_configs: list) -> tuple
             # could raise on some filesystems. Skip it.
             continue
     if canonical is None:
+        # Owners matched, so the mapping is correct — yet none of the mapped
+        # disks hold the file. That's the stale-bind-mount / unmounted-volume
+        # signature (or a still-copying file), NOT a mapping typo. Log the
+        # full candidate set so the operator can see we probed every backing
+        # disk before falling back; "missing on every mapped disk for a file
+        # that's clearly on the host" points straight at a container mount
+        # problem. See project_stale_bindmount_missing_on_disk.
         canonical = matching_candidates[0]
+        logger.warning(
+            "Webhook path {!r}: owned by {} but none of the mapped candidates exist on disk — "
+            "falling back to {!r}. Checked: {}. If the file is clearly present on the host, the "
+            "media volume may not be mounted inside this container (stale bind-mount / unmounted NFS).",
+            path,
+            sorted({m.server_id for m in aggregated}),
+            canonical,
+            ", ".join(matching_candidates),
+        )
+    else:
+        logger.debug("Webhook path resolved: {!r} → {!r}", path, canonical)
     return canonical, aggregated
 
 

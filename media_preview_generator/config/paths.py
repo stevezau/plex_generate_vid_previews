@@ -213,6 +213,52 @@ def is_path_excluded(
     return False
 
 
+def detect_unhealthy_media_mounts(path_mappings: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Flag configured ``local_prefix`` mounts that look unusable.
+
+    Returns a list of ``{"path", "issue"}`` dicts, one per distinct
+    ``local_prefix`` that fails a sanity check:
+
+    - ``"missing"`` — the directory doesn't exist in this container.
+    - ``"empty"`` — the directory exists but has no entries. This is the
+      stale-bind-mount signature: the container captured the empty local
+      underlay before the network share was mounted, so every media read
+      fails as "missing on disk" even though the host sees the files
+      (job ``be0151d2``; see project_stale_bindmount_missing_on_disk).
+
+    A legitimately-empty disk would also be flagged, but this is an
+    advisory signal (not a hard error), and an empty *media* mount is
+    almost always a mount problem worth surfacing.
+
+    Args:
+        path_mappings: List from :func:`normalize_path_mappings`.
+
+    Returns:
+        List of issue dicts; empty when every distinct local_prefix is
+        present and non-empty.
+
+    """
+    issues: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for mapping in path_mappings or []:
+        if not isinstance(mapping, dict):
+            continue
+        local = (mapping.get("local_prefix") or "").strip()
+        if not local or local in seen:
+            continue
+        seen.add(local)
+        try:
+            if not os.path.isdir(local):
+                issues.append({"path": local, "issue": "missing"})
+                continue
+            with os.scandir(local) as entries:
+                if next(entries, None) is None:
+                    issues.append({"path": local, "issue": "empty"})
+        except OSError:
+            issues.append({"path": local, "issue": "missing"})
+    return issues
+
+
 def path_to_canonical_local(path: str, path_mappings: list[dict[str, Any]]) -> str:
     """Map any path (Plex, webhook, or local) to canonical local path.
 

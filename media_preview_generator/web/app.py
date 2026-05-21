@@ -392,6 +392,44 @@ def _get_media_servers_from_settings(config_dir: str) -> list:
     return servers if isinstance(servers, list) else []
 
 
+def _warn_unhealthy_media_mounts(media_servers: list) -> list[dict[str, str]]:
+    """Log a WARNING for each configured media mount that looks unmounted.
+
+    Runs at startup so a stale bind-mount (container captured the empty
+    local underlay before the network share mounted) is visible in the
+    log immediately — instead of being discovered job-by-job as "missing
+    on disk" failures hours later (job be0151d2; see
+    project_stale_bindmount_missing_on_disk). Aggregates and dedupes
+    across every server's ``path_mappings``.
+
+    Returns the issue list (also handy for tests / API surfacing).
+    """
+    from ..config import detect_unhealthy_media_mounts
+
+    all_mappings: list[dict] = []
+    for server in media_servers or []:
+        if isinstance(server, dict):
+            all_mappings.extend(server.get("path_mappings") or [])
+
+    issues = detect_unhealthy_media_mounts(all_mappings)
+    for issue in issues:
+        if issue["issue"] == "empty":
+            logger.warning(
+                "Media mount {!r} exists but is EMPTY inside this container — the volume is "
+                "probably not mounted (stale bind-mount / unmounted NFS). Every preview job for "
+                "files on this disk will fail as 'missing on disk'. Recreate the container after "
+                "the share is mounted, or use slave bind-mount propagation.",
+                issue["path"],
+            )
+        else:
+            logger.warning(
+                "Media mount {!r} does not exist inside this container — check the volume mount "
+                "and the path mapping under Settings → Media Servers.",
+                issue["path"],
+            )
+    return issues
+
+
 def _requeue_interrupted_on_startup(config_dir: str) -> None:
     """Revive jobs that were running or pending when the server last stopped.
 
@@ -849,6 +887,13 @@ def create_app(config_dir: str | None = None) -> Flask:
     # are both read by this function). Order doesn't matter relative to
     # _requeue_interrupted_on_startup — they touch disjoint Job sets.
     _resume_interrupted_retry_chains_on_startup(config_dir)
+
+    # Surface stale/unmounted media volumes loudly at boot rather than
+    # letting them masquerade as per-file "missing on disk" failures.
+    try:
+        _warn_unhealthy_media_mounts(_get_media_servers_from_settings(config_dir))
+    except Exception as exc:  # never block startup on a health probe
+        logger.debug("media-mount health probe skipped: {}", exc)
 
     # Pre-warm GPU and version caches in background threads so the first
     # page load doesn't block on GPU detection or GitHub API calls.

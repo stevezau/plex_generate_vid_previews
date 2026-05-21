@@ -28,6 +28,7 @@ VULKAN_SOFTWARE_FALLBACK_ID = "vulkan_software_fallback"
 TIMEZONE_MISCONFIGURED_ID = "timezone_misconfigured"
 SCHEMA_MIGRATION_ID = "schema_migration_completed"
 DEPRECATED_IMAGE_ID = "deprecated_docker_image_name"
+MEDIA_MOUNT_UNHEALTHY_ID = "media_mount_unhealthy"
 
 # Image names recognised by the deprecation banner. The deprecated image
 # keeps publishing alongside the canonical name until 2026-10-29 (six months
@@ -221,6 +222,62 @@ def _build_deprecated_image_notification() -> dict[str, Any] | None:
     }
 
 
+def _build_unhealthy_media_mounts_notification() -> dict[str, Any] | None:
+    """Dashboard banner when a configured media mount looks unmounted.
+
+    Mirrors the startup WARNING (``app._warn_unhealthy_media_mounts``)
+    into the bell dropdown so the operator sees the problem in the UI,
+    not just the log. An ``empty`` mount is the stale-bind-mount
+    signature that made job be0151d2 fail as "missing on disk" for
+    files that existed on the host. See
+    project_stale_bindmount_missing_on_disk.
+    """
+    from ..config import detect_unhealthy_media_mounts
+    from .settings_manager import get_settings_manager
+
+    try:
+        servers = get_settings_manager().get("media_servers", []) or []
+    except Exception as exc:
+        logger.debug("media-mount notification skipped: {}", exc)
+        return None
+    if not isinstance(servers, list):
+        return None
+
+    all_mappings: list[dict] = []
+    for server in servers:
+        if isinstance(server, dict):
+            all_mappings.extend(server.get("path_mappings") or [])
+
+    issues = detect_unhealthy_media_mounts(all_mappings)
+    if not issues:
+        return None
+
+    from markupsafe import escape
+
+    rows = "".join(
+        f"<li><code>{escape(i['path'])}</code> — "
+        f"{'exists but is empty (volume not mounted?)' if i['issue'] == 'empty' else 'does not exist'}</li>"
+        for i in issues
+    )
+    body = (
+        "<p class='mb-1'>One or more configured media paths look unusable inside this container. "
+        "Preview jobs for files on these disks will fail as <em>“missing on disk”</em> even when the "
+        "files exist on the host:</p>"
+        f"<ul class='mb-1'>{rows}</ul>"
+        "<p class='mb-0 small text-muted'>This usually means the volume isn’t mounted (stale "
+        "bind-mount / unmounted network share). Recreate the container after the share is mounted, "
+        "or use slave bind-mount propagation, then re-check Settings → Media Servers.</p>"
+    )
+    return {
+        "id": MEDIA_MOUNT_UNHEALTHY_ID,
+        "severity": "warning",
+        "title": "Media mount looks unmounted",
+        "body_html": body,
+        "dismissable": True,
+        "source": "media_mount_health",
+    }
+
+
 def _notification_sources() -> list[dict[str, Any] | None]:
     """All notification builders.  Add new sources here as they arrive."""
     return [
@@ -228,6 +285,7 @@ def _notification_sources() -> list[dict[str, Any] | None]:
         _build_timezone_misconfigured_notification(),
         _build_schema_migration_notification(),
         _build_deprecated_image_notification(),
+        _build_unhealthy_media_mounts_notification(),
     ]
 
 
