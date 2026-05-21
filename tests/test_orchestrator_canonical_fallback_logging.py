@@ -98,17 +98,23 @@ class TestCanonicalFallbackLogging:
         assert [m.server_id for m in owners] == ["plex-1"]
 
         logged = " ".join(r.msg for r in loguru_caplog.records if r.levelno >= _std_logging.WARNING)
-        assert "none of the mapped candidates" in logged, logged
+        assert "NONE of the mapped disks" in logged, logged
         # The source path the operator recognises (what Sonarr sent).
         assert WEBHOOK_PATH in logged, logged
+        # Names the owning server, not its opaque id, so the per-job log is readable.
+        assert "Plex" in logged, logged
         # Proof every backing disk was checked — the bit that screams "mount",
         # not "mapping typo".
         assert "/data_16tb2/TV Shows" in logged, logged
         assert "/data_16tb3/TV Shows" in logged, logged
 
-    def test_no_fallback_warning_when_a_candidate_exists(self, loguru_caplog):
-        """When a candidate exists on disk the picker resolves to it and emits
-        only a DEBUG source→canonical breadcrumb — never the WARNING."""
+    def test_info_breadcrumb_when_a_candidate_exists_and_path_translated(self, loguru_caplog):
+        """When a candidate exists on disk the picker resolves to it and emits a
+        visible INFO ``webhook X → resolved Y`` breadcrumb (never the WARNING).
+
+        This INFO line — not a hidden DEBUG — is what surfaces the applied path
+        mapping into the per-job log so operators can see ``/data/...`` was
+        translated to ``/data_16tb3/...`` without enabling debug logging."""
         configs = [_plex_with_tv_library()]
 
         def _only_disk3_exists(p):
@@ -119,7 +125,30 @@ class TestCanonicalFallbackLogging:
 
         assert canonical == "/data_16tb3/TV Shows/Show (2024)/Season 01/Show - S01E01.mkv"
         warnings = " ".join(r.msg for r in loguru_caplog.records if r.levelno >= _std_logging.WARNING)
-        assert "none of the mapped candidates" not in warnings, warnings
-        # DEBUG breadcrumb shows the source → resolved mapping.
-        debugs = " ".join(r.msg for r in loguru_caplog.records if r.levelno < _std_logging.WARNING)
-        assert WEBHOOK_PATH in debugs and canonical in debugs, debugs
+        assert "NONE of the mapped disks" not in warnings, warnings
+        # The mapping must be visible at INFO (captured into job logs), not DEBUG.
+        infos = " ".join(r.msg for r in loguru_caplog.records if r.levelno == _std_logging.INFO)
+        assert WEBHOOK_PATH in infos and canonical in infos, infos
+        # Owner name (not opaque id) must appear on the INFO breadcrumb too.
+        assert "Plex" in infos, infos
+
+    def test_no_breadcrumb_logged_when_log_resolution_false(self, loguru_caplog):
+        """Count-only callers (the owning-servers summary) pass
+        ``log_resolution=False`` so the per-path mapping line isn't logged
+        twice per path per job — only the real dispatch pass logs it.
+
+        Uses the candidate-exists path (the INFO branch) — the cell that
+        matches the summary caller on a healthy mount — so a regression that
+        dropped the gate from the ``elif`` INFO branch would be caught."""
+        configs = [_plex_with_tv_library()]
+
+        def _only_disk3_exists(p):
+            return p == "/data_16tb3/TV Shows/Show (2024)/Season 01/Show - S01E01.mkv"
+
+        with patch("media_preview_generator.jobs.orchestrator.os.path.exists", side_effect=_only_disk3_exists):
+            canonical, owners = _resolve_webhook_path_to_canonical(WEBHOOK_PATH, configs, log_resolution=False)
+
+        assert canonical == "/data_16tb3/TV Shows/Show (2024)/Season 01/Show - S01E01.mkv"
+        assert [m.server_id for m in owners] == ["plex-1"]
+        emitted = " ".join(r.msg for r in loguru_caplog.records if r.levelno >= _std_logging.INFO)
+        assert "Path mapping:" not in emitted, emitted

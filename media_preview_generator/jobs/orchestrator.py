@@ -25,7 +25,9 @@ from .worker import WorkerPool
 _WORKER_EMIT_THROTTLE_S = 1.0
 
 
-def _resolve_webhook_path_to_canonical(path: str, server_configs: list) -> tuple[str, list]:
+def _resolve_webhook_path_to_canonical(
+    path: str, server_configs: list, *, log_resolution: bool = True
+) -> tuple[str, list]:
     """Resolve a webhook-source path to a canonical server-view path + its owners.
 
     Sonarr/Radarr emit paths in their own view (e.g. ``/data/TV Shows/X.mkv``)
@@ -57,6 +59,13 @@ def _resolve_webhook_path_to_canonical(path: str, server_configs: list) -> tuple
 
     Tries the raw path first (the dominant case for installs without
     webhook_prefixes mappings), then every translated candidate.
+
+    ``log_resolution`` controls whether the per-path mapping breadcrumb
+    (the INFO "webhook X → resolved Y" line and the fallback WARNING) is
+    emitted. Count-only callers (the owning-servers summary breadcrumb)
+    pass ``False`` so the detail isn't logged twice per path per job —
+    the real dispatch pass logs it. When run on a job thread these lines
+    are captured into the per-job log, surfacing path mappings in the UI.
     """
     if not path or not server_configs:
         return path, []
@@ -120,18 +129,38 @@ def _resolve_webhook_path_to_canonical(path: str, server_configs: list) -> tuple
         # that's clearly on the host" points straight at a container mount
         # problem. See project_stale_bindmount_missing_on_disk.
         canonical = matching_candidates[0]
-        logger.warning(
-            "Webhook path {!r}: owned by {} but none of the mapped candidates exist on disk — "
-            "falling back to {!r}. Checked: {}. If the file is clearly present on the host, the "
-            "media volume may not be mounted inside this container (stale bind-mount / unmounted NFS).",
+        if log_resolution:
+            logger.warning(
+                "Path mapping: webhook {!r} matched {}'s library but exists on NONE of the mapped "
+                "disks — checked {}. Falling back to {!r}. If the file is clearly present on the host, "
+                "the media volume may not be mounted inside this container "
+                "(stale bind-mount / unmounted volume).",
+                path,
+                _owner_label(aggregated, server_configs),
+                ", ".join(matching_candidates),
+                canonical,
+            )
+    elif log_resolution and canonical != path:
+        logger.info(
+            "Path mapping: webhook {!r} → resolved {!r} (owner: {})",
             path,
-            sorted({m.server_id for m in aggregated}),
             canonical,
-            ", ".join(matching_candidates),
+            _owner_label(aggregated, server_configs),
         )
     else:
         logger.debug("Webhook path resolved: {!r} → {!r}", path, canonical)
     return canonical, aggregated
+
+
+def _owner_label(matches: list, server_configs: list) -> str:
+    """Human-readable owner names for a mapping breadcrumb.
+
+    Prefers the configured server ``name`` over the opaque ``server_id``
+    so the per-job log reads "Plex" instead of a 32-char hex id.
+    """
+    name_by_id = {cfg.id: (cfg.name or cfg.id) for cfg in server_configs}
+    names = sorted({name_by_id.get(m.server_id, m.server_id) for m in matches})
+    return ", ".join(names) if names else "no server"
 
 
 def _outcome_for_multi_server_status(status) -> ProcessingResult:
@@ -397,7 +426,7 @@ def _log_webhook_owning_servers(config, paths: list[str]) -> None:
         owners_by_server: dict[str, int] = {}
         unowned = 0
         for path in paths:
-            _canonical, uniq_matches = _resolve_webhook_path_to_canonical(path, configs)
+            _canonical, uniq_matches = _resolve_webhook_path_to_canonical(path, configs, log_resolution=False)
             if not uniq_matches:
                 unowned += 1
                 continue

@@ -168,6 +168,20 @@ def _format_eta(seconds: float) -> str:
         return f"{int(seconds // 3600)}h {int((seconds % 3600) // 60)}m"
 
 
+def _join_error_clauses(parts: list[str]) -> str:
+    """Join independent failure clauses into one readable summary.
+
+    Each part may be a short clause (``"3 path(s) sent for retry"``) or a
+    full multi-sentence message (``"... no previews were generated. Check the
+    per-item logs above."``). A fixed ``", "`` join collided with parts that
+    already ended in ``.``, producing ``"...logs above., Could not find ..."``.
+    We strip any trailing sentence punctuation from each part and separate
+    them with ``". "`` so the result reads as clean sentences.
+    """
+    cleaned = [p.strip().rstrip(".!?").strip() for p in parts if p and p.strip()]
+    return ". ".join(c for c in cleaned if c)
+
+
 def _build_selected_gpus(settings) -> list:
     """Build the selected_gpus list from gpu_config and GPU cache.
 
@@ -1503,9 +1517,11 @@ def _start_job_async(job_id: str, config_overrides: dict | None = None):
 
                         if error_parts:
                             if total_paths > 0 and resolved_count < total_paths:
-                                error_msg = f"{resolved_count}/{total_paths} processed; " + ", ".join(error_parts)
+                                error_msg = f"{resolved_count}/{total_paths} processed; " + _join_error_clauses(
+                                    error_parts
+                                )
                             else:
-                                error_msg = "; ".join(error_parts)
+                                error_msg = _join_error_clauses(error_parts)
                             job_manager.add_log(job_id, f"WARNING - {error_msg}")
                             classification = _classify_job_completion(
                                 failures=failures,

@@ -995,7 +995,10 @@ def _kick_early_scan(path: str, server_id_filter: str | None, job_id: str) -> No
             settings = get_settings_manager()
             media_servers = settings.get("media_servers") or []
             registry = ServerRegistry.from_settings(media_servers)
-            canonical_path, matches = _resolve_webhook_path_to_canonical(path, registry.configs())
+            # Best-effort head-start: the authoritative dispatch pass logs the
+            # path-mapping breadcrumb into the job log, so keep this resolution
+            # silent to avoid a duplicate per-path line.
+            canonical_path, matches = _resolve_webhook_path_to_canonical(path, registry.configs(), log_resolution=False)
             if server_id_filter:
                 matches = [m for m in matches if m.server_id == server_id_filter]
             if not matches:
