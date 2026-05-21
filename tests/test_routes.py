@@ -159,6 +159,36 @@ class TestPageRoutes:
         assert b'id="settings-sidebar"' in body, "settings page must include the sidebar nav"
         assert b'id="section-processing"' in body, "settings page must include the Processing section"
 
+    def test_webhook_activity_requires_auth(self, client):
+        resp = client.get("/webhook-activity", follow_redirects=False)
+        assert resp.status_code == 302
+        assert "/login" in resp.headers.get("Location", "")
+
+    def test_webhook_activity_page_renders(self, authed_client):
+        """The relocated Tools page must carry the history table + pagination
+        markup the JS binds to; a 200 with the wrong template would strand
+        loadHistory() against missing elements."""
+        resp = authed_client.get("/webhook-activity")
+        assert resp.status_code == 200
+        body = resp.data
+        assert b'id="section-webhooks-activity"' in body, "page missing the activity card"
+        assert b'id="historyTable"' in body, "page missing the history table the JS renders into"
+        assert b'id="historyPaginationControls"' in body, "page missing pagination controls"
+        # The markup is inert without the moved JS — assert the load-bearing
+        # functions shipped too, so a truncated script copy can't pass green.
+        assert b"function loadHistory" in body, "page missing loadHistory() — table would never populate"
+        assert b"function clearHistory" in body, "page missing clearHistory() — Clear button would throw"
+
+    def test_automation_links_out_to_webhook_activity_not_inline_table(self, authed_client):
+        """After the move, the Automation page must NOT embed the history
+        table (that lives under Tools now) but MUST link to it — otherwise
+        the configure→verify path is broken."""
+        resp = authed_client.get("/automation")
+        assert resp.status_code == 200
+        body = resp.data
+        assert b'id="historyTable"' not in body, "history table must no longer be inline on Automation"
+        assert b"/webhook-activity" in body, "Automation must link to the Webhook Activity page"
+
     def test_servers_page_accepts_add_query_param(self, authed_client):
         """Setup wizard step 1's vendor picker redirects to
         /servers?add=<vendor> when the user picks Emby/Jellyfin. The page

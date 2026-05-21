@@ -58,6 +58,19 @@ def logs_page():
     return render_template("logs.html")
 
 
+@main.route("/webhook-activity")
+@login_required
+def webhook_activity_page():
+    """Read-only webhook activity history.
+
+    Relocated from the Automation page so Tools owns the diagnostic /
+    history surfaces (Logs, Preview Inspector, Webhook Activity) while
+    Automation stays focused on configuration (Triggers, Schedules,
+    Quiet Hours). The Automation page links here.
+    """
+    return render_template("webhook_activity.html")
+
+
 @main.route("/automation")
 @login_required
 def automation_page():

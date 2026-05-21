@@ -133,7 +133,7 @@
                            highlight on the Automation dropdown. Same pattern
                            as the Help and Notification toggles further down. #}
                         <button type="button"
-                                class="nav-link btn btn-link dropdown-toggle d-flex align-items-center {% if request.endpoint in ('main.logs_page','main.bif_viewer') %}active{% endif %}"
+                                class="nav-link btn btn-link dropdown-toggle d-flex align-items-center {% if request.endpoint in ('main.logs_page','main.webhook_activity_page','main.bif_viewer') %}active{% endif %}"
                                 id="navToolsDropdown"
                                 data-bs-toggle="dropdown" aria-expanded="false">
                             <i class="bi bi-wrench-adjustable me-1"></i>Tools
@@ -142,6 +142,11 @@
                             <li>
                                 <a class="dropdown-item {% if request.endpoint == 'main.logs_page' %}active{% endif %}" href="{{ url_for('main.logs_page') }}">
                                     <i class="bi bi-terminal me-2"></i>Logs
+                                </a>
+                            </li>
+                            <li>
+                                <a class="dropdown-item {% if request.endpoint == 'main.webhook_activity_page' %}active{% endif %}" href="{{ url_for('main.webhook_activity_page') }}">
+                                    <i class="bi bi-clock-history me-2"></i>Webhook Activity
                                 </a>
                             </li>
                             <li>
